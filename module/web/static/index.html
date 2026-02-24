@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NemesisBot Web Chat</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 头部 -->
+        <header>
+            <h1>NemesisBot</h1>
+            <div id="connection-status">
+                <span class="status-dot connecting"></span>
+                <span class="status-text">连接中...</span>
+            </div>
+        </header>
+
+        <!-- 消息列表 -->
+        <div id="messages-container">
+            <!-- 消息会动态插入到这里 -->
+        </div>
+
+        <!-- 输入区域 -->
+        <div id="input-area">
+            <textarea id="message-input"
+                      placeholder="输入消息... (Ctrl+Enter 发送)"
+                      rows="1"></textarea>
+            <button id="send-button" disabled>发送</button>
+        </div>
+    </div>
+
+    <!-- Load app.js first to establish WebSocket connection immediately -->
+    <script src="/app.js"></script>
+    <!-- Load external libraries asynchronously (don't block WebSocket) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js" defer></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+</body>
+</html>

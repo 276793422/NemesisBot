@@ -1,0 +1,129 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.nemesisbot/workspace",
+      "restrict_to_workspace": true,
+      "llm": "zhipu/glm-4.7-flash",
+      "max_tokens": 8192,
+      "temperature": 0.7,
+      "max_tool_iterations": 20
+    }
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": false,
+      "bridge_url": "ws://localhost:3001",
+      "proxy": "",
+      "allow_from": []
+    },
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "proxy": "",
+      "allow_from": []
+    },
+    "feishu": {
+      "enabled": false,
+      "app_id": "",
+      "app_secret": "",
+      "encrypt_key": "",
+      "verification_token": "",
+      "allow_from": []
+    },
+    "discord": {
+      "enabled": false,
+      "token": "",
+      "allow_from": []
+    },
+    "maixcam": {
+      "enabled": false,
+      "host": "0.0.0.0",
+      "port": 18790,
+      "allow_from": []
+    },
+    "qq": {
+      "enabled": false,
+      "app_id": "",
+      "app_secret": "",
+      "allow_from": []
+    },
+    "dingtalk": {
+      "enabled": false,
+      "client_id": "",
+      "client_secret": "",
+      "allow_from": []
+    },
+    "slack": {
+      "enabled": false,
+      "bot_token": "",
+      "app_token": "",
+      "allow_from": []
+    },
+    "line": {
+      "enabled": false,
+      "channel_secret": "",
+      "channel_access_token": "",
+      "webhook_host": "0.0.0.0",
+      "webhook_port": 18791,
+      "webhook_path": "/webhook/line",
+      "allow_from": []
+    },
+    "onebot": {
+      "enabled": false,
+      "ws_url": "ws://127.0.0.1:3001",
+      "access_token": "",
+      "reconnect_interval": 5,
+      "group_trigger_prefix": [],
+      "allow_from": []
+    },
+    "web": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 8080,
+      "path": "/ws",
+      "auth_token": "",
+      "allow_from": [],
+      "heartbeat_interval": 30,
+      "session_timeout": 3600
+    }
+  },
+  "model_list": [],
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  },
+  "tools": {
+    "web": {
+      "brave": {
+        "enabled": false,
+        "api_key": "",
+        "max_results": 5
+      },
+      "duckduckgo": {
+        "enabled": false
+      },
+      "perplexity": {
+        "enabled": false,
+        "api_key": "",
+        "max_results": 5
+      }
+    },
+    "cron": {
+      "exec_timeout_minutes": 5
+    }
+  },
+  "heartbeat": {
+    "enabled": true,
+    "interval": 30
+  },
+  "devices": {
+    "enabled": false,
+    "monitor_usb": true
+  },
+  "security": {
+    "enabled": false
+  },
+  "mcp": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,150 @@
+// NemesisBot - AI agent
+// License: MIT
+// Copyright (c) 2026 NemesisBot contributors
+// Web Channel - WebSocket-based chat channel
+
+package channels
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/276793422/NemesisBot/module/bus"
+	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/web"
+)
+
+// WebChannel implements a WebSocket-based chat channel
+type WebChannel struct {
+	*BaseChannel
+	config     *config.WebChannelConfig
+	server     *web.Server
+	sessionMgr *web.SessionManager
+	running    bool
+}
+
+// NewWebChannel creates a new web channel
+func NewWebChannel(cfg *config.WebChannelConfig, messageBus *bus.MessageBus) (*WebChannel, error) {
+	// Create session manager with configured timeout
+	sessionTimeout := time.Duration(cfg.SessionTimeout) * time.Second
+	if sessionTimeout == 0 {
+		sessionTimeout = 1 * time.Hour // Default 1 hour
+	}
+	sessionMgr := web.NewSessionManager(sessionTimeout)
+
+	base := NewBaseChannel("web", cfg, messageBus, cfg.AllowFrom)
+
+	return &WebChannel{
+		BaseChannel: base,
+		config:      cfg,
+		sessionMgr:  sessionMgr,
+		running:     false,
+	}, nil
+}
+
+// Start starts the web channel HTTP server
+func (c *WebChannel) Start(ctx context.Context) error {
+	logger.InfoCF("web", "Starting web channel", map[string]interface{}{
+		"host": c.config.Host,
+		"port": c.config.Port,
+		"path": c.config.Path,
+	})
+
+	// Create and start server
+	c.server = web.NewServer(web.ServerConfig{
+		Host:       c.config.Host,
+		Port:       c.config.Port,
+		WSPath:     c.config.Path,
+		AuthToken:  c.config.AuthToken,
+		SessionMgr: c.sessionMgr,
+		Bus:        c.bus,
+	})
+
+	// Start server in goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		if err := c.server.Start(ctx); err != nil {
+			errChan <- err
+		}
+	}()
+
+	// Wait briefly to ensure server starts successfully
+	select {
+	case err := <-errChan:
+		return err
+	case <-time.After(100 * time.Millisecond):
+		// Server started successfully
+		c.setRunning(true)
+		logger.InfoCF("web", "Web channel started", map[string]interface{}{
+			"url": fmt.Sprintf("http://%s:%d", c.config.Host, c.config.Port),
+		})
+		return nil
+	}
+}
+
+// Stop stops the web channel
+func (c *WebChannel) Stop(ctx context.Context) error {
+	logger.InfoC("web", "Stopping web channel")
+
+	c.setRunning(false)
+
+	// Shutdown server
+	if c.server != nil {
+		if err := c.server.Shutdown(ctx); err != nil {
+			logger.ErrorCF("web", "Error stopping server", map[string]interface{}{
+				"error": err.Error(),
+			})
+			return err
+		}
+	}
+
+	// Shutdown session manager
+	c.sessionMgr.Shutdown()
+
+	logger.InfoC("web", "Web channel stopped")
+	return nil
+}
+
+// Send sends a message to a WebSocket client
+func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	if !c.IsRunning() {
+		return fmt.Errorf("web channel not running")
+	}
+
+	// Extract session ID from chat ID (format: web:<session-id>)
+	var sessionID string
+	if len(msg.ChatID) > 4 && msg.ChatID[:4] == "web:" {
+		sessionID = msg.ChatID[4:]
+	} else {
+		return fmt.Errorf("invalid chat ID format: %s", msg.ChatID)
+	}
+
+	logger.DebugCF("web", "Sending message to session", map[string]interface{}{
+		"session_id": sessionID,
+		"chat_id":    msg.ChatID,
+		"content":    msg.Content,
+	})
+
+	// Send message to session
+	if err := c.server.SendToSession(sessionID, "assistant", msg.Content); err != nil {
+		logger.ErrorCF("web", "Failed to send message", map[string]interface{}{
+			"error":      err.Error(),
+			"session_id": sessionID,
+		})
+		return err
+	}
+
+	return nil
+}
+
+// IsRunning returns whether the channel is running
+func (c *WebChannel) IsRunning() bool {
+	return c.running
+}
+
+// setRunning sets the running state
+func (c *WebChannel) setRunning(running bool) {
+	c.running = running
+}

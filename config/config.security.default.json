@@ -1,0 +1,196 @@
+{
+  "default_action": "allow",
+  "log_all_operations": true,
+  "log_denials_only": false,
+  "approval_timeout_seconds": 300,
+  "max_pending_requests": 100,
+  "audit_log_retention_days": 90,
+  "audit_log_file_enabled": true,
+  "synchronous_mode": false,
+  "file_rules": {
+    "read": [
+      {
+        "pattern": "/workspace/",
+        "action": "allow"
+      },
+      {
+        "pattern": "*.log",
+        "action": "ask"
+      }
+    ],
+    "write": [
+      {
+        "pattern": "/workspace/**",
+        "action": "allow"
+      },
+      {
+        "pattern": "/etc/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Windows/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Program Files/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Program Files (x86)/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/ProgramData/**",
+        "action": "deny"
+      }
+    ],
+    "delete": [
+      {
+        "pattern": "/workspace/tmp/**",
+        "action": "allow"
+      }
+    ]
+  },
+  "directory_rules": {
+    "read": [
+      {
+        "pattern": "/workspace/**",
+        "action": "allow"
+      }
+    ],
+    "create": [
+      {
+        "pattern": "/workspace/**",
+        "action": "allow"
+      }
+    ],
+    "delete": [
+      {
+        "pattern": "/workspace/tmp/**",
+        "action": "allow"
+      }
+    ]
+  },
+  "process_rules": {
+    "exec": [
+      {
+        "pattern": "git *",
+        "action": "allow"
+      },
+      {
+        "pattern": "npm *",
+        "action": "allow"
+      },
+      {
+        "pattern": "go run *",
+        "action": "allow"
+      },
+      {
+        "pattern": "rm -rf *",
+        "action": "deny"
+      },
+      {
+        "pattern": "*sudo*",
+        "action": "deny"
+      },
+      {
+        "pattern": "format *",
+        "action": "deny"
+      }
+    ],
+    "spawn": [
+      {
+        "pattern": "*",
+        "action": "ask"
+      }
+    ],
+    "kill": [
+      {
+        "pattern": "*",
+        "action": "deny"
+      }
+    ],
+    "suspend": [
+      {
+        "pattern": "*",
+        "action": "deny"
+      }
+    ]
+  },
+  "network_rules": {
+    "request": [
+      {
+        "pattern": "*.github.com",
+        "action": "allow"
+      },
+      {
+        "pattern": "*.openai.com",
+        "action": "allow"
+      },
+      {
+        "pattern": "*.anthropic.com",
+        "action": "allow"
+      }
+    ],
+    "download": [
+      {
+        "pattern": "*",
+        "action": "ask"
+      }
+    ],
+    "upload": [
+      {
+        "pattern": "*",
+        "action": "ask"
+      }
+    ]
+  },
+  "hardware_rules": {
+    "i2c": [
+      {
+        "pattern": "*",
+        "action": "allow"
+      }
+    ],
+    "spi": [
+      {
+        "pattern": "*",
+        "action": "allow"
+      }
+    ],
+    "gpio": [
+      {
+        "pattern": "*",
+        "action": "allow"
+      }
+    ]
+  },
+  "registry_rules": {
+    "read": [
+      {
+        "pattern": "HKEY_CURRENT_USER/**",
+        "action": "allow"
+      },
+      {
+        "pattern": "HKEY_LOCAL_MACHINE/**",
+        "action": "ask"
+      }
+    ],
+    "write": [
+      {
+        "pattern": "HKEY_CURRENT_USER/**",
+        "action": "ask"
+      },
+      {
+        "pattern": "HKEY_LOCAL_MACHINE/**",
+        "action": "deny"
+      }
+    ],
+    "delete": [
+      {
+        "pattern": "*",
+        "action": "deny"
+      }
+    ]
+  }
+}
