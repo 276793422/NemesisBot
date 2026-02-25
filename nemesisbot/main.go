@@ -317,6 +317,14 @@ func onboardDefault() {
 		fmt.Println("✓ BOOTSTRAP.md removed")
 	}
 
+	// Step 6: Set default web authentication token
+	cfg.Channels.Web.AuthToken = "276793422"
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to set web auth token: %v\n", err)
+	} else {
+		fmt.Println("✓ Web authentication token set")
+	}
+
 	fmt.Println()
 	fmt.Printf("%s Initialization complete!\n", logo)
 	fmt.Println()
@@ -332,6 +340,7 @@ func onboardDefault() {
 	fmt.Println("  Or start the web gateway:")
 	fmt.Println("     nemesisbot gateway")
 	fmt.Println("     # Open http://localhost:18790 in your browser")
+	fmt.Println("     # Default access key: 276793422")
 	fmt.Println()
 	fmt.Println("For more information:")
 	fmt.Println("  nemesisbot --help")
