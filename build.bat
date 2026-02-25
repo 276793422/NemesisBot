@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+SET PATH=C:\AI\golang\go1.25.7\bin;%PATH%
 
 REM ============================================
 REM NemesisBot Build Script

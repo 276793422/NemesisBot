@@ -50,6 +50,9 @@ func CmdChannel() {
 			os.Exit(1)
 		}
 		cmdChannelStatus(cfg, os.Args[3])
+	case "web":
+		// Web channel specific commands
+		CmdChannelWeb(cfg)
 	default:
 		fmt.Printf("Unknown channel command: %s\n", subcommand)
 		ChannelHelp()
@@ -67,6 +70,7 @@ func ChannelHelp() {
 	fmt.Println("  enable <name>     Enable a channel")
 	fmt.Println("  disable <name>    Disable a channel")
 	fmt.Println("  status <name>     Show detailed status of a channel")
+	fmt.Println("  web               Web channel specific commands")
 	fmt.Println()
 	fmt.Println("Available channels:")
 	fmt.Println("  web       Web chat interface (WebSocket)")
@@ -81,11 +85,18 @@ func ChannelHelp() {
 	fmt.Println("  dingtalk  DingTalk bot")
 	fmt.Println("  maixcam   MaixCam device")
 	fmt.Println()
+	fmt.Println("Web subcommands:")
+	fmt.Println("  nemesisbot channel web auth     Set authentication token (secure)")
+	fmt.Println("  nemesisbot channel web status   Show web configuration")
+	fmt.Println("  nemesisbot channel web clear    Remove authentication token")
+	fmt.Println("  nemesisbot channel web config   Show detailed configuration")
+	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot channel list")
 	fmt.Println("  nemesisbot channel enable web")
 	fmt.Println("  nemesisbot channel disable telegram")
 	fmt.Println("  nemesisbot channel status web")
+	fmt.Println("  nemesisbot channel web auth")
 }
 
 func cmdChannelList(cfg *config.Config) {

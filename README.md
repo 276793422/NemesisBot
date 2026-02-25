@@ -273,6 +273,94 @@ nemesisbot.exe gateway
 http://localhost:8080
 ```
 
+#### Web 认证配置（推荐）
+
+为了安全性，建议设置访问密钥。有三种方式配置：
+
+##### 方式一：交互式命令（推荐手动使用）
+
+```bash
+# 交互式设置 token（安全）
+nemesisbot channel web auth
+```
+
+**优点**：
+- ✅ Token 不在命令行参数中暴露
+- ✅ 避免在进程列表和终端历史中泄露
+- ✅ 适合日常手动配置
+
+##### 方式二：命令行直接设置（推荐脚本/自动化）
+
+```bash
+# 快速设置 token
+nemesisbot channel web auth set my-secret-token
+nemesisbot channel web auth set 276793422
+
+# 查看当前 token
+nemesisbot channel web auth get
+```
+
+**优点**：
+- ✅ 方便快捷，一次输入即可
+- ✅ 适合脚本和自动化场景
+- ⚠️ Token 可能在进程列表和 shell 历史中可见
+
+##### 方式三：编辑配置文件
+
+编辑 `config.json`，在 `channels.web` 中配置：
+
+```json
+{
+  "channels": {
+    "web": {
+      "enabled": true,
+      "host": "0.0.0.0",
+      "port": 8080,
+      "path": "/ws",
+      "auth_token": "your-secret-key-here",  // 设置密钥后启用认证
+      "session_timeout": 3600
+    }
+  }
+}
+```
+
+##### 方式四：使用环境变量
+
+```bash
+export NEMESISBOT_CHANNELS_WEB_AUTH_TOKEN="your-secret-key-here"
+```
+
+**注意**：环境变量方式可能在进程列表中暴露 token。
+
+#### 其他管理命令
+
+```bash
+# 查看当前认证状态
+nemesisbot channel web status
+
+# 查看详细配置
+nemesisbot channel web config
+
+# 清除认证 token
+nemesisbot channel web clear
+```
+
+#### 使用说明
+
+设置密钥后：
+- 首次访问需要输入密钥登录
+- 选中"记住我"选项后，密钥保存在浏览器本地，下次访问自动登录
+- 点击"退出"按钮可以清除密钥并注销
+
+#### 安全建议
+
+- 使用强密钥（至少 16 位随机字符）
+- 生产环境建议使用 HTTPS
+- 定期更换密钥以提高安全性
+- 确保配置文件权限安全（Unix/Mac 建议 0600）
+- 手动配置优先使用交互式命令
+- 脚本/自动化可以使用命令行模式，但注意清理历史记录
+
 ### 聊天平台
 
 配置好对应平台的 Bot 后，直接在 Telegram/飞书 等平台与 AI 对话。

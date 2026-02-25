@@ -1,15 +1,61 @@
 // NemesisBot Web Chat - JavaScript Client
 
+// Auth Manager - Handles token storage and authentication
+class AuthManager {
+    constructor() {
+        this.storageKey = 'nemesisbot_auth_token';
+    }
+
+    // Save token to localStorage
+    saveToken(token) {
+        try {
+            localStorage.setItem(this.storageKey, token);
+            return true;
+        } catch (e) {
+            console.error('Failed to save token:', e);
+            return false;
+        }
+    }
+
+    // Get token from localStorage
+    getToken() {
+        try {
+            return localStorage.getItem(this.storageKey);
+        } catch (e) {
+            console.error('Failed to get token:', e);
+            return null;
+        }
+    }
+
+    // Clear token (logout)
+    clearToken() {
+        try {
+            localStorage.removeItem(this.storageKey);
+            return true;
+        } catch (e) {
+            console.error('Failed to clear token:', e);
+            return false;
+        }
+    }
+
+    // Check if user is authenticated
+    isAuthenticated() {
+        return this.getToken() !== null;
+    }
+}
+
 // WebSocket Manager
 class WebSocketManager {
-    constructor(url) {
+    constructor(url, authToken) {
         this.url = url;
+        this.authToken = authToken;
         this.ws = null;
         this.reconnectDelay = 1000;
         this.maxReconnectDelay = 30000;
         this.messageQueue = [];
         this.onMessage = null;
         this.onStatusChange = null;
+        this.onAuthError = null;  // New callback for auth errors
         this.manualClose = false;
     }
 
@@ -22,7 +68,14 @@ class WebSocketManager {
         this.manualClose = false;
 
         try {
-            this.ws = new WebSocket(this.url);
+            // Build WebSocket URL with auth token
+            let wsUrl = this.url;
+            if (this.authToken) {
+                const separator = wsUrl.includes('?') ? '&' : '?';
+                wsUrl = wsUrl + separator + 'token=' + encodeURIComponent(this.authToken);
+            }
+
+            this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
                 console.log('WebSocket connected');
@@ -55,7 +108,17 @@ class WebSocketManager {
 
                 if (!this.manualClose) {
                     this.updateStatus('disconnected');
-                    this.reconnect();
+
+                    // Check if it's an auth error (close code 1008 or similar)
+                    if (event.code === 1008 || event.code === 4001) {
+                        // Authentication failed
+                        if (this.onAuthError) {
+                            this.onAuthError('Authentication failed. Please check your token.');
+                        }
+                    } else {
+                        // Normal reconnect
+                        this.reconnect();
+                    }
                 }
             };
 
@@ -69,6 +132,17 @@ class WebSocketManager {
             this.updateStatus('disconnected');
             this.reconnect();
         }
+    }
+
+    // Update auth token and reconnect
+    updateAuthToken(newToken) {
+        this.authToken = newToken;
+        if (this.ws) {
+            this.manualClose = true;
+            this.ws.close();
+            this.ws = null;
+        }
+        this.connect();
     }
 
     send(content) {
@@ -240,9 +314,141 @@ class UIController {
         this.sendButton = null;
         this.statusIndicator = null;
         this.statusText = null;
+        this.authManager = new AuthManager();
     }
 
     init() {
+        // Check if user is authenticated
+        if (this.authManager.isAuthenticated()) {
+            this.showChatScreen();
+            this.initChat(this.authManager.getToken());
+        } else {
+            this.showLoginScreen();
+            this.initLogin();
+        }
+    }
+
+    initLogin() {
+        const loginButton = document.getElementById('login-button');
+        const tokenInput = document.getElementById('auth-token-input');
+        const rememberMe = document.getElementById('remember-me');
+        const errorMessage = document.getElementById('login-error');
+
+        // Focus on input
+        tokenInput.focus();
+
+        // Handle login button click
+        loginButton.addEventListener('click', () => {
+            this.handleLogin(tokenInput.value, rememberMe.checked, errorMessage);
+        });
+
+        // Handle Enter key
+        tokenInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.handleLogin(tokenInput.value, rememberMe.checked, errorMessage);
+            }
+        });
+    }
+
+    handleLogin(token, remember, errorElement) {
+        const trimmedToken = token.trim();
+
+        if (!trimmedToken) {
+            errorElement.textContent = '请输入访问密钥';
+            return;
+        }
+
+        // Clear error message
+        errorElement.textContent = '';
+
+        // Disable login button
+        const loginButton = document.getElementById('login-button');
+        loginButton.disabled = true;
+        loginButton.textContent = '登录中...';
+
+        // Try to connect with the token
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = protocol + '//' + window.location.host + '/ws';
+
+        const testWsManager = new WebSocketManager(wsUrl, trimmedToken);
+
+        let authSucceeded = false;
+        let authFailed = false;
+
+        // Set up callbacks
+        testWsManager.onStatusChange = (status) => {
+            if (status === 'connected') {
+                authSucceeded = true;
+                loginButton.disabled = false;
+                loginButton.textContent = '登录';
+
+                // Save token if remember me is checked
+                if (remember) {
+                    this.authManager.saveToken(trimmedToken);
+                }
+
+                // Close test connection and show chat screen
+                testWsManager.manualClose = true;
+                testWsManager.disconnect();
+
+                this.showChatScreen();
+                this.initChat(trimmedToken);
+            }
+        };
+
+        testWsManager.onAuthError = (error) => {
+            authFailed = true;
+            loginButton.disabled = false;
+            loginButton.textContent = '登录';
+            errorElement.textContent = '访问密钥无效，请检查后重试';
+            testWsManager.manualClose = true;
+            testWsManager.disconnect();
+        };
+
+        // Timeout after 5 seconds
+        setTimeout(() => {
+            if (!authSucceeded && !authFailed) {
+                loginButton.disabled = false;
+                loginButton.textContent = '登录';
+                errorElement.textContent = '连接超时，请检查网络或服务器状态';
+                testWsManager.manualClose = true;
+                testWsManager.disconnect();
+            }
+        }, 5000);
+
+        // Try to connect
+        testWsManager.connect();
+    }
+
+    handleLogout() {
+        if (confirm('确定要退出登录吗？')) {
+            // Disconnect WebSocket
+            if (this.wsManager) {
+                this.wsManager.manualClose = true;
+                this.wsManager.disconnect();
+            }
+
+            // Clear token
+            this.authManager.clearToken();
+
+            // Show login screen
+            this.showLoginScreen();
+            this.initLogin();
+        }
+    }
+
+    showLoginScreen() {
+        document.getElementById('login-screen').style.display = '';
+        document.getElementById('chat-screen').style.display = 'none';
+    }
+
+    showChatScreen() {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('chat-screen').style.display = '';
+    }
+
+    initChat(authToken) {
         // Initialize renderer
         const messagesContainer = document.getElementById('messages-container');
         this.renderer = new MessageRenderer(messagesContainer);
@@ -255,14 +461,23 @@ class UIController {
         this.statusIndicator = document.querySelector('.status-dot');
         this.statusText = document.querySelector('.status-text');
 
+        // Initialize logout button
+        const logoutButton = document.getElementById('logout-button');
+        logoutButton.addEventListener('click', () => this.handleLogout());
+
         // Initialize WebSocket manager
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = protocol + '//' + window.location.host + '/ws';
-        this.wsManager = new WebSocketManager(wsUrl);
+        this.wsManager = new WebSocketManager(wsUrl, authToken);
 
         // Set up callbacks
         this.wsManager.onMessage = (data) => this.handleMessage(data);
         this.wsManager.onStatusChange = (status) => this.updateStatus(status);
+        this.wsManager.onAuthError = (error) => {
+            // Auth error during chat session - token might have expired
+            alert('认证失败：' + error + '\n请重新登录');
+            this.handleLogout();
+        };
 
         // Bind events
         this.sendButton.addEventListener('click', () => this.sendMessage());

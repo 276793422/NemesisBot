@@ -55,6 +55,28 @@ var embeddedDefaults struct {
 	mu       sync.RWMutex
 }
 
+// GetEmbeddedDefaults returns the embedded default configurations.
+// This allows other packages to access the embedded config files.
+func GetEmbeddedDefaults() EmbeddedDefaults {
+	embeddedDefaults.mu.RLock()
+	defer embeddedDefaults.mu.RUnlock()
+
+	return EmbeddedDefaults{
+		Config:   embeddedDefaults.config,
+		MCP:      embeddedDefaults.mcp,
+		Security: embeddedDefaults.security,
+	}
+}
+
+// EmbeddedDefaults holds the embedded default configuration data.
+type EmbeddedDefaults struct {
+	Config   []byte
+	MCP      []byte
+	Security []byte
+}
+
+// SetEmbeddedDefaults sets the embedded default configuration files.
+
 // SetEmbeddedDefaults sets the embedded default configuration files.
 // This should be called from main() before any config loading happens.
 func SetEmbeddedDefaults(configFS fs.FS) error {
@@ -83,6 +105,31 @@ func SetEmbeddedDefaults(configFS fs.FS) error {
 	embeddedDefaults.security = data
 
 	return nil
+}
+
+// LoadEmbeddedConfig loads the embedded default configuration.
+// This reads the config/config.default.json that was embedded at compile time.
+// Returns the same result as LoadConfig() when the config file doesn't exist.
+//
+// This is the preferred way to get default configuration, as it uses the
+// single source of truth (config/config.default.json) rather than hardcoded values.
+func LoadEmbeddedConfig() (*Config, error) {
+	embeddedDefaults.mu.RLock()
+	defer embeddedDefaults.mu.RUnlock()
+
+	// Read embedded default config
+	defaultData := embeddedDefaults.config
+
+	if len(defaultData) == 0 {
+		return nil, fmt.Errorf("embedded default config not available")
+	}
+
+	cfg := &Config{}
+	if err := json.Unmarshal(defaultData, cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse embedded default config: %w", err)
+	}
+
+	return cfg, nil
 }
 
 type Config struct {
@@ -287,7 +334,7 @@ type WebChannelConfig struct {
 	Host              string              `json:"host" env:"NEMESISBOT_CHANNELS_WEB_HOST"`
 	Port              int                 `json:"port" env:"NEMESISBOT_CHANNELS_WEB_PORT"`
 	Path              string              `json:"path" env:"NEMESISBOT_CHANNELS_WEB_PATH"`
-	AuthToken         string              `json:"auth_token,omitempty" env:"NEMESISBOT_CHANNELS_WEB_AUTH_TOKEN"`
+	AuthToken         string              `json:"auth_token" env:"NEMESISBOT_CHANNELS_WEB_AUTH_TOKEN"`
 	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEB_ALLOW_FROM"`
 	HeartbeatInterval int                 `json:"heartbeat_interval" env:"NEMESISBOT_CHANNELS_WEB_HEARTBEAT_INTERVAL"` // seconds
 	SessionTimeout    int                 `json:"session_timeout" env:"NEMESISBOT_CHANNELS_WEB_SESSION_TIMEOUT"`      // seconds

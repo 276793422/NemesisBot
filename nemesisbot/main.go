@@ -6,6 +6,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -178,7 +179,8 @@ func onboardDefault() {
 	fmt.Println("🚀 Initializing NemesisBot with default settings...")
 	fmt.Println()
 
-	// Step 1: Run standard onboard (without prompts)
+	// Step 1: Load embedded default configuration
+	// This uses config/config.default.json as the single source of truth
 	configPath := command.GetConfigPath()
 
 	// Overwrite existing config without prompting for 'default' command
@@ -186,19 +188,43 @@ func onboardDefault() {
 		fmt.Printf("⚠️  Config already exists at %s, overwriting...\n", configPath)
 	}
 
-	cfg := config.DefaultConfig()
+	// Load from embedded config (config/config.default.json)
+	cfg, err := config.LoadEmbeddedConfig()
+	if err != nil {
+		fmt.Printf("❌ Error loading embedded default config: %v\n", err)
+		fmt.Printf("   This should not happen. Please check that config/config.default.json exists.\n")
+		os.Exit(1)
+	}
+
+	// Save base config
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("❌ Error saving config: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ Config saved")
+	fmt.Println("✓ Config saved (from embedded config/config.default.json)")
 
 	// Create MCP config file
 	mcpConfigPath := command.GetMCPConfigPath()
-	mcpConfig := &config.MCPConfig{
-		Enabled: true,
-		Servers: []config.MCPServerConfig{},
-		Timeout: 30,
+	mcpConfig, err := config.LoadMCPConfig(mcpConfigPath)
+	if err != nil {
+		// If MCP config doesn't exist, try to use embedded default
+		embeddedDefaults := config.GetEmbeddedDefaults()
+		if len(embeddedDefaults.MCP) > 0 {
+			var mcpCfg config.MCPConfig
+			if err := json.Unmarshal(embeddedDefaults.MCP, &mcpCfg); err != nil {
+				fmt.Printf("⚠️  Warning: Failed to parse embedded MCP config: %v\n", err)
+			} else {
+				mcpConfig = &mcpCfg
+			}
+		}
+	}
+	if mcpConfig == nil {
+		// Fallback to hardcoded default
+		mcpConfig = &config.MCPConfig{
+			Enabled: true,
+			Servers: []config.MCPServerConfig{},
+			Timeout: 30,
+		}
 	}
 	if err := config.SaveMCPConfig(mcpConfigPath, mcpConfig); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to create MCP config: %v\n", err)
@@ -210,41 +236,59 @@ func onboardDefault() {
 	securityConfigPath := command.GetSecurityConfigPath()
 	securityCfg, err := config.LoadSecurityConfig(securityConfigPath)
 	if err != nil {
-		fmt.Printf("⚠️  Warning: Failed to create security config: %v\n", err)
+		// If security config doesn't exist, try to use embedded default
+		embeddedDefaults := config.GetEmbeddedDefaults()
+		if len(embeddedDefaults.Security) > 0 {
+			var secCfg config.SecurityConfig
+			if err := json.Unmarshal(embeddedDefaults.Security, &secCfg); err != nil {
+				fmt.Printf("⚠️  Warning: Failed to parse embedded security config: %v\n", err)
+			} else {
+				securityCfg = &secCfg
+			}
+		}
+	}
+	if securityCfg == nil {
+		// Fallback to hardcoded default
+		securityCfg = &config.SecurityConfig{
+			DefaultAction:         "ask",
+			LogAllOperations:      false,
+			LogDenialsOnly:        true,
+			ApprovalTimeout:       300,
+			MaxPendingRequests:    10,
+			AuditLogRetentionDays: 30,
+			AuditLogFileEnabled:   true,
+			SynchronousMode:       false,
+		}
+	}
+	if err := config.SaveSecurityConfig(securityConfigPath, securityCfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to save security config: %v\n", err)
 	} else {
-		if err := config.SaveSecurityConfig(securityConfigPath, securityCfg); err != nil {
-			fmt.Printf("⚠️  Warning: Failed to save security config: %v\n", err)
+		fmt.Println("✓ Security config created")
+	}
+
+	// Step 2: Enable LLM logging (optional enhancement for default mode)
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{
+			LLMRequests: true,
+			LogDir:      "~/.nemesisbot/workspace/logs/request_logs",
+			DetailLevel: "full",
+		}
+		if err := config.SaveConfig(configPath, cfg); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to enable LLM logging: %v\n", err)
 		} else {
-			fmt.Println("✓ Security config created")
+			fmt.Println("✓ LLM logging enabled")
 		}
 	}
 
-	// Step 2: Enable LLM logging
-	// Load config and enable logging
-	if cfg.Logging == nil {
-		cfg.Logging = &config.LoggingConfig{}
-	}
-	cfg.Logging.LLMRequests = true
-	if cfg.Logging.LogDir == "" {
-		cfg.Logging.LogDir = "~/.nemesisbot/workspace/logs/request_logs"
-	}
-	if cfg.Logging.DetailLevel == "" {
-		cfg.Logging.DetailLevel = "full"
-	}
-	if err := config.SaveConfig(configPath, cfg); err != nil {
-		fmt.Printf("⚠️  Warning: Failed to enable LLM logging: %v\n", err)
-	} else {
-		fmt.Println("✓ LLM logging enabled")
-	}
-
-	// Step 3: Enable security module
+	// Step 3: Enable security module (optional enhancement for default mode)
 	if cfg.Security == nil {
 		cfg.Security = &config.SecurityFlagConfig{}
 	}
+	// Always enable security for default mode
 	cfg.Security.Enabled = true
-	// When security is enabled, disable restrict_to_workspace to allow file operations outside workspace
+	// When security is enabled, keep restrict_to_workspace as-is from config
 	// Security module will enforce access through rules instead
-	cfg.Agents.Defaults.RestrictToWorkspace = false
+	// Don't override the config default settings
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to enable security module: %v\n", err)
 	} else {
