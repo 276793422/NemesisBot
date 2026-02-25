@@ -38,7 +38,21 @@ type AgentLoop struct {
 	summarizing    sync.Map
 	fallback       *providers.FallbackChain
 	channelManager *channels.Manager
+	// Session-level busy state management
+	sessionBusy     sync.Map    // sessionKey -> *sessionBusyState
+	concurrentMode  string      // "reject" or "queue"
+	queueSize       int         // Only effective in queue mode
 }
+
+// sessionBusyState tracks the busy state and queue for a session
+type sessionBusyState struct {
+	mu          sync.Mutex
+	busy        bool
+	queueLength int
+}
+
+// Busy message returned when session is busy
+const busyMessage = "⏳ AI 正在处理上一个请求，请稍后再试"
 
 // processOptions configures how a message is processed
 type processOptions struct {
@@ -70,13 +84,26 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		stateManager = state.NewManager(defaultAgent.Workspace)
 	}
 
+	// Get concurrent request mode settings
+	concurrentMode := cfg.Agents.Defaults.ConcurrentRequestMode
+	if concurrentMode == "" {
+		concurrentMode = "reject" // default
+	}
+	queueSize := cfg.Agents.Defaults.QueueSize
+	if queueSize <= 0 {
+		queueSize = 8 // default
+	}
+
 	return &AgentLoop{
-		bus:         msgBus,
-		cfg:         cfg,
-		registry:    registry,
-		state:       stateManager,
-		summarizing: sync.Map{},
-		fallback:    fallbackChain,
+		bus:            msgBus,
+		cfg:            cfg,
+		registry:       registry,
+		state:          stateManager,
+		summarizing:    sync.Map{},
+		fallback:       fallbackChain,
+		sessionBusy:    sync.Map{},
+		concurrentMode: concurrentMode,
+		queueSize:      queueSize,
 	}
 }
 
@@ -244,6 +271,64 @@ func (al *AgentLoop) RecordLastChatID(chatID string) error {
 	return al.state.SetLastChatID(chatID)
 }
 
+// getSessionBusyState gets or creates the busy state for a session
+func (al *AgentLoop) getSessionBusyState(sessionKey string) *sessionBusyState {
+	if value, ok := al.sessionBusy.Load(sessionKey); ok {
+		return value.(*sessionBusyState)
+	}
+
+	// Create new state
+	state := &sessionBusyState{busy: false, queueLength: 0}
+	actual, loaded := al.sessionBusy.LoadOrStore(sessionKey, state)
+	if loaded {
+		return actual.(*sessionBusyState)
+	}
+	return state
+}
+
+// tryAcquireSession tries to acquire the session for processing
+// Returns true if acquired, false if session is busy (and queue is full in queue mode)
+func (al *AgentLoop) tryAcquireSession(sessionKey string) bool {
+	state := al.getSessionBusyState(sessionKey)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if !state.busy {
+		state.busy = true
+		return true
+	}
+
+	// Session is busy
+	if al.concurrentMode == "reject" {
+		return false
+	}
+
+	// Queue mode: check if queue is full
+	if state.queueLength >= al.queueSize {
+		return false
+	}
+
+	// Increment queue length
+	state.queueLength++
+	return false
+}
+
+// releaseSession releases the session and returns true if there are queued requests
+func (al *AgentLoop) releaseSession(sessionKey string) bool {
+	state := al.getSessionBusyState(sessionKey)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if state.queueLength > 0 {
+		state.queueLength--
+		// Keep busy true since there are queued requests
+		return true
+	}
+
+	state.busy = false
+	return false
+}
+
 func (al *AgentLoop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
 	return al.ProcessDirectWithChannel(ctx, content, sessionKey, "cli", "direct")
 }
@@ -329,6 +414,21 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			"session_key": sessionKey,
 			"matched_by":  route.MatchedBy,
 		})
+
+	// Check if session is busy and try to acquire it
+	if !al.tryAcquireSession(sessionKey) {
+		logger.WarnCF("agent", "Session busy, returning busy message",
+			map[string]interface{}{
+				"session_key":     sessionKey,
+				"concurrent_mode": al.concurrentMode,
+			})
+		return busyMessage, nil
+	}
+
+	// Ensure session is released when done
+	defer func() {
+		al.releaseSession(sessionKey)
+	}()
 
 	return al.runAgentLoop(ctx, agent, processOptions{
 		SessionKey:      sessionKey,

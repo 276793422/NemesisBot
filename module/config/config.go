@@ -230,14 +230,16 @@ type SessionConfig struct {
 }
 
 type AgentDefaults struct {
-	Workspace           string   `json:"workspace" env:"NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE"`
-	RestrictToWorkspace bool     `json:"restrict_to_workspace" env:"NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
-	LLM                 string   `json:"llm,omitempty" env:"NEMESISBOT_AGENTS_DEFAULTS_LLM"` // Format: "provider/model" (e.g., "openai/gpt-4")
-	ImageModel          string   `json:"image_model,omitempty" env:"NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL"`
-	ImageModelFallbacks []string `json:"image_model_fallbacks,omitempty"`
-	MaxTokens           int      `json:"max_tokens" env:"NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS"`
-	Temperature         float64  `json:"temperature" env:"NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE"`
-	MaxToolIterations   int      `json:"max_tool_iterations" env:"NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	Workspace             string   `json:"workspace" env:"NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE"`
+	RestrictToWorkspace   bool     `json:"restrict_to_workspace" env:"NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE"`
+	LLM                   string   `json:"llm,omitempty" env:"NEMESISBOT_AGENTS_DEFAULTS_LLM"` // Format: "provider/model" (e.g., "openai/gpt-4")
+	ImageModel            string   `json:"image_model,omitempty" env:"NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL"`
+	ImageModelFallbacks   []string `json:"image_model_fallbacks,omitempty"`
+	MaxTokens             int      `json:"max_tokens" env:"NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS"`
+	Temperature           float64  `json:"temperature" env:"NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE"`
+	MaxToolIterations     int      `json:"max_tool_iterations" env:"NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	ConcurrentRequestMode string   `json:"concurrent_request_mode" env:"NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE"` // "reject" or "queue"
+	QueueSize             int      `json:"queue_size" env:"NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE"`                         // Only effective in queue mode
 }
 
 type ChannelsConfig struct {
@@ -474,12 +476,14 @@ func DefaultConfig() *Config {
 	return &Config{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
-				Workspace:           "~/.nemesisbot/workspace",
-				RestrictToWorkspace: true,
-				LLM:                 "zhipu/glm-4.7-flash", // New format: "provider/model"
-				MaxTokens:           8192,
-				Temperature:         0.7,
-				MaxToolIterations:   20,
+				Workspace:             "~/.nemesisbot/workspace",
+				RestrictToWorkspace:   true,
+				LLM:                   "zhipu/glm-4.7-flash", // New format: "provider/model"
+				MaxTokens:             8192,
+				Temperature:           0.7,
+				MaxToolIterations:     20,
+				ConcurrentRequestMode: "reject",
+				QueueSize:             8,
 			},
 		},
 		Channels: ChannelsConfig{
