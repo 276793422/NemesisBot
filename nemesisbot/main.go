@@ -325,6 +325,22 @@ func onboardDefault() {
 		fmt.Println("✓ Web authentication token set")
 	}
 
+	// Step 7: Set web server host to 127.0.0.1
+	cfg.Channels.Web.Host = "127.0.0.1"
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to set web host: %v\n", err)
+	} else {
+		fmt.Println("✓ Web server host set to 127.0.0.1")
+	}
+
+	// Step 8: Set web server port to 49000
+	cfg.Channels.Web.Port = 49000
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to set web port: %v\n", err)
+	} else {
+		fmt.Println("✓ Web server port set to 49000")
+	}
+
 	fmt.Println()
 	fmt.Printf("%s Initialization complete!\n", logo)
 	fmt.Println()
@@ -339,7 +355,7 @@ func onboardDefault() {
 	fmt.Println()
 	fmt.Println("  Or start the web gateway:")
 	fmt.Println("     nemesisbot gateway")
-	fmt.Println("     # Open http://localhost:18790 in your browser")
+	fmt.Println("     # Open http://127.0.0.1:49000 in your browser")
 	fmt.Println("     # Default access key: 276793422")
 	fmt.Println()
 	fmt.Println("For more information:")

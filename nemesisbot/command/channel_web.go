@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/276793422/NemesisBot/module/config"
@@ -54,6 +55,25 @@ func CmdChannelWeb(cfg *config.Config) {
 			// No sub-subcommand, use interactive mode
 			cmdChannelWebAuth(cfg)
 		}
+	case "host":
+		if len(os.Args) < 5 {
+			fmt.Println("Usage: nemesisbot channel web host <ip>")
+			fmt.Println()
+			fmt.Println("Example:")
+			fmt.Println("  nemesisbot channel web host 0.0.0.0")
+			fmt.Println("  nemesisbot channel web host 127.0.0.1")
+			os.Exit(1)
+		}
+		cmdChannelWebSetHost(cfg, os.Args[4])
+	case "port":
+		if len(os.Args) < 5 {
+			fmt.Println("Usage: nemesisbot channel web port <port>")
+			fmt.Println()
+			fmt.Println("Example:")
+			fmt.Println("  nemesisbot channel web port 8080")
+			os.Exit(1)
+		}
+		cmdChannelWebSetPort(cfg, os.Args[4])
 	case "status":
 		cmdChannelWebStatus(cfg)
 	case "clear":
@@ -77,6 +97,8 @@ func ChannelWebHelp() {
 	fmt.Println("  auth              Set web authentication token (interactive mode)")
 	fmt.Println("  auth set <token>  Set web authentication token (direct mode)")
 	fmt.Println("  auth get           Show current authentication token")
+	fmt.Println("  host <ip>         Set web server listen address")
+	fmt.Println("  port <port>       Set web server port number")
 	fmt.Println("  status            Show current web channel configuration")
 	fmt.Println("  clear             Clear web authentication token")
 	fmt.Println("  config            Show detailed web channel configuration")
@@ -95,16 +117,18 @@ func ChannelWebHelp() {
 	fmt.Println("  Token is never displayed in logs or status output (except 'auth get')")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  # Interactive mode (recommended for manual setup)")
+	fmt.Println("  # Set authentication token")
 	fmt.Println("  nemesisbot channel web auth")
-	fmt.Println()
-	fmt.Println("  # Direct mode (convenient for scripts)")
-	fmt.Println("  nemesisbot channel web auth set my-secret-token")
 	fmt.Println("  nemesisbot channel web auth set 276793422")
+	fmt.Println()
+	fmt.Println("  # Set listen address and port")
+	fmt.Println("  nemesisbot channel web host 0.0.0.0")
+	fmt.Println("  nemesisbot channel web port 8080")
 	fmt.Println()
 	fmt.Println("  # View and manage")
 	fmt.Println("  nemesisbot channel web auth get")
 	fmt.Println("  nemesisbot channel web status")
+	fmt.Println("  nemesisbot channel web config")
 	fmt.Println("  nemesisbot channel web clear")
 }
 
@@ -408,4 +432,80 @@ func readSecretFromReader(reader *bufio.Reader) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(line), nil
+}
+
+// cmdChannelWebSetHost sets the web server listen address
+func cmdChannelWebSetHost(cfg *config.Config, host string) {
+	host = strings.TrimSpace(host)
+
+	if host == "" {
+		fmt.Println("❌ Host cannot be empty")
+		os.Exit(1)
+	}
+
+	// Save host to config
+	cfg.Channels.Web.Host = host
+	configPath := GetConfigPath()
+
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("\n❌ Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n✅ Web server host set successfully")
+	fmt.Println()
+	fmt.Println("📝 Configuration:")
+	fmt.Printf("   Host: %s\n", host)
+	fmt.Printf("   Port: %d\n", cfg.Channels.Web.Port)
+	fmt.Println()
+	fmt.Println("🔄 Restart gateway for changes to take effect:")
+	fmt.Println("   nemesisbot gateway")
+	fmt.Println()
+	fmt.Println("🌐 Access URL:")
+	fmt.Printf("   http://%s:%d\n", host, cfg.Channels.Web.Port)
+}
+
+// cmdChannelWebSetPort sets the web server port
+func cmdChannelWebSetPort(cfg *config.Config, portStr string) {
+	portStr = strings.TrimSpace(portStr)
+
+	if portStr == "" {
+		fmt.Println("❌ Port cannot be empty")
+		os.Exit(1)
+	}
+
+	// Parse and validate port
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		fmt.Printf("❌ Invalid port number: %s\n", portStr)
+		fmt.Println("   Port must be a valid number between 1 and 65535")
+		os.Exit(1)
+	}
+
+	if port < 1 || port > 65535 {
+		fmt.Printf("❌ Invalid port number: %d\n", port)
+		fmt.Println("   Port must be between 1 and 65535")
+		os.Exit(1)
+	}
+
+	// Save port to config
+	cfg.Channels.Web.Port = port
+	configPath := GetConfigPath()
+
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("\n❌ Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n✅ Web server port set successfully")
+	fmt.Println()
+	fmt.Println("📝 Configuration:")
+	fmt.Printf("   Host: %s\n", cfg.Channels.Web.Host)
+	fmt.Printf("   Port: %d\n", port)
+	fmt.Println()
+	fmt.Println("🔄 Restart gateway for changes to take effect:")
+	fmt.Println("   nemesisbot gateway")
+	fmt.Println()
+	fmt.Println("🌐 Access URL:")
+	fmt.Printf("   http://%s:%d\n", cfg.Channels.Web.Host, port)
 }
