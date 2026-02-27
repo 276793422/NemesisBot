@@ -113,6 +113,11 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		return fmt.Errorf("web channel not running")
 	}
 
+	// Handle broadcast to all sessions
+	if msg.ChatID == "web:broadcast" || msg.ChatID == "web:broadcast" {
+		return c.BroadcastToAll(msg.Content)
+	}
+
 	// Extract session ID from chat ID (format: web:<session-id>)
 	var sessionID string
 	if len(msg.ChatID) > 4 && msg.ChatID[:4] == "web:" {
@@ -136,6 +141,25 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		return err
 	}
 
+	return nil
+}
+
+// BroadcastToAll sends a message to all active web sessions
+func (c *WebChannel) BroadcastToAll(content string) error {
+	sessions := c.sessionMgr.GetAllSessions()
+	logger.DebugCF("web", "Broadcasting to all sessions", map[string]interface{}{
+		"session_count": len(sessions),
+		"content":       content,
+	})
+
+	for _, session := range sessions {
+		if err := c.server.SendToSession(session.ID, "assistant", content); err != nil {
+			logger.WarnCF("web", "Failed to broadcast to session", map[string]interface{}{
+				"error":      err.Error(),
+				"session_id": session.ID,
+			})
+		}
+	}
 	return nil
 }
 

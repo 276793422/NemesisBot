@@ -188,6 +188,20 @@ func (m *Manager) initChannels() error {
 		}
 	}
 
+	// Initialize External Channel
+	if m.config.Channels.External.Enabled {
+		logger.DebugC("channels", "Attempting to initialize External channel")
+		external, err := NewExternalChannel(&m.config.Channels.External, m.bus)
+		if err != nil {
+			logger.ErrorCF("channels", "Failed to initialize External channel", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			m.channels["external"] = external
+			logger.InfoC("channels", "External channel enabled successfully")
+		}
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]interface{}{
 		"enabled_channels": len(m.channels),
 	})
@@ -211,6 +225,17 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 	go m.dispatchOutbound(dispatchCtx)
 
+	// First, set up channel references (e.g., External -> Web for sync)
+	if externalCh, ok := m.channels["external"]; ok {
+		if webCh, ok := m.channels["web"]; ok {
+			if ext, ok := externalCh.(*ExternalChannel); ok {
+				ext.SetWebChannel(&webCh)
+				logger.InfoC("channels", "External channel linked to Web channel for sync")
+			}
+		}
+	}
+
+	// Start all channels
 	for name, channel := range m.channels {
 		logger.InfoCF("channels", "Starting channel", map[string]interface{}{
 			"channel": name,

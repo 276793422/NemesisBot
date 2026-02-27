@@ -87,6 +87,15 @@
       "allow_from": [],
       "heartbeat_interval": 30,
       "session_timeout": 3600
+    },
+    "external": {
+      "enabled": false,
+      "input_exe": "",
+      "output_exe": "",
+      "chat_id": "external:main",
+      "allow_from": [],
+      "sync_to_web": true,
+      "web_session_id": ""
     }
   },
   "model_list": [],

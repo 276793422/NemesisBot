@@ -1,7 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-set GOPATH=D:\_EnvTool\go\go1.25.7\GOPATH
-set PATH=D:\_EnvTool\go\go1.25.7\bin;%PATH%
+
 SET PATH=C:\AI\golang\go1.25.7\bin;%PATH%
 
 REM ============================================

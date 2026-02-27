@@ -254,6 +254,7 @@ type ChannelsConfig struct {
 	LINE     LINEConfig     `json:"line"`
 	OneBot   OneBotConfig   `json:"onebot"`
 	Web      WebChannelConfig `json:"web"`
+	External ExternalConfig `json:"external"`
 }
 
 type WhatsAppConfig struct {
@@ -340,6 +341,19 @@ type WebChannelConfig struct {
 	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEB_ALLOW_FROM"`
 	HeartbeatInterval int                 `json:"heartbeat_interval" env:"NEMESISBOT_CHANNELS_WEB_HEARTBEAT_INTERVAL"` // seconds
 	SessionTimeout    int                 `json:"session_timeout" env:"NEMESISBOT_CHANNELS_WEB_SESSION_TIMEOUT"`      // seconds
+}
+
+// ExternalConfig configures the external kit channel (input/output EXE pair)
+type ExternalConfig struct {
+	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_EXTERNAL_ENABLED"`
+	InputEXE  string              `json:"input_exe" env:"NEMESISBOT_CHANNELS_EXTERNAL_INPUT_EXE"`
+	OutputEXE string              `json:"output_exe" env:"NEMESISBOT_CHANNELS_EXTERNAL_OUTPUT_EXE"`
+	ChatID    string              `json:"chat_id" env:"NEMESISBOT_CHANNELS_EXTERNAL_CHAT_ID"`
+	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_EXTERNAL_ALLOW_FROM"`
+	// SyncToWeb enables automatic message forwarding to the web channel
+	SyncToWeb bool `json:"sync_to_web" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO_WEB"`
+	// WebSessionID is the specific web session ID to sync to (empty = broadcast to all)
+	WebSessionID string `json:"web_session_id" env:"NEMESISBOT_CHANNELS_EXTERNAL_WEB_SESSION_ID"`
 }
 
 type HeartbeatConfig struct {
@@ -560,6 +574,15 @@ func DefaultConfig() *Config {
 				AllowFrom:         FlexibleStringSlice{},
 				HeartbeatInterval: 30,
 				SessionTimeout:    3600,
+			},
+			External: ExternalConfig{
+				Enabled:     false,
+				InputEXE:    "",
+				OutputEXE:   "",
+				ChatID:      "external:main",
+				AllowFrom:   FlexibleStringSlice{},
+				SyncToWeb:   true,
+				WebSessionID: "",
 			},
 		},
 		ModelList: []ModelConfig{}, // Empty model list by default

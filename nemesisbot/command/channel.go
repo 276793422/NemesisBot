@@ -30,7 +30,7 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel enable <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam")
+			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelEnable(cfg, os.Args[3])
@@ -38,7 +38,7 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel disable <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam")
+			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelDisable(cfg, os.Args[3])
@@ -46,13 +46,16 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel status <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam")
+			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelStatus(cfg, os.Args[3])
 	case "web":
 		// Web channel specific commands
 		CmdChannelWeb(cfg)
+	case "external":
+		// External channel specific commands
+		CmdChannelExternal(cfg)
 	default:
 		fmt.Printf("Unknown channel command: %s\n", subcommand)
 		ChannelHelp()
@@ -71,6 +74,7 @@ func ChannelHelp() {
 	fmt.Println("  disable <name>    Disable a channel")
 	fmt.Println("  status <name>     Show detailed status of a channel")
 	fmt.Println("  web               Web channel specific commands")
+	fmt.Println("  external          External channel specific commands")
 	fmt.Println()
 	fmt.Println("Available channels:")
 	fmt.Println("  web       Web chat interface (WebSocket)")
@@ -84,6 +88,7 @@ func ChannelHelp() {
 	fmt.Println("  qq        QQ bot")
 	fmt.Println("  dingtalk  DingTalk bot")
 	fmt.Println("  maixcam   MaixCam device")
+	fmt.Println("  external  External program channel (stdin/stdout)")
 	fmt.Println()
 	fmt.Println("Web subcommands:")
 	fmt.Println("  nemesisbot channel web auth     Set authentication token (secure)")
@@ -91,12 +96,18 @@ func ChannelHelp() {
 	fmt.Println("  nemesisbot channel web clear    Remove authentication token")
 	fmt.Println("  nemesisbot channel web config   Show detailed configuration")
 	fmt.Println()
+	fmt.Println("External subcommands:")
+	fmt.Println("  nemesisbot channel external setup   Interactive setup for external channel")
+	fmt.Println("  nemesisbot channel external config  Show external channel configuration")
+	fmt.Println("  nemesisbot channel external test    Test external programs")
+	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot channel list")
 	fmt.Println("  nemesisbot channel enable web")
+	fmt.Println("  nemesisbot channel enable external")
 	fmt.Println("  nemesisbot channel disable telegram")
-	fmt.Println("  nemesisbot channel status web")
-	fmt.Println("  nemesisbot channel web auth")
+	fmt.Println("  nemesisbot channel status external")
+	fmt.Println("  nemesisbot channel external setup")
 }
 
 func cmdChannelList(cfg *config.Config) {
@@ -119,6 +130,7 @@ func cmdChannelList(cfg *config.Config) {
 		{"qq", cfg.Channels.QQ.Enabled},
 		{"dingtalk", cfg.Channels.DingTalk.Enabled},
 		{"maixcam", cfg.Channels.MaixCam.Enabled},
+		{"external", cfg.Channels.External.Enabled},
 	}
 
 	// Print header
@@ -181,10 +193,15 @@ func cmdChannelEnable(cfg *config.Config, channelName string) {
 	case "maixcam":
 		cfg.Channels.MaixCam.Enabled = true
 		fmt.Println("✅ MaixCam channel enabled")
+	case "external":
+		fmt.Println("⚠️  External channel requires additional configuration")
+		fmt.Println("   Use: nemesisbot channel external setup")
+		cfg.Channels.External.Enabled = true
+		fmt.Println("✅ External channel enabled (not configured yet)")
 	default:
 		fmt.Printf("❌ Unknown channel: %s\n", channelName)
 		fmt.Println()
-		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam")
+		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 		os.Exit(1)
 	}
 
@@ -236,10 +253,13 @@ func cmdChannelDisable(cfg *config.Config, channelName string) {
 	case "maixcam":
 		cfg.Channels.MaixCam.Enabled = false
 		fmt.Println("❌ MaixCam channel disabled")
+	case "external":
+		cfg.Channels.External.Enabled = false
+		fmt.Println("❌ External channel disabled")
 	default:
 		fmt.Printf("❌ Unknown channel: %s\n", channelName)
 		fmt.Println()
-		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam")
+		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 		os.Exit(1)
 	}
 
@@ -334,6 +354,8 @@ func cmdChannelStatus(cfg *config.Config, channelName string) {
 			enabled = cfg.Channels.DingTalk.Enabled
 		case "maixcam":
 			enabled = cfg.Channels.MaixCam.Enabled
+		case "external":
+			enabled = cfg.Channels.External.Enabled
 		}
 
 		if enabled {
