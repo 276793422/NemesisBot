@@ -1,0 +1,30 @@
+{
+  "server": {
+    "url": "ws://127.0.0.1:49001/ws",
+    "token": ""
+  },
+  "reconnect": {
+    "enabled": true,
+    "initial_delay_sec": 2,
+    "max_delay_sec": 30,
+    "delay_multiplier": 1.5,
+    "max_attempts": 0
+  },
+  "heartbeat": {
+    "enabled": true,
+    "interval_sec": 30
+  },
+  "logging": {
+    "enabled": true,
+    "file": "websocket_client.log",
+    "level": "info"
+  },
+  "statistics": {
+    "enabled": true
+  },
+  "ui": {
+    "color": true,
+    "show_timestamp": true,
+    "prompt_style": "simple"
+  }
+}

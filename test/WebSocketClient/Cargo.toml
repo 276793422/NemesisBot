@@ -1,0 +1,42 @@
+[package]
+name = "websocket-client"
+version = "0.1.0"
+edition = "2021"
+authors = ["NemesisBot Contributors"]
+description = "WebSocket client for NemesisBot communication"
+
+[dependencies]
+# WebSocket client
+tokio-tungstenite = "0.24"
+tokio = { version = "1.42", features = ["full"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+toml = "0.8"
+dirs = "5.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+chrono = "0.4"
+
+# Colored terminal output
+colored = "2.2"
+crossterm = "0.28"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Atomic operations
+atomic = "0.6"
+
+# Command line parsing
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.13"
