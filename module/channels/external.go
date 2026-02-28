@@ -35,10 +35,6 @@ type ExternalChannel struct {
 	running      atomic.Bool
 	stopped      chan struct{}
 	wg           sync.WaitGroup
-
-	// Web sync support
-	webChan   *Channel // Reference to web channel for sync
-	webChanMu sync.RWMutex
 }
 
 // NewExternalChannel creates a new external channel
@@ -202,9 +198,9 @@ func (c *ExternalChannel) readInputEXEStdout(reader io.Reader) {
 			nil,
 		)
 
-		// Sync to web if enabled
-		if c.config.SyncToWeb {
-			c.syncToWeb("user", line)
+		// Sync to configured targets if enabled
+		if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+			c.SyncToTargets("user", line)
 		}
 	}
 
@@ -286,9 +282,9 @@ func (c *ExternalChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		}
 	}
 
-	// Sync to web if enabled
-	if c.config.SyncToWeb {
-		c.syncToWeb("assistant", msg.Content)
+	// Sync to configured targets if enabled
+	if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+		c.SyncToTargets("assistant", msg.Content)
 	}
 
 	return nil
@@ -401,47 +397,4 @@ func (c *ExternalChannel) stopOutputEXE() {
 		c.outputCmd.Process.Kill()
 		logger.WarnC("external", "Output EXE force killed")
 	}
-}
-
-// syncToWeb sends a message to the web channel for display
-func (c *ExternalChannel) syncToWeb(role, content string) {
-	c.webChanMu.RLock()
-	defer c.webChanMu.RUnlock()
-
-	if c.webChan == nil {
-		return
-	}
-
-	// Create outbound message for web
-	webMsg := bus.OutboundMessage{
-		Channel: "web",
-		ChatID:  c.getWebChatID(),
-		Content: content,
-	}
-
-	// Send to web channel (use background context to avoid blocking)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := (*c.webChan).Send(ctx, webMsg); err != nil {
-		logger.WarnCF("external", "Failed to sync message to web", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
-}
-
-// getWebChatID returns the web chat ID to sync to
-func (c *ExternalChannel) getWebChatID() string {
-	if c.config.WebSessionID != "" {
-		return "web:" + c.config.WebSessionID
-	}
-	// Return a special ID that web channel can handle as broadcast
-	return "web:broadcast"
-}
-
-// SetWebChannel sets the web channel reference for sync
-func (c *ExternalChannel) SetWebChannel(webCh *Channel) {
-	c.webChanMu.Lock()
-	defer c.webChanMu.Unlock()
-	c.webChan = webCh
 }

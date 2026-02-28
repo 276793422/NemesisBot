@@ -202,6 +202,20 @@ func (m *Manager) initChannels() error {
 		}
 	}
 
+	// Initialize WebSocket Channel
+	if m.config.Channels.WebSocket.Enabled {
+		logger.DebugC("channels", "Attempting to initialize WebSocket channel")
+		ws, err := NewWebSocketChannel(&m.config.Channels.WebSocket, m.bus)
+		if err != nil {
+			logger.ErrorCF("channels", "Failed to initialize WebSocket channel", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			m.channels["websocket"] = ws
+			logger.InfoC("channels", "WebSocket channel enabled successfully")
+		}
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]interface{}{
 		"enabled_channels": len(m.channels),
 	})
@@ -220,20 +234,14 @@ func (m *Manager) StartAll(ctx context.Context) error {
 
 	logger.InfoC("channels", "Starting all channels")
 
+	// Start unified dispatcher
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
 
 	go m.dispatchOutbound(dispatchCtx)
 
-	// First, set up channel references (e.g., External -> Web for sync)
-	if externalCh, ok := m.channels["external"]; ok {
-		if webCh, ok := m.channels["web"]; ok {
-			if ext, ok := externalCh.(*ExternalChannel); ok {
-				ext.SetWebChannel(&webCh)
-				logger.InfoC("channels", "External channel linked to Web channel for sync")
-			}
-		}
-	}
+	// Setup sync targets for all channels
+	m.setupSyncTargets()
 
 	// Start all channels
 	for name, channel := range m.channels {
@@ -280,17 +288,13 @@ func (m *Manager) StopAll(ctx context.Context) error {
 }
 
 func (m *Manager) dispatchOutbound(ctx context.Context) {
-	logger.InfoC("channels", "Outbound dispatcher started")
-
 	for {
 		select {
 		case <-ctx.Done():
-			logger.InfoC("channels", "Outbound dispatcher stopped")
 			return
-		default:
-			msg, ok := m.bus.SubscribeOutbound(ctx)
+		case msg, ok := <-m.bus.OutboundChannel():
 			if !ok {
-				continue
+				return
 			}
 
 			// Silently skip internal channels
@@ -303,7 +307,7 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			m.mu.RUnlock()
 
 			if !exists {
-				logger.WarnCF("channels", "Unknown channel for outbound message", map[string]interface{}{
+				logger.ErrorCF("channels", "Unknown channel for outbound message", map[string]interface{}{
 					"channel": msg.Channel,
 				})
 				continue
@@ -379,4 +383,88 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	}
 
 	return channel.Send(ctx, msg)
+}
+
+// setupSyncTargets establishes sync relationships between channels based on config
+func (m *Manager) setupSyncTargets() {
+	for sourceName, sourceCh := range m.channels {
+		// Get sync targets from config (generic method)
+		syncTargets := m.getSyncTargets(sourceName)
+
+		if len(syncTargets) == 0 {
+			continue
+		}
+
+		// Establish reference for each sync target
+		for _, targetName := range syncTargets {
+			// Prevent self-sync
+			if targetName == sourceName {
+				logger.WarnCF("channels", "Channel cannot sync to itself, skipping",
+					map[string]interface{}{
+						"channel": sourceName,
+					})
+				continue
+			}
+
+			targetCh, exists := m.channels[targetName]
+			if !exists {
+				logger.WarnCF("channels", "Sync target not found, skipping",
+					map[string]interface{}{
+						"source": sourceName,
+						"target": targetName,
+					})
+				continue
+			}
+
+			// Add sync target
+			if err := sourceCh.AddSyncTarget(targetName, targetCh); err != nil {
+				logger.WarnCF("channels", "Failed to add sync target",
+					map[string]interface{}{
+						"source": sourceName,
+						"target": targetName,
+						"error":  err.Error(),
+					})
+				continue
+			}
+
+			logger.InfoC("channels", fmt.Sprintf("Linked %s → %s for sync", sourceName, targetName))
+		}
+	}
+}
+
+// getSyncTargets returns the list of sync targets for a channel from config
+// This is a generic method that works for all channels
+func (m *Manager) getSyncTargets(channelName string) []string {
+	var targets []string
+
+	switch channelName {
+	case "web":
+		targets = m.config.Channels.Web.SyncTo
+	case "external":
+		targets = m.config.Channels.External.SyncTo
+	case "websocket":
+		targets = m.config.Channels.WebSocket.SyncTo
+	case "telegram":
+		targets = m.config.Channels.Telegram.SyncTo
+	case "discord":
+		targets = m.config.Channels.Discord.SyncTo
+	case "whatsapp":
+		targets = m.config.Channels.WhatsApp.SyncTo
+	case "feishu":
+		targets = m.config.Channels.Feishu.SyncTo
+	case "slack":
+		targets = m.config.Channels.Slack.SyncTo
+	case "line":
+		targets = m.config.Channels.LINE.SyncTo
+	case "onebot":
+		targets = m.config.Channels.OneBot.SyncTo
+	case "qq":
+		targets = m.config.Channels.QQ.SyncTo
+	case "dingtalk":
+		targets = m.config.Channels.DingTalk.SyncTo
+	case "maixcam":
+		targets = m.config.Channels.MaixCam.SyncTo
+	}
+
+	return targets
 }

@@ -57,7 +57,9 @@ func NewServer(config ServerConfig) *Server {
 	}
 
 	// Start outbound message dispatcher
-	go s.dispatchOutbound()
+	// DISABLED: Now using unified dispatcher from channels.Manager
+	// Web server should NOT read from outbound channel directly
+	// go s.dispatchOutbound()
 
 	return s
 }

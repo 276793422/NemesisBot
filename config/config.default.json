@@ -16,13 +16,15 @@
       "enabled": false,
       "bridge_url": "ws://localhost:3001",
       "proxy": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "telegram": {
       "enabled": false,
       "token": "",
       "proxy": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "feishu": {
       "enabled": false,
@@ -30,36 +32,42 @@
       "app_secret": "",
       "encrypt_key": "",
       "verification_token": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "discord": {
       "enabled": false,
       "token": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "maixcam": {
       "enabled": false,
       "host": "0.0.0.0",
       "port": 18790,
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "qq": {
       "enabled": false,
       "app_id": "",
       "app_secret": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "dingtalk": {
       "enabled": false,
       "client_id": "",
       "client_secret": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "slack": {
       "enabled": false,
       "bot_token": "",
       "app_token": "",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "line": {
       "enabled": false,
@@ -68,7 +76,8 @@
       "webhook_host": "0.0.0.0",
       "webhook_port": 18791,
       "webhook_path": "/webhook/line",
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "onebot": {
       "enabled": false,
@@ -76,7 +85,8 @@
       "access_token": "",
       "reconnect_interval": 5,
       "group_trigger_prefix": [],
-      "allow_from": []
+      "allow_from": [],
+      "sync_to": []
     },
     "web": {
       "enabled": true,
@@ -86,7 +96,17 @@
       "auth_token": "",
       "allow_from": [],
       "heartbeat_interval": 30,
-      "session_timeout": 3600
+      "session_timeout": 3600,
+      "sync_to": []
+    },
+    "websocket": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 49001,
+      "path": "/ws",
+      "auth_token": "",
+      "allow_from": [],
+      "sync_to": ["web"]
     },
     "external": {
       "enabled": false,
@@ -94,8 +114,7 @@
       "output_exe": "",
       "chat_id": "external:main",
       "allow_from": [],
-      "sync_to_web": true,
-      "web_session_id": ""
+      "sync_to": ["web"]
     }
   },
   "model_list": [],

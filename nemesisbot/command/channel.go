@@ -30,7 +30,7 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel enable <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
+			fmt.Println("Available channels: web, websocket, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelEnable(cfg, os.Args[3])
@@ -38,7 +38,7 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel disable <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
+			fmt.Println("Available channels: web, websocket, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelDisable(cfg, os.Args[3])
@@ -46,13 +46,16 @@ func CmdChannel() {
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot channel status <channel-name>")
 			fmt.Println()
-			fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
+			fmt.Println("Available channels: web, websocket, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 			os.Exit(1)
 		}
 		cmdChannelStatus(cfg, os.Args[3])
 	case "web":
 		// Web channel specific commands
 		CmdChannelWeb(cfg)
+	case "websocket":
+		// WebSocket channel specific commands
+		CmdChannelWebSocket(cfg)
 	case "external":
 		// External channel specific commands
 		CmdChannelExternal(cfg)
@@ -74,11 +77,13 @@ func ChannelHelp() {
 	fmt.Println("  disable <name>    Disable a channel")
 	fmt.Println("  status <name>     Show detailed status of a channel")
 	fmt.Println("  web               Web channel specific commands")
+	fmt.Println("  websocket         WebSocket channel specific commands")
 	fmt.Println("  external          External channel specific commands")
 	fmt.Println()
 	fmt.Println("Available channels:")
-	fmt.Println("  web       Web chat interface (WebSocket)")
-	fmt.Println("  telegram  Telegram bot")
+	fmt.Println("  web        Web chat interface (WebSocket)")
+	fmt.Println("  websocket  Standalone WebSocket server for external programs")
+	fmt.Println("  telegram   Telegram bot")
 	fmt.Println("  discord   Discord bot")
 	fmt.Println("  whatsapp  WhatsApp bridge")
 	fmt.Println("  feishu    Feishu bot")
@@ -101,13 +106,20 @@ func ChannelHelp() {
 	fmt.Println("  nemesisbot channel external config  Show external channel configuration")
 	fmt.Println("  nemesisbot channel external test    Test external programs")
 	fmt.Println()
+	fmt.Println("WebSocket subcommands:")
+	fmt.Println("  nemesisbot channel websocket setup   Interactive setup for WebSocket channel")
+	fmt.Println("  nemesisbot channel websocket config  Show WebSocket channel configuration")
+	fmt.Println("  nemesisbot channel websocket set     Set configuration parameters")
+	fmt.Println("  nemesisbot channel websocket get     Get configuration parameters")
+	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot channel list")
 	fmt.Println("  nemesisbot channel enable web")
+	fmt.Println("  nemesisbot channel enable websocket")
 	fmt.Println("  nemesisbot channel enable external")
 	fmt.Println("  nemesisbot channel disable telegram")
-	fmt.Println("  nemesisbot channel status external")
-	fmt.Println("  nemesisbot channel external setup")
+	fmt.Println("  nemesisbot channel status websocket")
+	fmt.Println("  nemesisbot channel websocket setup")
 }
 
 func cmdChannelList(cfg *config.Config) {
@@ -120,6 +132,7 @@ func cmdChannelList(cfg *config.Config) {
 		enabled bool
 	}{
 		{"web", cfg.Channels.Web.Enabled},
+		{"websocket", cfg.Channels.WebSocket.Enabled},
 		{"telegram", cfg.Channels.Telegram.Enabled},
 		{"discord", cfg.Channels.Discord.Enabled},
 		{"whatsapp", cfg.Channels.WhatsApp.Enabled},
@@ -163,6 +176,10 @@ func cmdChannelEnable(cfg *config.Config, channelName string) {
 		cfg.Channels.Web.Enabled = true
 		fmt.Println("✅ Web channel enabled")
 		fmt.Printf("🌐 URL: http://%s:%d\n", cfg.Channels.Web.Host, cfg.Channels.Web.Port)
+	case "websocket":
+		cfg.Channels.WebSocket.Enabled = true
+		fmt.Println("✅ WebSocket channel enabled")
+		fmt.Printf("🔌 Server: ws://%s:%d%s\n", cfg.Channels.WebSocket.Host, cfg.Channels.WebSocket.Port, cfg.Channels.WebSocket.Path)
 	case "telegram":
 		cfg.Channels.Telegram.Enabled = true
 		fmt.Println("✅ Telegram channel enabled")
@@ -201,7 +218,7 @@ func cmdChannelEnable(cfg *config.Config, channelName string) {
 	default:
 		fmt.Printf("❌ Unknown channel: %s\n", channelName)
 		fmt.Println()
-		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
+		fmt.Println("Available channels: web, websocket, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 		os.Exit(1)
 	}
 
@@ -223,6 +240,9 @@ func cmdChannelDisable(cfg *config.Config, channelName string) {
 	case "web":
 		cfg.Channels.Web.Enabled = false
 		fmt.Println("❌ Web channel disabled")
+	case "websocket":
+		cfg.Channels.WebSocket.Enabled = false
+		fmt.Println("❌ WebSocket channel disabled")
 	case "telegram":
 		cfg.Channels.Telegram.Enabled = false
 		fmt.Println("❌ Telegram channel disabled")
@@ -259,7 +279,7 @@ func cmdChannelDisable(cfg *config.Config, channelName string) {
 	default:
 		fmt.Printf("❌ Unknown channel: %s\n", channelName)
 		fmt.Println()
-		fmt.Println("Available channels: web, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
+		fmt.Println("Available channels: web, websocket, telegram, discord, whatsapp, feishu, slack, line, onebot, qq, dingtalk, maixcam, external")
 		os.Exit(1)
 	}
 
@@ -319,6 +339,36 @@ func cmdChannelStatus(cfg *config.Config, channelName string) {
 			fmt.Println("❌ Not configured")
 		}
 		fmt.Printf("Proxy:     %s\n", cfg.Channels.Telegram.Proxy)
+
+	case "websocket":
+		fmt.Printf("Enabled:         ")
+		if cfg.Channels.WebSocket.Enabled {
+			fmt.Println("✅ Yes")
+		} else {
+			fmt.Println("❌ No")
+		}
+		fmt.Printf("Host:            %s\n", cfg.Channels.WebSocket.Host)
+		fmt.Printf("Port:            %d\n", cfg.Channels.WebSocket.Port)
+		fmt.Printf("Path:            %s\n", cfg.Channels.WebSocket.Path)
+		fmt.Printf("Auth Token:      %s\n", formatToken(cfg.Channels.WebSocket.AuthToken))
+		fmt.Printf("Allow From:      %v\n", cfg.Channels.WebSocket.AllowFrom)
+		fmt.Printf("Sync to Web:     ")
+		if cfg.Channels.WebSocket.SyncToWeb {
+			fmt.Println("✅ Yes")
+		} else {
+			fmt.Println("❌ No")
+		}
+		fmt.Printf("Web Session ID:  %s\n", formatSessionID(cfg.Channels.WebSocket.WebSessionID))
+
+		if cfg.Channels.WebSocket.Enabled {
+			fmt.Println()
+			fmt.Println("🔌 Connection URL:")
+			url := fmt.Sprintf("ws://%s:%d%s", cfg.Channels.WebSocket.Host, cfg.Channels.WebSocket.Port, cfg.Channels.WebSocket.Path)
+			fmt.Printf("   %s\n", url)
+			if cfg.Channels.WebSocket.AuthToken != "" {
+				fmt.Printf("   ?token=%s\n", cfg.Channels.WebSocket.AuthToken)
+			}
+		}
 
 	case "discord":
 		fmt.Printf("Enabled:   ")

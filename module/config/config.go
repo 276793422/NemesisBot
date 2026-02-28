@@ -254,6 +254,7 @@ type ChannelsConfig struct {
 	LINE     LINEConfig     `json:"line"`
 	OneBot   OneBotConfig   `json:"onebot"`
 	Web      WebChannelConfig `json:"web"`
+	WebSocket WebSocketChannelConfig `json:"websocket"`
 	External ExternalConfig `json:"external"`
 }
 
@@ -261,6 +262,7 @@ type WhatsAppConfig struct {
 	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_WHATSAPP_ENABLED"`
 	BridgeURL string              `json:"bridge_url" env:"NEMESISBOT_CHANNELS_WHATSAPP_BRIDGE_URL"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WHATSAPP_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_WHATSAPP_SYNC_TO"`
 }
 
 type TelegramConfig struct {
@@ -268,6 +270,7 @@ type TelegramConfig struct {
 	Token     string              `json:"token" env:"NEMESISBOT_CHANNELS_TELEGRAM_TOKEN"`
 	Proxy     string              `json:"proxy" env:"NEMESISBOT_CHANNELS_TELEGRAM_PROXY"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_TELEGRAM_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_TELEGRAM_SYNC_TO"`
 }
 
 type FeishuConfig struct {
@@ -277,12 +280,14 @@ type FeishuConfig struct {
 	EncryptKey        string              `json:"encrypt_key" env:"NEMESISBOT_CHANNELS_FEISHU_ENCRYPT_KEY"`
 	VerificationToken string              `json:"verification_token" env:"NEMESISBOT_CHANNELS_FEISHU_VERIFICATION_TOKEN"`
 	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_FEISHU_ALLOW_FROM"`
+	SyncTo            []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_FEISHU_SYNC_TO"`
 }
 
 type DiscordConfig struct {
 	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_DISCORD_ENABLED"`
 	Token     string              `json:"token" env:"NEMESISBOT_CHANNELS_DISCORD_TOKEN"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_DISCORD_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_DISCORD_SYNC_TO"`
 }
 
 type MaixCamConfig struct {
@@ -290,13 +295,15 @@ type MaixCamConfig struct {
 	Host      string              `json:"host" env:"NEMESISBOT_CHANNELS_MAIXCAM_HOST"`
 	Port      int                 `json:"port" env:"NEMESISBOT_CHANNELS_MAIXCAM_PORT"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_MAIXCAM_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_MAIXCAM_SYNC_TO"`
 }
 
 type QQConfig struct {
-	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_QQ_ENABLED"`
-	AppID     string              `json:"app_id" env:"NEMESISBOT_CHANNELS_QQ_APP_ID"`
-	AppSecret string              `json:"app_secret" env:"NEMESISBOT_CHANNELS_QQ_APP_SECRET"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_QQ_ALLOW_FROM"`
+	Enabled     bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_QQ_ENABLED"`
+	AppID       string              `json:"app_id" env:"NEMESISBOT_CHANNELS_QQ_APP_ID"`
+	AppSecret   string              `json:"app_secret" env:"NEMESISBOT_CHANNELS_QQ_APP_SECRET"`
+	AllowFrom   FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_QQ_ALLOW_FROM"`
+	SyncTo      []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_QQ_SYNC_TO"`
 }
 
 type DingTalkConfig struct {
@@ -304,6 +311,7 @@ type DingTalkConfig struct {
 	ClientID     string              `json:"client_id" env:"NEMESISBOT_CHANNELS_DINGTALK_CLIENT_ID"`
 	ClientSecret string              `json:"client_secret" env:"NEMESISBOT_CHANNELS_DINGTALK_CLIENT_SECRET"`
 	AllowFrom    FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_DINGTALK_ALLOW_FROM"`
+	SyncTo       []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_DINGTALK_SYNC_TO"`
 }
 
 type SlackConfig struct {
@@ -311,6 +319,7 @@ type SlackConfig struct {
 	BotToken  string              `json:"bot_token" env:"NEMESISBOT_CHANNELS_SLACK_BOT_TOKEN"`
 	AppToken  string              `json:"app_token" env:"NEMESISBOT_CHANNELS_SLACK_APP_TOKEN"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_SLACK_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_SLACK_SYNC_TO"`
 }
 
 type LINEConfig struct {
@@ -321,6 +330,7 @@ type LINEConfig struct {
 	WebhookPort        int                 `json:"webhook_port" env:"NEMESISBOT_CHANNELS_LINE_WEBHOOK_PORT"`
 	WebhookPath        string              `json:"webhook_path" env:"NEMESISBOT_CHANNELS_LINE_WEBHOOK_PATH"`
 	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_LINE_ALLOW_FROM"`
+	SyncTo             []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_LINE_SYNC_TO"`
 }
 
 type OneBotConfig struct {
@@ -330,6 +340,7 @@ type OneBotConfig struct {
 	ReconnectInterval  int                 `json:"reconnect_interval" env:"NEMESISBOT_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
 	GroupTriggerPrefix []string            `json:"group_trigger_prefix" env:"NEMESISBOT_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
 	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_ONEBOT_ALLOW_FROM"`
+	SyncTo             []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_ONEBOT_SYNC_TO"`
 }
 
 type WebChannelConfig struct {
@@ -341,6 +352,7 @@ type WebChannelConfig struct {
 	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEB_ALLOW_FROM"`
 	HeartbeatInterval int                 `json:"heartbeat_interval" env:"NEMESISBOT_CHANNELS_WEB_HEARTBEAT_INTERVAL"` // seconds
 	SessionTimeout    int                 `json:"session_timeout" env:"NEMESISBOT_CHANNELS_WEB_SESSION_TIMEOUT"`      // seconds
+	SyncTo            []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_WEB_SYNC_TO"`
 }
 
 // ExternalConfig configures the external kit channel (input/output EXE pair)
@@ -350,10 +362,28 @@ type ExternalConfig struct {
 	OutputEXE string              `json:"output_exe" env:"NEMESISBOT_CHANNELS_EXTERNAL_OUTPUT_EXE"`
 	ChatID    string              `json:"chat_id" env:"NEMESISBOT_CHANNELS_EXTERNAL_CHAT_ID"`
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_EXTERNAL_ALLOW_FROM"`
-	// SyncToWeb enables automatic message forwarding to the web channel
-	SyncToWeb bool `json:"sync_to_web" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO_WEB"`
+	// SyncTo specifies channels to sync messages to (e.g., ["web"])
+	SyncTo []string `json:"sync_to" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO"`
+	// Deprecated: Use SyncTo instead
+	SyncToWeb bool `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO_WEB"`
 	// WebSessionID is the specific web session ID to sync to (empty = broadcast to all)
 	WebSessionID string `json:"web_session_id" env:"NEMESISBOT_CHANNELS_EXTERNAL_WEB_SESSION_ID"`
+}
+
+// WebSocketChannelConfig configures the standalone WebSocket channel for external program integration
+type WebSocketChannelConfig struct {
+	Enabled    bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ENABLED"`
+	Host       string              `json:"host" env:"NEMESISBOT_CHANNELS_WEBSOCKET_HOST"`
+	Port       int                 `json:"port" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PORT"`
+	Path       string              `json:"path" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PATH"`
+	AuthToken  string              `json:"auth_token" env:"NEMESISBOT_CHANNELS_WEBSOCKET_AUTH_TOKEN"`
+	AllowFrom  FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ALLOW_FROM"`
+	// SyncTo specifies channels to sync messages to (e.g., ["web"])
+	SyncTo []string `json:"sync_to" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO"`
+	// Deprecated: Use SyncTo instead
+	SyncToWeb bool `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO_WEB"`
+	// WebSessionID is the specific web session ID to sync to (empty = broadcast to all)
+	WebSessionID string `json:"web_session_id" env:"NEMESISBOT_CHANNELS_WEBSOCKET_WEB_SESSION_ID"`
 }
 
 type HeartbeatConfig struct {

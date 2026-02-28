@@ -45,10 +45,12 @@ func (mb *MessageBus) ConsumeInbound(ctx context.Context) (InboundMessage, bool)
 
 func (mb *MessageBus) PublishOutbound(msg OutboundMessage) {
 	mb.mu.RLock()
-	defer mb.mu.RUnlock()
 	if mb.closed {
+		mb.mu.RUnlock()
 		return
 	}
+	mb.mu.RUnlock()
+
 	mb.outbound <- msg
 }
 
@@ -83,4 +85,9 @@ func (mb *MessageBus) Close() {
 	mb.closed = true
 	close(mb.inbound)
 	close(mb.outbound)
+}
+
+// OutboundChannel returns the outbound message channel for direct reading
+func (mb *MessageBus) OutboundChannel() <-chan OutboundMessage {
+	return mb.outbound
 }

@@ -341,6 +341,14 @@ func onboardDefault() {
 		fmt.Println("✓ Web server port set to 49000")
 	}
 
+	// Step 9: Enable WebSocket channel for external program integration
+	cfg.Channels.WebSocket.Enabled = true
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to enable WebSocket channel: %v\n", err)
+	} else {
+		fmt.Println("✓ WebSocket channel enabled")
+	}
+
 	fmt.Println()
 	fmt.Printf("%s Initialization complete!\n", logo)
 	fmt.Println()
@@ -350,13 +358,12 @@ func onboardDefault() {
 	fmt.Println("  1. Add API key:")
 	fmt.Println("     nemesisbot model add --model zhipu/glm-4.7-flash --key YOUR_API_KEY --default")
 	fmt.Println()
-	fmt.Println("  2. Start chatting:")
-	fmt.Println("     nemesisbot agent")
-	fmt.Println()
-	fmt.Println("  Or start the web gateway:")
+	fmt.Println("  2. Start the gateway:")
 	fmt.Println("     nemesisbot gateway")
-	fmt.Println("     # Open http://127.0.0.1:49000 in your browser")
-	fmt.Println("     # Default access key: 276793422")
+	fmt.Println()
+	fmt.Println("  Available interfaces:")
+	fmt.Println("    • Web:     http://127.0.0.1:49000 (access key: 276793422)")
+	fmt.Println("    • WebSocket: ws://127.0.0.1:49001/ws")
 	fmt.Println()
 	fmt.Println("For more information:")
 	fmt.Println("  nemesisbot --help")
