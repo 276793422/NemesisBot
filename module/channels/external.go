@@ -66,7 +66,7 @@ func (c *ExternalChannel) Start(ctx context.Context) error {
 		"input_exe":  c.config.InputEXE,
 		"output_exe": c.config.OutputEXE,
 		"chat_id":    c.config.ChatID,
-		"sync_to_web": c.config.SyncToWeb,
+		"sync_to":    c.config.SyncTo,
 	})
 
 	// Start input EXE
@@ -198,8 +198,8 @@ func (c *ExternalChannel) readInputEXEStdout(reader io.Reader) {
 			nil,
 		)
 
-		// Sync to configured targets if enabled
-		if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+		// Sync to configured targets
+		if len(c.config.SyncTo) > 0 {
 			c.SyncToTargets("user", line)
 		}
 	}
@@ -282,8 +282,8 @@ func (c *ExternalChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		}
 	}
 
-	// Sync to configured targets if enabled
-	if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+	// Sync to configured targets
+	if len(c.config.SyncTo) > 0 {
 		c.SyncToTargets("assistant", msg.Content)
 	}
 

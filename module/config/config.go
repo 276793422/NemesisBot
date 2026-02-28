@@ -129,6 +129,9 @@ func LoadEmbeddedConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse embedded default config: %w", err)
 	}
 
+	// Post-process: populate deprecated fields from new fields for backward compatibility
+	cfg.postProcessForCompatibility()
+
 	return cfg, nil
 }
 
@@ -364,10 +367,9 @@ type ExternalConfig struct {
 	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_EXTERNAL_ALLOW_FROM"`
 	// SyncTo specifies channels to sync messages to (e.g., ["web"])
 	SyncTo []string `json:"sync_to" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO"`
-	// Deprecated: Use SyncTo instead
-	SyncToWeb bool `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO_WEB"`
-	// WebSessionID is the specific web session ID to sync to (empty = broadcast to all)
-	WebSessionID string `json:"web_session_id" env:"NEMESISBOT_CHANNELS_EXTERNAL_WEB_SESSION_ID"`
+	// Deprecated: Use SyncTo instead. These fields are auto-populated from SyncTo.
+	SyncToWeb    bool   `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_EXTERNAL_SYNC_TO_WEB"`
+	WebSessionID string `json:"web_session_id,omitempty" env:"NEMESISBOT_CHANNELS_EXTERNAL_WEB_SESSION_ID"`
 }
 
 // WebSocketChannelConfig configures the standalone WebSocket channel for external program integration
@@ -380,10 +382,9 @@ type WebSocketChannelConfig struct {
 	AllowFrom  FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ALLOW_FROM"`
 	// SyncTo specifies channels to sync messages to (e.g., ["web"])
 	SyncTo []string `json:"sync_to" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO"`
-	// Deprecated: Use SyncTo instead
-	SyncToWeb bool `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO_WEB"`
-	// WebSessionID is the specific web session ID to sync to (empty = broadcast to all)
-	WebSessionID string `json:"web_session_id" env:"NEMESISBOT_CHANNELS_WEBSOCKET_WEB_SESSION_ID"`
+	// Deprecated: Use SyncTo instead. These fields are auto-populated from SyncTo.
+	SyncToWeb    bool   `json:"sync_to_web,omitempty" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO_WEB"`
+	WebSessionID string `json:"web_session_id,omitempty" env:"NEMESISBOT_CHANNELS_WEBSOCKET_WEB_SESSION_ID"`
 }
 
 type HeartbeatConfig struct {
@@ -611,8 +612,7 @@ func DefaultConfig() *Config {
 				OutputEXE:   "",
 				ChatID:      "external:main",
 				AllowFrom:   FlexibleStringSlice{},
-				SyncToWeb:   true,
-				WebSessionID: "",
+				SyncTo:      []string{"web"},
 			},
 		},
 		ModelList: []ModelConfig{}, // Empty model list by default
@@ -699,6 +699,8 @@ func LoadConfig(path string) (*Config, error) {
 			} else {
 				cfg = DefaultConfig()
 			}
+			// Post-process for compatibility
+			cfg.postProcessForCompatibility()
 			return cfg, nil
 		}
 		return nil, err
@@ -712,6 +714,9 @@ func LoadConfig(path string) (*Config, error) {
 	if err := env.Parse(cfg); err != nil {
 		return nil, err
 	}
+
+	// Post-process for compatibility
+	cfg.postProcessForCompatibility()
 
 	return cfg, nil
 }
@@ -1037,4 +1042,21 @@ func SaveSecurityConfig(path string, cfg *SecurityConfig) error {
 	}
 
 	return os.WriteFile(path, data, 0600)
+}
+
+// postProcessForCompatibility populates deprecated fields from new fields for backward compatibility
+func (c *Config) postProcessForCompatibility() {
+	// External channel: populate SyncToWeb from SyncTo
+	if len(c.Channels.External.SyncTo) > 0 {
+		c.Channels.External.SyncToWeb = true
+	} else {
+		c.Channels.External.SyncToWeb = false
+	}
+
+	// WebSocket channel: populate SyncToWeb from SyncTo
+	if len(c.Channels.WebSocket.SyncTo) > 0 {
+		c.Channels.WebSocket.SyncToWeb = true
+	} else {
+		c.Channels.WebSocket.SyncToWeb = false
+	}
 }

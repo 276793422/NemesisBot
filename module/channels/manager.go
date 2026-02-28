@@ -387,9 +387,17 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 
 // setupSyncTargets establishes sync relationships between channels based on config
 func (m *Manager) setupSyncTargets() {
+	logger.InfoC("channels", "Setting up sync targets")
+
 	for sourceName, sourceCh := range m.channels {
 		// Get sync targets from config (generic method)
 		syncTargets := m.getSyncTargets(sourceName)
+
+		logger.DebugCF("channels", "Checking channel for sync targets", map[string]interface{}{
+			"channel":      sourceName,
+			"sync_targets":  syncTargets,
+			"num_targets":  len(syncTargets),
+		})
 
 		if len(syncTargets) == 0 {
 			continue
@@ -430,6 +438,8 @@ func (m *Manager) setupSyncTargets() {
 			logger.InfoC("channels", fmt.Sprintf("Linked %s → %s for sync", sourceName, targetName))
 		}
 	}
+
+	logger.InfoC("channels", "Sync targets setup completed")
 }
 
 // getSyncTargets returns the list of sync targets for a channel from config

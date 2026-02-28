@@ -72,10 +72,10 @@ func NewWebSocketChannel(cfg *config.WebSocketChannelConfig, messageBus *bus.Mes
 // Start starts the WebSocket server
 func (c *WebSocketChannel) Start(ctx context.Context) error {
 	logger.InfoCF("websocket", "Starting WebSocket channel", map[string]interface{}{
-		"host":       c.config.Host,
-		"port":       c.config.Port,
-		"path":       c.config.Path,
-		"sync_to_web": c.config.SyncToWeb,
+		"host":    c.config.Host,
+		"port":    c.config.Port,
+		"path":    c.config.Path,
+		"sync_to": c.config.SyncTo,
 	})
 
 	// Create HTTP server
@@ -198,9 +198,17 @@ func (c *WebSocketChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
-	// Sync to configured targets if enabled
-	if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+	// Sync to configured targets
+	logger.DebugCF("websocket", "Checking sync config", map[string]interface{}{
+		"sync_to":    c.config.SyncTo,
+		"len_sync_to": len(c.config.SyncTo),
+	})
+
+	if len(c.config.SyncTo) > 0 {
+		logger.DebugC("websocket", "Calling SyncToTargets for assistant message")
 		c.SyncToTargets("assistant", msg.Content)
+	} else {
+		logger.DebugC("websocket", "No sync targets configured, skipping sync")
 	}
 
 	return nil
@@ -376,10 +384,16 @@ func (c *WebSocketChannel) handleConnection(conn *websocket.Conn) {
 			)
 			logger.DebugC("websocket", "HandleMessage returned, continuing message loop")
 
-			// Sync to configured targets if enabled
-			if c.config.SyncToWeb || len(c.config.SyncTo) > 0 {
+			// Sync to configured targets
+			logger.DebugCF("websocket", "Checking sync config for user message", map[string]interface{}{
+				"sync_to":    c.config.SyncTo,
+				"len_sync_to": len(c.config.SyncTo),
+			})
+			if len(c.config.SyncTo) > 0 {
 				logger.DebugC("websocket", "Syncing message to configured targets")
 				c.SyncToTargets("user", clientMsg.Content)
+			} else {
+				logger.DebugC("websocket", "No sync targets configured for user message")
 			}
 
 		case MessageTypePing:

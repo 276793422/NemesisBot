@@ -152,7 +152,14 @@ func (c *BaseChannel) SyncToTargets(role, content string) {
 	c.syncMu.RLock()
 	defer c.syncMu.RUnlock()
 
+	logger.DebugCF(c.name, "SyncToTargets called", map[string]interface{}{
+		"role":        role,
+		"content_len": len(content),
+		"num_targets": len(c.syncTargets),
+	})
+
 	if len(c.syncTargets) == 0 {
+		logger.DebugCF(c.name, "No sync targets configured, skipping", nil)
 		return
 	}
 
@@ -167,6 +174,17 @@ func (c *BaseChannel) SyncToTargets(role, content string) {
 			Channel: targetName,
 			Content: content,
 		}
+
+		// For web channel, use broadcast to reach all web clients
+		if targetName == "web" {
+			msg.ChatID = "web:broadcast"
+		}
+
+		logger.DebugCF(c.name, "Sending to sync target", map[string]interface{}{
+			"target":     targetName,
+			"content_len": len(content),
+			"chat_id":    msg.ChatID,
+		})
 
 		// Send with timeout to avoid blocking
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
