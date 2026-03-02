@@ -10,23 +10,23 @@
   "file_rules": {
     "read": [
       {
-        "pattern": "/workspace/",
-        "action": "allow"
+        "pattern": "C:/Windows/**",
+        "action": "deny"
       },
       {
-        "pattern": "*.log",
-        "action": "ask"
+        "pattern": "C:/Program Files/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Program Files (x86)/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/ProgramData/**",
+        "action": "deny"
       }
     ],
     "write": [
-      {
-        "pattern": "/workspace/**",
-        "action": "allow"
-      },
-      {
-        "pattern": "/etc/**",
-        "action": "deny"
-      },
       {
         "pattern": "C:/Windows/**",
         "action": "deny"
@@ -46,8 +46,20 @@
     ],
     "delete": [
       {
-        "pattern": "/workspace/tmp/**",
-        "action": "allow"
+        "pattern": "C:/Windows/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Program Files/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/Program Files (x86)/**",
+        "action": "deny"
+      },
+      {
+        "pattern": "C:/ProgramData/**",
+        "action": "deny"
       }
     ]
   },

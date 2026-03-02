@@ -286,9 +286,9 @@ func onboardDefault() {
 	}
 	// Always enable security for default mode
 	cfg.Security.Enabled = true
-	// When security is enabled, keep restrict_to_workspace as-is from config
+	// When security is enabled, disable restrict_to_workspace to allow file operations outside workspace
 	// Security module will enforce access through rules instead
-	// Don't override the config default settings
+	cfg.Agents.Defaults.RestrictToWorkspace = false
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to enable security module: %v\n", err)
 	} else {
