@@ -19,6 +19,7 @@ import (
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/cron"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/tools"
 	"github.com/chzyer/readline"
@@ -87,41 +88,17 @@ func PrintVersion() {
 
 // GetConfigPath returns the main config file path
 func GetConfigPath() string {
-	configPath := os.Getenv("NEMESISBOT_CONFIG")
-	if configPath != "" {
-		return configPath
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "./config.json"
-	}
-	return filepath.Join(homeDir, ".nemesisbot", "config.json")
+	return path.ResolveConfigPath()
 }
 
 // GetSecurityConfigPath returns the security config file path
 func GetSecurityConfigPath() string {
-	configPath := os.Getenv("NEMESISBOT_SECURITY_CONFIG")
-	if configPath != "" {
-		return configPath
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "./config.security.json"
-	}
-	return filepath.Join(homeDir, ".nemesisbot", "config.security.json")
+	return path.ResolveSecurityConfigPath()
 }
 
 // GetMCPConfigPath returns the MCP config file path
 func GetMCPConfigPath() string {
-	configPath := os.Getenv("NEMESISBOT_MCP_CONFIG")
-	if configPath != "" {
-		return configPath
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "./config.mcp.json"
-	}
-	return filepath.Join(homeDir, ".nemesisbot", "config.mcp.json")
+	return path.ResolveMCPConfigPath()
 }
 
 // CopyDirectory copies a directory recursively

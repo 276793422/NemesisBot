@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/276793422/NemesisBot/module/path"
 )
 
 type AuthCredential struct {
@@ -39,8 +41,7 @@ func (c *AuthCredential) NeedsRefresh() bool {
 }
 
 func authFilePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".nemesisbot", "auth.json")
+	return path.DefaultPathManager().AuthPath()
 }
 
 func LoadStore() (*AuthStore, error) {

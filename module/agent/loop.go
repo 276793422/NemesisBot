@@ -8,8 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +20,7 @@ import (
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/276793422/NemesisBot/module/mcp"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/routing"
 	"github.com/276793422/NemesisBot/module/state"
@@ -157,8 +156,7 @@ func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *A
 
 		// MCP tools (Model Context Protocol)
 		// Load MCP configuration from separate config.mcp.json file
-		home, _ := os.UserHomeDir()
-		mcpConfigPath := filepath.Join(home, ".nemesisbot", "config.mcp.json")
+		mcpConfigPath := path.ResolveMCPConfigPath()
 		mcpConfig, err := config.LoadMCPConfig(mcpConfigPath)
 		if err != nil {
 			logger.WarnCF("agent", "Failed to load MCP config",

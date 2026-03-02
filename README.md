@@ -460,6 +460,110 @@ nemesisbot.exe --help
 
 ---
 
+## 🚀 多实例部署
+
+NemesisBot 支持在同一台设备上运行多个独立的 bot 实例，每个实例使用自己的配置和工作空间。
+
+### 方式 1：使用 --local 参数（推荐）
+
+`--local` 参数强制使用当前目录的 `.nemesisbot` 配置，适合快速创建独立实例：
+
+```batch
+REM 创建 bot 实例
+mkdir C:\MyBots\bot1
+cd C:\MyBots\bot1
+
+REM 初始化（在当前目录创建配置）
+nemesisbot.exe --local onboard default
+
+REM 启动服务
+nemesisbot.exe --local gateway
+```
+
+**特点**：
+- ✅ 配置文件创建在当前目录的 `.nemesisbot/` 下
+- ✅ 所有命令都支持 `--local` 参数
+- ✅ 最简单直接的方式
+
+### 方式 2：自动检测模式
+
+如果当前目录存在 `.nemesisbot` 目录，程序会自动使用当前目录的配置：
+
+```batch
+REM 创建 bot 实例
+mkdir C:\MyBots\bot1
+cd C:\MyBots\bot1
+
+REM 创建 .nemesisbot 目录（触发自动检测）
+mkdir .nemesisbot
+
+REM 初始化和启动（无需 --local）
+nemesisbot.exe onboard default
+nemesisbot.exe gateway
+```
+
+**特点**：
+- ✅ 无需每次添加 `--local` 参数
+- ✅ 配置自动存储在当前目录
+- ✅ 适合长期运行的实例
+
+### 方式 3：环境变量
+
+使用环境变量 `NEMESISBOT_HOME` 指定配置目录：
+
+```batch
+REM 设置环境变量
+set NEMESISBOT_HOME=C:\MyBots\bot1\.nemesisbot
+
+REM 初始化和启动
+nemesisbot.exe onboard default
+nemesisbot.exe gateway
+```
+
+### 优先级顺序
+
+```
+1. --local 参数         (最高 - 强制当前目录)
+   ↓
+2. 环境变量              (NEMESISBOT_HOME)
+   ↓
+3. 自动检测              (当前目录有 .nemesisbot)
+   ↓
+4. 默认路径              (~/.nemesisbot)
+```
+
+### 多实例部署示例
+
+```batch
+REM Bot 1
+mkdir C:\MyBots\bot1
+cd C:\MyBots\bot1
+nemesisbot.exe --local onboard default
+start /B nemesisbot.exe --local gateway
+
+REM Bot 2
+mkdir C:\MyBots\bot2
+cd C:\MyBots\bot2
+nemesisbot.exe --local onboard default
+start /B nemesisbot.exe --local gateway
+```
+
+### 配置文件位置
+
+| 方式 | 配置目录 | 说明 |
+|------|----------|------|
+| --local | `当前目录/.nemesisbot/` | 强制使用当前目录 |
+| 自动检测 | `当前目录/.nemesisbot/` | 检测到目录时自动使用 |
+| 环境变量 | `%NEMESISBOT_HOME%` | 指定的路径 |
+| 默认 | `~/.nemesisbot/` | 用户主目录 |
+
+### 📚 更多文档
+
+- **[多实例部署指南](docs/multi-instance-guide.md)** - 详细的部署方案和最佳实践
+- **[--local 参数快速参考](docs/local-quick-ref.md)** - 常用命令和快速开始
+
+---
+
 ## 📁 项目结构
 
 ```

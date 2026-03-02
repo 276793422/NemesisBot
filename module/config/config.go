@@ -9,8 +9,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/caarlos0/env/v11"
 )
 
@@ -736,27 +738,51 @@ func LoadConfig(path string) (*Config, error) {
 //   - Writes file with permissions 0600 (owner read/write only)
 //   - Formats JSON with 2-space indentation for readability
 //   - Thread-safe: uses internal read lock
-func SaveConfig(path string, cfg *Config) error {
+func SaveConfig(configPath string, cfg *Config) error {
 	cfg.mu.RLock()
 	defer cfg.mu.RUnlock()
+
+	// Auto-adjust paths for local mode before saving
+	// This ensures that when --local is used or .nemesisbot is detected,
+	// workspace and other paths are relative to the config directory
+	if path.LocalMode || path.DetectLocal() {
+		// Check if config is in current directory's .nemesisbot
+		configDir := filepath.Dir(configPath)
+		if filepath.Base(configDir) == ".nemesisbot" {
+			// Check if workspace is using default ~/ path pattern
+			if strings.HasPrefix(cfg.Agents.Defaults.Workspace, "~/") ||
+			   strings.HasPrefix(cfg.Agents.Defaults.Workspace, filepath.Join("~", ".nemesisbot")) {
+				// Update workspace to use relative path from config directory
+				cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
+			}
+
+			// Adjust logging directory if it's using default path
+			if cfg.Logging != nil {
+				if strings.HasPrefix(cfg.Logging.LogDir, "~/.nemesisbot/workspace") ||
+				   strings.HasPrefix(cfg.Logging.LogDir, filepath.Join("~", ".nemesisbot")) {
+					cfg.Logging.LogDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
+				}
+			}
+		}
+	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(configPath, data, 0600)
 }
 
 func (c *Config) WorkspacePath() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return expandHome(c.Agents.Defaults.Workspace)
+	return path.ExpandHome(c.Agents.Defaults.Workspace)
 }
 
 // GetModelByModelName finds a model configuration by model name or vendor/model prefix.
@@ -795,20 +821,6 @@ func (c *Config) GetModelConfig(modelName string) (*ModelConfig, error) {
 	}
 
 	return nil, fmt.Errorf("model %q not found in model_list", modelName)
-}
-
-func expandHome(path string) string {
-	if path == "" {
-		return path
-	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
-		return home
-	}
-	return path
 }
 
 // LoadMCPConfig loads MCP configuration from a separate config.mcp.json file.

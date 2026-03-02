@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/routing"
@@ -85,8 +86,7 @@ func NewAgentInstance(
 
 	// Initialize and register security plugin if enabled
 	if cfg.Security != nil && cfg.Security.Enabled {
-		home, _ := os.UserHomeDir()
-		securityConfigPath := filepath.Join(home, ".nemesisbot", "config.security.json")
+		securityConfigPath := path.DefaultPathManager().SecurityConfigPath()
 
 		securityPlugin := security.NewSecurityPlugin()
 		pluginConfig := map[string]interface{}{
@@ -178,15 +178,21 @@ func NewAgentInstance(
 
 // resolveAgentWorkspace determines the workspace directory for an agent.
 func resolveAgentWorkspace(agentCfg *config.AgentConfig, defaults *config.AgentDefaults) string {
+	pm := path.DefaultPathManager()
+
+	// If agent config has a custom workspace, use it
 	if agentCfg != nil && strings.TrimSpace(agentCfg.Workspace) != "" {
-		return expandHome(strings.TrimSpace(agentCfg.Workspace))
+		return path.ExpandHome(strings.TrimSpace(agentCfg.Workspace))
 	}
+
+	// For default/main agents, use the default workspace from config
 	if agentCfg == nil || agentCfg.Default || agentCfg.ID == "" || routing.NormalizeAgentID(agentCfg.ID) == "main" {
-		return expandHome(defaults.Workspace)
+		return path.ExpandHome(defaults.Workspace)
 	}
-	home, _ := os.UserHomeDir()
-	id := routing.NormalizeAgentID(agentCfg.ID)
-	return filepath.Join(home, ".nemesisbot", "workspace-"+id)
+
+	// For named agents, use a separate workspace under .nemesisbot
+	agentID := routing.NormalizeAgentID(agentCfg.ID)
+	return pm.AgentWorkspace(agentID)
 }
 
 // resolveAgentModel resolves the primary model for an agent.
@@ -208,18 +214,4 @@ func resolveAgentFallbacks(agentCfg *config.AgentConfig, defaults *config.AgentD
 	}
 	// No global fallbacks anymore - configure per-agent or via ModelList
 	return nil
-}
-
-func expandHome(path string) string {
-	if path == "" {
-		return path
-	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
-		return home
-	}
-	return path
 }

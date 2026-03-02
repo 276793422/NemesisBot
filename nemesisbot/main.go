@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/nemesisbot/command"
 )
 
@@ -34,7 +35,27 @@ var (
 
 const logo = "🤖"
 
+// parseGlobalFlags parses global flags like --local and filters them from args.
+// Returns the filtered args list (without global flags).
+func parseGlobalFlags(args []string) []string {
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--local" {
+			// Set LocalMode flag in path package
+			path.LocalMode = true
+			fmt.Println("📍 Local mode enabled: using ./.nemesisbot")
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	return filtered
+}
+
 func main() {
+	// Parse global flags first (before any command processing)
+	// This handles --local flag which affects path resolution
+	os.Args = append([]string{os.Args[0]}, parseGlobalFlags(os.Args[1:])...)
+
 	// Pass embedded files and version info to command package
 	command.SetEmbeddedFS(embeddedFiles, defaultFiles)
 	command.SetVersionInfo(version, gitCommit, buildTime, goVersion)
@@ -81,6 +102,14 @@ func onboard() {
 	}
 
 	cfg := config.DefaultConfig()
+
+	// Adjust paths for local mode if enabled
+	// Check if we're in local mode (either explicit --local or auto-detected)
+	if path.LocalMode || path.DetectLocal() {
+		// Set workspace to relative path for local mode
+		cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
+	}
+
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("Error saving config: %v\n", err)
 		os.Exit(1)
@@ -196,6 +225,13 @@ func onboardDefault() {
 		os.Exit(1)
 	}
 
+	// Adjust paths for local mode if enabled
+	// Check if we're in local mode (either explicit --local or auto-detected)
+	if path.LocalMode || path.DetectLocal() {
+		// Set workspace to relative path for local mode
+		cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
+	}
+
 	// Save base config
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("❌ Error saving config: %v\n", err)
@@ -268,9 +304,15 @@ func onboardDefault() {
 
 	// Step 2: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
+		// Determine log directory based on local mode
+		logDir := "~/.nemesisbot/workspace/logs/request_logs"
+		if path.LocalMode || path.DetectLocal() {
+			logDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
+		}
+
 		cfg.Logging = &config.LoggingConfig{
 			LLMRequests: true,
-			LogDir:      "~/.nemesisbot/workspace/logs/request_logs",
+			LogDir:      logDir,
 			DetailLevel: "full",
 		}
 		if err := config.SaveConfig(configPath, cfg); err != nil {

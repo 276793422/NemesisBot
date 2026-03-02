@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/path"
 )
 
 type ActionType int
@@ -317,10 +318,10 @@ func PrintSummary(result *Result) {
 
 func resolveOpenClawHome(override string) (string, error) {
 	if override != "" {
-		return expandHome(override), nil
+		return path.ExpandHome(override), nil
 	}
 	if envHome := os.Getenv("OPENCLAW_HOME"); envHome != "" {
-		return expandHome(envHome), nil
+		return path.ExpandHome(envHome), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -331,34 +332,17 @@ func resolveOpenClawHome(override string) (string, error) {
 
 func resolveNemesisBotHome(override string) (string, error) {
 	if override != "" {
-		return expandHome(override), nil
+		return path.ExpandHome(override), nil
 	}
 	if envHome := os.Getenv("NEMESISBOT_HOME"); envHome != "" {
-		return expandHome(envHome), nil
+		return path.ExpandHome(envHome), nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolving home directory: %w", err)
-	}
-	return filepath.Join(home, ".nemesisbot"), nil
+	// Use path.ResolveHomeDir to get default location
+	return path.ResolveHomeDir()
 }
 
 func resolveWorkspace(homeDir string) string {
 	return filepath.Join(homeDir, "workspace")
-}
-
-func expandHome(path string) string {
-	if path == "" {
-		return path
-	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
-		return home
-	}
-	return path
 }
 
 func backupFile(path string) error {

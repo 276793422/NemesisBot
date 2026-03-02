@@ -15,6 +15,7 @@ import (
 
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
 )
 
@@ -42,8 +43,7 @@ func (p *SecurityPlugin) Init(pluginConfig map[string]interface{}) error {
 	// Extract configuration
 	configPath, ok := pluginConfig["config_path"].(string)
 	if !ok {
-		home, _ := os.UserHomeDir()
-		configPath = filepath.Join(home, ".nemesisbot", "config.security.json")
+		configPath = path.DefaultPathManager().SecurityConfigPath()
 	}
 	p.configPath = configPath
 
@@ -58,8 +58,7 @@ func (p *SecurityPlugin) Init(pluginConfig map[string]interface{}) error {
 
 	// Initialize auditor if enabled
 	if p.enabled {
-		home, _ := os.UserHomeDir()
-		auditLogDir := filepath.Join(home, ".nemesisbot", "workspace", "logs", "security_logs")
+		auditLogDir := path.DefaultPathManager().AuditLogDir()
 
 		auditorConfig := &AuditorConfig{
 			Enabled:               true,

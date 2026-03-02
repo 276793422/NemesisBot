@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/skills"
 	"github.com/276793422/NemesisBot/module/tools"
@@ -25,11 +26,7 @@ type ContextBuilder struct {
 }
 
 func getGlobalConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".nemesisbot")
+	return path.DefaultPathManager().HomeDir()
 }
 
 func NewContextBuilder(workspace string) *ContextBuilder {
