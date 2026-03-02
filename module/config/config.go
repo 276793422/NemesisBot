@@ -54,6 +54,7 @@ var embeddedDefaults struct {
 	config   []byte
 	mcp      []byte
 	security []byte
+	cluster  []byte
 	mu       sync.RWMutex
 }
 
@@ -67,6 +68,7 @@ func GetEmbeddedDefaults() EmbeddedDefaults {
 		Config:   embeddedDefaults.config,
 		MCP:      embeddedDefaults.mcp,
 		Security: embeddedDefaults.security,
+		Cluster:  embeddedDefaults.cluster,
 	}
 }
 
@@ -75,36 +77,57 @@ type EmbeddedDefaults struct {
 	Config   []byte
 	MCP      []byte
 	Security []byte
+	Cluster  []byte
 }
 
-// SetEmbeddedDefaults sets the embedded default configuration files.
-
-// SetEmbeddedDefaults sets the embedded default configuration files.
-// This should be called from main() before any config loading happens.
-func SetEmbeddedDefaults(configFS fs.FS) error {
+// SetEmbeddedDefaults sets the embedded default configuration files from byte arrays.
+// This is called from command package during initialization.
+func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData []byte) error {
 	embeddedDefaults.mu.Lock()
 	defer embeddedDefaults.mu.Unlock()
 
-	// Read config/config.default.json
-	data, err := fs.ReadFile(configFS, "config/config.default.json")
+	embeddedDefaults.config = configData
+	embeddedDefaults.mcp = mcpData
+	embeddedDefaults.security = securityData
+	embeddedDefaults.cluster = clusterData
+
+	return nil
+}
+
+// SetEmbeddedDefaultsFromFS sets the embedded default configuration files
+// from a filesystem that contains the config files directly (no subdirectory).
+// This is used when embedding files from module/config/_embed directory.
+func SetEmbeddedDefaultsFromFS(configFS fs.FS) error {
+	embeddedDefaults.mu.Lock()
+	defer embeddedDefaults.mu.Unlock()
+
+	// Read config.default.json
+	data, err := fs.ReadFile(configFS, "config.default.json")
 	if err != nil {
-		return fmt.Errorf("failed to read config/config.default.json: %w", err)
+		return fmt.Errorf("failed to read config.default.json: %w", err)
 	}
 	embeddedDefaults.config = data
 
-	// Read config/config.mcp.default.json
-	data, err = fs.ReadFile(configFS, "config/config.mcp.default.json")
+	// Read config.mcp.default.json
+	data, err = fs.ReadFile(configFS, "config.mcp.default.json")
 	if err != nil {
-		return fmt.Errorf("failed to read config/config.mcp.default.json: %w", err)
+		return fmt.Errorf("failed to read config.mcp.default.json: %w", err)
 	}
 	embeddedDefaults.mcp = data
 
-	// Read config/config.security.default.json
-	data, err = fs.ReadFile(configFS, "config/config.security.default.json")
+	// Read config.security.default.json
+	data, err = fs.ReadFile(configFS, "config.security.default.json")
 	if err != nil {
-		return fmt.Errorf("failed to read config/config.security.default.json: %w", err)
+		return fmt.Errorf("failed to read config.security.default.json: %w", err)
 	}
 	embeddedDefaults.security = data
+
+	// Read config.cluster.default.json
+	data, err = fs.ReadFile(configFS, "config.cluster.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config.cluster.default.json: %w", err)
+	}
+	embeddedDefaults.cluster = data
 
 	return nil
 }

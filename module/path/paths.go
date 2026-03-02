@@ -13,8 +13,10 @@
 package path
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -282,35 +284,94 @@ func ResolveConfigPath() string {
 }
 
 // ResolveMCPConfigPath resolves the MCP configuration file path.
-// Priority: NEMESISBOT_MCP_CONFIG > LocalMode/auto-detect > Default
+// Priority: NEMESISBOT_MCP_CONFIG > workspace/config/config.mcp.json > Default
 func ResolveMCPConfigPath() string {
 	if envPath := os.Getenv(EnvMCPConfig); envPath != "" {
 		return envPath
 	}
 
+	// Try to get workspace from main config
 	homeDir, err := ResolveHomeDir()
 	if err != nil {
 		home, _ := os.UserHomeDir()
 		homeDir = filepath.Join(home, DefaultHomeDir)
 	}
 
+	// Try to load main config to get workspace path
+	configPath := filepath.Join(homeDir, "config.json")
+	if cfg, err := loadConfigForWorkspace(configPath); err == nil {
+		workspace := cfg.WorkspacePath()
+		return filepath.Join(workspace, "config", "config.mcp.json")
+	}
+
+	// Fallback to old location (for backward compatibility)
 	return filepath.Join(homeDir, "config.mcp.json")
 }
 
 // ResolveSecurityConfigPath resolves the security configuration file path.
-// Priority: NEMESISBOT_SECURITY_CONFIG > LocalMode/auto-detect > Default
+// Priority: NEMESISBOT_SECURITY_CONFIG > workspace/config/config.security.json > Default
 func ResolveSecurityConfigPath() string {
 	if envPath := os.Getenv(EnvSecurityConfig); envPath != "" {
 		return envPath
 	}
 
+	// Try to get workspace from main config
 	homeDir, err := ResolveHomeDir()
 	if err != nil {
 		home, _ := os.UserHomeDir()
 		homeDir = filepath.Join(home, DefaultHomeDir)
 	}
 
+	// Try to load main config to get workspace path
+	configPath := filepath.Join(homeDir, "config.json")
+	if cfg, err := loadConfigForWorkspace(configPath); err == nil {
+		workspace := cfg.WorkspacePath()
+		return filepath.Join(workspace, "config", "config.security.json")
+	}
+
+	// Fallback to old location (for backward compatibility)
 	return filepath.Join(homeDir, "config.security.json")
+}
+
+// loadConfigForWorkspace is a helper to load main config for workspace path resolution.
+// This avoids circular dependency by doing a minimal JSON load.
+func loadConfigForWorkspace(configPath string) (*minimalConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var cfg minimalConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+// minimalConfig is a minimal config struct for workspace path resolution.
+type minimalConfig struct {
+	Agents struct {
+		Defaults struct {
+			Workspace string `json:"workspace"`
+		} `json:"defaults"`
+	} `json:"agents"`
+}
+
+// WorkspacePath returns the workspace path from minimal config.
+func (c *minimalConfig) WorkspacePath() string {
+	ws := c.Agents.Defaults.Workspace
+	if ws == "" {
+		return filepath.Join("~", ".nemesisbot", "workspace")
+	}
+
+	// Expand ~ if present
+	if strings.HasPrefix(ws, "~/") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ws[2:])
+	}
+
+	return ws
 }
 
 // DefaultPathManager returns the default singleton PathManager instance.
@@ -319,4 +380,22 @@ func DefaultPathManager() *PathManager {
 		defaultManager = NewPathManager()
 	})
 	return defaultManager
+}
+
+// ResolveMCPConfigPathInWorkspace returns the MCP config path for a specific workspace.
+// Usage: For runtime components that already know the workspace path.
+func ResolveMCPConfigPathInWorkspace(workspace string) string {
+	return filepath.Join(workspace, "config", "config.mcp.json")
+}
+
+// ResolveSecurityConfigPathInWorkspace returns the security config path for a specific workspace.
+// Usage: For runtime components that already know the workspace path.
+func ResolveSecurityConfigPathInWorkspace(workspace string) string {
+	return filepath.Join(workspace, "config", "config.security.json")
+}
+
+// ResolveClusterConfigPathInWorkspace returns the cluster config path for a specific workspace.
+// Usage: For runtime components that already know the workspace path.
+func ResolveClusterConfigPathInWorkspace(workspace string) string {
+	return filepath.Join(workspace, "config", "config.cluster.json")
 }

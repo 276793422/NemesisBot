@@ -57,13 +57,8 @@ func main() {
 	os.Args = append([]string{os.Args[0]}, parseGlobalFlags(os.Args[1:])...)
 
 	// Pass embedded files and version info to command package
-	command.SetEmbeddedFS(embeddedFiles, defaultFiles)
+	command.SetEmbeddedFS(embeddedFiles, defaultFiles, configFiles)
 	command.SetVersionInfo(version, gitCommit, buildTime, goVersion)
-
-	// Initialize embedded default configurations
-	if err := config.SetEmbeddedDefaults(configFiles); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to load embedded default configs: %v\n", err)
-	}
 
 	if len(os.Args) < 2 {
 		command.PrintHelp()
@@ -210,14 +205,6 @@ func onboardDefault() {
 
 	// Step 1: Load embedded default configuration
 	// This uses config/config.default.json as the single source of truth
-	configPath := command.GetConfigPath()
-
-	// Overwrite existing config without prompting for 'default' command
-	if _, err := os.Stat(configPath); err == nil {
-		fmt.Printf("⚠️  Config already exists at %s, overwriting...\n", configPath)
-	}
-
-	// Load from embedded config (config/config.default.json)
 	cfg, err := config.LoadEmbeddedConfig()
 	if err != nil {
 		fmt.Printf("❌ Error loading embedded default config: %v\n", err)
@@ -227,24 +214,38 @@ func onboardDefault() {
 
 	// Adjust paths for local mode if enabled
 	// Check if we're in local mode (either explicit --local or auto-detected)
-	if path.LocalMode || path.DetectLocal() {
+	isLocalMode := path.LocalMode || path.DetectLocal()
+	if isLocalMode {
 		// Set workspace to relative path for local mode
 		cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
 	}
 
-	// Save base config
+	// Save main config to .nemesisbot/config.json (root directory)
+	configPath := command.GetConfigPath()
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("⚠️  Config already exists at %s, overwriting...\n", configPath)
+	}
+
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		fmt.Printf("❌ Error saving config: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("✓ Config saved (from embedded config/config.default.json)")
+	fmt.Println("✓ Main config saved to .nemesisbot/config.json")
 
-	// Create MCP config file
-	mcpConfigPath := command.GetMCPConfigPath()
+	// Create workspace config directory
+	workspace := cfg.WorkspacePath()
+	configDir := filepath.Join(workspace, "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		fmt.Printf("❌ Error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 2: Create MCP config file in workspace/config/
+	embeddedDefaults := config.GetEmbeddedDefaults()
+	mcpConfigPath := filepath.Join(configDir, "config.mcp.json")
 	mcpConfig, err := config.LoadMCPConfig(mcpConfigPath)
 	if err != nil {
 		// If MCP config doesn't exist, try to use embedded default
-		embeddedDefaults := config.GetEmbeddedDefaults()
 		if len(embeddedDefaults.MCP) > 0 {
 			var mcpCfg config.MCPConfig
 			if err := json.Unmarshal(embeddedDefaults.MCP, &mcpCfg); err != nil {
@@ -268,12 +269,11 @@ func onboardDefault() {
 		fmt.Println("✓ MCP config created")
 	}
 
-	// Create security config file
-	securityConfigPath := command.GetSecurityConfigPath()
+	// Step 3: Create security config file in workspace/config/
+	securityConfigPath := filepath.Join(configDir, "config.security.json")
 	securityCfg, err := config.LoadSecurityConfig(securityConfigPath)
 	if err != nil {
 		// If security config doesn't exist, try to use embedded default
-		embeddedDefaults := config.GetEmbeddedDefaults()
 		if len(embeddedDefaults.Security) > 0 {
 			var secCfg config.SecurityConfig
 			if err := json.Unmarshal(embeddedDefaults.Security, &secCfg); err != nil {
@@ -302,11 +302,36 @@ func onboardDefault() {
 		fmt.Println("✓ Security config created")
 	}
 
-	// Step 2: Enable LLM logging (optional enhancement for default mode)
+	// Step 4: Create cluster config file in workspace/config/
+	clusterConfigPath := filepath.Join(configDir, "config.cluster.json")
+	if len(embeddedDefaults.Cluster) > 0 {
+		// Write embedded cluster config directly
+		if err := os.WriteFile(clusterConfigPath, embeddedDefaults.Cluster, 0644); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to create cluster config: %v\n", err)
+		} else {
+			fmt.Println("✓ Cluster config created")
+		}
+	} else {
+		// Fallback to hardcoded default
+		clusterCfg := map[string]interface{}{
+			"enabled":            false,
+			"port":               49100,
+			"rpc_port":           49200,
+			"broadcast_interval": 30,
+		}
+		data, _ := json.MarshalIndent(clusterCfg, "", "  ")
+		if err := os.WriteFile(clusterConfigPath, data, 0644); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to create cluster config: %v\n", err)
+		} else {
+			fmt.Println("✓ Cluster config created")
+		}
+	}
+
+	// Step 5: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
 		// Determine log directory based on local mode
 		logDir := "~/.nemesisbot/workspace/logs/request_logs"
-		if path.LocalMode || path.DetectLocal() {
+		if isLocalMode {
 			logDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
 		}
 
@@ -322,7 +347,7 @@ func onboardDefault() {
 		}
 	}
 
-	// Step 3: Enable security module (optional enhancement for default mode)
+	// Step 6: Enable security module (optional enhancement for default mode)
 	if cfg.Security == nil {
 		cfg.Security = &config.SecurityFlagConfig{}
 	}
@@ -337,19 +362,18 @@ func onboardDefault() {
 		fmt.Println("✓ Security module enabled")
 	}
 
-	// Create workspace
-	workspace := cfg.WorkspacePath()
+	// Create workspace templates
 	createWorkspaceTemplates(workspace)
 	fmt.Println("✓ Workspace templates created")
 
-	// Step 4: Copy default personality files
+	// Step 7: Copy default personality files
 	if err := copyDefaultFiles(workspace); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to copy default personality files: %v\n", err)
 	} else {
 		fmt.Println("✓ Default personality files installed (IDENTITY.md, SOUL.md, USER.md)")
 	}
 
-	// Step 5: Delete BOOTSTRAP.md
+	// Step 8: Delete BOOTSTRAP.md
 	if err := deleteBootstrapFile(workspace); err != nil {
 		// Don't show warning if file doesn't exist
 		if !os.IsNotExist(err) {

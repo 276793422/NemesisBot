@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "port": 49100,
+  "rpc_port": 49200,
+  "broadcast_interval": 30
+}

@@ -86,7 +86,8 @@ func NewAgentInstance(
 
 	// Initialize and register security plugin if enabled
 	if cfg.Security != nil && cfg.Security.Enabled {
-		securityConfigPath := path.DefaultPathManager().SecurityConfigPath()
+		// Security config should be in workspace/config/config.security.json
+		securityConfigPath := path.ResolveSecurityConfigPathInWorkspace(workspace)
 
 		securityPlugin := security.NewSecurityPlugin()
 		pluginConfig := map[string]interface{}{

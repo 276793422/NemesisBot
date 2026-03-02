@@ -38,11 +38,50 @@ const Logo = "🤖"
 // Embedded filesystems (must be set by main)
 var EmbeddedFiles embed.FS
 var DefaultFiles embed.FS
+var ConfigFiles embed.FS
 
 // SetEmbeddedFS sets the embedded filesystems from main
-func SetEmbeddedFS(embedded, defaultFs embed.FS) {
+func SetEmbeddedFS(embedded, defaultFs, configFs embed.FS) {
 	EmbeddedFiles = embedded
 	DefaultFiles = defaultFs
+	ConfigFiles = configFs
+
+	// Initialize config package with embedded defaults
+	if err := initializeConfigDefaults(configFs); err != nil {
+		// This should not happen in production, but don't crash
+		// The error will be handled when LoadEmbeddedConfig is called
+		fmt.Fprintf(os.Stderr, "Warning: Failed to initialize embedded config: %v\n", err)
+	}
+}
+
+// initializeConfigDefaults initializes the config package with embedded defaults
+func initializeConfigDefaults(configFS embed.FS) error {
+	// Read config/config.default.json
+	data, err := fs.ReadFile(configFS, "config/config.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config/config.default.json: %w", err)
+	}
+
+	// Read config/config.mcp.default.json
+	mcpData, err := fs.ReadFile(configFS, "config/config.mcp.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config/config.mcp.default.json: %w", err)
+	}
+
+	// Read config/config.security.default.json
+	securityData, err := fs.ReadFile(configFS, "config/config.security.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config/config.security.default.json: %w", err)
+	}
+
+	// Read config/config.cluster.default.json
+	clusterData, err := fs.ReadFile(configFS, "config/config.cluster.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config/config.cluster.default.json: %w", err)
+	}
+
+	// Initialize config package
+	return config.SetEmbeddedDefaults(data, mcpData, securityData, clusterData)
 }
 
 // SetVersionInfo sets version information from main

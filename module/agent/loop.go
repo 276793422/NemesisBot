@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
+	"github.com/276793422/NemesisBot/module/cluster"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
@@ -37,6 +40,7 @@ type AgentLoop struct {
 	summarizing    sync.Map
 	fallback       *providers.FallbackChain
 	channelManager *channels.Manager
+	cluster        *cluster.Cluster
 	// Session-level busy state management
 	sessionBusy     sync.Map    // sessionKey -> *sessionBusyState
 	concurrentMode  string      // "reject" or "queue"
@@ -69,8 +73,49 @@ type processOptions struct {
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
 	registry := NewAgentRegistry(cfg, provider)
 
-	// Register shared tools to all agents
-	registerSharedTools(cfg, msgBus, registry, provider)
+	// Initialize cluster if enabled (load from separate config file)
+	var clusterInstance *cluster.Cluster
+	workspace := cfg.Agents.Defaults.Workspace
+	// Resolve workspace path
+	if strings.HasPrefix(workspace, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, workspace[2:])
+	}
+
+	// Load cluster config from workspace/config/config.cluster.json
+	clusterCfg, err := cluster.LoadAppConfig(workspace)
+	if err != nil {
+		logger.WarnCF("agent", "Failed to load cluster config",
+			map[string]interface{}{"error": err.Error()})
+	} else if clusterCfg.Enabled {
+		var err error
+		clusterInstance, err = cluster.NewCluster(workspace)
+		if err != nil {
+			logger.ErrorCF("agent", "Failed to create cluster",
+				map[string]interface{}{"error": err.Error()})
+		} else {
+			// Set ports from config
+			clusterInstance.SetPorts(clusterCfg.Port, clusterCfg.RPCPort)
+
+			// Start cluster discovery and RPC
+			if err := clusterInstance.Start(); err != nil {
+				logger.ErrorCF("agent", "Failed to start cluster",
+					map[string]interface{}{"error": err.Error()})
+				clusterInstance = nil
+			} else {
+				logger.InfoCF("agent", "Cluster started",
+					map[string]interface{}{
+						"node_id":  clusterInstance.GetNodeID(),
+						"udp_port": clusterCfg.Port,
+						"rpc_port": clusterCfg.RPCPort,
+						"address":  clusterInstance.GetAddress(),
+					})
+			}
+		}
+	}
+
+	// Register shared tools to all agents (pass cluster instance for tool registration)
+	registerSharedTools(cfg, msgBus, registry, provider, clusterInstance)
 
 	// Set up shared fallback chain
 	cooldown := providers.NewCooldownTracker()
@@ -100,6 +145,7 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 		state:          stateManager,
 		summarizing:    sync.Map{},
 		fallback:       fallbackChain,
+		cluster:        clusterInstance,
 		sessionBusy:    sync.Map{},
 		concurrentMode: concurrentMode,
 		queueSize:      queueSize,
@@ -107,12 +153,16 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 }
 
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
-func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *AgentRegistry, provider providers.LLMProvider) {
+func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *AgentRegistry, provider providers.LLMProvider, clusterInstance *cluster.Cluster) {
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
 		if !ok {
 			continue
 		}
+
+		// Extract commonly used fields for consistency
+		workspace := agent.Workspace
+		model := agent.Model
 
 		// Web tools
 		if searchTool := tools.NewWebSearchTool(tools.WebSearchToolOptions{
@@ -146,7 +196,7 @@ func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *A
 		agent.Tools.Register(messageTool)
 
 		// Spawn tool with allowlist checker
-		subagentManager := tools.NewSubagentManager(provider, agent.Model, agent.Workspace, msgBus)
+		subagentManager := tools.NewSubagentManager(provider, model, workspace, msgBus)
 		spawnTool := tools.NewSpawnTool(subagentManager)
 		currentAgentID := agentID
 		spawnTool.SetAllowlistChecker(func(targetAgentID string) bool {
@@ -155,8 +205,8 @@ func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *A
 		agent.Tools.Register(spawnTool)
 
 		// MCP tools (Model Context Protocol)
-		// Load MCP configuration from separate config.mcp.json file
-		mcpConfigPath := path.ResolveMCPConfigPath()
+		// Load MCP configuration from workspace/config/config.mcp.json
+		mcpConfigPath := path.ResolveMCPConfigPathInWorkspace(workspace)
 		mcpConfig, err := config.LoadMCPConfig(mcpConfigPath)
 		if err != nil {
 			logger.WarnCF("agent", "Failed to load MCP config",
@@ -182,6 +232,16 @@ func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *A
 						"tool_count":  len(mcpTools),
 					})
 			}
+		}
+
+		// Cluster RPC tool (bot-to-bot communication)
+		if clusterInstance != nil {
+			clusterTool := tools.NewClusterRPCTool(clusterInstance)
+			agent.Tools.Register(clusterTool)
+			logger.InfoCF("agent", "Registered cluster RPC tool",
+				map[string]interface{}{
+					"agent_id": agentID,
+				})
 		}
 
 		// Update context builder with the complete tools registry
@@ -237,6 +297,14 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 func (al *AgentLoop) Stop() {
 	al.running.Store(false)
+
+	// Stop cluster if it was initialized
+	if al.cluster != nil {
+		if err := al.cluster.Stop(); err != nil {
+			logger.ErrorCF("agent", "Failed to stop cluster",
+				map[string]interface{}{"error": err.Error()})
+		}
+	}
 }
 
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {
