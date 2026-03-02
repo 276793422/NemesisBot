@@ -38,6 +38,8 @@ func Dispatch() {
 		CmdChannel()
 	case "security":
 		CmdSecurity()
+	case "cluster":
+		CmdCluster()
 	case "model":
 		CmdModel()
 	case "skills":
@@ -65,6 +67,7 @@ func PrintHelp() {
 	fmt.Println("  gateway     Start nemesisbot gateway")
 	fmt.Println("  status      Show nemesisbot status")
 	fmt.Println("  channel     Manage communication channels (list, enable, disable, status)")
+	fmt.Println("  cluster     Manage bot cluster (status, config, enable, disable)")
 	fmt.Println("  model       Manage LLM models (list, add, remove)")
 	fmt.Println("  cron        Manage scheduled tasks")
 	fmt.Println("  mcp         Manage MCP servers (list, add, remove, test)")
