@@ -77,8 +77,8 @@ func (t *ClusterRPCTool) Execute(ctx context.Context, params map[string]interfac
 		payload = make(map[string]interface{})
 	}
 
-	// Make RPC call
-	response, err := t.cluster.Call(peerID, action, payload)
+	// Make RPC call with context support
+	response, err := t.cluster.CallWithContext(ctx, peerID, action, payload)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("RPC call failed: %v", err))
 	}

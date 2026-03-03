@@ -101,15 +101,18 @@ func (l *ClusterLogger) DiscoveryDebug(format string, args ...interface{}) {
 
 // RPC logging methods
 func (l *ClusterLogger) RPCInfo(format string, args ...interface{}) {
-	l.rpcLogger.logger.Printf("[INFO] "+format, args...)
+	l.rpcLogger.logger.Printf("[INFO] "+format+"\n", args...)
+	l.rpcLogger.file.Sync() // Force flush
 }
 
 func (l *ClusterLogger) RPCError(format string, args ...interface{}) {
-	l.rpcLogger.logger.Printf("[ERROR] "+format, args...)
+	l.rpcLogger.logger.Printf("[ERROR] "+format+"\n", args...)
+	l.rpcLogger.file.Sync() // Force flush
 }
 
 func (l *ClusterLogger) RPCDebug(format string, args ...interface{}) {
-	l.rpcLogger.logger.Printf("[DEBUG] "+format, args...)
+	l.rpcLogger.logger.Printf("[DEBUG] "+format+"\n", args...)
+	l.rpcLogger.file.Sync() // Force flush
 }
 
 // log.Logger interface (minimal implementation)

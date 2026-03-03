@@ -566,12 +566,17 @@ func runDaemon() {
 // runClusterDaemon runs the cluster daemon service
 // This service runs independently without LLM, only handling cluster discovery and communication
 func runClusterDaemon() {
+	// Debug: Print environment variable
+	envHome := os.Getenv("NEMESISBOT_HOME")
+	fmt.Printf("DEBUG: NEMESISBOT_HOME env var = '%s'\n", envHome)
+
 	// Load config to get workspace path
 	homeDir, err := path.ResolveHomeDir()
 	if err != nil {
 		fmt.Printf("Error resolving home directory: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Printf("DEBUG: Resolved homeDir = '%s'\n", homeDir)
 
 	configPath := filepath.Join(homeDir, "config.json")
 	cfg, err := config.LoadConfig(configPath)
@@ -610,6 +615,7 @@ func runClusterDaemon() {
 
 		// Write to file
 		logF.WriteString(logLine)
+		logF.Sync() // Force flush to disk
 
 		// Print to console
 		fmt.Print(logLine)
@@ -689,11 +695,13 @@ func runClusterDaemon() {
 				log("INFO", "RPC: Calling %d nodes...", len(onlineNodes))
 				for _, node := range onlineNodes {
 					go func(n *cluster.Node) {
-						log("DEBUG", "RPC -> %s (%s): Calling...", n.ID, n.Address)
+						log("DEBUG", "RPC -> %s (%s): Starting RPC call...", n.ID, n.Address)
+						log("DEBUG", "RPC -> %s: Calling clusterInstance.Call()", n.ID)
 						response, err := clusterInstance.Call(n.ID, "hello", map[string]interface{}{
 							"from": clusterInstance.GetNodeID(),
 							"timestamp": time.Now().Format(time.RFC3339),
 						})
+						log("DEBUG", "RPC -> %s: Call returned, err=%v", n.ID, err)
 						if err != nil {
 							log("WARN", "RPC -> %s: Error: %v", n.ID, err)
 						} else {

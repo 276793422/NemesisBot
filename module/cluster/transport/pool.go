@@ -5,57 +5,109 @@
 package transport
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-// Pool manages a pool of WebSocket connections
+const (
+	// DefaultMaxConns is the default maximum number of concurrent connections
+	DefaultMaxConns = 50
+	// DefaultMaxConnsPerNode is the default maximum connections per node
+	DefaultMaxConnsPerNode = 3
+)
+
+// Pool manages a pool of TCP connections
 type Pool struct {
 	mu        sync.RWMutex
-	conns     map[string]*Conn // node_id -> Conn
-	dialer    *websocket.Dialer
+	conns     map[string]*TCPConn // node_id:address -> TCPConn
 	timeout   time.Duration
+
+	// Connection limits
+	maxConns           int // Maximum total concurrent connections
+	maxConnsPerNode    int // Maximum concurrent connections per node
+	semaphore          chan struct{} // Semaphore for limiting total connections
+	activeConns        int // Counter for active connections (must hold mu to access)
+
+	// Per-node connection counters (must hold mu to access)
+	nodeConns map[string]int // node_id -> active connection count
+
+	// Configuration
+	dialTimeout   time.Duration
+	idleTimeout   time.Duration
+	sendTimeout   time.Duration
 }
 
-// Conn represents a WebSocket connection
-type Conn struct {
-	mu        sync.RWMutex
-	ws        *websocket.Conn
-	nodeID    string
-	address   string
-	createdAt time.Time
-	lastUsed  time.Time
+// PoolConfig contains configuration for creating a new Pool
+type PoolConfig struct {
+	MaxConns        int
+	MaxConnsPerNode int
+	DialTimeout     time.Duration
+	IdleTimeout     time.Duration
+	SendTimeout     time.Duration
+}
+
+// DefaultPoolConfig returns the default pool configuration
+func DefaultPoolConfig() *PoolConfig {
+	return &PoolConfig{
+		MaxConns:        DefaultMaxConns,
+		MaxConnsPerNode: DefaultMaxConnsPerNode,
+		DialTimeout:     10 * time.Second,
+		IdleTimeout:     30 * time.Second,
+		SendTimeout:     10 * time.Second,
+	}
 }
 
 // NewPool creates a new connection pool
 func NewPool() *Pool {
+	return NewPoolWithConfig(DefaultPoolConfig())
+}
+
+// NewPoolWithConfig creates a new connection pool with custom configuration
+func NewPoolWithConfig(config *PoolConfig) *Pool {
 	return &Pool{
-		conns: make(map[string]*Conn),
-		dialer: &websocket.Dialer{
-			HandshakeTimeout: 10 * time.Second,
-		},
-		timeout: 10 * time.Second,
+		conns:            make(map[string]*TCPConn),
+		timeout:           10 * time.Second,
+		maxConns:          config.MaxConns,
+		maxConnsPerNode:   config.MaxConnsPerNode,
+		semaphore:         make(chan struct{}, config.MaxConns),
+		nodeConns:         make(map[string]int),
+		dialTimeout:       config.DialTimeout,
+		idleTimeout:       config.IdleTimeout,
+		sendTimeout:       config.SendTimeout,
 	}
 }
 
 // Get gets or creates a connection to a node
-func (p *Pool) Get(nodeID, address string) (*Conn, error) {
+// If ctx is provided, it can be used to cancel the dial operation
+func (p *Pool) Get(nodeID, address string) (*TCPConn, error) {
+	return p.GetWithContext(context.Background(), nodeID, address)
+}
+
+// GetWithContext gets or creates a connection to a node with context support
+func (p *Pool) GetWithContext(ctx context.Context, nodeID, address string) (*TCPConn, error) {
 	// Use nodeID:address as the cache key to support multiple addresses per node
 	key := nodeID + ":" + address
 
 	p.mu.RLock()
 	conn, exists := p.conns[key]
-	p.mu.RUnlock()
-
 	if exists && conn.IsActive() {
+		p.mu.RUnlock()
 		conn.UpdateLastUsed()
 		return conn, nil
+	}
+	p.mu.RUnlock()
+
+	// Acquire semaphore slot (with context timeout to avoid blocking forever)
+	select {
+	case p.semaphore <- struct{}{}:
+		// Acquired slot
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("connection pool exhausted (max=%d)", p.maxConns)
+	case <-ctx.Done():
+		return nil, fmt.Errorf("connection cancelled: %w", ctx.Err())
 	}
 
 	// Create new connection
@@ -64,26 +116,32 @@ func (p *Pool) Get(nodeID, address string) (*Conn, error) {
 
 	// Double-check after acquiring write lock
 	if conn, exists := p.conns[key]; exists && conn.IsActive() {
+		// Connection was created while we were waiting for write lock
+		// Release the semaphore slot we acquired
+		<-p.semaphore
+		conn.UpdateLastUsed()
 		return conn, nil
 	}
 
-	// Dial WebSocket
-	ws, err := p.dial(address)
+	// Check per-node limit
+	if p.nodeConns[nodeID] >= p.maxConnsPerNode {
+		<-p.semaphore // Release semaphore slot
+		return nil, fmt.Errorf("too many concurrent connections to node %s (max=%d)", nodeID, p.maxConnsPerNode)
+	}
+
+	// Dial TCP connection
+	tcpConn, err := p.dial(ctx, nodeID, address)
 	if err != nil {
+		<-p.semaphore // Release semaphore slot on failure
 		return nil, fmt.Errorf("failed to dial %s: %w", address, err)
 	}
 
-	newConn := &Conn{
-		ws:        ws,
-		nodeID:    nodeID,
-		address:   address,
-		createdAt: time.Now(),
-		lastUsed:  time.Now(),
-	}
+	// Add to pool
+	p.conns[key] = tcpConn
+	p.activeConns++
+	p.nodeConns[nodeID]++
 
-	p.conns[key] = newConn
-
-	return newConn, nil
+	return tcpConn, nil
 }
 
 // Remove removes a connection from the pool
@@ -98,34 +156,63 @@ func (p *Pool) Remove(nodeID, address string) {
 			if conn.GetNodeID() == nodeID {
 				conn.Close()
 				delete(p.conns, key)
+				p.activeConns--
 			}
 		}
+		// Reset node counter
+		delete(p.nodeConns, nodeID)
 	} else {
 		// Remove specific connection
 		key := nodeID + ":" + address
 		if conn, ok := p.conns[key]; ok {
 			conn.Close()
 			delete(p.conns, key)
+			p.activeConns--
+
+			// Decrement node counter and release semaphore
+			if p.nodeConns[nodeID] > 0 {
+				p.nodeConns[nodeID]--
+			}
 		}
+	}
+
+	// Release semaphore slot
+	select {
+	case <-p.semaphore:
+		// Successfully released
+	default:
+		// Semaphore was full, nothing to release
 	}
 }
 
-// dial creates a new WebSocket connection
-func (p *Pool) dial(address string) (*websocket.Conn, error) {
-	// Parse address
-	u := url.URL{
-		Scheme: "ws",
-		Host:   address,
-		Path:   "/rpc",
+// dial creates a new TCP connection
+func (p *Pool) dial(ctx context.Context, nodeID, address string) (*TCPConn, error) {
+	// Create dialer with timeout
+	dialer := net.Dialer{
+		Timeout: p.dialTimeout,
 	}
 
-	// Add timeout
-	conn, _, err := p.dialer.Dial(u.String(), nil)
+	// Dial TCP connection
+	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return nil, err
 	}
 
-	return conn, nil
+	// Create TCPConn wrapper
+	config := &TCPConnConfig{
+		NodeID:           nodeID,
+		Address:          address,
+		ReadBufferSize:   100,
+		SendBufferSize:   100,
+		SendTimeout:      p.sendTimeout,
+		IdleTimeout:      p.idleTimeout,
+		HeartbeatInterval: 0,
+	}
+
+	tcpConn := NewTCPConn(conn, config)
+	tcpConn.Start()
+
+	return tcpConn, nil
 }
 
 // Close closes all connections in the pool
@@ -135,13 +222,26 @@ func (p *Pool) Close() error {
 
 	var errs []error
 
+	// Close all connections
 	for _, conn := range p.conns {
 		if err := conn.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 
-	p.conns = make(map[string]*Conn)
+	p.conns = make(map[string]*TCPConn)
+	p.nodeConns = make(map[string]int)
+	p.activeConns = 0
+
+	// Drain semaphore to capacity (release all slots)
+	for i := 0; i < cap(p.semaphore); i++ {
+		select {
+		case <-p.semaphore:
+			// Successfully released a slot
+		default:
+			// No more slots to release
+		}
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing connections: %v", errs)
@@ -150,120 +250,30 @@ func (p *Pool) Close() error {
 	return nil
 }
 
-// IsActive checks if a connection is active
-func (c *Conn) IsActive() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// GetStats returns statistics about the connection pool
+func (p *Pool) GetStats() PoolStats {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	if c.ws == nil {
-		return false
+	stats := PoolStats{
+		ActiveConns:   p.activeConns,
+		MaxConns:      p.maxConns,
+		AvailableSlots: cap(p.semaphore) - len(p.semaphore),
 	}
 
-	// Try to send a ping
-	c.ws.SetWriteDeadline(time.Now().Add(1 * time.Second))
-	err := c.ws.WriteMessage(websocket.PingMessage, nil)
-	return err == nil
+	// Count connections per node
+	stats.NodeConns = make(map[string]int, len(p.nodeConns))
+	for node, count := range p.nodeConns {
+		stats.NodeConns[node] = count
+	}
+
+	return stats
 }
 
-// Close closes the connection
-func (c *Conn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.ws != nil {
-		err := c.ws.Close()
-		c.ws = nil
-		return err
-	}
-
-	return nil
-}
-
-// UpdateLastUsed updates the last used timestamp
-func (c *Conn) UpdateLastUsed() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.lastUsed = time.Now()
-}
-
-// Send sends a message through the connection
-func (c *Conn) Send(msg *RPCMessage) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.ws == nil {
-		return fmt.Errorf("connection is closed")
-	}
-
-	data, err := msg.Bytes()
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err = c.ws.WriteMessage(websocket.TextMessage, data)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
-	}
-
-	c.UpdateLastUsed()
-	return nil
-}
-
-// Receive receives a message from the connection
-func (c *Conn) Receive() (*RPCMessage, error) {
-	c.mu.RLock()
-	ws := c.ws
-	c.mu.RUnlock()
-
-	if ws == nil {
-		return nil, fmt.Errorf("connection is closed")
-	}
-
-	ws.SetReadDeadline(time.Now().Add(30 * time.Second))
-	_, data, err := ws.ReadMessage()
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive message: %w", err)
-	}
-
-	var msg RPCMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal message: %w", err)
-	}
-
-	return &msg, nil
-}
-
-// GetNodeID returns the node ID of the connection
-func (c *Conn) GetNodeID() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.nodeID
-}
-
-// GetAddress returns the address of the connection
-func (c *Conn) GetAddress() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.address
-}
-
-// GetLocalAddress returns the local address of the connection
-func (c *Conn) GetLocalAddress() net.Addr {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.ws != nil {
-		return c.ws.LocalAddr()
-	}
-	return nil
-}
-
-// GetRemoteAddress returns the remote address of the connection
-func (c *Conn) GetRemoteAddress() net.Addr {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.ws != nil {
-		return c.ws.RemoteAddr()
-	}
-	return nil
+// PoolStats contains statistics about the connection pool
+type PoolStats struct {
+	ActiveConns    int            // Number of active connections
+	MaxConns       int            // Maximum allowed connections
+	AvailableSlots int            // Available semaphore slots
+	NodeConns      map[string]int // Connections per node
 }

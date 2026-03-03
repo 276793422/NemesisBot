@@ -28,9 +28,9 @@ func (r *Registry) AddOrUpdate(node *Node) {
 	defer r.mu.Unlock()
 
 	if existing, ok := r.nodes[node.ID]; ok {
-		// Update existing node
+		// Update existing node - copy data to avoid holding Node lock while Registry is locked
+		// We don't call node methods here to avoid nested locking
 		existing.mu.Lock()
-		// Direct field updates to avoid nested locks
 		existing.LastSeen = time.Now()
 		if existing.Status != StatusOnline {
 			existing.Status = StatusOnline
@@ -47,7 +47,9 @@ func (r *Registry) AddOrUpdate(node *Node) {
 		existing.mu.Unlock()
 	} else {
 		// Add new node
-		node.UpdateLastSeen()
+		node.mu.Lock()
+		node.LastSeen = time.Now()
+		node.mu.Unlock()
 		r.nodes[node.ID] = node
 	}
 }
@@ -158,12 +160,18 @@ func (r *Registry) CheckTimeouts(timeout time.Duration) []string {
 	now := time.Now()
 
 	for _, node := range r.nodes {
-		if node.IsOnline() {
+		// Acquire node lock to safely check both Status and LastSeen
+		// This is necessary because time.Time is not atomic on 32-bit systems
+		node.mu.Lock()
+		if node.Status == StatusOnline {
 			if now.Sub(node.LastSeen) > timeout {
-				node.MarkOffline("timeout")
+				// Mark node as offline directly without calling MarkOffline to avoid nested lock
+				node.Status = StatusOffline
+				node.LastError = "timeout"
 				expired = append(expired, node.ID)
 			}
 		}
+		node.mu.Unlock()
 	}
 
 	return expired

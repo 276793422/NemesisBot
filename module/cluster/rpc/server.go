@@ -5,23 +5,31 @@
 package rpc
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
 	"sync"
+	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/276793422/NemesisBot/module/cluster/transport"
 )
 
 // Server handles incoming RPC requests
 type Server struct {
 	cluster   Cluster
-	upgrader  websocket.Upgrader
 	mu        sync.RWMutex
 	handlers  map[string]RPCHandler
 	running   bool
+	listener  net.Listener
+
+	// Configuration
+	rpcPort      int
+	sendTimeout  time.Duration
+	idleTimeout  time.Duration
+
+	// Active connections
+	conns      map[string]*transport.TCPConn // remoteAddr -> conn
+	connMu     sync.RWMutex
+	shutdownCh chan struct{}
 }
 
 // RPCHandler is a function that handles an RPC action
@@ -30,12 +38,12 @@ type RPCHandler func(payload map[string]interface{}) (map[string]interface{}, er
 // NewServer creates a new RPC server
 func NewServer(cluster Cluster) *Server {
 	return &Server{
-		cluster: cluster,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
-		handlers: make(map[string]RPCHandler),
+		cluster:       cluster,
+		handlers:      make(map[string]RPCHandler),
+		conns:         make(map[string]*transport.TCPConn),
+		sendTimeout:   10 * time.Second,
+		idleTimeout:   60 * time.Second,
+		shutdownCh:    make(chan struct{}),
 	}
 }
 
@@ -53,33 +61,28 @@ func (s *Server) Start(port int) error {
 		s.mu.Unlock()
 		return fmt.Errorf("server already running")
 	}
-	s.running = true
+	s.rpcPort = port
 	s.mu.Unlock()
 
 	// Register default handlers
 	s.registerDefaultHandlers()
 
-	// HTTP handler
-	http.HandleFunc("/rpc", s.handleWebSocket)
-
-	// Start HTTP server
+	// Create TCP listener
 	addr := fmt.Sprintf(":%d", port)
-
-	// Try to listen synchronously first to detect binding errors immediately
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		s.running = false
 		return fmt.Errorf("failed to bind port %d: %w", port, err)
 	}
 
+	s.mu.Lock()
+	s.listener = listener
+	s.running = true
+	s.mu.Unlock()
+
 	s.cluster.LogRPCInfo("RPC server started on %s", addr)
 
-	// Serve in background
-	go func() {
-		if err := http.Serve(listener, nil); err != nil {
-			s.cluster.LogRPCError("RPC server error: %v", err)
-		}
-	}()
+	// Start accept loop in background
+	go s.acceptLoop()
 
 	return nil
 }
@@ -94,60 +97,115 @@ func (s *Server) Stop() error {
 	s.running = false
 	s.mu.Unlock()
 
+	// Signal shutdown
+	close(s.shutdownCh)
+
+	// Close listener
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	// Close all connections
+	s.connMu.Lock()
+	for addr, conn := range s.conns {
+		conn.Close()
+		s.cluster.LogRPCDebug("Closed connection to %s", addr)
+	}
+	s.conns = make(map[string]*transport.TCPConn)
+	s.connMu.Unlock()
+
 	s.cluster.LogRPCInfo("RPC server stopped")
 
 	return nil
 }
 
-// handleWebSocket handles WebSocket connections
-func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		s.cluster.LogRPCError("Failed to upgrade WebSocket: %v", err)
-		return
-	}
+// acceptLoop accepts incoming connections
+func (s *Server) acceptLoop() {
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			s.mu.RLock()
+			running := s.running
+			s.mu.RUnlock()
 
-	// Handle connection
-	go s.handleConnection(conn)
+			if !running {
+				return // Server stopped
+			}
+
+			s.cluster.LogRPCError("Accept error: %v", err)
+			continue
+		}
+
+		// Handle connection in background
+		go s.handleConnection(conn)
+	}
 }
 
-// handleConnection handles a WebSocket connection
-func (s *Server) handleConnection(conn *websocket.Conn) {
-	defer conn.Close()
+// handleConnection handles a TCP connection
+func (s *Server) handleConnection(netConn net.Conn) {
+	remoteAddr := netConn.RemoteAddr().String()
 
-	// Message loop
+	// Create TCPConn wrapper
+	config := &transport.TCPConnConfig{
+		NodeID:           "", // Will be set when we know the peer
+		Address:          remoteAddr,
+		ReadBufferSize:   100,
+		SendBufferSize:   100,
+		SendTimeout:      s.sendTimeout,
+		IdleTimeout:      s.idleTimeout,
+		HeartbeatInterval: 0,
+	}
+
+	tc := transport.NewTCPConn(netConn, config)
+	tc.Start()
+
+	// Add to connections map
+	s.connMu.Lock()
+	s.conns[remoteAddr] = tc
+	s.connMu.Unlock()
+
+	s.cluster.LogRPCInfo("Accepted connection from %s", remoteAddr)
+
+	// Handle messages
+	defer func() {
+		tc.Close()
+		s.connMu.Lock()
+		delete(s.conns, remoteAddr)
+		s.connMu.Unlock()
+		s.cluster.LogRPCDebug("Connection to %s closed", remoteAddr)
+	}()
+
 	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			if err.Error() != "EOF" {
-				s.cluster.LogRPCError("Failed to read message: %v", err)
+		select {
+		case <-s.shutdownCh:
+			return
+
+		case msg, ok := <-tc.Receive():
+			if !ok {
+				// Connection closed
+				return
 			}
-			break
-		}
 
-		// Parse message
-		var msg transport.RPCMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			s.cluster.LogRPCError("Failed to unmarshal message: %v", err)
-			continue
-		}
+			if msg == nil {
+				continue
+			}
 
-		// Validate message
-		if err := msg.Validate(); err != nil {
-			s.cluster.LogRPCError("Invalid message: %v", err)
-			continue
-		}
-
-		// Handle request
-		if msg.Type == transport.RPCTypeRequest {
-			s.handleRequest(conn, &msg)
+			// Handle request
+			if msg.Type == transport.RPCTypeRequest {
+				s.handleRequest(tc, msg)
+			}
 		}
 	}
 }
 
 // handleRequest handles an RPC request
-func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) {
+func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessage) {
 	s.cluster.LogRPCInfo("Received request: action=%s, from=%s, id=%s", req.Action, req.From, req.ID)
+
+	// Update node ID if not set
+	if conn.GetNodeID() == "" {
+		conn.SetNodeID(req.From)
+	}
 
 	// Get handler
 	s.mu.RLock()
@@ -158,7 +216,7 @@ func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) 
 		// No handler for this action, return default response
 		s.cluster.LogRPCInfo("No handler for action '%s', returning default response", req.Action)
 
-		// Create default response: Resp: + payload
+		// Create default response
 		defaultPayload := map[string]interface{}{
 			"response": fmt.Sprintf("Resp: %v", req.Payload),
 		}
@@ -178,25 +236,13 @@ func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) 
 
 	// Send success response
 	resp := transport.NewResponse(req, result)
-	s.cluster.LogRPCInfo("Sending response: action=%s, id=%s", req.Action, req.ID)
+	s.cluster.LogRPCDebug("Sending response: action=%s, id=%s", req.Action, req.ID)
 	s.sendMessage(conn, resp)
 }
 
-// sendMessage sends a message through WebSocket
-func (s *Server) sendMessage(conn *websocket.Conn, msg *transport.RPCMessage) error {
-	data, err := msg.Bytes()
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
-	err = conn.WriteMessage(websocket.TextMessage, data)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
-	}
-
-	s.cluster.LogRPCDebug("Sent message: type=%s, id=%s", msg.Type, msg.ID)
-
-	return nil
+// sendMessage sends a message through the connection
+func (s *Server) sendMessage(conn *transport.TCPConn, msg *transport.RPCMessage) error {
+	return conn.Send(msg)
 }
 
 // registerDefaultHandlers registers default RPC handlers
@@ -237,4 +283,18 @@ func (s *Server) registerDefaultHandlers() {
 			"peers":    peerInfos,
 		}, nil
 	})
+}
+
+// GetConnectionCount returns the number of active connections
+func (s *Server) GetConnectionCount() int {
+	s.connMu.RLock()
+	defer s.connMu.RUnlock()
+	return len(s.conns)
+}
+
+// IsRunning returns true if the server is running
+func (s *Server) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.running
 }

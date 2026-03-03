@@ -5,6 +5,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -421,12 +422,24 @@ func (c *Cluster) IsRunning() bool {
 
 // Call makes an RPC call to a peer
 func (c *Cluster) Call(peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return c.CallWithContext(context.Background(), peerID, action, payload)
+}
+
+// CallWithContext makes an RPC call to a peer with context support for cancellation and timeout
+func (c *Cluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
 	if c.rpcClient == nil {
 		return nil, fmt.Errorf("RPC client not initialized")
 	}
 
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	c.logger.RPCInfo("Calling %s: action=%s", peerID, action)
-	return c.rpcClient.Call(peerID, action, payload)
+	return c.rpcClient.CallWithContext(ctx, peerID, action, payload)
 }
 
 // GetLogger returns the cluster logger
