@@ -10,9 +10,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/cluster"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/nemesisbot/command"
@@ -69,6 +73,11 @@ func main() {
 	// Check if it's the onboard command (needs access to embedded files)
 	if os.Args[1] == "onboard" {
 		onboard()
+	}
+
+	// Check if it's the daemon command (independent service mode)
+	if os.Args[1] == "daemon" {
+		runDaemon()
 	}
 
 	// Route to command dispatcher
@@ -529,5 +538,209 @@ func createWorkspaceTemplates(workspace string) {
 	err := copyEmbeddedToTarget(workspace)
 	if err != nil {
 		fmt.Printf("Error copying workspace templates: %v\n", err)
+	}
+}
+
+// runDaemon runs an independent service without LLM
+// Usage: nemesisbot daemon <module> <mode>
+// Example: nemesisbot daemon cluster auto
+func runDaemon() {
+	if len(os.Args) < 4 {
+		fmt.Println("Usage: nemesisbot daemon <module> <mode>")
+		fmt.Println()
+		fmt.Println("Available modules:")
+		fmt.Println("  cluster  - Cluster daemon service")
+		fmt.Println()
+		fmt.Println("Available modes:")
+		fmt.Println("  auto     - Automatic mode (follows preset configuration)")
+		fmt.Println()
+		fmt.Println("Example:")
+		fmt.Println("  nemesisbot daemon cluster auto")
+		os.Exit(1)
+	}
+
+	module := os.Args[2]
+	mode := os.Args[3]
+
+	switch module {
+	case "cluster":
+		if mode == "auto" {
+			runClusterDaemon()
+		} else {
+			fmt.Printf("Error: Unknown mode '%s' for module 'cluster'\n", mode)
+			fmt.Println("Available modes: auto")
+			os.Exit(1)
+		}
+	default:
+		fmt.Printf("Error: Unknown module '%s'\n", module)
+		fmt.Println("Available modules: cluster")
+		os.Exit(1)
+	}
+}
+
+// runClusterDaemon runs the cluster daemon service
+// This service runs independently without LLM, only handling cluster discovery and communication
+func runClusterDaemon() {
+	// Load config to get workspace path
+	homeDir, err := path.ResolveHomeDir()
+	if err != nil {
+		fmt.Printf("Error resolving home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	configPath := filepath.Join(homeDir, "config.json")
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get workspace
+	workspace := cfg.Agents.Defaults.Workspace
+	if strings.HasPrefix(workspace, "~/") {
+		homeDir, _ := os.UserHomeDir()
+		workspace = filepath.Join(homeDir, workspace[2:])
+	}
+
+	// Setup logging
+	logDir := filepath.Join(workspace, "logs", "cluster")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Printf("Error creating log directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	logFile := filepath.Join(logDir, "daemon.log")
+	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Printf("Error opening log file: %v\n", err)
+		os.Exit(1)
+	}
+	defer logF.Close()
+
+	// Create logger function
+	log := func(level, format string, args ...interface{}) {
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		message := fmt.Sprintf(format, args...)
+		logLine := fmt.Sprintf("[%s] %s %s\n", timestamp, level, message)
+
+		// Write to file
+		logF.WriteString(logLine)
+
+		// Print to console
+		fmt.Print(logLine)
+	}
+
+	log("INFO", "🌐 Cluster Daemon Starting")
+	log("INFO", "Workspace: %s", workspace)
+
+	// Load cluster config
+	clusterCfg, err := cluster.LoadAppConfig(workspace)
+	if err != nil {
+		log("ERROR", "Failed to load cluster config: %v", err)
+		os.Exit(1)
+	}
+
+	// Daemon mode: Ignore enabled flag and always start cluster
+	if !clusterCfg.Enabled {
+		log("INFO", "Daemon mode: Starting cluster despite enabled=false")
+		log("INFO", "Cluster will be forced enabled for daemon operation")
+	}
+
+	// Create cluster instance
+	clusterInstance, err := cluster.NewCluster(workspace)
+	if err != nil {
+		log("ERROR", "Failed to create cluster: %v", err)
+		os.Exit(1)
+	}
+
+	// Set ports from config
+	clusterInstance.SetPorts(clusterCfg.Port, clusterCfg.RPCPort)
+
+	// Start cluster
+	log("INFO", "Starting cluster service...")
+	if err := clusterInstance.Start(); err != nil {
+		log("ERROR", "Failed to start cluster: %v", err)
+		os.Exit(1)
+	}
+
+	log("INFO", "✓ Cluster started")
+	log("INFO", "  Node ID: %s", clusterInstance.GetNodeID())
+	log("INFO", "  UDP Port: %d", clusterCfg.Port)
+	log("INFO", "  RPC Port: %d", clusterCfg.RPCPort)
+	log("INFO", "  Address: %s", clusterInstance.GetAddress())
+	log("INFO", "")
+
+	// Setup signal handling for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// RPC call ticker
+	rpcTicker := time.NewTicker(60 * time.Second)
+	defer rpcTicker.Stop()
+
+	// State sync ticker (periodic full sync)
+	syncTicker := time.NewTicker(5 * time.Minute)
+	defer syncTicker.Stop()
+
+	log("INFO", "Daemon running. Press Ctrl+C to stop.")
+	log("INFO", "")
+
+	// Main loop
+	for {
+		select {
+		case <-rpcTicker.C:
+			// Call all online nodes every 60 seconds
+			registry := clusterInstance.GetRegistry()
+			var onlineNodes []*cluster.Node
+
+			// Type assertion for registry
+			if reg, ok := registry.(*cluster.Registry); ok {
+				onlineNodes = reg.GetOnline()
+			}
+
+			if len(onlineNodes) == 0 {
+				log("INFO", "RPC: No nodes to call")
+			} else {
+				log("INFO", "RPC: Calling %d nodes...", len(onlineNodes))
+				for _, node := range onlineNodes {
+					go func(n *cluster.Node) {
+						log("DEBUG", "RPC -> %s (%s): Calling...", n.ID, n.Address)
+						response, err := clusterInstance.Call(n.ID, "hello", map[string]interface{}{
+							"from": clusterInstance.GetNodeID(),
+							"timestamp": time.Now().Format(time.RFC3339),
+						})
+						if err != nil {
+							log("WARN", "RPC -> %s: Error: %v", n.ID, err)
+						} else {
+							log("INFO", "RPC -> %s: Response: %s", n.ID, string(response))
+						}
+					}(node)
+				}
+			}
+
+		case <-syncTicker.C:
+			// Periodic full sync
+			log("DEBUG", "Syncing state to disk...")
+			if err := clusterInstance.SyncToDisk(); err != nil {
+				log("ERROR", "Failed to sync state: %v", err)
+			} else {
+				log("DEBUG", "State synced successfully")
+			}
+
+		case <-sigCh:
+			// Shutdown signal
+			log("INFO", "")
+			log("INFO", "Received shutdown signal, stopping daemon...")
+
+			// Stop cluster
+			if err := clusterInstance.Stop(); err != nil {
+				log("ERROR", "Error stopping cluster: %v", err)
+			} else {
+				log("INFO", "✓ Cluster stopped")
+			}
+
+			log("INFO", "Daemon stopped.")
+			return
+		}
 	}
 }
