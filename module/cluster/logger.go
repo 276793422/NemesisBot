@@ -27,7 +27,7 @@ type logger struct {
 // NewClusterLogger creates a new cluster logger
 func NewClusterLogger(workspace string) (*ClusterLogger, error) {
 	// Create log directory
-	logDir := filepath.Join(workspace, ".nemesisbot", "workspace", "logs", "cluster")
+	logDir := filepath.Join(workspace, "logs", "cluster")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory: %w", err)
 	}

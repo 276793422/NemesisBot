@@ -19,10 +19,15 @@ type LogFunc func(format string, args ...interface{})
 type ClusterCallbacks interface {
 	GetNodeID() string
 	GetAddress() string
+	GetRPCPort() int
+	GetAllLocalIPs() []string
+	GetRole() string
+	GetCategory() string
+	GetTags() []string
 	LogInfo(msg string, args ...interface{})
 	LogError(msg string, args ...interface{})
 	LogDebug(msg string, args ...interface{})
-	HandleDiscoveredNode(nodeID, name, address string, capabilities []string)
+	HandleDiscoveredNode(nodeID, name string, addresses []string, rpcPort int, role, category string, tags []string, capabilities []string)
 	HandleNodeOffline(nodeID, reason string)
 	SyncToDisk() error
 }
@@ -135,17 +140,28 @@ func (d *Discovery) broadcastLoop() {
 
 // sendAnnounce sends an announce broadcast
 func (d *Discovery) sendAnnounce() {
+	// Get all local IPs
+	addresses := d.cluster.GetAllLocalIPs()
+	if len(addresses) == 0 {
+		d.cluster.LogError("No local IP addresses available for broadcast")
+		return
+	}
+
 	msg := NewAnnounceMessage(
 		d.cluster.GetNodeID(),
-		"Bot "+d.cluster.GetNodeID(),
-		d.cluster.GetAddress(), // Get RPC address from cluster
-		[]string{},            // Capabilities will be set by cluster module
+		d.cluster.GetNodeID(), // Use nodeID as name for now, cluster can override
+		addresses,
+		d.cluster.GetRPCPort(),
+		d.cluster.GetRole(),
+		d.cluster.GetCategory(),
+		d.cluster.GetTags(),
+		[]string{}, // Capabilities will be set by cluster module
 	)
 
 	if err := d.listener.Broadcast(msg); err != nil {
 		d.cluster.LogError("Failed to send announce: %v", err)
 	} else {
-		d.cluster.LogDebug("Announce sent: node_id=%s, address=%s", d.cluster.GetNodeID(), d.cluster.GetAddress())
+		d.cluster.LogDebug("Announce sent: node_id=%s, addresses=%v, rpc_port=%d", d.cluster.GetNodeID(), addresses, d.cluster.GetRPCPort())
 	}
 }
 
@@ -176,7 +192,7 @@ func (d *Discovery) handleMessage(msg *DiscoveryMessage, addr *net.UDPAddr) {
 // handleAnnounce handles an announce message
 func (d *Discovery) handleAnnounce(msg *DiscoveryMessage) {
 	// Use callback to handle discovered node
-	d.cluster.HandleDiscoveredNode(msg.NodeID, msg.Name, msg.Address, msg.Capabilities)
+	d.cluster.HandleDiscoveredNode(msg.NodeID, msg.Name, msg.Addresses, msg.RPCPort, msg.Role, msg.Category, msg.Tags, msg.Capabilities)
 
 	d.cluster.LogInfo("Node discovered/updated: %s", msg.NodeID)
 

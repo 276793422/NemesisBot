@@ -32,6 +32,9 @@ type Cluster struct {
 	nodeID   string
 	nodeName string
 	address  string
+	role      string
+	category  string
+	tags      []string
 
 	// Paths
 	workspace       string
@@ -94,6 +97,15 @@ func NewCluster(workspace string) (*Cluster, error) {
 		broadcastInterval: DefaultBroadcastInterval,
 		timeout:          DefaultTimeout,
 		stopCh:           make(chan struct{}),
+		role:             "worker",  // Default role
+		category:         "general", // Default category
+		tags:             []string{},// Default tags
+	}
+
+	// Load static config to get local node info (role, category, tags)
+	if err := cluster.loadStaticConfig(); err != nil {
+		logger.DiscoveryError("Failed to load static config: %v", err)
+		// Continue anyway, will use defaults
 	}
 
 	// Load static config if available (contains manually configured peers)
@@ -273,6 +285,24 @@ func (c *Cluster) loadStaticConfig() error {
 		return err
 	}
 
+	// Load local node information from static config
+	// Check if the node in static config matches our generated nodeID
+	if staticConfig.Node.ID == c.nodeID || staticConfig.Node.ID == "" {
+		// Use our generated nodeID, but load other info from config
+		if staticConfig.Node.Name != "" {
+			c.nodeName = staticConfig.Node.Name
+		}
+		if staticConfig.Node.Role != "" {
+			c.role = staticConfig.Node.Role
+		}
+		if staticConfig.Node.Category != "" {
+			c.category = staticConfig.Node.Category
+		}
+		if len(staticConfig.Node.Tags) > 0 {
+			c.tags = staticConfig.Node.Tags
+		}
+	}
+
 	// Restore manually configured peers from static config to registry
 	for _, peerConfig := range staticConfig.Peers {
 		// Skip self
@@ -289,7 +319,11 @@ func (c *Cluster) loadStaticConfig() error {
 			ID:           peerConfig.ID,
 			Name:         peerConfig.Name,
 			Address:      peerConfig.Address,
+			Addresses:    peerConfig.Addresses,
+			RPCPort:      peerConfig.RPCPort,
 			Role:         peerConfig.Role,
+			Category:     peerConfig.Category,
+			Tags:         peerConfig.Tags,
 			Capabilities: peerConfig.Capabilities,
 			Priority:     peerConfig.Priority,
 			Status:       NodeStatus(peerConfig.Status.State),
@@ -320,7 +354,11 @@ func (c *Cluster) loadDynamicState() error {
 			ID:           peerConfig.ID,
 			Name:         peerConfig.Name,
 			Address:      peerConfig.Address,
+			Addresses:    peerConfig.Addresses,
+			RPCPort:      peerConfig.RPCPort,
 			Role:         peerConfig.Role,
+			Category:     peerConfig.Category,
+			Tags:         peerConfig.Tags,
 			Capabilities: peerConfig.Capabilities,
 			Priority:     peerConfig.Priority,
 			Status:       NodeStatus(peerConfig.Status.State),
@@ -419,13 +457,56 @@ func (c *Cluster) LogDebug(msg string, args ...interface{}) {
 	c.logger.DiscoveryDebug(msg, args...)
 }
 
+// GetRPCPort returns the RPC port (for discovery callback)
+func (c *Cluster) GetRPCPort() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.rpcPort
+}
+
+// GetAllLocalIPs returns all local IP addresses (for discovery callback)
+func (c *Cluster) GetAllLocalIPs() []string {
+	ips, err := GetAllLocalIPs()
+	if err != nil {
+		c.logger.DiscoveryError("Failed to get local IPs: %v", err)
+		// Fallback to single IP from address
+		return []string{c.address}
+	}
+	return ips
+}
+
+// GetRole returns the node role (for discovery callback)
+func (c *Cluster) GetRole() string {
+	return c.role
+}
+
+// GetCategory returns the node category (for discovery callback)
+func (c *Cluster) GetCategory() string {
+	return c.category
+}
+
+// GetTags returns the node tags (for discovery callback)
+func (c *Cluster) GetTags() []string {
+	return c.tags
+}
+
 // HandleDiscoveredNode handles a node discovered via UDP broadcast
-func (c *Cluster) HandleDiscoveredNode(nodeID, name, address string, capabilities []string) {
+func (c *Cluster) HandleDiscoveredNode(nodeID, name string, addresses []string, rpcPort int, role, category string, tags []string, capabilities []string) {
+	// For backward compatibility, use the first address as primary Address
+	primaryAddress := ""
+	if len(addresses) > 0 {
+		primaryAddress = fmt.Sprintf("%s:%d", addresses[0], rpcPort)
+	}
+
 	node := &Node{
 		ID:           nodeID,
 		Name:         name,
-		Address:      address,
-		Role:         "worker",
+		Address:      primaryAddress,  // Primary address for backward compatibility
+		Addresses:    addresses,       // All addresses
+		RPCPort:      rpcPort,
+		Role:         role,
+		Category:     category,
+		Tags:         tags,
 		Capabilities: capabilities,
 		Priority:     1,
 	}

@@ -17,8 +17,12 @@ import (
 type Node struct {
 	ID           string    `toml:"id"`
 	Name         string    `toml:"name"`
-	Address      string    `toml:"address"`      // IP:Port
-	Role         string    `toml:"role"`         // coordinator | worker
+	Address      string    `toml:"address"`      // Deprecated: Primary IP:Port (for backward compatibility)
+	Addresses    []string  `toml:"addresses"`     // List of all IP addresses
+	RPCPort      int       `toml:"rpc_port"`      // RPC port number
+	Role         string    `toml:"role"`          // Cluster role
+	Category     string    `toml:"category"`      // Business category
+	Tags         []string  `toml:"tags"`          // Custom tags
 	Capabilities []string  `toml:"capabilities"`
 	Priority     int       `toml:"priority"`
 
@@ -106,8 +110,12 @@ func (n *Node) ToConfig() PeerConfig {
 	return PeerConfig{
 		ID:           n.ID,
 		Name:         n.Name,
-		Address:      n.Address,
+		Address:      n.Address,      // Primary address for backward compatibility
+		Addresses:    n.Addresses,    // All addresses
+		RPCPort:      n.RPCPort,      // RPC port
 		Role:         n.Role,
+		Category:     n.Category,
+		Tags:         n.Tags,
 		Capabilities: n.Capabilities,
 		Priority:     n.Priority,
 		Status: PeerStatus{
@@ -189,4 +197,52 @@ func getLocalIP() (string, error) {
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String(), nil
+}
+
+// GetAllLocalIPs returns all local IP addresses
+func GetAllLocalIPs() ([]string, error) {
+	var ips []string
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, iface := range interfaces {
+		// Skip down interfaces and loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Only include IPv4 addresses
+			if ip != nil && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+
+	// If no IPs found, fallback to getLocalIP
+	if len(ips) == 0 {
+		ip, err := getLocalIP()
+		if err != nil {
+			return nil, err
+		}
+		return []string{ip}, nil
+	}
+
+	return ips, nil
 }

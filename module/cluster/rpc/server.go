@@ -137,7 +137,7 @@ func (s *Server) handleConnection(conn *websocket.Conn) {
 
 // handleRequest handles an RPC request
 func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) {
-	s.cluster.LogRPCDebug("Received request: action=%s, from=%s", req.Action, req.From)
+	s.cluster.LogRPCInfo("Received request: action=%s, from=%s, id=%s", req.Action, req.From, req.ID)
 
 	// Get handler
 	s.mu.RLock()
@@ -145,8 +145,14 @@ func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) 
 	s.mu.RUnlock()
 
 	if !exists {
-		// Send error response
-		resp := transport.NewError(req, fmt.Sprintf("unknown action: %s", req.Action))
+		// No handler for this action, return default response
+		s.cluster.LogRPCInfo("No handler for action '%s', returning default response", req.Action)
+
+		// Create default response: Resp: + payload
+		defaultPayload := map[string]interface{}{
+			"response": fmt.Sprintf("Resp: %v", req.Payload),
+		}
+		resp := transport.NewResponse(req, defaultPayload)
 		s.sendMessage(conn, resp)
 		return
 	}
@@ -154,6 +160,7 @@ func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) 
 	// Call handler
 	result, err := handler(req.Payload)
 	if err != nil {
+		s.cluster.LogRPCError("Handler error for action '%s': %v", req.Action, err)
 		resp := transport.NewError(req, err.Error())
 		s.sendMessage(conn, resp)
 		return
@@ -161,6 +168,7 @@ func (s *Server) handleRequest(conn *websocket.Conn, req *transport.RPCMessage) 
 
 	// Send success response
 	resp := transport.NewResponse(req, result)
+	s.cluster.LogRPCInfo("Sending response: action=%s, id=%s", req.Action, req.ID)
 	s.sendMessage(conn, resp)
 }
 

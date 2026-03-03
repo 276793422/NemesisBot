@@ -491,26 +491,10 @@ func initializeClusterConfig(workspace string) {
 	nodeID := fmt.Sprintf("node-%s-%d", hostname, time.Now().Unix())
 	nodeName := "Bot " + nodeID
 
-	// Create static config with current node info
-	staticConfig := map[string]interface{}{
-		"cluster": map[string]interface{}{
-			"id":            "manual",
-			"auto_discovery": true,
-			"last_updated":  time.Now().Format(time.RFC3339),
-		},
-		"node": map[string]interface{}{
-			"id":           nodeID,
-			"name":         nodeName,
-			"address":      "",
-			"role":         "worker",
-			"capabilities": []string{},
-		},
-		"peers": []interface{}{},
-	}
-
 	// Marshal to TOML manually (since we're not importing cluster package)
 	tomlData := fmt.Sprintf(
-		"cluster = \"%s\"\n"+
+		"[cluster]\n"+
+		"id = \"manual\"\n"+
 		"auto_discovery = true\n"+
 		"last_updated = \"%s\"\n\n"+
 		"[node]\n"+
@@ -518,12 +502,13 @@ func initializeClusterConfig(workspace string) {
 		"name = \"%s\"\n"+
 		"address = \"\"\n"+
 		"role = \"worker\"\n"+
+		"category = \"general\"\n"+
+		"tags = []\n"+
 		"capabilities = []\n\n"+
 		"peers = []\n",
-		staticConfig["cluster"].(map[string]interface{})["id"],
-		staticConfig["cluster"].(map[string]interface{})["last_updated"],
-		staticConfig["node"].(map[string]interface{})["id"],
-		staticConfig["node"].(map[string]interface{})["name"])
+		time.Now().Format(time.RFC3339),
+		nodeID,
+		nodeName)
 
 	// Save to peers.toml
 	peersPath := filepath.Join(clusterDir, "peers.toml")
@@ -732,15 +717,25 @@ func runClusterDaemon() {
 			log("INFO", "")
 			log("INFO", "Received shutdown signal, stopping daemon...")
 
-			// Stop cluster
-			if err := clusterInstance.Stop(); err != nil {
-				log("ERROR", "Error stopping cluster: %v", err)
-			} else {
-				log("INFO", "✓ Cluster stopped")
+			// Timeout mechanism: Stop cluster with 60-second timeout
+			stopDone := make(chan error, 1)
+			go func() {
+				stopDone <- clusterInstance.Stop()
+			}()
+
+			select {
+			case err := <-stopDone:
+				if err != nil {
+					log("ERROR", "Error stopping cluster: %v", err)
+				} else {
+					log("INFO", "✓ Cluster stopped")
+				}
+			case <-time.After(60 * time.Second):
+				log("WARN", "Shutdown timeout (60s), forcing exit...")
 			}
 
 			log("INFO", "Daemon stopped.")
-			return
+			os.Exit(0)
 		}
 	}
 }

@@ -44,7 +44,9 @@ type NodeInfo struct {
 type PeerConfig struct {
 	ID           string      `toml:"id"`
 	Name         string      `toml:"name"`
-	Address      string      `toml:"address"`
+	Address      string      `toml:"address"`       // Deprecated: Primary address for backward compatibility
+	Addresses    []string    `toml:"addresses"`     // List of all IP addresses
+	RPCPort      int         `toml:"rpc_port"`      // RPC port number
 	Role         string      `toml:"role"`         // Cluster role: manager, coordinator, worker, observer, standby
 	Category     string      `toml:"category"`      // Business category: design, development, testing, ops, deployment, analysis, general
 	Tags         []string    `toml:"tags"`          // Custom tags for flexible classification
