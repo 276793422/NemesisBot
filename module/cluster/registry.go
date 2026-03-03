@@ -30,7 +30,11 @@ func (r *Registry) AddOrUpdate(node *Node) {
 	if existing, ok := r.nodes[node.ID]; ok {
 		// Update existing node
 		existing.mu.Lock()
-		existing.UpdateLastSeen()
+		// Direct field updates to avoid nested locks
+		existing.LastSeen = time.Now()
+		if existing.Status != StatusOnline {
+			existing.Status = StatusOnline
+		}
 		existing.Name = node.Name
 		existing.Address = node.Address
 		existing.Addresses = node.Addresses

@@ -6,6 +6,7 @@ package cluster
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,9 +18,9 @@ import (
 
 const (
 	// DefaultUDPPort is the default UDP broadcast port
-	DefaultUDPPort = 49100
+	DefaultUDPPort = 11949
 	// DefaultRPCPort is the default WebSocket RPC port
-	DefaultRPCPort = 49200
+	DefaultRPCPort = 21949
 	// DefaultBroadcastInterval is the default broadcast interval
 	DefaultBroadcastInterval = 30 * time.Second
 	// DefaultTimeout is the default timeout for marking a node as offline
@@ -92,8 +93,8 @@ func NewCluster(workspace string) (*Cluster, error) {
 		dynamicStatePath: dynamicStatePath,
 		registry:         NewRegistry(),
 		logger:           logger,
-		udpPort:          49100,  // Default UDP port
-		rpcPort:          49200,  // Default RPC port
+		udpPort:          DefaultUDPPort,  // Default UDP port
+		rpcPort:          DefaultRPCPort,  // Default RPC port
 		broadcastInterval: DefaultBroadcastInterval,
 		timeout:          DefaultTimeout,
 		stopCh:           make(chan struct{}),
@@ -134,6 +135,26 @@ func (c *Cluster) Start() error {
 	}
 	c.running = true
 	c.mu.Unlock()
+
+	// Find available UDP port
+	actualUDPPort, err := findAvailablePort(c.udpPort, "udp")
+	if err != nil {
+		return fmt.Errorf("failed to find available UDP port: %w", err)
+	}
+	if actualUDPPort != c.udpPort {
+		c.logger.DiscoveryInfo("UDP port %d unavailable, using %d", c.udpPort, actualUDPPort)
+		c.udpPort = actualUDPPort
+	}
+
+	// Find available RPC port
+	actualRPCPort, err := findAvailablePort(c.rpcPort, "tcp")
+	if err != nil {
+		return fmt.Errorf("failed to find available RPC port: %w", err)
+	}
+	if actualRPCPort != c.rpcPort {
+		c.logger.DiscoveryInfo("RPC port %d unavailable, using %d", c.rpcPort, actualRPCPort)
+		c.rpcPort = actualRPCPort
+	}
 
 	// Get local IP for RPC address
 	localIP, err := getLocalIP()
@@ -548,4 +569,38 @@ func (c *Cluster) LogRPCError(msg string, args ...interface{}) {
 // LogRPCDebug logs an RPC debug message (for RPC callback)
 func (c *Cluster) LogRPCDebug(msg string, args ...interface{}) {
 	c.logger.RPCDebug(msg, args...)
+}
+
+// findAvailablePort finds an available port starting from the given port
+// It tries port, port+1, port+2, ... until it finds an available one
+// Returns the available port and nil error, or 0 and error if no port available
+func findAvailablePort(startPort int, protocol string) (int, error) {
+	maxAttempts := 100 // Try at most 100 ports
+
+	for i := 0; i < maxAttempts; i++ {
+		port := startPort + i
+		addr := fmt.Sprintf(":%d", port)
+
+		var err error
+		if protocol == "udp" {
+			// For UDP, use ListenPacket
+			conn, err := net.ListenPacket("udp", addr)
+			if err == nil {
+				conn.Close()
+				return port, nil
+			}
+		} else {
+			// For TCP, use Listen
+			listener, err := net.Listen("tcp", addr)
+			if err == nil {
+				listener.Close()
+				return port, nil
+			}
+		}
+
+		// If error, try next port
+		_ = err
+	}
+
+	return 0, fmt.Errorf("no available port found starting from %d", startPort)
 }

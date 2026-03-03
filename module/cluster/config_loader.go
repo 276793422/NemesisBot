@@ -27,8 +27,8 @@ type AppConfig struct {
 func DefaultAppConfig() *AppConfig {
 	return &AppConfig{
 		Enabled:           false,
-		Port:              49100,
-		RPCPort:           49200,
+		Port:              11949,
+		RPCPort:           21949,
 		BroadcastInterval: 30,
 	}
 }
@@ -63,8 +63,8 @@ func LoadAppConfig(workspace string) (*AppConfig, error) {
 	// Default config (hardcoded, will be embedded from config/config.cluster.default.json at build time)
 	defaultConfigJSON := []byte(`{
   "enabled": false,
-  "port": 49100,
-  "rpc_port": 49200,
+  "port": 11949,
+  "rpc_port": 21949,
   "broadcast_interval": 30
 }`)
 

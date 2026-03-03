@@ -140,9 +140,10 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 	// Get local broadcast addresses
 	broadcastAddrs := l.getBroadcastAddresses()
 
-	// Broadcast to all addresses on default port 49100
+	// Broadcast to all addresses on listener's port
+	basePort := l.GetPort()
 	for _, addr := range broadcastAddrs {
-		targetAddr, err := net.ResolveUDPAddr("udp", addr+":49100")
+		targetAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, basePort))
 		if err != nil {
 			continue
 		}
@@ -150,7 +151,7 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 	}
 
 	// Also broadcast to a range of ports to support multi-port discovery
-	for port := 49101; port <= 49110; port++ {
+	for port := basePort + 1; port <= basePort + 10; port++ {
 		for _, addr := range broadcastAddrs {
 			targetAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, port))
 			if err != nil {

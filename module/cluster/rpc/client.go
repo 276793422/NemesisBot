@@ -88,13 +88,16 @@ func (c *Client) Call(peerID, action string, payload map[string]interface{}) ([]
 
 	// Get all addresses from the peer
 	addresses := peer.GetAddresses()
+	c.cluster.LogRPCDebug("Peer %s addresses: %v (len=%d)", peerID, addresses, len(addresses))
 	if len(addresses) == 0 {
 		// Fallback to old Address field
 		addresses = []string{peer.GetAddress()}
+		c.cluster.LogRPCDebug("Using fallback address: %v", addresses)
 	}
 
 	// Select the best address to connect to
 	rpcPort := peer.GetRPCPort()
+	c.cluster.LogRPCDebug("Peer %s RPCPort: %d", peerID, rpcPort)
 	if rpcPort == 0 {
 		// Extract port from old Address field
 		parts := strings.Split(peer.GetAddress(), ":")
@@ -102,7 +105,7 @@ func (c *Client) Call(peerID, action string, payload map[string]interface{}) ([]
 			rpcPort = 55555 // Default, won't be used if we extract correctly
 			fmt.Sscanf(parts[1], "%d", &rpcPort)
 		} else {
-			rpcPort = 49200 // Default RPC port
+			rpcPort = 21949 // Default RPC port
 		}
 	}
 

@@ -7,6 +7,7 @@ package rpc
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 
@@ -63,10 +64,19 @@ func (s *Server) Start(port int) error {
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%d", port)
+
+	// Try to listen synchronously first to detect binding errors immediately
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		s.running = false
+		return fmt.Errorf("failed to bind port %d: %w", port, err)
+	}
+
 	s.cluster.LogRPCInfo("RPC server started on %s", addr)
 
+	// Serve in background
 	go func() {
-		if err := http.ListenAndServe(addr, nil); err != nil {
+		if err := http.Serve(listener, nil); err != nil {
 			s.cluster.LogRPCError("RPC server error: %v", err)
 		}
 	}()

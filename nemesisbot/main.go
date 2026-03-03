@@ -325,8 +325,8 @@ func onboardDefault() {
 		// Fallback to hardcoded default
 		clusterCfg := map[string]interface{}{
 			"enabled":            false,
-			"port":               49100,
-			"rpc_port":           49200,
+			"port":               11949,
+			"rpc_port":           21949,
 			"broadcast_interval": 30,
 		}
 		data, _ := json.MarshalIndent(clusterCfg, "", "  ")
