@@ -427,6 +427,23 @@ func (c *Cluster) GetPeer(peerID string) (interface{}, error) {
 	return node, nil
 }
 
+// GetLocalNetworkInterfaces returns local network interfaces (for RPC client)
+func (c *Cluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
+	interfaces, err := GetLocalNetworkInterfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]rpc.LocalNetworkInterface, len(interfaces))
+	for i, iface := range interfaces {
+		result[i] = rpc.LocalNetworkInterface{
+			IP:   iface.IP,
+			Mask: iface.Mask,
+		}
+	}
+	return result, nil
+}
+
 // SetPorts sets the UDP and RPC ports
 func (c *Cluster) SetPorts(udpPort, rpcPort int) {
 	c.mu.Lock()
