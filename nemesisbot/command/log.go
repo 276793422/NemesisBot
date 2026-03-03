@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/path"
 )
 
 // CmdLog manages logging
@@ -116,7 +117,8 @@ func cmdLogLLMEnable() {
 
 	// Set defaults if not set
 	if cfg.Logging.LogDir == "" {
-		cfg.Logging.LogDir = "~/.nemesisbot/workspace/logs/request_logs"
+		pm := path.NewPathManager()
+		cfg.Logging.LogDir = filepath.Join(pm.Workspace(), "logs", "request_logs")
 	}
 	if cfg.Logging.DetailLevel == "" {
 		cfg.Logging.DetailLevel = "full"
@@ -166,7 +168,8 @@ func cmdLogStatus() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	enabled := false
-	logDir := "~/.nemesisbot/workspace/logs/request_logs"
+	pm := path.NewPathManager()
+	logDir := filepath.Join(pm.Workspace(), "logs", "request_logs")
 	detailLevel := "full"
 
 	if cfg.Logging != nil {
@@ -245,7 +248,8 @@ func cmdLogLLMStatus() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	enabled := false
-	logDir := "~/.nemesisbot/workspace/logs/request_logs"
+	pm := path.NewPathManager()
+	logDir := filepath.Join(pm.Workspace(), "logs", "request_logs")
 	detailLevel := "full"
 
 	if cfg.Logging != nil {

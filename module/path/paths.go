@@ -4,12 +4,45 @@
 // .nemesisbot paths throughout the codebase. It supports environment variable
 // overrides and provides a thread-safe PathManager with caching.
 //
-// Priority Order:
+// Environment Variables:
+//
+//   NEMESISBOT_HOME
+//     Sets the root directory for NemesisBot project data.
+//     The actual project directory will be: $NEMESISBOT_HOME/.nemesisbot/
+//
+//     Example:
+//       export NEMESISBOT_HOME=/opt/nemesisbot
+//       # Actual directory: /opt/nemesisbot/.nemesisbot/
+//
+//   NEMESISBOT_CONFIG
+//     Override the main config.json file path (advanced usage)
+//
+// Priority Order (for home directory resolution):
 //   1. LocalMode flag (set by --local parameter)
-//   2. NEMESISBOT_CONFIG     - Override main config file path
-//   3. NEMESISBOT_HOME       - Set NemesisBot base directory
-//   4. Auto-detection        - Current directory .nemesisbot
-//   5. Default               - Use ~/.nemesisbot
+//      → Uses ./.nemesisbot/ (current directory)
+//   2. NEMESISBOT_HOME environment variable
+//      → Uses $NEMESISBOT_HOME/.nemesisbot/
+//   3. Auto-detection
+//      → Uses ./.nemesisbot/ (if exists in current directory)
+//   4. Default
+//      → Uses ~/.nemesisbot/
+//
+// Directory Structure:
+//
+//   When NEMESISBOT_HOME is set:
+//   $NEMESISBOT_HOME/
+//   └── .nemesisbot/           ← Project directory
+//       ├── config.json       ← Main configuration
+//       └── workspace/        ← Agent workspace
+//           ├── cluster/
+//           ├── agents/
+//           └── logs/
+//
+//   This design ensures:
+//   - All project data is contained within .nemesisbot/ directory
+//   - Easy migration: just copy the .nemesisbot/ directory
+//   - Multi-instance support: multiple .nemesisbot/ directories
+//   - Clear separation between program and data
 package path
 
 import (
@@ -228,7 +261,21 @@ func DetectLocal() bool {
 }
 
 // ResolveHomeDir resolves the NemesisBot home directory.
+//
+// The NemesisBot home directory (.nemesisbot/) contains all project data:
+//   - config.json: Main configuration file
+//   - workspace/: Agent workspace directory
+//
 // Priority: LocalMode > NEMESISBOT_HOME > Auto-detect > Default
+//
+// When NEMESISBOT_HOME is set, the project directory is created as:
+//   $NEMESISBOT_HOME/.nemesisbot/
+//
+// Examples:
+//   NEMESISBOT_HOME=/opt/nemesisbot  →  /opt/nemesisbot/.nemesisbot/
+//   LocalMode (--local)              →  ./.nemesisbot/
+//   Auto-detect                       →  ./.nemesisbot/
+//   Default                           →  ~/.nemesisbot/
 func ResolveHomeDir() (string, error) {
 	// 1. Check if LocalMode is explicitly set (highest priority)
 	if LocalMode {
@@ -240,9 +287,11 @@ func ResolveHomeDir() (string, error) {
 		return filepath.Join(cwd, DefaultHomeDir), nil
 	}
 
-	// 2. Check environment variable
+	// 2. Check NEMESISBOT_HOME environment variable
 	if envHome := os.Getenv(EnvHome); envHome != "" {
-		return ExpandHome(envHome), nil
+		// Create .nemesisbot directory under NEMESISBOT_HOME
+		// This keeps all project data in a single .nemesisbot/ directory
+		return filepath.Join(ExpandHome(envHome), DefaultHomeDir), nil
 	}
 
 	// 3. Auto-detect: check if .nemesisbot exists in current directory

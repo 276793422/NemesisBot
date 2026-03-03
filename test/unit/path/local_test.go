@@ -80,7 +80,8 @@ func TestLocalModePriority(t *testing.T) {
 		t.Fatalf("ResolveHomeDir() error = %v", err)
 	}
 
-	expected = "/custom/home"
+	// With new implementation: NEMESISBOT_HOME/.nemesisbot
+	expected = filepath.Join("/custom/home", path.DefaultHomeDir)
 	if home != expected {
 		t.Errorf("ResolveHomeDir() with env var = %q, want %q", home, expected)
 	}
@@ -148,7 +149,8 @@ func TestAutoDetectionOrder(t *testing.T) {
 		t.Fatalf("ResolveHomeDir() error = %v", err)
 	}
 
-	expected = "/env/override"
+	// With new implementation: NEMESISBOT_HOME/.nemesisbot
+	expected = filepath.Join("/env/override", path.DefaultHomeDir)
 	if home != expected {
 		t.Errorf("ResolveHomeDir() env override = %q, want %q", home, expected)
 	}

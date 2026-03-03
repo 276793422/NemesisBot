@@ -98,8 +98,10 @@ func TestResolveHomeDir_WithEnv(t *testing.T) {
 		t.Fatalf("ResolveHomeDir() error = %v", err)
 	}
 
-	if home != customPath {
-		t.Errorf("ResolveHomeDir() = %q, want %q", home, customPath)
+	// With new implementation, NEMESISBOT_HOME/.nemesisbot is used
+	expected := filepath.Join(customPath, path.DefaultHomeDir)
+	if home != expected {
+		t.Errorf("ResolveHomeDir() = %q, want %q", home, expected)
 	}
 }
 
@@ -121,7 +123,8 @@ func TestResolveHomeDir_WithTilde(t *testing.T) {
 		t.Fatalf("Failed to get user home dir: %v", err)
 	}
 
-	expected := filepath.Join(userHome, "custom")
+	// With new implementation, ~/custom/.nemesisbot is used
+	expected := filepath.Join(userHome, "custom", path.DefaultHomeDir)
 	if home != expected {
 		t.Errorf("ResolveHomeDir() = %q, want %q", home, expected)
 	}

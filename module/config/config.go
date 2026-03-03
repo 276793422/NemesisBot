@@ -157,6 +157,9 @@ func LoadEmbeddedConfig() (*Config, error) {
 	// Post-process: populate deprecated fields from new fields for backward compatibility
 	cfg.postProcessForCompatibility()
 
+	// Adjust hardcoded paths to respect NEMESISBOT_HOME
+	cfg.adjustPathsForEnvironment()
+
 	return cfg, nil
 }
 
@@ -532,7 +535,7 @@ type SecurityFlagConfig struct {
 //   A Config instance with default settings for all components
 //
 // Default values include:
-//   - Workspace: ~/.nemesisbot/workspace
+//   - Workspace: Resolved dynamically using path package (respects NEMESISBOT_HOME)
 //   - Model: glm-4.7-flash (智谱)
 //   - MaxTokens: 8192
 //   - Temperature: 0.7
@@ -543,10 +546,15 @@ type SecurityFlagConfig struct {
 //
 // The returned config can be customized and saved using SaveConfig()
 func DefaultConfig() *Config {
+	// Get default workspace from path package
+	// This ensures consistency with NEMESISBOT_HOME environment variable
+	pm := path.NewPathManager()
+	defaultWorkspace := pm.Workspace()
+
 	return &Config{
 		Agents: AgentsConfig{
 			Defaults: AgentDefaults{
-				Workspace:             "~/.nemesisbot/workspace",
+				Workspace:             defaultWorkspace,
 				RestrictToWorkspace:   true,
 				LLM:                   "zhipu/glm-4.7-flash", // New format: "provider/model"
 				MaxTokens:             8192,
@@ -679,7 +687,7 @@ func DefaultConfig() *Config {
 		},
 		Logging: &LoggingConfig{
 			LLMRequests: false,
-			LogDir:      "~/.nemesisbot/workspace/logs/request_logs",
+			LogDir:      filepath.Join(defaultWorkspace, "logs", "request_logs"),
 			DetailLevel: "full",
 		},
 		Security: &SecurityFlagConfig{
@@ -726,6 +734,8 @@ func LoadConfig(path string) (*Config, error) {
 			}
 			// Post-process for compatibility
 			cfg.postProcessForCompatibility()
+			// Adjust hardcoded paths to respect NEMESISBOT_HOME
+			cfg.adjustPathsForEnvironment()
 			return cfg, nil
 		}
 		return nil, err
@@ -742,6 +752,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Post-process for compatibility
 	cfg.postProcessForCompatibility()
+
+	// Adjust hardcoded paths to respect NEMESISBOT_HOME
+	cfg.adjustPathsForEnvironment()
 
 	return cfg, nil
 }
@@ -772,17 +785,24 @@ func SaveConfig(configPath string, cfg *Config) error {
 		// Check if config is in current directory's .nemesisbot
 		configDir := filepath.Dir(configPath)
 		if filepath.Base(configDir) == ".nemesisbot" {
-			// Check if workspace is using default ~/ path pattern
+			// Get the expected default workspace path
+			userHome, _ := os.UserHomeDir()
+			defaultWorkspacePath := filepath.Join(userHome, ".nemesisbot", "workspace")
+
+			// Check if workspace is using default path pattern (~/ or absolute default)
 			if strings.HasPrefix(cfg.Agents.Defaults.Workspace, "~/") ||
-			   strings.HasPrefix(cfg.Agents.Defaults.Workspace, filepath.Join("~", ".nemesisbot")) {
+			   strings.HasPrefix(cfg.Agents.Defaults.Workspace, filepath.Join("~", ".nemesisbot")) ||
+			   cfg.Agents.Defaults.Workspace == defaultWorkspacePath {
 				// Update workspace to use relative path from config directory
 				cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
 			}
 
 			// Adjust logging directory if it's using default path
 			if cfg.Logging != nil {
+				defaultLogDir := filepath.Join(defaultWorkspacePath, "logs", "request_logs")
 				if strings.HasPrefix(cfg.Logging.LogDir, "~/.nemesisbot/workspace") ||
-				   strings.HasPrefix(cfg.Logging.LogDir, filepath.Join("~", ".nemesisbot")) {
+				   strings.HasPrefix(cfg.Logging.LogDir, filepath.Join("~", ".nemesisbot")) ||
+				   cfg.Logging.LogDir == defaultLogDir {
 					cfg.Logging.LogDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
 				}
 			}
@@ -1093,5 +1113,40 @@ func (c *Config) postProcessForCompatibility() {
 		c.Channels.WebSocket.SyncToWeb = true
 	} else {
 		c.Channels.WebSocket.SyncToWeb = false
+	}
+}
+
+// adjustPathsForEnvironment adjusts hardcoded default paths to respect NEMESISBOT_HOME
+// This should be called after postProcessForCompatibility() to ensure paths are correct
+func (c *Config) adjustPathsForEnvironment() {
+	// Note: We don't skip LocalMode here because SaveConfig handles relative path conversion
+	// This function handles absolute path correction for NEMESISBOT_HOME
+
+	// Get the expected paths from path package
+	pm := path.NewPathManager()
+	expectedWorkspace := pm.Workspace()
+	expectedLogDir := filepath.Join(expectedWorkspace, "logs", "request_logs")
+
+	// Check if workspace is using hardcoded default path
+	userHome, _ := os.UserHomeDir()
+	absoluteDefault := filepath.Join(userHome, ".nemesisbot", "workspace")
+
+	isDefaultWorkspace := c.Agents.Defaults.Workspace == "~/.nemesisbot/workspace" ||
+		c.Agents.Defaults.Workspace == filepath.Join("~", ".nemesisbot", "workspace") ||
+		c.Agents.Defaults.Workspace == absoluteDefault
+
+	if isDefaultWorkspace {
+		c.Agents.Defaults.Workspace = expectedWorkspace
+	}
+
+	// Same for LogDir
+	if c.Logging != nil {
+		isDefaultLogDir := c.Logging.LogDir == "~/.nemesisbot/workspace/logs/request_logs" ||
+			c.Logging.LogDir == filepath.Join("~", ".nemesisbot", "workspace", "logs", "request_logs") ||
+			c.Logging.LogDir == filepath.Join(absoluteDefault, "logs", "request_logs")
+
+		if isDefaultLogDir {
+			c.Logging.LogDir = expectedLogDir
+		}
 	}
 }
