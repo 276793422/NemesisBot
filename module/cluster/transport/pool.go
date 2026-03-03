@@ -46,8 +46,11 @@ func NewPool() *Pool {
 
 // Get gets or creates a connection to a node
 func (p *Pool) Get(nodeID, address string) (*Conn, error) {
+	// Use nodeID:address as the cache key to support multiple addresses per node
+	key := nodeID + ":" + address
+
 	p.mu.RLock()
-	conn, exists := p.conns[nodeID]
+	conn, exists := p.conns[key]
 	p.mu.RUnlock()
 
 	if exists && conn.IsActive() {
@@ -60,7 +63,7 @@ func (p *Pool) Get(nodeID, address string) (*Conn, error) {
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if conn, exists := p.conns[nodeID]; exists && conn.IsActive() {
+	if conn, exists := p.conns[key]; exists && conn.IsActive() {
 		return conn, nil
 	}
 
@@ -78,19 +81,32 @@ func (p *Pool) Get(nodeID, address string) (*Conn, error) {
 		lastUsed:  time.Now(),
 	}
 
-	p.conns[nodeID] = newConn
+	p.conns[key] = newConn
 
 	return newConn, nil
 }
 
 // Remove removes a connection from the pool
-func (p *Pool) Remove(nodeID string) {
+// If address is empty, removes all connections for the node
+func (p *Pool) Remove(nodeID, address string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if conn, ok := p.conns[nodeID]; ok {
-		conn.Close()
-		delete(p.conns, nodeID)
+	if address == "" {
+		// Remove all connections for this node
+		for key, conn := range p.conns {
+			if conn.GetNodeID() == nodeID {
+				conn.Close()
+				delete(p.conns, key)
+			}
+		}
+	} else {
+		// Remove specific connection
+		key := nodeID + ":" + address
+		if conn, ok := p.conns[key]; ok {
+			conn.Close()
+			delete(p.conns, key)
+		}
 	}
 }
 

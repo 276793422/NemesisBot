@@ -29,12 +29,18 @@ func (r *Registry) AddOrUpdate(node *Node) {
 
 	if existing, ok := r.nodes[node.ID]; ok {
 		// Update existing node
+		existing.mu.Lock()
 		existing.UpdateLastSeen()
 		existing.Name = node.Name
 		existing.Address = node.Address
+		existing.Addresses = node.Addresses
+		existing.RPCPort = node.RPCPort
 		existing.Capabilities = node.Capabilities
 		existing.Role = node.Role
+		existing.Category = node.Category
+		existing.Tags = node.Tags
 		existing.Priority = node.Priority
+		existing.mu.Unlock()
 	} else {
 		// Add new node
 		node.UpdateLastSeen()

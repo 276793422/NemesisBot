@@ -161,6 +161,20 @@ func (n *Node) GetCapabilities() []string {
 	return n.Capabilities
 }
 
+// GetAddresses returns all IP addresses of the node (for RPC interface)
+func (n *Node) GetAddresses() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.Addresses
+}
+
+// GetRPCPort returns the RPC port of the node (for RPC interface)
+func (n *Node) GetRPCPort() int {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.RPCPort
+}
+
 // String returns a string representation of the node
 func (n *Node) String() string {
 	return fmt.Sprintf("Node{id=%s, name=%s, address=%s, status=%s}",
