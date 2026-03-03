@@ -18,6 +18,7 @@ type LogFunc func(format string, args ...interface{})
 // ClusterCallbacks defines the interface that discovery uses to interact with the cluster
 type ClusterCallbacks interface {
 	GetNodeID() string
+	GetAddress() string
 	LogInfo(msg string, args ...interface{})
 	LogError(msg string, args ...interface{})
 	LogDebug(msg string, args ...interface{})
@@ -137,14 +138,14 @@ func (d *Discovery) sendAnnounce() {
 	msg := NewAnnounceMessage(
 		d.cluster.GetNodeID(),
 		"Bot "+d.cluster.GetNodeID(),
-		"", // Address will be set by cluster module
-		[]string{}, // Capabilities will be set by cluster module
+		d.cluster.GetAddress(), // Get RPC address from cluster
+		[]string{},            // Capabilities will be set by cluster module
 	)
 
 	if err := d.listener.Broadcast(msg); err != nil {
 		d.cluster.LogError("Failed to send announce: %v", err)
 	} else {
-		d.cluster.LogDebug("Announce sent: node_id=%s", d.cluster.GetNodeID())
+		d.cluster.LogDebug("Announce sent: node_id=%s, address=%s", d.cluster.GetNodeID(), d.cluster.GetAddress())
 	}
 }
 

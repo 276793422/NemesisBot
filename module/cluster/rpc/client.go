@@ -22,11 +22,6 @@ type Node interface {
 	IsOnline() bool
 }
 
-// Registry represents the node registry (minimal interface)
-type Registry interface {
-	Get(nodeID string) interface{}
-}
-
 // Logger represents logging functions
 type Logger interface {
 	RPCInfo(format string, args ...interface{})
@@ -44,6 +39,7 @@ type Cluster interface {
 	LogRPCInfo(msg string, args ...interface{})
 	LogRPCError(msg string, args ...interface{})
 	LogRPCDebug(msg string, args ...interface{})
+	GetPeer(peerID string) (interface{}, error) // New method to get peer directly
 }
 
 // Client handles RPC calls to other bots
@@ -64,21 +60,15 @@ func NewClient(cluster Cluster) *Client {
 
 // Call makes an RPC call to a peer
 func (c *Client) Call(peerID, action string, payload map[string]interface{}) ([]byte, error) {
-	// Get peer from registry
-	registryIface := c.cluster.GetRegistry()
-	registry, ok := registryIface.(Registry)
-	if !ok {
-		return nil, fmt.Errorf("invalid registry type")
-	}
-
-	peerIface := registry.Get(peerID)
-	if peerIface == nil {
-		return nil, fmt.Errorf("peer not found: %s", peerID)
+	// Get peer using the new GetPeer method
+	peerIface, err := c.cluster.GetPeer(peerID)
+	if err != nil {
+		return nil, fmt.Errorf("peer not found: %w", err)
 	}
 
 	peer, ok := peerIface.(Node)
 	if !ok {
-		return nil, fmt.Errorf("peer is not a valid Node: %s", peerID)
+		return nil, fmt.Errorf("peer does not implement Node interface")
 	}
 
 	if !peer.IsOnline() {

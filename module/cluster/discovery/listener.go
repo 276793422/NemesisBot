@@ -24,8 +24,8 @@ type UDPListener struct {
 
 // NewUDPListener creates a new UDP listener
 func NewUDPListener(port int) (*UDPListener, error) {
-	// Listen on all interfaces
-	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+	// Listen on all interfaces (IPv4)
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve UDP address: %w", err)
 	}
@@ -137,18 +137,79 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// Broadcast to local network
-	broadcastAddr, err := net.ResolveUDPAddr("udp", "255.255.255.255:49100")
-	if err != nil {
-		return fmt.Errorf("failed to resolve broadcast address: %w", err)
+	// Get local broadcast addresses
+	broadcastAddrs := l.getBroadcastAddresses()
+
+	// Broadcast to all addresses on default port 49100
+	for _, addr := range broadcastAddrs {
+		targetAddr, err := net.ResolveUDPAddr("udp", addr+":49100")
+		if err != nil {
+			continue
+		}
+		l.conn.WriteToUDP(data, targetAddr)
 	}
 
-	_, err = l.conn.WriteToUDP(data, broadcastAddr)
-	if err != nil {
-		return fmt.Errorf("failed to send broadcast: %w", err)
+	// Also broadcast to a range of ports to support multi-port discovery
+	for port := 49101; port <= 49110; port++ {
+		for _, addr := range broadcastAddrs {
+			targetAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, port))
+			if err != nil {
+				continue
+			}
+			l.conn.WriteToUDP(data, targetAddr)
+		}
 	}
 
 	return nil
+}
+
+// getBroadcastAddresses returns list of broadcast addresses to use
+func (l *UDPListener) getBroadcastAddresses() []string {
+	broadcastList := []string{
+		"255.255.255.255", // Global broadcast
+	}
+
+	// Try to get local subnet broadcast
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return broadcastList
+	}
+
+	for _, iface := range interfaces {
+		// Skip down interfaces and loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		ifaceAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range ifaceAddrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+
+			// For IPv4, create subnet broadcast
+			if ip.To4() != nil {
+				// Get subnet broadcast by replacing last octet with 255
+				ip4 := ip.To4()
+				broadcastIP := fmt.Sprintf("%d.%d.%d.255", ip4[0], ip4[1], ip4[2])
+				broadcastList = append(broadcastList, broadcastIP)
+			}
+		}
+	}
+
+	return broadcastList
 }
 
 // IsRunning returns true if the listener is running

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/path"
@@ -327,6 +328,9 @@ func onboardDefault() {
 		}
 	}
 
+	// Step 4.5: Initialize cluster peers.toml (static configuration)
+	initializeClusterConfig(workspace)
+
 	// Step 5: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
 		// Determine log directory based on local mode
@@ -463,6 +467,62 @@ func copyDefaultFiles(workspace string) error {
 func deleteBootstrapFile(workspace string) error {
 	bootstrapPath := filepath.Join(workspace, "BOOTSTRAP.md")
 	return os.Remove(bootstrapPath)
+}
+
+// initializeClusterConfig creates the static peers.toml configuration file
+func initializeClusterConfig(workspace string) {
+	clusterDir := filepath.Join(workspace, "cluster")
+	if err := os.MkdirAll(clusterDir, 0755); err != nil {
+		fmt.Printf("⚠️  Failed to create cluster directory: %v\n", err)
+		return
+	}
+
+	// Generate a node ID (use a simple format for initial setup)
+	hostname, _ := os.Hostname()
+	nodeID := fmt.Sprintf("node-%s-%d", hostname, time.Now().Unix())
+	nodeName := "Bot " + nodeID
+
+	// Create static config with current node info
+	staticConfig := map[string]interface{}{
+		"cluster": map[string]interface{}{
+			"id":            "manual",
+			"auto_discovery": true,
+			"last_updated":  time.Now().Format(time.RFC3339),
+		},
+		"node": map[string]interface{}{
+			"id":           nodeID,
+			"name":         nodeName,
+			"address":      "",
+			"role":         "worker",
+			"capabilities": []string{},
+		},
+		"peers": []interface{}{},
+	}
+
+	// Marshal to TOML manually (since we're not importing cluster package)
+	tomlData := fmt.Sprintf(
+		"cluster = \"%s\"\n"+
+		"auto_discovery = true\n"+
+		"last_updated = \"%s\"\n\n"+
+		"[node]\n"+
+		"id = \"%s\"\n"+
+		"name = \"%s\"\n"+
+		"address = \"\"\n"+
+		"role = \"worker\"\n"+
+		"capabilities = []\n\n"+
+		"peers = []\n",
+		staticConfig["cluster"].(map[string]interface{})["id"],
+		staticConfig["cluster"].(map[string]interface{})["last_updated"],
+		staticConfig["node"].(map[string]interface{})["id"],
+		staticConfig["node"].(map[string]interface{})["name"])
+
+	// Save to peers.toml
+	peersPath := filepath.Join(clusterDir, "peers.toml")
+	if err := os.WriteFile(peersPath, []byte(tomlData), 0644); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create peers.toml: %v\n", err)
+	} else {
+		fmt.Println("✓ Peers config created at", peersPath)
+	}
 }
 
 func createWorkspaceTemplates(workspace string) {

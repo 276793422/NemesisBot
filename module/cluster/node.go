@@ -48,8 +48,15 @@ func (n *Node) IsOnline() bool {
 	return n.Status == StatusOnline
 }
 
-// GetStatus returns the current status
-func (n *Node) GetStatus() NodeStatus {
+// GetStatus returns the current status as string
+func (n *Node) GetStatus() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return string(n.Status)
+}
+
+// GetNodeStatus returns the current status as NodeStatus type
+func (n *Node) GetNodeStatus() NodeStatus {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.Status

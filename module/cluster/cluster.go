@@ -26,52 +26,6 @@ const (
 	DefaultTimeout = 90 * time.Second
 )
 
-// ClusterConfig represents the cluster configuration stored in peers.toml
-type ClusterConfig struct {
-	Cluster ClusterMeta `toml:"cluster"`
-	Node    NodeInfo    `toml:"node"`
-	Peers   []PeerConfig `toml:"peers"`
-}
-
-// ClusterMeta contains cluster metadata
-type ClusterMeta struct {
-	ID            string    `toml:"id"`
-	AutoDiscovery bool      `toml:"auto_discovery"`
-	LastUpdated   time.Time `toml:"last_updated"`
-}
-
-// NodeInfo contains information about the current node
-type NodeInfo struct {
-	ID           string   `toml:"id"`
-	Name         string   `toml:"name"`
-	Address      string   `toml:"address"`
-	Role         string   `toml:"role"`
-	Capabilities []string `toml:"capabilities"`
-}
-
-// PeerConfig represents a peer node configuration
-type PeerConfig struct {
-	ID           string      `toml:"id"`
-	Name         string      `toml:"name"`
-	Address      string      `toml:"address"`
-	Role         string      `toml:"role"`
-	Capabilities []string    `toml:"capabilities"`
-	Priority     int         `toml:"priority"`
-	Enabled      bool        `toml:"enabled"`
-	Status       PeerStatus  `toml:"status"`
-}
-
-// PeerStatus contains runtime status of a peer
-type PeerStatus struct {
-	State            string     `toml:"state"`
-	LastSeen         time.Time  `toml:"last_seen"`
-	Uptime           string     `toml:"uptime"`           // Human-readable uptime
-	TasksCompleted   int        `toml:"tasks_completed"`
-	SuccessRate      float64    `toml:"success_rate"`
-	AvgResponseTime  int        `toml:"avg_response_time"` // milliseconds
-	LastError        string     `toml:"last_error"`
-}
-
 // Cluster represents the bot cluster
 type Cluster struct {
 	// Node information
@@ -80,9 +34,10 @@ type Cluster struct {
 	address  string
 
 	// Paths
-	workspace  string
-	configPath string
-	logDir     string
+	workspace       string
+	staticConfigPath string  // peers.toml (static configuration)
+	dynamicStatePath string  // state.toml (dynamic state)
+	logDir          string
 
 	// Components
 	registry  *Registry
@@ -116,8 +71,9 @@ func NewCluster(workspace string) (*Cluster, error) {
 		return nil, fmt.Errorf("failed to create cluster directory: %w", err)
 	}
 
-	// Config path
-	configPath := filepath.Join(clusterDir, "peers.toml")
+	// Config paths
+	staticConfigPath := filepath.Join(clusterDir, "peers.toml")   // Static configuration
+	dynamicStatePath := filepath.Join(clusterDir, "state.toml")   // Dynamic state
 
 	// Create logger
 	logger, err := NewClusterLogger(workspace)
@@ -129,7 +85,8 @@ func NewCluster(workspace string) (*Cluster, error) {
 		nodeID:           nodeID,
 		nodeName:         "Bot " + nodeID,
 		workspace:        workspace,
-		configPath:       configPath,
+		staticConfigPath: staticConfigPath,
+		dynamicStatePath: dynamicStatePath,
 		registry:         NewRegistry(),
 		logger:           logger,
 		udpPort:          49100,  // Default UDP port
@@ -139,10 +96,16 @@ func NewCluster(workspace string) (*Cluster, error) {
 		stopCh:           make(chan struct{}),
 	}
 
-	// Load existing config if available
-	if err := cluster.loadConfig(); err != nil {
-		logger.DiscoveryError("Failed to load config: %v", err)
-		// Continue anyway, will create new config
+	// Load static config if available (contains manually configured peers)
+	if err := cluster.loadStaticConfig(); err != nil {
+		logger.DiscoveryError("Failed to load static config: %v", err)
+		// Continue anyway, will use defaults
+	}
+
+	// Load dynamic state if available (contains discovered peers)
+	if err := cluster.loadDynamicState(); err != nil {
+		logger.DiscoveryError("Failed to load dynamic state: %v", err)
+		// Continue anyway, will start fresh
 	}
 
 	logger.DiscoveryInfo("Cluster initialized: node_id=%s", nodeID)
@@ -266,50 +229,93 @@ func (c *Cluster) syncLoop() {
 	}
 }
 
-// SyncToDisk saves the current state to peers.toml
+// SyncToDisk saves the current state to state.toml (dynamic state only)
 func (c *Cluster) SyncToDisk() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Build config from registry state
-	clusterConfig := &ClusterConfig{
+	// Build dynamic state from registry state
+	dynamicState := &DynamicState{
 		Cluster: ClusterMeta{
 			ID:            "auto-discovered",
 			AutoDiscovery: true,
 			LastUpdated:   time.Now(),
 		},
-		Node: NodeInfo{
+		LocalNode: NodeInfo{
 			ID:           c.nodeID,
 			Name:         c.nodeName,
 			Address:      c.address,
 			Role:         "worker",
 			Capabilities: []string{},
 		},
+		Discovered: []PeerConfig{},
+		LastSync:   time.Now(),
 	}
 
-	// Convert registry nodes to peer configs
+	// Convert registry nodes to peer configs (only discovered peers, not self)
 	nodes := c.registry.GetAll()
 	for _, node := range nodes {
 		// Skip self
 		if node.ID == c.nodeID {
 			continue
 		}
-		clusterConfig.Peers = append(clusterConfig.Peers, node.ToConfig())
+		dynamicState.Discovered = append(dynamicState.Discovered, node.ToConfig())
 	}
 
-	// Save using saver
-	return SaveConfig(c.configPath, clusterConfig)
+	// Save to state.toml
+	return SaveDynamicState(c.dynamicStatePath, dynamicState)
 }
 
-// loadConfig loads the configuration from peers.toml
-func (c *Cluster) loadConfig() error {
-	clusterConfig, err := LoadOrCreateConfig(c.configPath, c.nodeID)
+// loadStaticConfig loads the static configuration (peers.toml)
+func (c *Cluster) loadStaticConfig() error {
+	staticConfig, err := LoadStaticConfig(c.staticConfigPath)
 	if err != nil {
 		return err
 	}
 
-	// Restore peers from config to registry
-	for _, peerConfig := range clusterConfig.Peers {
+	// Restore manually configured peers from static config to registry
+	for _, peerConfig := range staticConfig.Peers {
+		// Skip self
+		if peerConfig.ID == c.nodeID {
+			continue
+		}
+
+		// Only add enabled peers
+		if !peerConfig.Enabled {
+			continue
+		}
+
+		node := &Node{
+			ID:           peerConfig.ID,
+			Name:         peerConfig.Name,
+			Address:      peerConfig.Address,
+			Role:         peerConfig.Role,
+			Capabilities: peerConfig.Capabilities,
+			Priority:     peerConfig.Priority,
+			Status:       NodeStatus(peerConfig.Status.State),
+			LastSeen:     peerConfig.Status.LastSeen,
+			LastError:    peerConfig.Status.LastError,
+		}
+		c.registry.AddOrUpdate(node)
+	}
+
+	return nil
+}
+
+// loadDynamicState loads the dynamic state (state.toml)
+func (c *Cluster) loadDynamicState() error {
+	dynamicState, err := LoadDynamicState(c.dynamicStatePath)
+	if err != nil {
+		return err
+	}
+
+	// Restore discovered peers from dynamic state to registry
+	for _, peerConfig := range dynamicState.Discovered {
+		// Skip self
+		if peerConfig.ID == c.nodeID {
+			continue
+		}
+
 		node := &Node{
 			ID:           peerConfig.ID,
 			Name:         peerConfig.Name,
@@ -372,6 +378,15 @@ func (c *Cluster) GetLogger() *ClusterLogger {
 // GetAddress returns the RPC address of this node
 func (c *Cluster) GetAddress() string {
 	return c.address
+}
+
+// GetPeer returns a peer node by ID (for RPC client)
+func (c *Cluster) GetPeer(peerID string) (interface{}, error) {
+	node := c.registry.Get(peerID)
+	if node == nil {
+		return nil, fmt.Errorf("peer not found: %s", peerID)
+	}
+	return node, nil
 }
 
 // SetPorts sets the UDP and RPC ports
