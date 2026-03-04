@@ -220,8 +220,14 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 		// Create default response
 		defaultPayload := map[string]interface{}{
 			"response": fmt.Sprintf("Resp: %v", req.Payload),
+			"status":   "no_handler",
 		}
 		resp := transport.NewResponse(req, defaultPayload)
+
+		// Log the default response details
+		s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, payload=%+v",
+			req.Action, req.From, req.To, req.ID, defaultPayload)
+
 		s.sendMessage(conn, resp)
 		return
 	}
@@ -231,13 +237,22 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 	if err != nil {
 		s.cluster.LogRPCError("Handler error for action '%s': %v", req.Action, err)
 		resp := transport.NewError(req, err.Error())
+
+		// Log error response details
+		s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, error=%s",
+			req.Action, req.From, req.To, req.ID, err.Error())
+
 		s.sendMessage(conn, resp)
 		return
 	}
 
 	// Send success response
 	resp := transport.NewResponse(req, result)
-	s.cluster.LogRPCDebug("Sending response: action=%s, id=%s", req.Action, req.ID)
+
+	// Log response details at INFO level (changed from DEBUG)
+	s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, payload=%+v",
+		req.Action, req.From, req.To, req.ID, result)
+
 	s.sendMessage(conn, resp)
 }
 
