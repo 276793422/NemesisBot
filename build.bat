@@ -7,6 +7,22 @@ REM ============================================
 REM NemesisBot Build Script
 REM ============================================
 
+REM ============================================
+REM Parse Command Line Arguments
+REM ============================================
+REM Usage: build.bat [output_filename]
+REM   If output_filename is provided, the compiled binary will be named accordingly
+REM   If not provided, defaults to nemesisbot.exe
+
+if "%~1"=="" (
+    set OUTPUT_NAME=nemesisbot.exe
+    echo [INFO] No output filename specified, using default: nemesisbot.exe
+) else (
+    set OUTPUT_NAME=%~1
+    echo [INFO] Output filename specified: %OUTPUT_NAME%
+)
+echo.
+
 echo ============================================
 echo NemesisBot Build Script
 echo ============================================
@@ -87,10 +103,10 @@ if exist "config" (
 echo.
 
 REM Step 2: Build with dynamic ldflags
-echo [Step 2/3] Building nemesisbot.exe...
+echo [Step 2/3] Building %OUTPUT_NAME%...
 echo.
 
-go build -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o nemesisbot.exe .\nemesisbot\
+go build -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o %OUTPUT_NAME% .\nemesisbot\
 
 if errorlevel 1 (
     echo.
@@ -148,9 +164,9 @@ REM ============================================
 echo ============================================
 echo Build Summary
 echo ============================================
-if exist "nemesisbot.exe" (
-    echo Output file: nemesisbot.exe
-    for %%A in ("nemesisbot.exe") do (
+if exist "%OUTPUT_NAME%" (
+    echo Output file: %OUTPUT_NAME%
+    for %%A in ("%OUTPUT_NAME%") do (
         set size=%%~zA
         set /a sizeMB=!size! / 1048576
         echo File size: !sizeMB! MB
@@ -164,7 +180,7 @@ if exist "nemesisbot.exe" (
     echo.
     echo [SUCCESS] Build completed successfully!
     echo.
-    echo You can now run: .\nemesisbot.exe gateway
+    echo You can now run: .\%OUTPUT_NAME% gateway
 ) else (
     echo [ERROR] Output file not found!
 )

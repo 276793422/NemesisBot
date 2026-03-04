@@ -11,4 +11,4 @@ $NDK_PATH = "C:\Users\Zoo\AppData\Local\Android\Sdk\ndk\26.1.10909125"
 $env:CC = "$NDK_PATH\toolchains\llvm\prebuilt\windows-x86_64\bin\aarch64-linux-android21-clang.cmd"
 
 # 4. 编译
-.\build.bat
+.\build.bat android_nemesisbot.exe
