@@ -561,16 +561,23 @@ func (c *Cluster) GetTags() []string {
 // HandleDiscoveredNode handles a node discovered via UDP broadcast
 func (c *Cluster) HandleDiscoveredNode(nodeID, name string, addresses []string, rpcPort int, role, category string, tags []string, capabilities []string) {
 	// For backward compatibility, use the first address as primary Address
+	// Note: This might not be the best choice if the first address is unreachable
+	// The RPC client will try all addresses in the addresses array anyway
 	primaryAddress := ""
 	if len(addresses) > 0 {
 		primaryAddress = fmt.Sprintf("%s:%d", addresses[0], rpcPort)
 	}
 
+	// TODO: Could implement smart address selection here:
+	// - Try to connect to each address
+	// - Use the first reachable one as primary
+	// - This requires async handling which might complicate discovery
+
 	node := &Node{
 		ID:           nodeID,
 		Name:         name,
 		Address:      primaryAddress,  // Primary address for backward compatibility
-		Addresses:    addresses,       // All addresses
+		Addresses:    addresses,       // All addresses - RPC client will try all of them
 		RPCPort:      rpcPort,
 		Role:         role,
 		Category:     category,
