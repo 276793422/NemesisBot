@@ -19,7 +19,6 @@ import (
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/cluster"
-	clusterrpc "github.com/276793422/NemesisBot/module/cluster/rpc"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
@@ -1537,15 +1536,10 @@ func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.Messag
 		return fmt.Errorf("failed to start RPC channel: %w", err)
 	}
 
-	// Create and register LLM forward handler
-	llmForwardHandler := clusterrpc.NewLLMForwardHandler(clusterInstance, rpcCh)
-	if err := clusterInstance.RegisterRPCHandler("llm_forward", llmForwardHandler.Handle); err != nil {
-		logger.WarnCF("agent", "Failed to register LLM forward handler",
-			map[string]interface{}{"error": err.Error()})
-		// Continue anyway - RPC channel is still functional
-	}
+	// Set RPC channel on cluster (triggers LLM handler registration)
+	clusterInstance.SetRPCChannel(rpcCh)
 
-	logger.InfoC("agent", "RPC channel for LLM forwarding started and handler registered")
+	logger.InfoC("agent", "RPC channel for LLM forwarding started and configured")
 
 	return nil
 }

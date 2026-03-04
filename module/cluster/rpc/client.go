@@ -437,15 +437,15 @@ func (c *Client) tryConnect(ctx context.Context, peerID, address string) (string
 	default:
 	}
 
-	c.cluster.LogRPCDebug("RPC -> Attempting to get connection to %s (peer=%s)", address, peerID)
+	c.cluster.LogRPCDebug("Attempting to get connection to %s (peer=%s)", address, peerID)
 
 	conn, err := c.pool.Get(peerID, address)
 	if err != nil {
-		c.cluster.LogRPCError("RPC -> Failed to get connection to %s: %v", address, err)
+		c.cluster.LogRPCError("Failed to get connection to %s: %v", address, err)
 		return address, nil, err
 	}
 
-	c.cluster.LogRPCDebug("RPC -> Successfully got connection to %s", address)
+	c.cluster.LogRPCDebug("Successfully got connection to %s", address)
 	return address, conn, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/cluster/handlers"
 	"github.com/276793422/NemesisBot/module/cluster/transport"
 )
 
@@ -245,44 +246,21 @@ func (s *Server) sendMessage(conn *transport.TCPConn, msg *transport.RPCMessage)
 	return conn.Send(msg)
 }
 
-// registerDefaultHandlers registers default RPC handlers
+// registerDefaultHandlers registers default RPC handlers using the handlers package
 func (s *Server) registerDefaultHandlers() {
-	// Ping handler
-	s.RegisterHandler("ping", func(payload map[string]interface{}) (map[string]interface{}, error) {
-		return map[string]interface{}{
-			"status": "ok",
-			"node_id": s.cluster.GetNodeID(),
-		}, nil
-	})
+	// Create a registrar function that forwards to RegisterHandler
+	registrar := func(action string, handlerFunc func(map[string]interface{}) (map[string]interface{}, error)) {
+		s.RegisterHandler(action, handlerFunc)
+	}
 
-	// Get capabilities handler
-	s.RegisterHandler("get_capabilities", func(payload map[string]interface{}) (map[string]interface{}, error) {
-		caps := s.cluster.GetCapabilities()
-		return map[string]interface{}{
-			"capabilities": caps,
-		}, nil
-	})
-
-	// Get info handler
-	s.RegisterHandler("get_info", func(payload map[string]interface{}) (map[string]interface{}, error) {
-		peers := s.cluster.GetOnlinePeers()
-		peerInfos := make([]map[string]interface{}, 0, len(peers))
-		for _, p := range peers {
-			if peer, ok := p.(Node); ok {
-				peerInfos = append(peerInfos, map[string]interface{}{
-					"id":           peer.GetID(),
-					"name":         peer.GetName(),
-					"capabilities": peer.GetCapabilities(),
-					"status":       peer.GetStatus(),
-				})
-			}
-		}
-
-		return map[string]interface{}{
-			"node_id": s.cluster.GetNodeID(),
-			"peers":    peerInfos,
-		}, nil
-	})
+	// Register default handlers (ping, get_capabilities, get_info)
+	handlers.RegisterDefaultHandlers(
+		s.cluster,
+		s.cluster.GetNodeID,
+		s.cluster.GetCapabilities,
+		s.cluster.GetOnlinePeers,
+		registrar,
+	)
 }
 
 // GetConnectionCount returns the number of active connections

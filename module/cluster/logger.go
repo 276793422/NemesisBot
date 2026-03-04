@@ -115,6 +115,21 @@ func (l *ClusterLogger) RPCDebug(format string, args ...interface{}) {
 	l.rpcLogger.file.Sync() // Force flush
 }
 
+// LogRPCInfo logs an RPC info message (aliases for handlers.Logger interface)
+func (l *ClusterLogger) LogRPCInfo(msg string, args ...interface{}) {
+	l.RPCInfo(msg, args...)
+}
+
+// LogRPCError logs an RPC error message (aliases for handlers.Logger interface)
+func (l *ClusterLogger) LogRPCError(msg string, args ...interface{}) {
+	l.RPCError(msg, args...)
+}
+
+// LogRPCDebug logs an RPC debug message (aliases for handlers.Logger interface)
+func (l *ClusterLogger) LogRPCDebug(msg string, args ...interface{}) {
+	l.RPCDebug(msg, args...)
+}
+
 // log.Logger interface (minimal implementation)
 type logLogger struct {
 	logger *log.Logger

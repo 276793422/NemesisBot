@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/cluster/discovery"
+	"github.com/276793422/NemesisBot/module/cluster/handlers"
 	"github.com/276793422/NemesisBot/module/cluster/rpc"
 )
 
@@ -49,7 +51,8 @@ type Cluster struct {
 	logger     *ClusterLogger
 	discovery  *discovery.Discovery
 	rpcClient  *rpc.Client
-	rpcServer  *rpc.Server // RPC server instance
+	rpcServer  *rpc.Server      // RPC server instance
+	rpcChannel *channels.RPCChannel // RPC channel for LLM communication
 
 	// Configuration
 	udpPort           int
@@ -218,6 +221,15 @@ func (c *Cluster) Stop() error {
 		if err := c.rpcServer.Stop(); err != nil {
 			c.logger.RPCError("Failed to stop RPC server: %v", err)
 		}
+	}
+
+	// Stop RPC channel
+	if c.rpcChannel != nil {
+		ctx := context.Background()
+		if err := c.rpcChannel.Stop(ctx); err != nil {
+			c.logger.RPCError("Failed to stop RPC channel: %v", err)
+		}
+		c.rpcChannel = nil
 	}
 
 	// Close RPC client
@@ -606,6 +618,68 @@ func (c *Cluster) RegisterRPCHandler(action string, handler func(payload map[str
 	c.rpcServer.RegisterHandler(action, handler)
 	c.logger.RPCInfo("Registered RPC handler for action: %s", action)
 	return nil
+}
+
+// SetRPCChannel sets the RPC channel and triggers LLM handler registration
+// This is called by loop.go after creating the RPCChannel
+//
+// Thread safety: This method uses lock-free pattern to avoid deadlock:
+// - Acquires lock only to set c.rpcChannel and read state
+// - Releases lock before calling registerLLMHandlers()
+// - This avoids deadlock: registerLLMHandlers() internally calls RegisterRPCHandler()
+//   which tries to acquire a read lock while we might be holding a write lock
+//
+// There's a tiny race window between Unlock() and registerLLMHandlers() where
+// Stop() or server shutdown could occur. This is acceptable as:
+// - It's extremely short (microseconds)
+// - Worst case: LLM handlers don't get registered, but no deadlock occurs
+// - RegisterRPCHandler() has its own state checks and will return error if not running
+func (c *Cluster) SetRPCChannel(rpcCh *channels.RPCChannel) {
+	// Step 1: Acquire lock to set rpcChannel
+	c.mu.Lock()
+	c.rpcChannel = rpcCh
+
+	// Step 2: Save state (avoid reading outside of lock)
+	wasRunning := c.running
+	hasServer := c.rpcServer != nil
+
+	// Step 3: Release lock BEFORE calling registerLLMHandlers
+	// This prevents deadlock: registerLLMHandlers -> RegisterRPCHandler -> c.mu.RLock()
+	c.mu.Unlock()
+
+	// Step 4: Call registerLLMHandlers outside of lock
+	// RegisterRPCHandler will acquire its own read lock for safety checks
+	if wasRunning && hasServer {
+		c.registerLLMHandlers()
+	}
+}
+
+// registerLLMHandlers registers LLM-related handlers when RPCChannel is ready
+// This must be called after both RPC Server and RPC Channel are initialized
+func (c *Cluster) registerLLMHandlers() {
+	if c.rpcChannel == nil {
+		c.logger.RPCInfo("RPCChannel not ready, skipping LLM handler registration")
+		return
+	}
+
+	// Create a registrar function that forwards to RegisterRPCHandler
+	registrar := func(action string, handler func(map[string]interface{}) (map[string]interface{}, error)) {
+		if err := c.RegisterRPCHandler(action, handler); err != nil {
+			c.logger.RPCError("Failed to register handler '%s': %v", action, err)
+		}
+	}
+
+	// Create a handler factory that creates LLM forward handler
+	handlerFactory := func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+		handler := rpc.NewLLMForwardHandler(c, rpcChannel)
+		return handler.Handle
+	}
+
+	// Register LLM handlers using the handlers package
+	handlers.RegisterLLMHandlers(c.logger, c.rpcChannel, handlerFactory, registrar)
+
+	// Register custom handlers (hello, etc.)
+	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)
 }
 
 // findAvailablePort finds an available port starting from the given port
