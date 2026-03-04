@@ -19,6 +19,7 @@ import (
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/cluster"
+	clusterrpc "github.com/276793422/NemesisBot/module/cluster/rpc"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
@@ -110,6 +111,12 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 						"rpc_port": clusterCfg.RPCPort,
 						"address":  clusterInstance.GetAddress(),
 					})
+
+				// Create and setup RPC channel for LLM forwarding
+				if err := setupClusterRPCChannel(clusterInstance, msgBus); err != nil {
+					logger.WarnCF("agent", "Failed to setup RPC channel for LLM forwarding",
+						map[string]interface{}{"error": err.Error()})
+				}
 			}
 		}
 	}
@@ -495,6 +502,12 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	defer func() {
 		al.releaseSession(sessionKey)
 	}()
+
+	// If message contains CorrelationID (for RPC), add it to context
+	// This allows tools like MessageTool to include it in responses
+	if msg.CorrelationID != "" {
+		ctx = context.WithValue(ctx, "correlation_id", msg.CorrelationID)
+	}
 
 	result, err := al.runAgentLoop(ctx, agent, processOptions{
 		SessionKey:      sessionKey,
@@ -1501,4 +1514,38 @@ func registerMCPTools(mcpConfig *config.MCPConfig, agent *AgentInstance) ([]tool
 	}
 
 	return allTools, nil
+}
+
+// setupClusterRPCChannel sets up the RPC channel and LLM forward handler for the cluster
+func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.MessageBus) error {
+	// Create RPC channel configuration
+	cfg := &channels.RPCChannelConfig{
+		MessageBus:      msgBus,
+		RequestTimeout:  60 * time.Second,
+		CleanupInterval: 30 * time.Second,
+	}
+
+	// Create RPC channel
+	rpcCh, err := channels.NewRPCChannel(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create RPC channel: %w", err)
+	}
+
+	// Start RPC channel
+	ctx := context.Background()
+	if err := rpcCh.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start RPC channel: %w", err)
+	}
+
+	// Create and register LLM forward handler
+	llmForwardHandler := clusterrpc.NewLLMForwardHandler(clusterInstance, rpcCh)
+	if err := clusterInstance.RegisterRPCHandler("llm_forward", llmForwardHandler.Handle); err != nil {
+		logger.WarnCF("agent", "Failed to register LLM forward handler",
+			map[string]interface{}{"error": err.Error()})
+		// Continue anyway - RPC channel is still functional
+	}
+
+	logger.InfoC("agent", "RPC channel for LLM forwarding started and handler registered")
+
+	return nil
 }

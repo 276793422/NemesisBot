@@ -89,7 +89,16 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
 	}
 
-	if err := t.sendCallback(channel, chatID, content); err != nil {
+	// For RPC channel, check if we need to add correlation ID
+	finalContent := content
+	if channel == "rpc" {
+		// Try to get correlation ID from context
+		if correlationID := getCorrelationIDFromContext(ctx); correlationID != "" {
+			finalContent = fmt.Sprintf("[rpc:%s] %s", correlationID, content)
+		}
+	}
+
+	if err := t.sendCallback(channel, chatID, finalContent); err != nil {
 		return &ToolResult{
 			ForLLM:  fmt.Sprintf("sending message: %v", err),
 			IsError: true,
@@ -103,4 +112,19 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 		ForLLM: fmt.Sprintf("Message sent to %s:%s", channel, chatID),
 		Silent: true,
 	}
+}
+
+// getCorrelationIDFromContext extracts correlation ID from context
+func getCorrelationIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+
+	// Try to get correlation_id from context values
+	if v := ctx.Value("correlation_id"); v != nil {
+		if id, ok := v.(string); ok {
+			return id
+		}
+	}
+	return ""
 }

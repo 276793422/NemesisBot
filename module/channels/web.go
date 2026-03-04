@@ -114,7 +114,7 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	}
 
 	// Handle broadcast to all sessions
-	if msg.ChatID == "web:broadcast" || msg.ChatID == "web:broadcast" {
+	if msg.ChatID == "web:broadcast" {
 		return c.BroadcastToAll(msg.Content)
 	}
 

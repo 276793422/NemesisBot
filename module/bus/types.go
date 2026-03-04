@@ -12,6 +12,7 @@ type InboundMessage struct {
 	Media      []string          `json:"media,omitempty"`
 	SessionKey string            `json:"session_key"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+	CorrelationID string         `json:"correlation_id,omitempty"` // For RPC response matching
 }
 
 type OutboundMessage struct {

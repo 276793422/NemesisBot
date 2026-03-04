@@ -188,43 +188,36 @@ func GenerateNodeID() (string, error) {
 		return "", err
 	}
 
-	// Get local IP address
-	ip, err := getLocalIP()
-	if err != nil {
-		ip = "unknown"
-	}
-
-	// Create node ID: hostname-ip-timestamp
+	// Create simple node ID: hostname-timestamp
+	// Users can customize this via config if needed
 	timestamp := time.Now().Format("20060102-150405")
-	nodeID := fmt.Sprintf("bot-%s-%s-%s", hostname, strings.ReplaceAll(ip, ".", "-"), timestamp)
+	nodeID := fmt.Sprintf("bot-%s-%s", hostname, timestamp)
 
 	return nodeID, nil
 }
 
-// getLocalIP returns the local IP address
-func getLocalIP() (string, error) {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "", err
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String(), nil
-}
-
-// GetAllLocalIPs returns all local IP addresses
+// GetAllLocalIPs returns all local IP addresses for broadcast
+// Returns non-virtual interfaces only, sorted by priority (Ethernet > WiFi > Other)
+// This is used for UDP discovery broadcast to tell other nodes how to reach us
 func GetAllLocalIPs() ([]string, error) {
-	var ips []string
-
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil, err
+		// Return empty slice, not error
+		return []string{}, nil
 	}
 
+	// Collect candidate IPs with their priorities
+	var candidates []candidateIP
+
 	for _, iface := range interfaces {
-		// Skip down interfaces and loopback
+		// Skip down and loopback interfaces
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		// Skip virtual interfaces (common patterns)
+		ifName := iface.Name
+		if isVirtualInterface(ifName) {
 			continue
 		}
 
@@ -242,21 +235,88 @@ func GetAllLocalIPs() ([]string, error) {
 				ip = v.IP
 			}
 
-			// Only include IPv4 addresses
-			if ip != nil && ip.To4() != nil {
-				ips = append(ips, ip.String())
+			// Only consider IPv4, exclude link-local
+			if ip != nil && ip.To4() != nil && !ip.IsLinkLocalUnicast() {
+				priority := getInterfacePriority(ifName)
+				candidates = append(candidates, candidateIP{
+					ip:       ip.String(),
+					priority: priority,
+				})
 			}
 		}
 	}
 
-	// If no IPs found, fallback to getLocalIP
-	if len(ips) == 0 {
-		ip, err := getLocalIP()
-		if err != nil {
-			return nil, err
-		}
-		return []string{ip}, nil
+	// Sort by priority and return IPs in priority order
+	sortCandidatesByPriority(candidates)
+
+	// Extract just the IP strings
+	result := make([]string, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.ip
 	}
 
-	return ips, nil
+	return result, nil
+}
+
+// isVirtualInterface checks if an interface name matches common virtual interface patterns
+func isVirtualInterface(name string) bool {
+	virtualPatterns := []string{
+		"veth", "docker", "br-", "virbr", "tun", "tap",
+		"vbox", "vmnet", "utun", "awdl", "llw", "anpi",
+		"ipsec", "gif", "stf", "p2p", "lo", "Loopback",
+	}
+
+	lowerName := strings.ToLower(name)
+	for _, pattern := range virtualPatterns {
+		if strings.Contains(lowerName, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// getInterfacePriority returns a priority score for an interface type
+// Lower score = higher priority (for sorting broadcast IP list)
+func getInterfacePriority(name string) int {
+	lowerName := strings.ToLower(name)
+
+	// Priority 1: Ethernet (eth, eno, ens, enp)
+	if strings.HasPrefix(lowerName, "eth") ||
+	   strings.HasPrefix(lowerName, "eno") ||
+	   strings.HasPrefix(lowerName, "ens") ||
+	   strings.HasPrefix(lowerName, "enp") {
+		return 1
+	}
+
+	// Priority 2: WiFi (wlan, wlp)
+	if strings.HasPrefix(lowerName, "wlan") ||
+	   strings.HasPrefix(lowerName, "wlp") {
+		return 2
+	}
+
+	// Priority 3: Other physical interfaces
+	if strings.HasPrefix(lowerName, "en") || strings.HasPrefix(lowerName, "wl") {
+		return 3
+	}
+
+	// Priority 99: Everything else
+	return 99
+}
+
+// sortCandidatesByPriority sorts candidates by priority (stable sort)
+func sortCandidatesByPriority(candidates []candidateIP) {
+	// Simple bubble sort (small number of candidates expected)
+	n := len(candidates)
+	for i := 0; i < n-1; i++ {
+		for j := 0; j < n-i-1; j++ {
+			if candidates[j].priority > candidates[j+1].priority {
+				candidates[j], candidates[j+1] = candidates[j+1], candidates[j]
+			}
+		}
+	}
+}
+
+type candidateIP struct {
+	ip       string
+	priority int
 }

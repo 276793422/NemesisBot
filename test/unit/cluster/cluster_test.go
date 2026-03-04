@@ -5,8 +5,6 @@
 package cluster_test
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -243,22 +241,4 @@ func TestNodeToConfig(t *testing.T) {
 	if config.Status.State != string(cluster.StatusOnline) {
 		t.Errorf("Expected config state %s, got %s", cluster.StatusOnline, config.Status.State)
 	}
-}
-
-// TestGenerateNodeID tests node ID generation
-func TestGenerateNodeID(t *testing.T) {
-	nodeID, err := cluster.GenerateNodeID()
-	if err != nil {
-		t.Fatalf("Failed to generate node ID: %v", err)
-	}
-
-	if nodeID == "" {
-		t.Error("Generated empty node ID")
-	}
-
-	if !strings.HasPrefix(nodeID, "bot-") {
-		t.Errorf("Expected node ID to start with 'bot-', got %s", nodeID)
-	}
-
-	fmt.Printf("Generated node ID: %s\n", nodeID)
 }

@@ -45,10 +45,11 @@ type Cluster struct {
 	logDir          string
 
 	// Components
-	registry  *Registry
-	logger    *ClusterLogger
-	discovery *discovery.Discovery
-	rpcClient *rpc.Client
+	registry   *Registry
+	logger     *ClusterLogger
+	discovery  *discovery.Discovery
+	rpcClient  *rpc.Client
+	rpcServer  *rpc.Server // RPC server instance
 
 	// Configuration
 	udpPort           int
@@ -157,12 +158,9 @@ func (c *Cluster) Start() error {
 		c.rpcPort = actualRPCPort
 	}
 
-	// Get local IP for RPC address
-	localIP, err := getLocalIP()
-	if err != nil {
-		return fmt.Errorf("failed to get local IP: %w", err)
-	}
-	c.address = fmt.Sprintf("%s:%d", localIP, c.rpcPort)
+	// Set RPC address to bind all interfaces
+	// Other nodes can connect using any IP that reaches this machine
+	c.address = fmt.Sprintf("0.0.0.0:%d", c.rpcPort)
 
 	// Initialize discovery
 	disc, err := discovery.NewDiscovery(c.udpPort, c)
@@ -179,9 +177,9 @@ func (c *Cluster) Start() error {
 		return fmt.Errorf("failed to start discovery: %w", err)
 	}
 
-	// Start RPC server (will run in background)
-	rpcServer := rpc.NewServer(c)
-	if err := rpcServer.Start(c.rpcPort); err != nil {
+	// Create and start RPC server
+	c.rpcServer = rpc.NewServer(c)
+	if err := c.rpcServer.Start(c.rpcPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}
 
@@ -212,6 +210,13 @@ func (c *Cluster) Stop() error {
 	if c.discovery != nil {
 		if err := c.discovery.Stop(); err != nil {
 			c.logger.DiscoveryError("Failed to stop discovery: %v", err)
+		}
+	}
+
+	// Stop RPC server
+	if c.rpcServer != nil {
+		if err := c.rpcServer.Stop(); err != nil {
+			c.logger.RPCError("Failed to stop RPC server: %v", err)
 		}
 	}
 
@@ -582,6 +587,25 @@ func (c *Cluster) LogRPCError(msg string, args ...interface{}) {
 // LogRPCDebug logs an RPC debug message (for RPC callback)
 func (c *Cluster) LogRPCDebug(msg string, args ...interface{}) {
 	c.logger.RPCDebug(msg, args...)
+}
+
+// RegisterRPCHandler registers an RPC handler for an action
+// This allows external code to register custom RPC handlers
+func (c *Cluster) RegisterRPCHandler(action string, handler func(payload map[string]interface{}) (map[string]interface{}, error)) error {
+	c.mu.RLock()
+	if !c.running {
+		c.mu.RUnlock()
+		return fmt.Errorf("cluster is not running")
+	}
+	if c.rpcServer == nil {
+		c.mu.RUnlock()
+		return fmt.Errorf("RPC server is not initialized")
+	}
+	c.mu.RUnlock()
+
+	c.rpcServer.RegisterHandler(action, handler)
+	c.logger.RPCInfo("Registered RPC handler for action: %s", action)
+	return nil
 }
 
 // findAvailablePort finds an available port starting from the given port
