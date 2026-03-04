@@ -123,6 +123,17 @@ func (p *Pool) GetWithContext(ctx context.Context, nodeID, address string) (*TCP
 		return conn, nil
 	}
 
+	// ✅ Fix: Clean up inactive connection before checking limit
+	if exists && !conn.IsActive() {
+		// Connection exists but is inactive (closed by idle monitor or error)
+		// Remove it from pool and decrement counters
+		delete(p.conns, key)
+		p.activeConns--
+		if p.nodeConns[nodeID] > 0 {
+			p.nodeConns[nodeID]--
+		}
+	}
+
 	// Check per-node limit
 	if p.nodeConns[nodeID] >= p.maxConnsPerNode {
 		<-p.semaphore // Release semaphore slot
