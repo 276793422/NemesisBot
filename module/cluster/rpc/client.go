@@ -82,6 +82,14 @@ func NewRateLimiter(maxTokens int, refillRate time.Duration, maxRequests int, wi
 
 // Acquire acquires a token for RPC call to peerID
 func (rl *RateLimiter) Acquire(ctx context.Context, peerID string) error {
+	// Initialize peer tokens if not exists
+	rl.mu.Lock()
+	if _, exists := rl.tokens[peerID]; !exists {
+		rl.tokens[peerID] = rl.maxTokens
+		rl.requests[peerID] = []time.Time{}
+	}
+	rl.mu.Unlock()
+
 	// Refill tokens periodically
 	rl.mu.Lock()
 	if time.Since(rl.lastRefill) > rl.refillRate {

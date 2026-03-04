@@ -682,6 +682,39 @@ func (c *Cluster) registerLLMHandlers() {
 	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)
 }
 
+// RegisterBasicHandlers registers basic RPC handlers (default and custom)
+// This can be called directly in daemon mode where RPCChannel is not available
+func (c *Cluster) RegisterBasicHandlers() error {
+	c.mu.RLock()
+	serverRunning := c.running
+	c.mu.RUnlock()
+
+	if !serverRunning {
+		return fmt.Errorf("cluster not running")
+	}
+
+	// Create a registrar function that forwards to RegisterRPCHandler
+	registrar := func(action string, handler func(map[string]interface{}) (map[string]interface{}, error)) {
+		if err := c.RegisterRPCHandler(action, handler); err != nil {
+			c.logger.RPCError("Failed to register handler '%s': %v", action, err)
+		}
+	}
+
+	// Register default handlers (ping, get_capabilities, get_info)
+	handlers.RegisterDefaultHandlers(
+		c.logger,
+		c.GetNodeID,
+		c.GetCapabilities,
+		c.GetOnlinePeers,
+		registrar,
+	)
+
+	// Register custom handlers (hello, etc.)
+	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)
+
+	return nil
+}
+
 // findAvailablePort finds an available port starting from the given port
 // It tries port, port+1, port+2, ... until it finds an available one
 // Returns the available port and nil error, or 0 and error if no port available

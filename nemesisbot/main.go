@@ -659,6 +659,13 @@ func runClusterDaemon() {
 		os.Exit(1)
 	}
 
+	// Register basic RPC handlers (including hello)
+	log("INFO", "Registering RPC handlers...")
+	if err := clusterInstance.RegisterBasicHandlers(); err != nil {
+		log("ERROR", "Failed to register RPC handlers: %v", err)
+		os.Exit(1)
+	}
+
 	log("INFO", "✓ Cluster started")
 	log("INFO", "  Node ID: %s", clusterInstance.GetNodeID())
 	log("INFO", "  UDP Port: %d", clusterCfg.Port)
