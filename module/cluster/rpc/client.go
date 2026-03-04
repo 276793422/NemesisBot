@@ -209,30 +209,35 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 	// Get peer using the new GetPeer method
 	peerIface, err := c.cluster.GetPeer(peerID)
 	if err != nil {
+		c.cluster.LogRPCError("Peer not found: %s", peerID)
 		return nil, fmt.Errorf("peer not found: %w", err)
 	}
+	c.cluster.LogRPCInfo("Found peer %s", peerID)
 
 	peer, ok := peerIface.(Node)
 	if !ok {
+		c.cluster.LogRPCError("Peer does not implement Node interface: %s", peerID)
 		return nil, fmt.Errorf("peer does not implement Node interface")
 	}
 
 	if !peer.IsOnline() {
+		c.cluster.LogRPCError("Peer is offline: %s", peerID)
 		return nil, fmt.Errorf("peer is offline: %s", peerID)
 	}
+	c.cluster.LogRPCInfo("Peer %s is online", peerID)
 
 	// Get all addresses from the peer
 	addresses := peer.GetAddresses()
-	c.cluster.LogRPCDebug("Peer %s addresses: %v (len=%d)", peerID, addresses, len(addresses))
+	c.cluster.LogRPCInfo("Peer %s addresses: %v (len=%d)", peerID, addresses, len(addresses))
 	if len(addresses) == 0 {
 		// Fallback to old Address field
 		addresses = []string{peer.GetAddress()}
-		c.cluster.LogRPCDebug("Using fallback address: %v", addresses)
+		c.cluster.LogRPCInfo("Using fallback address: %v", addresses)
 	}
 
 	// Select the best address to connect to
 	rpcPort := peer.GetRPCPort()
-	c.cluster.LogRPCDebug("Peer %s RPCPort: %d", peerID, rpcPort)
+	c.cluster.LogRPCInfo("Peer %s RPCPort: %d", peerID, rpcPort)
 	if rpcPort == 0 {
 		// Extract port from old Address field
 		parts := strings.Split(peer.GetAddress(), ":")
@@ -242,6 +247,7 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 		} else {
 			rpcPort = 21949 // Default RPC port
 		}
+		c.cluster.LogRPCInfo("Extracted RPC port: %d for peer %s", rpcPort, peerID)
 	}
 
 	// Build full addresses (IP:Port)
@@ -253,37 +259,40 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 			fullAddresses = append(fullAddresses, addr)
 		}
 	}
+	c.cluster.LogRPCInfo("Attempting to connect to peer %s at %v", peerID, fullAddresses)
 
 	// Select best address and try to connect
 	selectedAddress, conn, err := c.connectToPeer(ctx, peerID, fullAddresses)
 	if err != nil {
+		c.cluster.LogRPCError("Failed to connect to peer %s: %v", peerID, err)
 		return nil, fmt.Errorf("failed to connect to peer %s: %w", peerID, err)
 	}
 
-	c.cluster.LogRPCInfo("Connected to peer %s at %s (selected from %v)", peerID, selectedAddress, addresses)
+	c.cluster.LogRPCInfo("Connected to peer %s at %s", peerID, selectedAddress)
 
 	// Create request message
 	req := transport.NewRequest(c.cluster.GetNodeID(), peerID, action, payload)
 	req.Timestamp = time.Now().Unix()
 
 	// Send request
-	c.cluster.LogRPCDebug("About to send request to peer %s", peerID)
+	c.cluster.LogRPCInfo("Sending request action=%s to peer %s (id=%s)", req.Action, peerID, req.ID)
 	if err := conn.Send(req); err != nil {
+		c.cluster.LogRPCError("Failed to send request to peer %s: %v", peerID, err)
 		// Connection might be bad, remove it from pool
 		c.pool.Remove(peerID, selectedAddress)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
-	c.cluster.LogRPCDebug("Request sent successfully, now waiting for response")
+	c.cluster.LogRPCInfo("Request sent successfully to peer %s, waiting for response (id=%s)", peerID, req.ID)
 
 	// Wait for response with context timeout
 	response, err := c.receiveResponseWithContext(ctx, conn, req.ID)
 	if err != nil {
-		c.cluster.LogRPCError("Failed to receive response for %s: %v", req.ID, err)
+		c.cluster.LogRPCError("Failed to receive response from %s for %s: %v", peerID, req.ID, err)
 		c.pool.Remove(peerID, selectedAddress)
 		return nil, fmt.Errorf("failed to receive response: %w", err)
 	}
 
-	c.cluster.LogRPCDebug("Received response for %s: type=%s", req.ID, response.Type)
+	c.cluster.LogRPCInfo("Received response from %s: type=%s, id=%s", peerID, response.Type, response.ID)
 
 	// Check for error
 	if response.Type == transport.RPCTypeError {
