@@ -240,16 +240,9 @@ header h1 {
     height: 100%;
 }
 
-/* 聊天界面头部 */
+/* 聊天界面头部 - 继承原有 header 样式 */
 #chat-screen header {
     flex-shrink: 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 15px 20px;
-    background: white;
-    border-bottom: 1px solid #e0e0e0;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 /* 消息列表容器 - 独立滚动 */

@@ -204,8 +204,6 @@ class WebSocketManager {
 class MessageRenderer {
     constructor(container) {
         this.container = container;
-        this.messageElements = new Map(); // 存储消息元素引用
-        this.timeUpdateInterval = null; // 定时更新器
     }
 
     appendMessage(role, content, timestamp, isError = false, isSystem = false) {
@@ -227,54 +225,20 @@ class MessageRenderer {
             messageDiv.textContent = content;
         }
 
-        // Add timestamp with data-timestamp attribute
+        // Add timestamp
         const timeDiv = document.createElement('div');
         timeDiv.className = 'message-time';
-        timeDiv.dataset.timestamp = timestamp; // 存储原始时间戳
         timeDiv.textContent = this.formatTime(timestamp);
         messageDiv.appendChild(timeDiv);
 
         this.container.appendChild(messageDiv);
-
-        // 存储消息元素引用
-        const messageId = 'msg-' + Date.now().getTime();
-        this.messageElements.set(messageId, { element: messageDiv, timeDiv: timeDiv });
-
         this.scrollToBottom();
-
-        // 启动定时更新
-        this.startTimeUpdate();
 
         // Apply syntax highlighting to code blocks (if library is loaded)
         if (role === 'assistant' && !isError && !isSystem && typeof hljs !== 'undefined') {
             messageDiv.querySelectorAll('pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
-        }
-    }
-
-    // 启动定时更新器
-    startTimeUpdate() {
-        if (this.timeUpdateInterval) {
-            return; // 已经在运行
-        }
-
-        this.timeUpdateInterval = setInterval(() => {
-            this.messageElements.forEach((data, id) => {
-                const timeDiv = data.timeDiv;
-                const timestamp = data.timeDiv.dataset.timestamp;
-                if (timestamp) {
-                    timeDiv.textContent = this.formatTime(timestamp);
-                }
-            });
-        }, 10000); // 每10秒更新一次
-    }
-
-    // 巻加停止更新方法（可选）
-    stopTimeUpdate() {
-        if (this.timeUpdateInterval) {
-            clearInterval(this.timeUpdateInterval);
-            this.timeUpdateInterval = null;
         }
     }
 
@@ -315,7 +279,6 @@ class MessageRenderer {
         const date = new Date(timestamp);
 
         // 显示精确的北京时间，精确到毫秒
-        // 使用 toLocaleString 格式化为北京时间 (Asia/Shanghai = UTC+8)
         const options = {
             timeZone: 'Asia/Shanghai',
             year: 'numeric',
