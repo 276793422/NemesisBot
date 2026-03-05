@@ -204,6 +204,8 @@ class WebSocketManager {
 class MessageRenderer {
     constructor(container) {
         this.container = container;
+        this.messageElements = new Map(); // 存储消息元素引用
+        this.timeUpdateInterval = null; // 定时更新器
     }
 
     appendMessage(role, content, timestamp, isError = false, isSystem = false) {
@@ -225,20 +227,54 @@ class MessageRenderer {
             messageDiv.textContent = content;
         }
 
-        // Add timestamp
+        // Add timestamp with data-timestamp attribute
         const timeDiv = document.createElement('div');
         timeDiv.className = 'message-time';
+        timeDiv.dataset.timestamp = timestamp; // 存储原始时间戳
         timeDiv.textContent = this.formatTime(timestamp);
         messageDiv.appendChild(timeDiv);
 
         this.container.appendChild(messageDiv);
+
+        // 存储消息元素引用
+        const messageId = 'msg-' + Date.now().getTime();
+        this.messageElements.set(messageId, { element: messageDiv, timeDiv: timeDiv });
+
         this.scrollToBottom();
+
+        // 启动定时更新
+        this.startTimeUpdate();
 
         // Apply syntax highlighting to code blocks (if library is loaded)
         if (role === 'assistant' && !isError && !isSystem && typeof hljs !== 'undefined') {
             messageDiv.querySelectorAll('pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
+        }
+    }
+
+    // 启动定时更新器
+    startTimeUpdate() {
+        if (this.timeUpdateInterval) {
+            return; // 已经在运行
+        }
+
+        this.timeUpdateInterval = setInterval(() => {
+            this.messageElements.forEach((data, id) => {
+                const timeDiv = data.timeDiv;
+                const timestamp = data.timeDiv.dataset.timestamp;
+                if (timestamp) {
+                    timeDiv.textContent = this.formatTime(timestamp);
+                }
+            });
+        }, 10000); // 每10秒更新一次
+    }
+
+    // 巻加停止更新方法（可选）
+    stopTimeUpdate() {
+        if (this.timeUpdateInterval) {
+            clearInterval(this.timeUpdateInterval);
+            this.timeUpdateInterval = null;
         }
     }
 
@@ -277,23 +313,22 @@ class MessageRenderer {
 
     formatTime(timestamp) {
         const date = new Date(timestamp);
-        const now = new Date();
-        const diff = now - date;
 
-        if (diff < 60000) {
-            return '刚刚';
-        } else if (diff < 3600000) {
-            return Math.floor(diff / 60000) + ' 分钟前';
-        } else if (diff < 86400000) {
-            return Math.floor(diff / 3600000) + ' 小时前';
-        } else {
-            return date.toLocaleDateString('zh-CN', {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        }
+        // 显示精确的北京时间，精确到毫秒
+        // 使用 toLocaleString 格式化为北京时间 (Asia/Shanghai = UTC+8)
+        const options = {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            fractionalSecondDigits: 3,  // 精确到毫秒
+            hour12: false
+        };
+
+        return date.toLocaleString('zh-CN', options);
     }
 
     scrollToBottom() {
