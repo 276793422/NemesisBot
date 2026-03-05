@@ -87,7 +87,7 @@ func TestRegisterDefaultHandlers(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
 		nodeID:      "test-node-1",
 		address:     "127.0.0.1:21950",
-		capabilities: []string{"llm_forward", "hello"},
+		capabilities: []string{"peer_chat", "hello"},
 		peers: []interface{}{
 			&mockNode{
 				id:           "peer-1",
@@ -95,7 +95,7 @@ func TestRegisterDefaultHandlers(t *testing.T) {
 				address:      "192.168.1.100:21950",
 				addresses:    []string{"192.168.1.100:21950"},
 				rpcPort:      21950,
-				capabilities: []string{"llm_forward"},
+				capabilities: []string{"peer_chat"},
 				status:       "online",
 				online:       true,
 			},
@@ -176,7 +176,7 @@ func TestPingHandler(t *testing.T) {
 // TestGetCapabilitiesHandler tests the get_capabilities handler
 func TestGetCapabilitiesHandler(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		capabilities: []string{"llm_forward", "hello", "test_capability"},
+		capabilities: []string{"peer_chat", "hello", "test_capability"},
 	}
 
 	var getCapabilitiesHandler func(map[string]interface{}) (map[string]interface{}, error)
@@ -206,7 +206,7 @@ func TestGetCapabilitiesHandler(t *testing.T) {
 	}
 
 	// Sort for comparison (order may vary)
-	expectedCaps := []string{"llm_forward", "hello", "test_capability"}
+	expectedCaps := []string{"peer_chat", "hello", "test_capability"}
 	sort.Strings(caps)
 	sort.Strings(expectedCaps)
 
@@ -232,7 +232,7 @@ func TestGetInfoHandler(t *testing.T) {
 				address:      "192.168.1.100:21950",
 				addresses:    []string{"192.168.1.100:21950"},
 				rpcPort:      21950,
-				capabilities: []string{"llm_forward"},
+				capabilities: []string{"peer_chat"},
 				status:       "online",
 				online:       true,
 			},

@@ -47,13 +47,16 @@ func TestBotToBotRPCIntegration(t *testing.T) {
 	t.Log("\n[Test] Bot A -> Bot B: Send RPC LLM forward request")
 
 	requestPayload := map[string]interface{}{
-		"chat_id":  "test-user-123",
-		"content":  "Hello from Bot A! What is 2+2?",
-		"sender_id": "bot-a",
+		"type":    "request",
+		"content": "Hello from Bot A! What is 2+2?",
+		"context": map[string]interface{}{
+			"chat_id":   "test-user-123",
+			"sender_id": "bot-a",
+		},
 	}
 
 	// Send request from Bot A to Bot B
-	response, err := botA.SendRPCRequest("127.0.0.1:21950", "llm_forward", requestPayload)
+	response, err := botA.SendRPCRequest("127.0.0.1:21950", "peer_chat", requestPayload)
 	if err != nil {
 		t.Fatalf("Failed to send RPC request: %v", err)
 	}
@@ -66,12 +69,12 @@ func TestBotToBotRPCIntegration(t *testing.T) {
 		t.Fatalf("Failed to parse response: %v", err)
 	}
 
-	success, ok := result["success"].(bool)
-	if !ok || !success {
-		t.Errorf("Expected success=true, got: %v", result)
+	status, ok := result["status"].(string)
+	if !ok || status != "success" {
+		t.Errorf("Expected status=success, got: %v", result)
 	}
 
-	if content, ok := result["content"].(string); ok {
+	if content, ok := result["response"].(string); ok {
 		t.Logf("LLM Response: %s", content)
 	} else {
 		t.Error("Expected content in response")
@@ -258,12 +261,12 @@ func (b *testBot) Start() error {
 		return fmt.Errorf("failed to start RPC channel: %w", err)
 	}
 
-	// Register LLM Forward Handler
-	handler := &testLLMForwardHandler{
+	// Register Peer Chat Handler
+	handler := &testPeerChatHandler{
 		rpcCh:  b.rpcCh,
 		msgBus: b.msgBus,
 	}
-	b.rpcSrv.RegisterHandler("llm_forward", handler.Handle)
+	b.rpcSrv.RegisterHandler("peer_chat", handler.Handle)
 
 	// Start RPC Server
 	if err := b.rpcSrv.Start(b.RPCPort); err != nil {
@@ -455,22 +458,29 @@ func (m *mockClusterForTest) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetw
 	}, nil
 }
 
-// testLLMForwardHandler handles LLM forward requests in tests
-type testLLMForwardHandler struct {
+// testPeerChatHandler handles peer chat requests in tests
+type testPeerChatHandler struct {
 	rpcCh  *channels.RPCChannel
 	msgBus *bus.MessageBus
 }
 
-func (h *testLLMForwardHandler) Handle(payload map[string]interface{}) (map[string]interface{}, error) {
-	// Extract fields
-	chatID, _ := payload["chat_id"].(string)
+func (h *testPeerChatHandler) Handle(payload map[string]interface{}) (map[string]interface{}, error) {
+	// Extract fields using new peer_chat format
 	content, _ := payload["content"].(string)
 
-	if chatID == "" || content == "" {
+	if content == "" {
 		return map[string]interface{}{
-			"success": false,
-			"error":   "chat_id and content are required",
+			"status":   "error",
+			"response": "content is required",
 		}, nil
+	}
+
+	// Extract chat_id from context if provided
+	chatID := "default-user"
+	if context, ok := payload["context"].(map[string]interface{}); ok {
+		if v, ok := context["chat_id"].(string); ok {
+			chatID = v
+		}
 	}
 
 	// Create inbound message
@@ -489,8 +499,8 @@ func (h *testLLMForwardHandler) Handle(payload map[string]interface{}) (map[stri
 	respCh, err := h.rpcCh.Input(ctx, inbound)
 	if err != nil {
 		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("failed to process: %v", err),
+			"status":   "error",
+			"response": fmt.Sprintf("failed to process: %v", err),
 		}, nil
 	}
 
@@ -509,14 +519,14 @@ func (h *testLLMForwardHandler) Handle(payload map[string]interface{}) (map[stri
 	select {
 	case response := <-respCh:
 		return map[string]interface{}{
-			"success": true,
-			"content": response,
+			"status":   "success",
+			"response": response,
 		}, nil
 
 	case <-ctx.Done():
 		return map[string]interface{}{
-			"success": false,
-			"error":   "timeout",
+			"status":   "error",
+			"response": "timeout",
 		}, nil
 	}
 }

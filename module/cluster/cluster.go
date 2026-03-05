@@ -639,11 +639,11 @@ func (c *Cluster) RegisterRPCHandler(action string, handler func(payload map[str
 //
 // Thread safety: This method uses lock-free pattern to avoid deadlock:
 // - Acquires lock only to set c.rpcChannel and read state
-// - Releases lock before calling registerLLMHandlers()
-// - This avoids deadlock: registerLLMHandlers() internally calls RegisterRPCHandler()
+// - Releases lock before calling registerPeerChatHandlers()
+// - This avoids deadlock: registerPeerChatHandlers() internally calls RegisterRPCHandler()
 //   which tries to acquire a read lock while we might be holding a write lock
 //
-// There's a tiny race window between Unlock() and registerLLMHandlers() where
+// There's a tiny race window between Unlock() and registerPeerChatHandlers() where
 // Stop() or server shutdown could occur. This is acceptable as:
 // - It's extremely short (microseconds)
 // - Worst case: LLM handlers don't get registered, but no deadlock occurs
@@ -657,20 +657,20 @@ func (c *Cluster) SetRPCChannel(rpcCh *channels.RPCChannel) {
 	wasRunning := c.running
 	hasServer := c.rpcServer != nil
 
-	// Step 3: Release lock BEFORE calling registerLLMHandlers
-	// This prevents deadlock: registerLLMHandlers -> RegisterRPCHandler -> c.mu.RLock()
+	// Step 3: Release lock BEFORE calling registerPeerChatHandlers
+	// This prevents deadlock: registerPeerChatHandlers -> RegisterRPCHandler -> c.mu.RLock()
 	c.mu.Unlock()
 
-	// Step 4: Call registerLLMHandlers outside of lock
+	// Step 4: Call registerPeerChatHandlers outside of lock
 	// RegisterRPCHandler will acquire its own read lock for safety checks
 	if wasRunning && hasServer {
-		c.registerLLMHandlers()
+		c.registerPeerChatHandlers()
 	}
 }
 
-// registerLLMHandlers registers LLM-related handlers when RPCChannel is ready
+// registerPeerChatHandlers registers LLM-related handlers when RPCChannel is ready
 // This must be called after both RPC Server and RPC Channel are initialized
-func (c *Cluster) registerLLMHandlers() {
+func (c *Cluster) registerPeerChatHandlers() {
 	if c.rpcChannel == nil {
 		c.logger.RPCInfo("RPCChannel not ready, skipping LLM handler registration")
 		return
@@ -683,14 +683,14 @@ func (c *Cluster) registerLLMHandlers() {
 		}
 	}
 
-	// Create a handler factory that creates LLM forward handler
+	// Create a handler factory that creates peer chat handler
 	handlerFactory := func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
-		handler := rpc.NewLLMForwardHandler(c, rpcChannel)
+		handler := rpc.NewPeerChatHandler(c, rpcChannel)
 		return handler.Handle
 	}
 
-	// Register LLM handlers using the handlers package
-	handlers.RegisterLLMHandlers(c.logger, c.rpcChannel, handlerFactory, registrar)
+	// Register peer chat handlers using the handlers package
+	handlers.RegisterPeerChatHandlers(c.logger, c.rpcChannel, handlerFactory, registrar)
 
 	// Register custom handlers (hello, etc.)
 	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)

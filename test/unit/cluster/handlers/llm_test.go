@@ -14,13 +14,13 @@ import (
 	"github.com/276793422/NemesisBot/module/cluster/handlers"
 )
 
-// TestRegisterLLMHandlers tests that LLM handlers are registered
-func TestRegisterLLMHandlers(t *testing.T) {
+// TestRegisterPeerChatHandlers tests that peer chat handlers are registered
+func TestRegisterPeerChatHandlers(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
-		capabilities: []string{"llm_forward"},
-		logMessages: []string{},
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
+		capabilities: []string{"peer_chat", "llm"},
+		logMessages:  []string{},
 	}
 
 	// Create a mock RPCChannel
@@ -49,37 +49,29 @@ func TestRegisterLLMHandlers(t *testing.T) {
 		registeredHandlers[action] = true
 	}
 
-	// Register LLM handlers
-	handlers.RegisterLLMHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+	// Register peer chat handlers
+	handlers.RegisterPeerChatHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
 		return func(payload map[string]interface{}) (map[string]interface{}, error) {
-			// Mock handler that simulates LLMForwardHandler behavior
-			chatID, _ := payload["chat_id"].(string)
+			// Mock handler that simulates PeerChatHandler behavior
 			content, _ := payload["content"].(string)
-
-			if chatID == "" {
-				return map[string]interface{}{
-					"success": false,
-					"error":   "chat_id is required",
-				}, nil
-			}
 
 			if content == "" {
 				return map[string]interface{}{
-					"success": false,
-					"error":   "content is required",
+					"status":   "error",
+					"response": "content is required",
 				}, nil
 			}
 
 			return map[string]interface{}{
-				"success": true,
-				"content": "mock response",
+				"status":   "success",
+				"response": "mock response",
 			}, nil
 		}
 	}, registrar)
 
-	// Verify llm_forward handler is registered
-	if !registeredHandlers["llm_forward"] {
-		t.Error("Handler 'llm_forward' was not registered")
+	// Verify peer_chat handler is registered
+	if !registeredHandlers["peer_chat"] {
+		t.Error("Handler 'peer_chat' was not registered")
 	}
 
 	// Verify log message was written
@@ -87,19 +79,19 @@ func TestRegisterLLMHandlers(t *testing.T) {
 		t.Error("Expected log message to be written")
 	}
 
-	// Verify the handler function is not nil
-	if !registeredHandlers["llm_forward"] {
-		t.Fatal("llm_forward handler was not registered")
+	// Verify the handler function is registered
+	if !registeredHandlers["peer_chat"] {
+		t.Fatal("peer_chat handler was not registered")
 	}
 }
 
-// TestLLMForwardHandlerExists tests that the LLM forward handler can be created
-func TestLLMForwardHandlerExists(t *testing.T) {
+// TestPeerChatHandlerExists tests that the peer chat handler can be created
+func TestPeerChatHandlerExists(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
-		capabilities: []string{"llm_forward"},
-		logMessages: []string{},
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
+		capabilities: []string{"peer_chat", "llm"},
+		logMessages:  []string{},
 	}
 
 	// Create a mock RPCChannel
@@ -121,59 +113,46 @@ func TestLLMForwardHandlerExists(t *testing.T) {
 	}
 	defer rpcCh.Stop(ctx)
 
-	var llmForwardHandler func(map[string]interface{}) (map[string]interface{}, error)
+	var peerChatHandler func(map[string]interface{}) (map[string]interface{}, error)
 
-	// Capture the llm_forward handler
+	// Capture the peer_chat handler
 	registrar := func(action string, handler func(map[string]interface{}) (map[string]interface{}, error)) {
-		if action == "llm_forward" {
-			llmForwardHandler = handler
+		if action == "peer_chat" {
+			peerChatHandler = handler
 		}
 	}
 
-	handlers.RegisterLLMHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+	handlers.RegisterPeerChatHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
 		return func(payload map[string]interface{}) (map[string]interface{}, error) {
-			// Mock handler that simulates LLMForwardHandler behavior
-			chatID, _ := payload["chat_id"].(string)
+			// Mock handler that simulates PeerChatHandler behavior
 			content, _ := payload["content"].(string)
-
-			if chatID == "" {
-				return map[string]interface{}{
-					"success": false,
-					"error":   "chat_id is required",
-				}, nil
-			}
 
 			if content == "" {
 				return map[string]interface{}{
-					"success": false,
-					"error":   "content is required",
+					"status":   "error",
+					"response": "content is required",
 				}, nil
 			}
 
 			return map[string]interface{}{
-				"success": true,
-				"content": "mock response",
+				"status":   "success",
+				"response": "mock response",
 			}, nil
 		}
 	}, registrar)
 
-	if llmForwardHandler == nil {
-		t.Fatal("llm_forward handler was not registered")
-	}
-
-	// Verify the handler is a function
-	if llmForwardHandler == nil {
-		t.Error("llm_forward handler is nil")
+	if peerChatHandler == nil {
+		t.Fatal("peer_chat handler was not registered")
 	}
 }
 
-// TestLLMForwardHandlerBasicCall tests basic call to the handler (will timeout without LLM)
-func TestLLMForwardHandlerBasicCall(t *testing.T) {
+// TestPeerChatHandlerBasicCall tests basic call to the handler
+func TestPeerChatHandlerBasicCall(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
-		capabilities: []string{"llm_forward"},
-		logMessages: []string{},
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
+		capabilities: []string{"peer_chat", "llm"},
+		logMessages:  []string{},
 	}
 
 	// Create a mock RPCChannel
@@ -195,44 +174,36 @@ func TestLLMForwardHandlerBasicCall(t *testing.T) {
 	}
 	defer rpcCh.Stop(ctx)
 
-	var llmForwardHandler func(map[string]interface{}) (map[string]interface{}, error)
+	var peerChatHandler func(map[string]interface{}) (map[string]interface{}, error)
 
-	// Capture the llm_forward handler
+	// Capture the peer_chat handler
 	registrar := func(action string, handler func(map[string]interface{}) (map[string]interface{}, error)) {
-		if action == "llm_forward" {
-			llmForwardHandler = handler
+		if action == "peer_chat" {
+			peerChatHandler = handler
 		}
 	}
 
-	handlers.RegisterLLMHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+	handlers.RegisterPeerChatHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
 		return func(payload map[string]interface{}) (map[string]interface{}, error) {
-			// Mock handler that simulates LLMForwardHandler behavior
-			chatID, _ := payload["chat_id"].(string)
+			// Mock handler that simulates PeerChatHandler behavior
 			content, _ := payload["content"].(string)
-
-			if chatID == "" {
-				return map[string]interface{}{
-					"success": false,
-					"error":   "chat_id is required",
-				}, nil
-			}
 
 			if content == "" {
 				return map[string]interface{}{
-					"success": false,
-					"error":   "content is required",
+					"status":   "error",
+					"response": "content is required",
 				}, nil
 			}
 
 			return map[string]interface{}{
-				"success": true,
-				"content": "mock response",
+				"status":   "success",
+				"response": "mock response",
 			}, nil
 		}
 	}, registrar)
 
-	if llmForwardHandler == nil {
-		t.Fatal("llm_forward handler was not registered")
+	if peerChatHandler == nil {
+		t.Fatal("peer_chat handler was not registered")
 	}
 
 	// Test with missing required fields
@@ -244,28 +215,29 @@ func TestLLMForwardHandlerBasicCall(t *testing.T) {
 		checkValue  interface{}
 	}{
 		{
-			name: "Missing chat_id",
-			payload: map[string]interface{}{
-				"content": "test message",
-			},
-			expectError: false, // Handler returns error in response, not as error
-			checkKey:    "success",
-			checkValue:  false,
-		},
-		{
 			name: "Missing content",
 			payload: map[string]interface{}{
-				"chat_id": "test-chat-1",
+				"type": "chat",
 			},
 			expectError: false,
-			checkKey:    "success",
-			checkValue:  false,
+			checkKey:    "status",
+			checkValue:  "error",
+		},
+		{
+			name: "Valid payload",
+			payload: map[string]interface{}{
+				"type":    "chat",
+				"content": "test message",
+			},
+			expectError: false,
+			checkKey:    "status",
+			checkValue:  "success",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			response, err := llmForwardHandler(tt.payload)
+			response, err := peerChatHandler(tt.payload)
 			if err != nil && tt.expectError {
 				return // Expected error
 			}
@@ -288,12 +260,12 @@ func TestLLMForwardHandlerBasicCall(t *testing.T) {
 	}
 }
 
-// TestLLMForwardHandlerCallStructure tests that the handler has the correct structure
-func TestLLMForwardHandlerCallStructure(t *testing.T) {
+// TestPeerChatHandlerCallStructure tests that the handler has the correct structure
+func TestPeerChatHandlerCallStructure(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
 		nodeID:       "test-node-1",
 		address:      "127.0.0.1:21950",
-		capabilities: []string{"llm_forward"},
+		capabilities: []string{"peer_chat", "llm"},
 		logMessages:  []string{},
 	}
 
@@ -316,53 +288,45 @@ func TestLLMForwardHandlerCallStructure(t *testing.T) {
 	}
 	defer rpcCh.Stop(ctx)
 
-	var llmForwardHandler func(map[string]interface{}) (map[string]interface{}, error)
+	var peerChatHandler func(map[string]interface{}) (map[string]interface{}, error)
 
-	// Capture the llm_forward handler
+	// Capture the peer_chat handler
 	registrar := func(action string, handler func(map[string]interface{}) (map[string]interface{}, error)) {
-		if action == "llm_forward" {
-			llmForwardHandler = handler
+		if action == "peer_chat" {
+			peerChatHandler = handler
 		}
 	}
 
-	handlers.RegisterLLMHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+	handlers.RegisterPeerChatHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
 		return func(payload map[string]interface{}) (map[string]interface{}, error) {
-			// Mock handler that simulates LLMForwardHandler behavior
-			chatID, _ := payload["chat_id"].(string)
+			// Mock handler that simulates PeerChatHandler behavior
 			content, _ := payload["content"].(string)
-
-			if chatID == "" {
-				return map[string]interface{}{
-					"success": false,
-					"error":   "chat_id is required",
-				}, nil
-			}
 
 			if content == "" {
 				return map[string]interface{}{
-					"success": false,
-					"error":   "content is required",
+					"status":   "error",
+					"response": "content is required",
 				}, nil
 			}
 
 			return map[string]interface{}{
-				"success": true,
-				"content": "mock response",
+				"status":   "success",
+				"response": "mock response",
 			}, nil
 		}
 	}, registrar)
 
-	if llmForwardHandler == nil {
-		t.Fatal("llm_forward handler was not registered")
+	if peerChatHandler == nil {
+		t.Fatal("peer_chat handler was not registered")
 	}
 
 	// Test that handler returns proper error structure for missing fields
 	payload := map[string]interface{}{
-		"chat_id": "", // Empty chat_id should cause error
-		"content": "test message",
+		"type":    "chat",
+		"content": "", // Empty content should cause error
 	}
 
-	response, err := llmForwardHandler(payload)
+	response, err := peerChatHandler(payload)
 	if err != nil {
 		t.Errorf("Handler returned error instead of error response: %v", err)
 	}
@@ -371,21 +335,21 @@ func TestLLMForwardHandlerCallStructure(t *testing.T) {
 		t.Fatal("Handler returned nil response")
 	}
 
-	if response["success"] != false {
-		t.Errorf("Expected success=false for missing chat_id, got %v", response["success"])
+	if response["status"] != "error" {
+		t.Errorf("Expected status=error for missing content, got %v", response["status"])
 	}
 
-	if _, ok := response["error"]; !ok {
-		t.Error("Expected error field in response for missing chat_id")
+	if _, ok := response["response"]; !ok {
+		t.Error("Expected response field in result for missing content")
 	}
 }
 
-// TestRegisterLLMHandlersLogMessage tests that registration produces a log message
-func TestRegisterLLMHandlersLogMessage(t *testing.T) {
+// TestRegisterPeerChatHandlersLogMessage tests that registration produces a log message
+func TestRegisterPeerChatHandlersLogMessage(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
 		nodeID:       "test-node-1",
 		address:      "127.0.0.1:21950",
-		capabilities: []string{"llm_forward"},
+		capabilities: []string{"peer_chat", "llm"},
 		logMessages:  []string{},
 	}
 
@@ -414,30 +378,22 @@ func TestRegisterLLMHandlersLogMessage(t *testing.T) {
 		registeredHandlers[action] = true
 	}
 
-	// Register LLM handlers
-	handlers.RegisterLLMHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
+	// Register peer chat handlers
+	handlers.RegisterPeerChatHandlers(mockCluster, rpcCh, func(rpcChannel *channels.RPCChannel) func(map[string]interface{}) (map[string]interface{}, error) {
 		return func(payload map[string]interface{}) (map[string]interface{}, error) {
-			// Mock handler that simulates LLMForwardHandler behavior
-			chatID, _ := payload["chat_id"].(string)
+			// Mock handler that simulates PeerChatHandler behavior
 			content, _ := payload["content"].(string)
-
-			if chatID == "" {
-				return map[string]interface{}{
-					"success": false,
-					"error":   "chat_id is required",
-				}, nil
-			}
 
 			if content == "" {
 				return map[string]interface{}{
-					"success": false,
-					"error":   "content is required",
+					"status":   "error",
+					"response": "content is required",
 				}, nil
 			}
 
 			return map[string]interface{}{
-				"success": true,
-				"content": "mock response",
+				"status":   "success",
+				"response": "mock response",
 			}, nil
 		}
 	}, registrar)
@@ -450,13 +406,13 @@ func TestRegisterLLMHandlersLogMessage(t *testing.T) {
 	// Check log message contains expected text
 	found := false
 	for _, msg := range mockCluster.logMessages {
-		if contains(msg, "Registered LLM handlers") {
+		if contains(msg, "Registered peer chat handler: peer_chat") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Expected log message to contain 'Registered LLM handlers', got: %v", mockCluster.logMessages)
+		t.Errorf("Expected log message to contain 'Registered peer chat handler: peer_chat', got: %v", mockCluster.logMessages)
 	}
 }
 
