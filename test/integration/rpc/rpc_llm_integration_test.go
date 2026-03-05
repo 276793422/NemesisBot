@@ -328,8 +328,123 @@ type mockClusterForTest struct {
 func (m *mockClusterForTest) GetRegistry() interface{}                        { return nil }
 func (m *mockClusterForTest) GetNodeID() string                              { return m.name }
 func (m *mockClusterForTest) GetAddress() string                             { return "" }
-func (m *mockClusterForTest) GetCapabilities() []string                      { return []string{"llm_forward"} }
+func (m *mockClusterForTest) GetCapabilities() []string                      { return []string{"peer_chat", "llm"} }
 func (m *mockClusterForTest) GetOnlinePeers() []interface{}                   { return nil }
+func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
+	// Return default action schemas for testing
+	return []interface{}{
+		map[string]interface{}{
+			"name":        "ping",
+			"description": "健康检查，测试节点是否在线",
+			"parameters":  nil,
+			"returns": map[string]interface{}{
+				"properties": map[string]interface{}{
+					"status": map[string]interface{}{
+						"type":        "string",
+						"description": "响应状态",
+						"enum":         []string{"ok"},
+					},
+					"node_id": map[string]interface{}{
+						"type":        "string",
+						"description": "节点 ID",
+					},
+				},
+			},
+			"examples": []map[string]interface{}{
+				{
+					"request": map[string]interface{}{
+						"action":  "ping",
+						"payload": nil,
+					},
+					"response": map[string]interface{}{
+						"status":  "ok",
+						"node_id": "node-abc123",
+					},
+				},
+			},
+		},
+		map[string]interface{}{
+			"name":        "get_capabilities",
+			"description": "获取节点的功能能力列表",
+			"parameters":  nil,
+			"returns": map[string]interface{}{
+				"properties": map[string]interface{}{
+					"capabilities": map[string]interface{}{
+						"type":        "array",
+						"description": "能力列表",
+						"items": map[string]interface{}{
+							"type": "string",
+						},
+					},
+				},
+			},
+			"examples": []map[string]interface{}{
+				{
+					"request": map[string]interface{}{
+						"action": "get_capabilities",
+						"payload": nil,
+					},
+					"response": map[string]interface{}{
+						"capabilities": []string{"llm", "tools", "memory"},
+					},
+				},
+			},
+		},
+		map[string]interface{}{
+			"name":        "get_info",
+			"description": "获取集群信息和在线节点列表",
+			"parameters":  nil,
+			"returns": map[string]interface{}{
+				"properties": map[string]interface{}{
+					"node_id": map[string]interface{}{
+						"type":        "string",
+						"description": "当前节点 ID",
+					},
+					"peers": map[string]interface{}{
+						"type":        "array",
+						"description": "在线节点列表",
+					},
+				},
+			},
+			"examples": []map[string]interface{}{
+				{
+					"request": map[string]interface{}{
+						"action": "get_info",
+						"payload": nil,
+					},
+					"response": map[string]interface{}{
+						"node_id": "node-abc123",
+						"peers":    []interface{}{},
+					},
+				},
+			},
+		},
+		map[string]interface{}{
+			"name":        "list_actions",
+			"description": "获取当前节点所有可用的 actions 及其详细说明",
+			"parameters":  nil,
+			"returns": map[string]interface{}{
+				"properties": map[string]interface{}{
+					"actions": map[string]interface{}{
+						"type":        "array",
+						"description": "所有可用的 actions",
+					},
+				},
+			},
+			"examples": []map[string]interface{}{
+				{
+					"request": map[string]interface{}{
+						"action": "list_actions",
+						"payload": nil,
+					},
+					"response": map[string]interface{}{
+						"actions": []interface{}{},
+					},
+				},
+			},
+		},
+	}
+}
 func (m *mockClusterForTest) LogRPCInfo(msg string, args ...interface{})    { fmt.Printf("[INFO] %s\n", msg) }
 func (m *mockClusterForTest) LogRPCError(msg string, args ...interface{})   { fmt.Printf("[ERROR] %s\n", msg) }
 func (m *mockClusterForTest) LogRPCDebug(msg string, args ...interface{})  { fmt.Printf("[DEBUG] %s\n", msg) }

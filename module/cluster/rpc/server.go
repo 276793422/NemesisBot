@@ -268,12 +268,13 @@ func (s *Server) registerDefaultHandlers() {
 		s.RegisterHandler(action, handlerFunc)
 	}
 
-	// Register default handlers (ping, get_capabilities, get_info)
+	// Register default handlers (ping, get_capabilities, get_info, list_actions)
 	handlers.RegisterDefaultHandlers(
 		s.cluster,
 		s.cluster.GetNodeID,
 		s.cluster.GetCapabilities,
 		s.cluster.GetOnlinePeers,
+		s.cluster.GetActionsSchema,
 		registrar,
 	)
 }

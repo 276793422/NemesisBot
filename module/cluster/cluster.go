@@ -714,12 +714,13 @@ func (c *Cluster) RegisterBasicHandlers() error {
 		}
 	}
 
-	// Register default handlers (ping, get_capabilities, get_info)
+	// Register default handlers (ping, get_capabilities, get_info, list_actions)
 	handlers.RegisterDefaultHandlers(
 		c.logger,
 		c.GetNodeID,
 		c.GetCapabilities,
 		c.GetOnlinePeers,
+		c.GetActionsSchema,
 		registrar,
 	)
 

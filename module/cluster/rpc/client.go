@@ -42,6 +42,7 @@ type Cluster interface {
 	GetAddress() string
 	GetCapabilities() []string
 	GetOnlinePeers() []interface{}
+	GetActionsSchema() []interface{} // Get all available actions with schema
 	LogRPCInfo(msg string, args ...interface{})
 	LogRPCError(msg string, args ...interface{})
 	LogRPCDebug(msg string, args ...interface{})
