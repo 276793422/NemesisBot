@@ -6,6 +6,9 @@ package tools
 import (
 	"context"
 	"fmt"
+
+	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/utils"
 )
 
 type SendCallback func(channel, chatID, content string) error
@@ -93,8 +96,25 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 	finalContent := content
 	if channel == "rpc" {
 		// Try to get correlation ID from context
-		if correlationID := getCorrelationIDFromContext(ctx); correlationID != "" {
+		correlationID := getCorrelationIDFromContext(ctx)
+		logger.InfoCF("agent", "MessageTool: RPC channel detected",
+			map[string]interface{}{
+				"correlation_id": correlationID,
+				"content_preview": utils.Truncate(content, 100),
+			})
+
+		if correlationID != "" {
 			finalContent = fmt.Sprintf("[rpc:%s] %s", correlationID, content)
+			logger.InfoCF("agent", "MessageTool: Added correlation ID prefix to RPC message",
+				map[string]interface{}{
+					"correlation_id": correlationID,
+					"final_content_preview": utils.Truncate(finalContent, 120),
+				})
+		} else {
+			logger.WarnCF("agent", "MessageTool: ⚠️ No correlation ID in context for RPC channel - response will not be delivered!",
+				map[string]interface{}{
+					"content_preview": utils.Truncate(content, 100),
+				})
 		}
 	}
 

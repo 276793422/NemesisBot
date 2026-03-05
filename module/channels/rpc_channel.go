@@ -13,6 +13,7 @@ import (
 
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/utils"
 )
 
 // RPCChannel allows RPC handlers to use the bot's LLM processing
@@ -153,20 +154,44 @@ func (ch *RPCChannel) Stop(ctx context.Context) error {
 // Send implements Channel interface - receives messages from dispatchOutbound
 // and delivers them to waiting RPC handlers
 func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	logger.InfoCF("rpc", "RPCChannel.Send called",
+		map[string]interface{}{
+			"msg_channel": msg.Channel,
+			"ch_name":     ch.Name(),
+			"chat_id":     msg.ChatID,
+			"content_len": len(msg.Content),
+		})
+
 	// Only process messages from this channel
 	if msg.Channel != ch.Name() {
+		logger.WarnCF("rpc", "Channel mismatch - message not for this channel",
+			map[string]interface{}{
+				"msg_channel": msg.Channel,
+				"ch_name":     ch.Name(),
+			})
 		return nil
 	}
+
+	logger.InfoCF("rpc", "Channel matched, processing message",
+		map[string]interface{}{
+			"content_preview": utils.Truncate(msg.Content, 100),
+		})
 
 	// Extract correlation ID from content
 	// Format: "[rpc:correlation_id] actual response"
 	correlationID := extractCorrelationID(msg.Content)
 	if correlationID == "" {
-		logger.DebugCF("rpc", "No correlation ID in message", map[string]interface{}{
-			"content": msg.Content,
-		})
+		logger.WarnCF("rpc", "No correlation ID in message",
+			map[string]interface{}{
+				"content": msg.Content,
+			})
 		return nil
 	}
+
+	logger.InfoCF("rpc", "Extracted correlation ID from message",
+		map[string]interface{}{
+			"correlation_id": correlationID,
+		})
 
 	// Find pending request and deliver response
 	ch.mu.RLock()
@@ -175,21 +200,46 @@ func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 
 	if exists {
 		actualContent := removeCorrelationID(msg.Content)
-		select {
-		case req.responseCh <- actualContent:
-			logger.DebugCF("rpc", "Delivered response via Send", map[string]interface{}{
+		logger.InfoCF("rpc", "Found pending request, delivering response",
+			map[string]interface{}{
 				"correlation_id": correlationID,
 				"content_len":    len(actualContent),
+				"content_preview": utils.Truncate(actualContent, 100),
 			})
+
+		select {
+		case req.responseCh <- actualContent:
+			logger.InfoCF("rpc", "✅ Response delivered successfully via Send",
+				map[string]interface{}{
+					"correlation_id": correlationID,
+				})
 		case <-time.After(time.Second):
-			logger.WarnCF("rpc", "Failed to deliver response (channel full or closed)", map[string]interface{}{
-				"correlation_id": correlationID,
-			})
+			logger.WarnCF("rpc", "Failed to deliver response (channel full or closed)",
+				map[string]interface{}{
+					"correlation_id": correlationID,
+				})
 		}
 	} else {
-		logger.DebugCF("rpc", "No pending request for correlation ID", map[string]interface{}{
-			"correlation_id": correlationID,
-		})
+		logger.WarnCF("rpc", "⚠️ No pending request found for correlation ID",
+			map[string]interface{}{
+				"correlation_id": correlationID,
+				"pending_count":  len(ch.pendingReqs),
+			})
+
+		// List all pending correlation IDs for debugging
+		ch.mu.RLock()
+		ids := make([]string, 0, len(ch.pendingReqs))
+		for id := range ch.pendingReqs {
+			ids = append(ids, id)
+		}
+		ch.mu.RUnlock()
+
+		if len(ids) > 0 {
+			logger.DebugCF("rpc", "Pending correlation IDs",
+				map[string]interface{}{
+					"ids": ids,
+				})
+		}
 	}
 
 	return nil

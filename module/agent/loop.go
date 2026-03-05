@@ -319,10 +319,23 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							"chat_id":      msg.ChatID,
 							"content_len":  len(response),
 						})
+
+					// For RPC channel, we need to add correlation ID prefix
+					// This is required because the response might not have gone through MessageTool
+					finalContent := response
+					if msg.Channel == "rpc" && msg.CorrelationID != "" {
+						finalContent = fmt.Sprintf("[rpc:%s] %s", msg.CorrelationID, response)
+						logger.InfoCF("agent", "Added correlation ID prefix to RPC response",
+							map[string]interface{}{
+								"correlation_id": msg.CorrelationID,
+								"content_preview": utils.Truncate(finalContent, 100),
+							})
+					}
+
 					al.bus.PublishOutbound(bus.OutboundMessage{
 						Channel: msg.Channel,
 						ChatID:  msg.ChatID,
-						Content: response,
+						Content: finalContent,
 					})
 					logger.InfoCF("agent", "Outbound response published",
 						map[string]interface{}{
@@ -1577,7 +1590,7 @@ func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.Messag
 	// Create RPC channel configuration
 	cfg := &channels.RPCChannelConfig{
 		MessageBus:      msgBus,
-		RequestTimeout:  60 * time.Second,
+		RequestTimeout:  28 * time.Minute,
 		CleanupInterval: 30 * time.Second,
 	}
 
@@ -1587,16 +1600,14 @@ func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.Messag
 		return fmt.Errorf("failed to create RPC channel: %w", err)
 	}
 
-	// Start RPC channel
-	ctx := context.Background()
-	if err := rpcCh.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start RPC channel: %w", err)
-	}
+	// NOTE: Don't start RPC channel here!
+	// It will be started by ChannelManager.StartAll() after registration
+	// This prevents "RPC channel already running" error
 
 	// Set RPC channel on cluster (triggers LLM handler registration)
 	clusterInstance.SetRPCChannel(rpcCh)
 
-	logger.InfoC("agent", "RPC channel for LLM forwarding started and configured")
+	logger.InfoC("agent", "RPC channel for peer chat created and configured (will be started by ChannelManager)")
 
 	return nil
 }

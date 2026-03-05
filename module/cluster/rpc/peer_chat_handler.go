@@ -70,12 +70,14 @@ func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]int
 // handleLLMRequest processes LLM-based chat requests
 func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]interface{}, error) {
 	h.cluster.LogRPCInfo("[PeerChat] Processing %s request", req.Type)
+	h.cluster.LogRPCInfo("[PeerChat] Request content: %s", req.Content)
 
 	// Check if rpcChannel is available
 	if h.rpcChannel == nil {
 		h.cluster.LogRPCError("[PeerChat] RPC channel is not available", nil)
 		return h.errorResponse("error", "rpc channel not available"), nil
 	}
+	h.cluster.LogRPCInfo("[PeerChat] RPC channel is available", nil)
 
 	// Extract chat_id and session_key from context
 	chatID := "default"
@@ -107,10 +109,12 @@ func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]int
 	correlationID := fmt.Sprintf("peer-chat-%d", time.Now().UnixNano())
 	inbound.CorrelationID = correlationID
 
-	h.cluster.LogRPCDebug("[PeerChat] Created inbound message: chat_id=%s, correlation_id=%s", chatID, correlationID)
+	h.cluster.LogRPCInfo("[PeerChat] Created inbound message: chat_id=%s, correlation_id=%s", chatID, correlationID)
+	h.cluster.LogRPCDebug("[PeerChat] Inbound message details: channel=%s, sender=%s, session=%s",
+		inbound.Channel, inbound.SenderID, inbound.SessionKey)
 
 	// Send to RPCChannel
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 29*time.Minute)
 	defer cancel()
 
 	respCh, err := h.rpcChannel.Input(ctx, inbound)
@@ -119,16 +123,16 @@ func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]int
 		return h.errorResponse("error", "failed to process: "+err.Error()), nil
 	}
 
-	h.cluster.LogRPCDebug("[PeerChat] Waiting for LLM response...", nil)
+	h.cluster.LogRPCInfo("[PeerChat] Request sent to MessageBus, waiting for LLM response (correlation_id=%s)", correlationID)
 
 	// Wait for response
 	select {
 	case response := <-respCh:
-		h.cluster.LogRPCInfo("[PeerChat] Response received, correlation_id=%s", correlationID)
+		h.cluster.LogRPCInfo("[PeerChat] Response received! correlation_id=%s, response=%s", correlationID, response)
 		return h.successResponse(response, nil), nil
 
 	case <-ctx.Done():
-		h.cluster.LogRPCError("[PeerChat] Timeout waiting for response", nil)
+		h.cluster.LogRPCError("[PeerChat] Timeout waiting for response (correlation_id=%s)", correlationID)
 		return h.errorResponse("error", "timeout"), nil
 	}
 }
