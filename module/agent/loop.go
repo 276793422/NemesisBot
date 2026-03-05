@@ -1590,7 +1590,7 @@ func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.Messag
 	// Create RPC channel configuration
 	cfg := &channels.RPCChannelConfig{
 		MessageBus:      msgBus,
-		RequestTimeout:  28 * time.Minute,
+		RequestTimeout:  60 * time.Second,
 		CleanupInterval: 30 * time.Second,
 	}
 

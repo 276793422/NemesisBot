@@ -114,7 +114,7 @@ func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]int
 		inbound.Channel, inbound.SenderID, inbound.SessionKey)
 
 	// Send to RPCChannel
-	ctx, cancel := context.WithTimeout(context.Background(), 29*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	respCh, err := h.rpcChannel.Input(ctx, inbound)

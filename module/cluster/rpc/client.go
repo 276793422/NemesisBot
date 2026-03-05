@@ -191,7 +191,7 @@ func NewClient(cluster Cluster) *Client {
 			30,               // maxRequests: 30 requests per peer per sliding window
 			10*time.Second,   // window: sliding window of 10 seconds
 		),
-		timeout: 30 * time.Minute, // 30 minutes for long-running LLM tasks
+		timeout: 30 * time.Second,
 	}
 }
 
