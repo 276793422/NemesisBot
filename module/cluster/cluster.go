@@ -255,6 +255,13 @@ func (c *Cluster) GetRegistry() interface{} {
 	return c.registry
 }
 
+// GetRPCChannel returns the RPC channel (may be nil if not configured)
+func (c *Cluster) GetRPCChannel() *channels.RPCChannel {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.rpcChannel
+}
+
 // syncLoop runs periodic sync tasks
 func (c *Cluster) syncLoop() {
 	ticker := time.NewTicker(c.broadcastInterval)

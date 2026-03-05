@@ -110,11 +110,20 @@ func (c *WebChannel) Stop(ctx context.Context) error {
 // Send sends a message to a WebSocket client
 func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	if !c.IsRunning() {
+		logger.WarnCF("web", "Web channel not running, cannot send message",
+			map[string]interface{}{
+				"chat_id": msg.ChatID,
+				"content_len": len(msg.Content),
+			})
 		return fmt.Errorf("web channel not running")
 	}
 
 	// Handle broadcast to all sessions
 	if msg.ChatID == "web:broadcast" {
+		logger.DebugCF("web", "Broadcasting to all sessions",
+			map[string]interface{}{
+				"content_len": len(msg.Content),
+			})
 		return c.BroadcastToAll(msg.Content)
 	}
 
@@ -123,23 +132,37 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	if len(msg.ChatID) > 4 && msg.ChatID[:4] == "web:" {
 		sessionID = msg.ChatID[4:]
 	} else {
+		logger.ErrorCF("web", "Invalid chat ID format",
+			map[string]interface{}{
+				"chat_id": msg.ChatID,
+				"expected_format": "web:<session-id>",
+			})
 		return fmt.Errorf("invalid chat ID format: %s", msg.ChatID)
 	}
 
-	logger.DebugCF("web", "Sending message to session", map[string]interface{}{
-		"session_id": sessionID,
-		"chat_id":    msg.ChatID,
-		"content":    msg.Content,
-	})
+	logger.DebugCF("web", "Sending message to session",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"chat_id":    msg.ChatID,
+			"content_len": len(msg.Content),
+		})
 
 	// Send message to session
 	if err := c.server.SendToSession(sessionID, "assistant", msg.Content); err != nil {
-		logger.ErrorCF("web", "Failed to send message", map[string]interface{}{
-			"error":      err.Error(),
-			"session_id": sessionID,
-		})
+		logger.ErrorCF("web", "Failed to send message to session",
+			map[string]interface{}{
+				"error":      err.Error(),
+				"session_id": sessionID,
+				"chat_id":    msg.ChatID,
+			})
 		return err
 	}
+
+	logger.InfoCF("web", "Message sent to session successfully",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"chat_id":    msg.ChatID,
+		})
 
 	return nil
 }

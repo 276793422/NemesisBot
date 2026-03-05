@@ -93,8 +93,19 @@ func (sm *SessionManager) RemoveSession(sessionID string) {
 func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 	session, ok := sm.GetSession(sessionID)
 	if !ok {
+		logger.WarnCF("web", "Session not found for broadcast",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"message_len": len(message),
+			})
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
+
+	logger.DebugCF("web", "Broadcasting to session",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"message_len": len(message),
+		})
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -102,25 +113,65 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 	// Update last active time
 	session.LastActive = time.Now()
 
+	// Check if connection is still active
+	if session.Conn == nil {
+		logger.ErrorCF("web", "Session connection is nil",
+			map[string]interface{}{
+				"session_id": sessionID,
+			})
+		return fmt.Errorf("session connection is nil")
+	}
+
 	// Use send queue if available (thread-safe), otherwise direct send (legacy)
 	if session.sendQueue != nil {
 		err := session.sendQueue.send(websocket.TextMessage, message)
 		if err != nil {
+			logger.ErrorCF("web", "Failed to send via queue",
+				map[string]interface{}{
+					"session_id": sessionID,
+					"error": err.Error(),
+				})
 			return fmt.Errorf("failed to send via queue: %w", err)
 		}
+		logger.DebugCF("web", "Message sent via queue",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"message_len": len(message),
+			})
 		return nil
 	}
 
 	// Legacy fallback: direct send (not recommended for concurrent use)
+	logger.DebugCF("web", "Using legacy direct send",
+		map[string]interface{}{
+			"session_id": sessionID,
+		})
+
 	err := session.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err != nil {
+		logger.ErrorCF("web", "Failed to set write deadline",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"error": err.Error(),
+			})
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
 	err = session.Conn.WriteMessage(websocket.TextMessage, message)
 	if err != nil {
+		logger.ErrorCF("web", "Failed to write message",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"error": err.Error(),
+			})
 		return fmt.Errorf("failed to write message: %w", err)
 	}
+
+	logger.DebugCF("web", "Message sent successfully",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"message_len": len(message),
+		})
 
 	return nil
 }

@@ -288,17 +288,33 @@ func (m *Manager) StopAll(ctx context.Context) error {
 }
 
 func (m *Manager) dispatchOutbound(ctx context.Context) {
+	logger.InfoC("channels", "Outbound dispatcher started")
 	for {
 		select {
 		case <-ctx.Done():
+			logger.InfoC("channels", "Outbound dispatcher stopped")
 			return
 		case msg, ok := <-m.bus.OutboundChannel():
 			if !ok {
+				logger.WarnC("channels", "Outbound channel closed")
 				return
 			}
 
+			logger.DebugCF("channels", "Received outbound message from bus",
+				map[string]interface{}{
+					"channel":      msg.Channel,
+					"chat_id":      msg.ChatID,
+					"content_len":  len(msg.Content),
+					"content_preview": msg.Content[:min(80, len(msg.Content))],
+				})
+
 			// Silently skip internal channels
 			if constants.IsInternalChannel(msg.Channel) {
+				logger.DebugCF("channels", "Skipping internal channel",
+					map[string]interface{}{
+						"channel": msg.Channel,
+						"chat_id": msg.ChatID,
+					})
 				continue
 			}
 
@@ -309,18 +325,39 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			if !exists {
 				logger.ErrorCF("channels", "Unknown channel for outbound message", map[string]interface{}{
 					"channel": msg.Channel,
+					"chat_id": msg.ChatID,
 				})
 				continue
 			}
 
+			logger.DebugCF("channels", "Sending to channel",
+				map[string]interface{}{
+					"channel": msg.Channel,
+					"chat_id": msg.ChatID,
+				})
+
 			if err := channel.Send(ctx, msg); err != nil {
 				logger.ErrorCF("channels", "Error sending message to channel", map[string]interface{}{
 					"channel": msg.Channel,
+					"chat_id": msg.ChatID,
 					"error":   err.Error(),
 				})
+			} else {
+				logger.InfoCF("channels", "Message sent to channel successfully",
+					map[string]interface{}{
+						"channel": msg.Channel,
+						"chat_id": msg.ChatID,
+					})
 			}
 		}
 	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (m *Manager) GetChannel(name string) (Channel, bool) {

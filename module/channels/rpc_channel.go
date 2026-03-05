@@ -150,10 +150,48 @@ func (ch *RPCChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send implements Channel interface - not used for RPC channel but required by interface
+// Send implements Channel interface - receives messages from dispatchOutbound
+// and delivers them to waiting RPC handlers
 func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	// RPC channel doesn't actively send messages
-	// Responses are delivered through the pending request mechanism
+	// Only process messages from this channel
+	if msg.Channel != ch.Name() {
+		return nil
+	}
+
+	// Extract correlation ID from content
+	// Format: "[rpc:correlation_id] actual response"
+	correlationID := extractCorrelationID(msg.Content)
+	if correlationID == "" {
+		logger.DebugCF("rpc", "No correlation ID in message", map[string]interface{}{
+			"content": msg.Content,
+		})
+		return nil
+	}
+
+	// Find pending request and deliver response
+	ch.mu.RLock()
+	req, exists := ch.pendingReqs[correlationID]
+	ch.mu.RUnlock()
+
+	if exists {
+		actualContent := removeCorrelationID(msg.Content)
+		select {
+		case req.responseCh <- actualContent:
+			logger.DebugCF("rpc", "Delivered response via Send", map[string]interface{}{
+				"correlation_id": correlationID,
+				"content_len":    len(actualContent),
+			})
+		case <-time.After(time.Second):
+			logger.WarnCF("rpc", "Failed to deliver response (channel full or closed)", map[string]interface{}{
+				"correlation_id": correlationID,
+			})
+		}
+	} else {
+		logger.DebugCF("rpc", "No pending request for correlation ID", map[string]interface{}{
+			"correlation_id": correlationID,
+		})
+	}
+
 	return nil
 }
 
@@ -215,67 +253,19 @@ func (ch *RPCChannel) Input(ctx context.Context, inbound *bus.InboundMessage) (<
 	return respCh, nil
 }
 
-// outboundListener listens for outbound messages and delivers them to waiting RPC handlers
+// outboundListener is deprecated - messages are now received via Send() method
+// This method is kept for backward compatibility but does nothing
 func (ch *RPCChannel) outboundListener(ctx context.Context) {
 	defer ch.wg.Done()
 
-	logger.DebugC("rpc", "Outbound listener started")
+	logger.InfoC("rpc", "Outbound listener started (deprecated - using Send() method)")
 
-	for {
-		select {
-		case <-ch.stopCh:
-			logger.DebugC("rpc", "Outbound listener stopped (signal)")
-			return
-
-		case <-ctx.Done():
-			logger.DebugC("rpc", "Outbound listener stopped (context)")
-			return
-
-		case msg, ok := <-ch.base.bus.OutboundChannel():
-			if !ok {
-				logger.DebugC("rpc", "Outbound channel closed")
-				return
-			}
-
-			// Only process messages from this channel
-			if msg.Channel != ch.Name() {
-				continue
-			}
-
-			// Extract correlation ID from content
-			// Format: "[rpc:correlation_id] actual response"
-			correlationID := extractCorrelationID(msg.Content)
-			if correlationID == "" {
-				logger.DebugCF("rpc", "No correlation ID in message", map[string]interface{}{
-					"content": msg.Content,
-				})
-				continue
-			}
-
-			// Find pending request and deliver response
-			ch.mu.RLock()
-			req, exists := ch.pendingReqs[correlationID]
-			ch.mu.RUnlock()
-
-			if exists {
-				actualContent := removeCorrelationID(msg.Content)
-				select {
-				case req.responseCh <- actualContent:
-					logger.DebugCF("rpc", "Delivered response", map[string]interface{}{
-						"correlation_id": correlationID,
-						"content_len":    len(actualContent),
-					})
-				case <-time.After(time.Second):
-					logger.WarnCF("rpc", "Failed to deliver response (channel full or closed)", map[string]interface{}{
-						"correlation_id": correlationID,
-					})
-				}
-			} else {
-				logger.DebugCF("rpc", "No pending request for correlation ID", map[string]interface{}{
-					"correlation_id": correlationID,
-				})
-			}
-		}
+	// Simply wait for stop signal
+	select {
+	case <-ch.stopCh:
+		logger.DebugC("rpc", "Outbound listener stopped (signal)")
+	case <-ctx.Done():
+		logger.DebugC("rpc", "Outbound listener stopped (context)")
 	}
 }
 

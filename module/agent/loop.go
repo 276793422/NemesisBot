@@ -271,9 +271,22 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			response, err := al.processMessage(ctx, msg)
 			if err != nil {
 				response = fmt.Sprintf("Error processing message: %v", err)
+				logger.DebugCF("agent", "Error captured, creating error response",
+					map[string]interface{}{
+						"error": err.Error(),
+						"response_preview": utils.Truncate(response, 100),
+					})
 			}
 
 			if response != "" {
+				logger.DebugCF("agent", "Response ready to send",
+					map[string]interface{}{
+						"channel":       msg.Channel,
+						"chat_id":       msg.ChatID,
+						"response_len":  len(response),
+						"response_preview": utils.Truncate(response, 80),
+					})
+
 				// Check if the message tool already sent a response during this round.
 				// If so, skip publishing to avoid duplicate messages to the user.
 				// Use default agent's tools to check (message tool is shared).
@@ -283,17 +296,52 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					if tool, ok := defaultAgent.Tools.Get("message"); ok {
 						if mt, ok := tool.(*tools.MessageTool); ok {
 							alreadySent = mt.HasSentInRound()
+							logger.DebugCF("agent", "MessageTool alreadySent check",
+								map[string]interface{}{
+									"alreadySent": alreadySent,
+									"agent_id": defaultAgent.ID,
+								})
+						} else {
+							logger.DebugCF("agent", "MessageTool not a MessageTool instance",
+								map[string]interface{}{"tool_type": fmt.Sprintf("%T", tool)})
 						}
+					} else {
+						logger.DebugCF("agent", "MessageTool not found in default agent", nil)
 					}
+				} else {
+					logger.DebugCF("agent", "Default agent not found", nil)
 				}
 
 				if !alreadySent {
+					logger.DebugCF("agent", "Publishing outbound response",
+						map[string]interface{}{
+							"channel":      msg.Channel,
+							"chat_id":      msg.ChatID,
+							"content_len":  len(response),
+						})
 					al.bus.PublishOutbound(bus.OutboundMessage{
 						Channel: msg.Channel,
 						ChatID:  msg.ChatID,
 						Content: response,
 					})
+					logger.InfoCF("agent", "Outbound response published",
+						map[string]interface{}{
+							"channel": msg.Channel,
+							"chat_id": msg.ChatID,
+						})
+				} else {
+					logger.InfoCF("agent", "Skipping outbound response (message tool already sent)",
+						map[string]interface{}{
+							"channel": msg.Channel,
+							"chat_id": msg.ChatID,
+						})
 				}
+			} else {
+				logger.DebugCF("agent", "Empty response, not sending",
+					map[string]interface{}{
+						"channel": msg.Channel,
+						"chat_id": msg.ChatID,
+					})
 			}
 		}
 	}
@@ -323,6 +371,15 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+
+	// Register RPC channel to channel manager if cluster has one
+	// This is needed so that dispatchOutbound can deliver messages to RPC channel
+	if al.cluster != nil {
+		if rpcCh := al.cluster.GetRPCChannel(); rpcCh != nil {
+			cm.RegisterChannel("rpc", rpcCh)
+			logger.InfoC("agent", "RPC channel registered to channel manager")
+		}
+	}
 }
 
 // RecordLastChannel records the last active channel for this workspace.

@@ -320,6 +320,14 @@ func sendErrorViaQueue(sq *sendQueue, message string) {
 
 // BroadcastToSession sends a message to a specific session
 func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, content string) error {
+	logger.DebugCF("web", "BroadcastToSession called",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"role": role,
+			"content_len": len(content),
+			"content_preview": content[:min(100, len(content))],
+		})
+
 	msg := ServerMessage{
 		Type:      MessageTypeMessage,
 		Role:      role,
@@ -329,8 +337,42 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 
 	data, err := json.Marshal(msg)
 	if err != nil {
+		logger.ErrorCF("web", "Failed to marshal message",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"error": err.Error(),
+			})
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	return sessionMgr.Broadcast(sessionID, data)
+	logger.DebugCF("web", "Message marshaled, broadcasting to session",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"data_len": len(data),
+		})
+
+	err = sessionMgr.Broadcast(sessionID, data)
+	if err != nil {
+		logger.ErrorCF("web", "Failed to broadcast to session",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"error": err.Error(),
+			})
+		return err
+	}
+
+	logger.InfoCF("web", "BroadcastToSession completed successfully",
+		map[string]interface{}{
+			"session_id": sessionID,
+			"role": role,
+		})
+
+	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
