@@ -118,7 +118,26 @@ func (t *ExecTool) Name() string {
 }
 
 func (t *ExecTool) Description() string {
-	return "Execute a shell command and return its output. Use with caution."
+	return `执行命令并等待完成，返回完整输出。
+
+适用场景：
+- 需要返回输出的命令（如：cat, ls, grep, curl）
+- 编译和构建命令（如：go build, make）
+- 任何需要等待结果完成的命令
+
+行为说明：
+- 此工具会等待命令执行完成（最多 60 秒超时）
+- 返回完整的标准输出和错误输出
+- 命令执行完成前无法继续执行其他操作
+
+重要提示：
+- 对于 GUI 应用程序（如 notepad.exe, calc.exe），请使用 exec_async 工具
+- exec_async 会立即返回，不会等待应用程序退出
+
+示例：
+- exec(command="dir")
+- exec(command="cat README.md")
+- exec(command="curl https://api.example.com")`
 }
 
 func (t *ExecTool) Parameters() map[string]interface{} {
