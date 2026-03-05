@@ -160,6 +160,13 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) *To
 		return ErrorResult(guardError)
 	}
 
+	// On Windows, replace 'curl' with 'curl.exe' to avoid PowerShell alias confusion
+	// PowerShell has 'curl' as an alias for Invoke-WebRequest, which breaks curl syntax
+	if runtime.GOOS == "windows" {
+		curlPattern := regexp.MustCompile(`\bcurl\b`)
+		command = curlPattern.ReplaceAllString(command, "curl.exe")
+	}
+
 	// timeout == 0 means no timeout
 	var cmdCtx context.Context
 	var cancel context.CancelFunc
