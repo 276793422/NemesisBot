@@ -58,48 +58,7 @@ echo   - Go Version: %GO_VERSION%
 echo.
 
 REM Step 1: Copy workspace to nemesisbot/
-echo [Step 1/4] Copying workspace to nemesisbot/...
-if exist "workspace" (
-    xcopy "workspace" ".\nemesisbot\workspace\" /E /I /Y /Q
-    if errorlevel 1 (
-        echo [ERROR] Failed to copy workspace directory
-        pause
-        exit /b 1
-    )
-    echo [OK] Workspace copied successfully
-) else (
-    echo [WARNING] workspace directory not found in current directory, skipping copy
-)
-echo.
-
-REM Step 1.5: Copy default to nemesisbot/
-echo [Step 1.5/3] Copying default to nemesisbot/...
-if exist "default" (
-    xcopy "default" ".\nemesisbot\default\" /E /I /Y /Q
-    if errorlevel 1 (
-        echo [ERROR] Failed to copy default directory
-        pause
-        exit /b 1
-    )
-    echo [OK] Default directory copied successfully
-) else (
-    echo [WARNING] default directory not found in current directory, skipping copy
-)
-echo.
-
-REM Step 1.6: Copy config to nemesisbot/
-echo [Step 1.6/3] Copying config to nemesisbot/...
-if exist "config" (
-    xcopy "config" ".\nemesisbot\config\" /E /I /Y /Q
-    if errorlevel 1 (
-        echo [ERROR] Failed to copy config directory
-        pause
-        exit /b 1
-    )
-    echo [OK] Config directory copied successfully
-) else (
-    echo [WARNING] config directory not found in current directory, skipping copy
-)
+echo [Step 1/3] Nothing
 echo.
 
 REM Step 2: Build with dynamic ldflags
@@ -120,42 +79,7 @@ echo [OK] Build completed successfully
 echo.
 
 REM Step 3: Clean up workspace and default directories
-echo [Step 3/3] Cleaning up embedded directories...
-if exist ".\nemesisbot\workspace" (
-    rmdir /S /Q ".\nemesisbot\workspace"
-    if errorlevel 1 (
-        echo [WARNING] Failed to remove workspace directory
-        echo Please manually delete: .\nemesisbot\workspace
-    ) else (
-        echo [OK] Workspace directory removed
-    )
-) else (
-    echo [INFO] No workspace directory to clean
-)
-
-if exist ".\nemesisbot\default" (
-    rmdir /S /Q ".\nemesisbot\default"
-    if errorlevel 1 (
-        echo [WARNING] Failed to remove default directory
-        echo Please manually delete: .\nemesisbot\default
-    ) else (
-        echo [OK] Default directory removed
-    )
-) else (
-    echo [INFO] No default directory to clean
-)
-
-if exist ".\nemesisbot\config" (
-    rmdir /S /Q ".\nemesisbot\config"
-    if errorlevel 1 (
-        echo [WARNING] Failed to remove config directory
-        echo Please manually delete: .\nemesisbot\config
-    ) else (
-        echo [OK] Config directory removed
-    )
-) else (
-    echo [INFO] No config directory to clean
-)
+echo [Step 3/3] Nothing
 echo.
 
 REM ============================================

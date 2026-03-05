@@ -6,6 +6,8 @@
 
 一个轻量级、高安全性的个人 AI 助手，专注于安全保障和拟真使用体验。
 
+（这句话是人写的）以下内容大部分都是AI胡掰，可信可不信，凡是AI说“稳定”的地方，可靠度都和投硬币差不多。
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://golang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macos-lightgrey)](https://github.com/276793422/NemesisBot)
@@ -30,22 +32,50 @@
 - ✅ 在安全保障的前提下，提供完整的工具能力
 - ✅ 可配置的安全策略，满足不同使用场景
 - ✅ 实时监控和拦截，防止意外损害
+- ✅ **工具执行增强** - Windows PowerShell curl 兼容性支持
 
-### 🌐 分布式集群（测试中，claude总说测试过了，但是它依旧不靠谱，还得我自己测）
+### 🌐 分布式集群
 
-**多节点协同 - 让多个 AI 一起工作**
+**多节点协同 - 让多个 AI 一起工作**（已稳定可用）
 
 - **角色分离** - manager / coordinator / worker / observer / standby
 - **业务分类** - design / development / testing / ops / deployment / analysis / general
 - **自定义标签** - 灵活的多维度分类体系
 - **UDP 自动发现** - 局域网内自动发现其他节点
-- **RPC 通信** - 节点间远程调用和协作
+- **RPC 通信** - 节点间远程调用和协作，支持 Bot 间 LLM 请求转发
 - **静态+动态配置** - 手动配置已知节点，自动发现新节点
+- **连接池管理** - 高效的连接复用和管理
+- **限流保护** - 防止 RPC 调用过载
 
 **使用场景**
 - 🏢 专业分工 - 设计、开发、测试各司其职
 - 🔄 任务协作 - 管理者协调，工作者执行
 - 📊 负载均衡 - 根据能力和标签智能路由
+
+---
+
+## 近期更新
+
+### 2026-03-05
+
+**重要修复**：
+- ✅ **Outbound channel 竞争修复** - 解决 RPC channel 和 manager 的消息竞争问题
+- ✅ **RateLimiter 死循环修复** - 修复限流器的潜在死循环问题
+- ✅ **Windows PowerShell curl 兼容** - 自动将 `curl` 替换为 `curl.exe`，避免 PowerShell 别名冲突
+
+**功能增强**：
+- ✅ **Web 界面优化** - 时间显示精确到毫秒，输入框固定底部，消息独立滚动
+- ✅ **RPC 日志增强** - 完整的 RPC 调用日志记录，方便调试
+- ✅ **连接池管理** - 优化连接池资源管理，防止资源泄漏
+
+**新增技能**：
+- ✅ **build-project skill** - 标准化的项目构建流程
+- ✅ **结构化开发流程** - 完整的开发、测试、复查流程
+
+**文档完善**：
+- 新增 20+ 份技术文档和分析报告
+- 完整的并发问题分析和修复记录
+- 详细的代理配置指南
 
 ---
 
@@ -258,6 +288,29 @@ nemesisbot cluster disable
 
 ---
 
+## Skill 系统
+
+NemesisBot 支持可扩展的技能系统，通过 Skills 定义标准化的操作流程。
+
+### 内置 Skills
+
+1. **structured-development** - 结构化开发流程
+   - 定义完整的开发流程：预研 → 计划 → 开发 → 测试 → 复查 → 修复 → 报告
+   - 确保代码质量和项目稳定性
+   - 所有开发工作严格按照此流程执行
+
+2. **build-project** - 项目构建流程
+   - 环境准备和检查
+   - 版本信息收集（Git 标签、提交哈希、构建时间等）
+   - 编译构建（带完整版本信息注入）
+   - 结果验证和报告
+
+### Skill 使用
+
+当加载特定 skill 后，AI 会严格按照定义的流程执行相关操作，确保操作的一致性和可追溯性。
+
+---
+
 ## 多实例部署
 
 NemesisBot 支持在同一台设备上运行多个独立的 bot 实例。
@@ -295,6 +348,8 @@ nemesisbot.exe --local gateway
 支持多平台接入（简单配置）：
 
 - **Web** - 内置 Web 界面，浏览器访问
+  - 精确时间显示（北京时间，精确到毫秒）
+  - 优化的界面布局（输入框固定底部，消息独立滚动）
 - **外部程序** - 自定义输入/输出程序集成
 - **Telegram** - Telegram Bot
 - **Discord** - Discord Bot
@@ -337,27 +392,45 @@ NemesisBot/
 │   ├── agent/            # 🤖 Agent 核心引擎
 │   ├── channels/         # 📱 通讯渠道
 │   ├── providers/        # 🧠 LLM 提供商
+│   ├── tools/            # 🛠️ 工具系统
+│   ├── config/           # ⚙️ 配置管理
+│   ├── bus/              # 📨 消息总线
+│   ├── routing/          # 🔀 路由分发
 │   └── ...
-├── default/              # 默认身份文件
+├── Skills/               # 📚 技能系统
+│   ├── structured-development/  # 结构化开发流程
+│   └── build-project/             # 项目构建流程
+├── nemesisbot/           # 🚀 主程序入口
+├── default/              # 📦 默认配置和身份
 │   ├── IDENTITY.md       # AI 身份
 │   ├── SOUL.md           # AI 灵魂
 │   └── USER.md           # 用户信息
-└── workspace/            # 默认工作空间
-    ├── memory/           # 持久化记忆
-    ├── config/           # 集群配置
-    └── skills/           # 技能安装
+├── config/               # 📋 配置模板
+│   ├── config.default.json
+│   ├── config.security.json
+│   ├── config.mcp.json
+│   └── config.cluster.json
+├── docs/                 # 📖 文档目录
+│   ├── CHANGELOG.md
+│   └── ...              # 各种分析报告和文档
+└── test/                 # 🧪 测试目录
+    ├── unit/             # 单元测试
+    └── integration/      # 集成测试
 ```
 
 ---
 
 ## 技术特点
 
-- **45,000+ 行代码** - 尽量保证较高的代码质量
+- **50,000+ 行代码** - 尽量保证较高的代码质量（持续更新中）
 - **24 个核心模块** - 清晰的架构设计
 - **ABAC 安全引擎** - 企业级权限控制
-- **分布式集群** - 支持多节点协同
+- **分布式集群** - 支持多节点协同（已稳定可用）
 - **身份系统** - 拟真使用体验
 - **持久化记忆** - AI 持续学习和进化
+- **Skill 系统** - 可扩展的技能系统
+- **多实例部署** - 支持同一设备运行多个独立实例
+- **完整的构建流程** - 标准化的构建和版本管理
 
 ---
 
