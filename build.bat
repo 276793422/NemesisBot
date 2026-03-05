@@ -10,16 +10,38 @@ REM ============================================
 REM ============================================
 REM Parse Command Line Arguments
 REM ============================================
-REM Usage: build.bat [output_filename]
-REM   If output_filename is provided, the compiled binary will be named accordingly
-REM   If not provided, defaults to nemesisbot.exe
+REM Usage: build.bat [output_filename] [powershell]
+REM   output_filename: Name of the compiled binary (default: nemesisbot.exe)
+REM   powershell: Optional flag to use PowerShell instead of cmd.exe
 
+set BUILD_TAGS=
+set OUTPUT_NAME=nemesisbot.exe
+
+REM Parse arguments
+:parse_args
 if "%~1"=="" (
-    set OUTPUT_NAME=nemesisbot.exe
+    goto done_parsing
+)
+if /i "%~1"=="powershell" (
+    set BUILD_TAGS=-tags powershell
+    echo [INFO] PowerShell build enabled
+    shift
+    goto parse_args
+)
+set OUTPUT_NAME=%~1
+shift
+goto parse_args
+
+:done_parsing
+if "%OUTPUT_NAME%"=="nemesisbot.exe" (
     echo [INFO] No output filename specified, using default: nemesisbot.exe
 ) else (
-    set OUTPUT_NAME=%~1
     echo [INFO] Output filename specified: %OUTPUT_NAME%
+)
+if not "%BUILD_TAGS%"=="" (
+    echo [INFO] Building with PowerShell support
+) else (
+    echo [INFO] Building with cmd.exe (default, more reliable)
 )
 echo.
 
@@ -65,7 +87,7 @@ REM Step 2: Build with dynamic ldflags
 echo [Step 2/3] Building %OUTPUT_NAME%...
 echo.
 
-go build -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o %OUTPUT_NAME% .\nemesisbot\
+go build %BUILD_TAGS% -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o %OUTPUT_NAME% .\nemesisbot\
 
 if errorlevel 1 (
     echo.

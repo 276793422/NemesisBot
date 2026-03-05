@@ -179,11 +179,9 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) *To
 		return ErrorResult(guardError)
 	}
 
-	// On Windows, replace 'curl' with 'curl.exe' to avoid PowerShell alias confusion
-	// PowerShell has 'curl' as an alias for Invoke-WebRequest, which breaks curl syntax
+	// Preprocess command for Windows
 	if runtime.GOOS == "windows" {
-		curlPattern := regexp.MustCompile(`\bcurl\b`)
-		command = curlPattern.ReplaceAllString(command, "curl.exe")
+		command = t.preprocessWindowsCommand(command)
 	}
 
 	// timeout == 0 means no timeout
@@ -197,11 +195,18 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) *To
 	defer cancel()
 
 	var cmd *exec.Cmd
+	var err error
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+		// Windows: use platform-specific implementation (cmd.exe or PowerShell)
+		cmd, err = t.buildWindowsCommand(cmdCtx, command)
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("Failed to build command: %v", err))
+		}
 	} else {
+		// Unix-like systems: use sh -c
 		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
 	}
+
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -210,7 +215,7 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]interface{}) *To
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	output := stdout.String()
 	if stderr.Len() > 0 {
 		output += "\nSTDERR:\n" + stderr.String()
@@ -326,4 +331,30 @@ func (t *ExecTool) SetAllowPatterns(patterns []string) error {
 		t.allowPatterns = append(t.allowPatterns, re)
 	}
 	return nil
+}
+
+// preprocessWindowsCommand preprocesses commands for Windows execution
+// - Ensures curl is curl.exe (not an alias)
+// - Adds --max-time to curl commands if not present
+func (t *ExecTool) preprocessWindowsCommand(command string) string {
+	// Replace 'curl' with 'curl.exe' to avoid alias issues
+	curlPattern := regexp.MustCompile(`\bcurl\.exe\b`)
+	if !curlPattern.MatchString(command) {
+		bareCurlPattern := regexp.MustCompile(`\bcurl\b`)
+		command = bareCurlPattern.ReplaceAllString(command, "curl.exe")
+	}
+
+	// Add --max-time to curl if not already present
+	// This prevents curl from hanging indefinitely on network issues
+	if strings.Contains(strings.ToLower(command), "curl.exe") {
+		// Check if --max-time or -m is already present
+		hasMaxTime := regexp.MustCompile(`\b--max-time\s*\d+|\b-m\s*\d+`).MatchString(command)
+		if !hasMaxTime {
+			// Insert --max-time 10 after curl.exe
+			curlExePattern := regexp.MustCompile(`\bcurl\.exe\b`)
+			command = curlExePattern.ReplaceAllString(command, "curl.exe --max-time 10")
+		}
+	}
+
+	return command
 }
