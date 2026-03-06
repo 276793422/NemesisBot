@@ -141,21 +141,13 @@ type FinalResponseInfo struct {
 }
 
 // NewRequestLogger creates a new request logger
-func NewRequestLogger(cfg *config.LoggingConfig) *RequestLogger {
+func NewRequestLogger(cfg *config.LoggingConfig, workspace string) *RequestLogger {
 	if cfg == nil || !cfg.LLMRequests {
 		return &RequestLogger{enabled: false}
 	}
 
-	// Expand ~ in log directory
-	logDir := cfg.LogDir
-	if strings.HasPrefix(logDir, "~") {
-		home, _ := os.UserHomeDir()
-		if len(logDir) > 1 && logDir[1] == '/' || logDir[1] == '\\' {
-			logDir = filepath.Join(home, logDir[2:])
-		} else {
-			logDir = home
-		}
-	}
+	// Resolve log directory relative to workspace
+	logDir := resolveLogPath(cfg.LogDir, workspace)
 
 	return &RequestLogger{
 		cfg:        cfg,
@@ -165,6 +157,38 @@ func NewRequestLogger(cfg *config.LoggingConfig) *RequestLogger {
 		startTime:  time.Now(),
 		mu:         newFileWriteMutex(),
 	}
+}
+
+// resolveLogPath resolves log directory path
+// - If logDir is absolute (including ~), use it as-is
+// - If logDir is relative, join it with workspace
+// - Expands ~ in the final path
+func resolveLogPath(logDir, workspace string) string {
+	var basePath string
+
+	// Check if logDir is an absolute path (including ~)
+	// Note: On Windows, filepath.IsAbs returns false for Unix-style paths like "/var/log"
+	// So we also explicitly check for paths starting with / or \
+	isUnixStyleAbs := len(logDir) > 0 && (logDir[0] == '/' || logDir[0] == '\\')
+	if filepath.IsAbs(logDir) || strings.HasPrefix(logDir, "~") || isUnixStyleAbs {
+		// Absolute path - use directly
+		basePath = logDir
+	} else {
+		// Relative path - join with workspace
+		basePath = filepath.Join(workspace, logDir)
+	}
+
+	// Expand ~
+	if strings.HasPrefix(basePath, "~") {
+		home, _ := os.UserHomeDir()
+		if len(basePath) > 1 && (basePath[1] == '/' || basePath[1] == '\\') {
+			basePath = filepath.Join(home, basePath[2:])
+		} else {
+			basePath = home
+		}
+	}
+
+	return basePath
 }
 
 // IsEnabled returns whether the logger is enabled

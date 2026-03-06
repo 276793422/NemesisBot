@@ -117,8 +117,7 @@ func cmdLogLLMEnable() {
 
 	// Set defaults if not set
 	if cfg.Logging.LogDir == "" {
-		pm := path.NewPathManager()
-		cfg.Logging.LogDir = filepath.Join(pm.Workspace(), "logs", "request_logs")
+		cfg.Logging.LogDir = "logs/request_logs"
 	}
 	if cfg.Logging.DetailLevel == "" {
 		cfg.Logging.DetailLevel = "full"
@@ -131,7 +130,13 @@ func cmdLogLLMEnable() {
 	}
 
 	fmt.Println("✅ LLM request logging enabled")
-	fmt.Printf("📁 Log directory: %s\n", cfg.Logging.LogDir)
+	// Display absolute path to user
+	displayLogDir := cfg.Logging.LogDir
+	isUnixStyleAbs := len(displayLogDir) > 0 && (displayLogDir[0] == '/' || displayLogDir[0] == '\\')
+	if !filepath.IsAbs(displayLogDir) && !strings.HasPrefix(displayLogDir, "~") && !isUnixStyleAbs {
+		displayLogDir = filepath.Join(cfg.WorkspacePath(), displayLogDir)
+	}
+	fmt.Printf("📁 Log directory: %s\n", displayLogDir)
 	fmt.Printf("📝 Detail level: %s\n", cfg.Logging.DetailLevel)
 }
 

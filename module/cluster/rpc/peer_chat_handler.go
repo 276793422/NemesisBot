@@ -64,11 +64,11 @@ func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]int
 	}
 
 	// 4. Route based on type (all types currently go through LLM)
-	return h.handleLLMRequest(&req)
+	return h.handleLLMRequest(payload, &req)
 }
 
 // handleLLMRequest processes LLM-based chat requests
-func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]interface{}, error) {
+func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, req *PeerChatPayload) (map[string]interface{}, error) {
 	h.cluster.LogRPCInfo("[PeerChat] Processing %s request", req.Type)
 	h.cluster.LogRPCInfo("[PeerChat] Request content: %s", req.Content)
 
@@ -81,20 +81,33 @@ func (h *PeerChatHandler) handleLLMRequest(req *PeerChatPayload) (map[string]int
 
 	// Extract chat_id and session_key from context
 	chatID := "default"
-	sessionKey := "default-session"
-	senderID := "remote-peer"
-
 	if req.Context != nil {
 		if v, ok := req.Context["chat_id"].(string); ok {
 			chatID = v
 		}
-		if v, ok := req.Context["session_key"].(string); ok {
-			sessionKey = v
+	}
+
+	// Determine sender ID with fallback priority:
+	// 1. _rpc.from (injected by server)
+	// 2. context.sender_id (legacy)
+	// 3. "remote-peer" (default)
+	senderID := "remote-peer"
+	if rpcMeta, ok := rawPayload["_rpc"].(map[string]interface{}); ok {
+		if from, ok := rpcMeta["from"].(string); ok && from != "" {
+			senderID = from
 		}
-		if v, ok := req.Context["sender_id"].(string); ok {
+	}
+	if senderID == "remote-peer" && req.Context != nil {
+		if v, ok := req.Context["sender_id"].(string); ok && v != "" {
 			senderID = v
 		}
 	}
+
+	// Construct session key as "cluster_rpc:{sender_id}"
+	sessionKey := fmt.Sprintf("cluster_rpc:%s", senderID)
+
+	// Log session key for verification
+	h.cluster.LogRPCInfo("[PeerChat] Using session_key=%s for sender=%s", sessionKey, senderID)
 
 	// Construct InboundMessage
 	inbound := &bus.InboundMessage{

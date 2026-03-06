@@ -343,10 +343,10 @@ nemesisbot.exe --local gateway
 - `test/cluster/` - 集群和 RPC 测试
 
 **文档**：
-- `docs/BUG/` - 已知问题和调查
-- `docs/INFO/` - 技术信息
-- `docs/PLAN/` - 规划文档
-- `docs/REPORT/` - 分析报告
+- `docs/BUG/` - 已知问题和调查，已知问题的分析，文件创建到这里
+- `docs/INFO/` - 技术信息，项目技术信息，文件创建到这里
+- `docs/PLAN/` - 规划文档，新的开发规划，文件创建到这里
+- `docs/REPORT/` - 分析报告，开发过程中各种报告，文件创建到这里
 
 ---
 

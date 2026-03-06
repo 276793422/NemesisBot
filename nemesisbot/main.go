@@ -113,10 +113,7 @@ func onboard() {
 	if path.LocalMode || path.DetectLocal() {
 		// Set workspace to relative path for local mode
 		cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
-		// Also adjust log directory to relative path
-		if cfg.Logging != nil {
-			cfg.Logging.LogDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
-		}
+		// Log directory is already relative in new design, no need to modify
 	}
 
 	if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -346,16 +343,9 @@ func onboardDefault() {
 
 	// Step 5: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
-		// Determine log directory based on local mode
-		pm := path.NewPathManager()
-		logDir := filepath.Join(pm.Workspace(), "logs", "request_logs")
-		if isLocalMode {
-			logDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
-		}
-
 		cfg.Logging = &config.LoggingConfig{
 			LLMRequests: true,
-			LogDir:      logDir,
+			LogDir:      "logs/request_logs",  // Relative path
 			DetailLevel: "full",
 		}
 		if err := config.SaveConfig(configPath, cfg); err != nil {

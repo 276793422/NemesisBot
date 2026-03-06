@@ -232,8 +232,9 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 		return
 	}
 
-	// Call handler
-	result, err := handler(req.Payload)
+	// Call handler with enhanced payload
+	enhanced := s.enhancePayload(req.Payload, req)
+	result, err := handler(enhanced)
 	if err != nil {
 		s.cluster.LogRPCError("Handler error for action '%s': %v", req.Action, err)
 		resp := transport.NewError(req, err.Error())
@@ -259,6 +260,28 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 // sendMessage sends a message through the connection
 func (s *Server) sendMessage(conn *transport.TCPConn, msg *transport.RPCMessage) error {
 	return conn.Send(msg)
+}
+
+// enhancePayload enriches the payload with RPC metadata
+func (s *Server) enhancePayload(payload map[string]interface{}, req *transport.RPCMessage) map[string]interface{} {
+	// Ensure payload is not nil
+	if payload == nil {
+		payload = make(map[string]interface{})
+	}
+
+	// Create _rpc metadata section if it doesn't exist
+	if payload["_rpc"] == nil {
+		payload["_rpc"] = make(map[string]interface{})
+	}
+
+	if rpcMeta, ok := payload["_rpc"].(map[string]interface{}); ok {
+		// Inject sender info
+		rpcMeta["from"] = req.From
+		rpcMeta["to"] = req.To
+		rpcMeta["id"] = req.ID
+	}
+
+	return payload
 }
 
 // registerDefaultHandlers registers default RPC handlers using the handlers package

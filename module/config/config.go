@@ -797,13 +797,10 @@ func SaveConfig(configPath string, cfg *Config) error {
 				cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
 			}
 
-			// Adjust logging directory if it's using default path
+			// Normalize logging directory to use relative path
 			if cfg.Logging != nil {
-				defaultLogDir := filepath.Join(defaultWorkspacePath, "logs", "request_logs")
-				if strings.HasPrefix(cfg.Logging.LogDir, "~/.nemesisbot/workspace") ||
-				   strings.HasPrefix(cfg.Logging.LogDir, filepath.Join("~", ".nemesisbot")) ||
-				   cfg.Logging.LogDir == defaultLogDir {
-					cfg.Logging.LogDir = filepath.Join(".nemesisbot", "workspace", "logs", "request_logs")
+				if cfg.Logging.LogDir == "" {
+					cfg.Logging.LogDir = "logs/request_logs"
 				}
 			}
 		}
@@ -1125,7 +1122,6 @@ func (c *Config) adjustPathsForEnvironment() {
 	// Get the expected paths from path package
 	pm := path.NewPathManager()
 	expectedWorkspace := pm.Workspace()
-	expectedLogDir := filepath.Join(expectedWorkspace, "logs", "request_logs")
 
 	// Check if workspace is using hardcoded default path
 	userHome, _ := os.UserHomeDir()
@@ -1139,14 +1135,8 @@ func (c *Config) adjustPathsForEnvironment() {
 		c.Agents.Defaults.Workspace = expectedWorkspace
 	}
 
-	// Same for LogDir
-	if c.Logging != nil {
-		isDefaultLogDir := c.Logging.LogDir == "~/.nemesisbot/workspace/logs/request_logs" ||
-			c.Logging.LogDir == filepath.Join("~", ".nemesisbot", "workspace", "logs", "request_logs") ||
-			c.Logging.LogDir == filepath.Join(absoluteDefault, "logs", "request_logs")
-
-		if isDefaultLogDir {
-			c.Logging.LogDir = expectedLogDir
-		}
+	// Same for LogDir - use relative path
+	if c.Logging != nil && c.Logging.LogDir == "" {
+		c.Logging.LogDir = "logs/request_logs"
 	}
 }

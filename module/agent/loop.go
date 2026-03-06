@@ -652,7 +652,8 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 	// Initialize request logger if enabled
 	var reqLogger *RequestLogger
 	if al.cfg.Logging != nil && al.cfg.Logging.LLMRequests {
-		reqLogger = NewRequestLogger(al.cfg.Logging)
+		workspace := al.cfg.WorkspacePath()
+		reqLogger = NewRequestLogger(al.cfg.Logging, workspace)
 		if reqLogger.IsEnabled() {
 			if err := reqLogger.CreateSession(); err != nil {
 				logger.WarnC("request_logger", fmt.Sprintf("Failed to create logging session: %v", err))
