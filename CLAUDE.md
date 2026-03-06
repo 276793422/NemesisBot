@@ -1,0 +1,368 @@
+# CLAUDE.md
+
+本文件为 Claude Code (claude.ai/code) 在此代码库中工作时提供指导。
+
+---
+
+## 构建和测试命令
+
+### 构建项目
+
+```bash
+# 标准构建（Windows，使用 cmd.exe）
+build.bat
+
+# 指定输出文件名构建
+build.bat mybot.exe
+
+# 使用 PowerShell 支持构建（使用 PowerShell 执行命令）
+build.bat powershell
+
+# 同时使用两个选项
+build.bat mybot.exe powershell
+```
+
+构建脚本会自动：
+- 从 git tag 提取版本号，如果没有则使用 `0.0.0.1`
+- 提取 git commit hash
+- 通过 ldflags 注入版本信息：`main.version`、`main.gitCommit`、`main.buildTime`、`main.goVersion`
+
+### 运行测试
+
+```bash
+# 运行某个模块的所有测试
+go test ./module/...
+
+# 运行特定包的测试
+go test ./module/channels/...
+go test ./module/cluster/rpc/...
+
+# 使用竞态检测器运行
+go test -race ./module/...
+
+# 运行单个测试
+go test -run TestFunctionName ./module/path/to/test
+
+# 运行集成测试
+go test ./test/integration/...
+
+# 详细输出模式
+go test -v ./module/...
+```
+
+### 运行应用程序
+
+```bash
+# 启动网关（Web UI）
+nemesisbot.exe gateway
+
+# 使用本地模式（配置在 ./.nemesisbot 而不是 ~/.nemesisbot）
+nemesisbot.exe --local gateway
+
+# 集群管理
+nemesisbot.exe cluster status
+nemesisbot.exe cluster init --name "机器人名称" --role worker --category development
+nemesisbot.exe cluster enable
+
+# 模型管理
+nemesisbot.exe model add --model zhipu/glm-4.7 --key YOUR_KEY --default
+
+# 配置管理
+nemesisbot.exe onboard default --local   # 使用默认配置，在当前目录初始化
+nemesisbot.exe onboard default           # 使用默认配置根据默认流程初始化
+nemesisbot.exe log config                # 配置日志详细级别
+```
+
+---
+
+## 架构概览
+
+NemesisBot 是一个具有安全控制的分布式 AI 代理系统。架构围绕消息总线展开，将从各种通道来的入站消息路由到 Agent 引擎，然后将出站响应通过通道路由回去。
+
+### 核心消息流
+
+```
+入站路径:
+Channel (rpc/web/discord/feishu 等)
+  → ChannelManager.Register()
+  → bus.PublishInbound(InboundMessage)
+  → AgentLoop 通过订阅接收
+  → Agent 执行（LLM + 工具）
+  → bus.PublishOutbound(OutboundMessage)
+
+出站路径:
+bus.PublishOutbound()
+  → ChannelManager.dispatchOutbound() 协程
+  → 按名称找到匹配的通道
+  → channel.Send(ctx, OutboundMessage)
+  → 通道投递到外部服务
+```
+
+**核心类型**（module/bus/types.go）：
+- `InboundMessage`：Channel、SenderID、ChatID、Content、Media、SessionKey、CorrelationID
+- `OutboundMessage`：Channel、ChatID、Content
+- `CorrelationID`：用于 RPC 请求-响应匹配
+
+### 模块架构
+
+**消息总线**（module/bus/）：
+- 消息路由的中心发布/订阅系统
+- 通道订阅 InboundMessage，发布 OutboundMessage
+- 线程安全，支持多个并发订阅者
+
+**通道管理器**（module/channels/manager.go）：
+- 所有通道的生命周期管理（Start/Stop）
+- 将出站消息路由到适当的通道
+- 处理消息过滤和投递
+- 关键：`dispatchOutbound()` 在专用协程中运行，监听 `bus.OutboundChannel()`
+
+**Agent 引擎**（module/agent/）：
+- `loop.go`：核心执行循环（AgentLoop.Run）
+  - 从 bus 接收 InboundMessage
+  - 使用对话历史构建上下文
+  - 调用 LLM 并传入工具定义
+  - 执行工具（可能多次迭代）
+  - 将最终响应发布到 OutboundMessage
+- `instance.go`：Agent 实例管理
+- `memory.go`：对话记忆和上下文
+- `context.go`：请求上下文处理
+
+**通道**（module/channels/）：
+- 每个通道实现 `Channel` 接口
+- `base.go`：BaseChannel 提供通用功能
+- `rpc_channel.go`：用于 RPC/集群通信的特殊通道
+  - 有 `Input(ctx, InboundMessage) (<-chan string, error)` 供 RPC 处理器使用
+  - 通过 CorrelationID 前缀匹配响应：`[rpc:correlation_id] content`
+  - 对 peer_chat 至关重要：响应必须有 correlation ID 前缀
+
+**集群/RPC**（module/cluster/）：
+- `cluster.go`：主集群编排
+- `rpc/client.go`：调用远程节点的 RPC 客户端
+  - `CallWithContext()`：发送请求，等待响应
+  - 超时：30 秒（line 194）- 对长时间运行的任务至关重要
+- `rpc/server.go`：处理传入请求的 RPC 服务器
+  - `handleRequest()`：路由到已注册的处理器
+  - `sendMessage()`：发送 TCP 响应
+- `rpc/peer_chat_handler.go`：处理 peer_chat action
+  - 通过 RPCChannel.Input() 等待 LLM 响应
+  - 超时：60 秒（line 117）
+- `transport/`：TCP 连接池和帧处理
+  - `conn.go`：带有读写协程的 TCPConn
+  - `frame.go`：长度前缀的二进制帧
+  - `pool.go`：支持重用的连接池
+
+**安全**（module/security/）：
+- `middleware.go`：拦截危险操作（文件、进程、注册表、网络）
+- `auditor.go`：ABAC 策略引擎（基于属性的访问控制）
+- 四个风险级别：LOW / MEDIUM / HIGH / CRITICAL
+- 可通过配置禁用（`security.enabled = false`）
+
+### 关键配置位置
+
+**超时配置**（module/agent/loop.go:1588-1598）：
+- 目前配置为如下
+```go
+cfg := &channels.RPCChannelConfig{
+    MessageBus:      msgBus,
+    RequestTimeout:  60 * time.Second,    // Line 1593
+    CleanupInterval: 30 * time.Second,    // Line 1594
+}
+```
+
+**重要**：长超时配置（28/29/30 分钟）会导致 peer_chat 阻塞。目前使用默认配置（30/60/60 秒）。
+
+**通道启动**（module/agent/loop.go:1603-1605）：
+- RPC 通道绝不能在 `setupClusterRPCChannel()` 中启动
+- ChannelManager.StartAll() 是唯一的启动点
+- 防止 "RPC channel already running" 错误
+
+### 已知问题
+
+**出站通道竞争**（2026-03-05 已修复）：
+- 之前：RPCChannel 和 dispatchOutbound 争抢消息
+- 修复：正确的通道注册和生命周期管理
+
+---
+
+## 关键模式和约定
+
+### 通道 Correlation ID 模式
+
+对于 RPC/集群通信，响应必须包含 correlation ID 前缀：
+
+```go
+// 正确格式
+content := fmt.Sprintf("[rpc:%s] 实际响应内容", correlationID)
+
+// RPCChannel.Send() 提取 correlationID 并路由到待处理的请求
+// 如果缺少前缀，响应会丢失
+```
+
+**关键**：AgentLoop.Run（line 323-333）在 LLM 直接返回文本时为 RPC 通道添加前缀：
+```go
+if msg.Channel == "rpc" && msg.CorrelationID != "" {
+    finalContent = fmt.Sprintf("[rpc:%s] %s", msg.CorrelationID, response)
+}
+```
+
+### 工具执行流程
+
+当 LLM 调用工具时（module/tools/message.go）：
+1. 工具检查 channel == "rpc"
+2. 从 context 提取 correlationID
+3. 添加前缀：`[rpc:correlation_id] content`
+4. 设置 `sentInRound = true` 标志
+5. AgentLoop 在发布前检查 `alreadySent` 以避免重复
+
+### 工作空间和配置
+
+**路径优先级**：
+1. `--local` 标志（强制使用 ./.nemesisbot）
+2. 环境变量 `NEMESISBOT_HOME`
+3. 自动检测（如果当前目录存在 .nemesisbot）
+4. 默认：`~/.nemesisbot`
+
+**关键文件**：
+- `IDENTITY.md`：AI 人设/身份
+- `SOUL.md`：AI 核心行为原则
+- `USER.md`：用户偏好
+- `config.json`：主配置
+- `cluster/peers.toml`：已知的集群对等节点
+
+### 安全区域
+
+**操作风险级别**：
+- **CRITICAL**：process_exec、process_kill、registry_write、system_shutdown
+- **HIGH**：file_write、file_delete、dir_create、dir_delete、process_spawn
+- **MEDIUM**：file_edit、file_append、registry_read、network_download
+- **LOW**：file_read、dir_list、network_request、hardware_i2c
+
+**工作空间限制**：
+- `restrict_to_workspace: true` 限制文件访问仅在工作区内
+- 安全中间件仍可拦截工作区外的操作
+- 设置为 false 以获得完整系统访问（不推荐）
+
+---
+
+## 测试指南
+
+### 测试目录
+
+位置：`test`
+
+- 目录下放置所有测试所需文件或项目
+- 未来若需增加，须在此目录下新增对应内容
+
+### 单元测试
+
+位置：`test/unit/` 目录中按照项目目录层级放置的对应 `*_test.go`
+
+- 若需增加对应单元测试，则也要按照当前规则，按照项目目录层级放置
+
+### 集成测试
+
+位置：`test/integration/`
+
+- `channels/`：通道集成测试
+- `rpc/`：RPC 流程测试
+- `web/`：WebSocket 集成测试
+
+### 集群测试
+
+位置：`test/cluster/`
+
+- `cluster-test/main.go`：多节点测试
+- `rpc/server_test.go`：RPC 服务器测试
+- `transport/`：连接池和帧测试
+
+### 运行特定测试类别
+
+```bash
+# 所有通道测试
+go test ./module/channels/...
+
+# 集群 RPC 测试
+go test ./module/cluster/rpc/...
+
+# 传输层测试
+go test ./test/cluster/transport/...
+```
+
+### 其他测试
+
+若有特定的测试工具需求，可在当前目录下创建对应测试工具项目。
+
+---
+
+## 重要说明
+
+### Windows PowerShell 兼容性
+
+项目对 Windows PowerShell 的 `curl` 别名有特殊处理（会重定向到 `Invoke-WebRequest`）：
+- 工具会自动将 `curl` 替换为 `curl.exe`
+- 使用 `build.bat powershell` 构建以启用此功能
+- 这对 Windows 上的外部工具执行至关重要
+
+### 多实例部署
+
+使用 `--local` 标志运行多个独立的 bot 实例：
+```batch
+mkdir C:\Bots\bot1
+cd C:\Bots\bot1
+nemesisbot.exe --local gateway
+```
+
+每个实例获得自己的 `.nemesisbot/` 目录，而不是使用 `~/.nemesisbot`。
+
+### Skill 系统
+
+`Skills/` 目录中的技能定义了标准化工作流程：
+- `structured-development/`：带有阶段的开发流程（plan → develop → test → review）
+- `build-project/`：带有版本注入的构建流程
+
+当加载技能时，AI 严格遵循定义的流程。
+
+---
+
+## 文件组织参考
+
+**入口点**：`nemesisbot/main.go` - 命令路由
+**CLI 命令**：`nemesisbot/command/` - 命令实现
+**配置模板**：`nemesisbot/config/*.json` - 默认配置
+
+**核心模块**：
+- `module/agent/loop.go` - 主执行循环（**理解 agent 流程的起点**）
+- `module/bus/` - 消息总线
+- `module/channels/manager.go` - 通道生命周期和路由
+- `module/cluster/rpc/` - 集群通信的 RPC 客户端/服务器
+- `module/security/` - 安全中间件和 ABAC
+
+**测试结构**：
+- `test/unit/` - 单元测试
+- `test/integration/` - 集成测试
+- `test/cluster/` - 集群和 RPC 测试
+
+**文档**：
+- `docs/BUG/` - 已知问题和调查
+- `docs/INFO/` - 技术信息
+- `docs/PLAN/` - 规划文档
+- `docs/REPORT/` - 分析报告
+
+---
+
+## 安全配置注意事项
+
+**工作区隔离是默认且推荐的配置**：
+- Bot 只能访问 workspace 目录
+- 所有文件操作受安全策略控制
+- 危险操作需要审批或会被拦截
+
+**禁用安全模块**（不推荐）：
+```json
+{
+  "security": {
+    "enabled": false
+  }
+}
+```
+这会移除所有安全检查，Bot 可以访问整个系统。
