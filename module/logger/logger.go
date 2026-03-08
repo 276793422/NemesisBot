@@ -37,6 +37,10 @@ var (
 	logger       *Logger
 	once         sync.Once
 	mu           sync.RWMutex
+
+	// Double layer switches
+	loggingEnabled bool // Master switch: controls whether to log at all
+	consoleEnabled bool // Console switch: controls console output
 )
 
 type Logger struct {
@@ -55,6 +59,8 @@ type LogEntry struct {
 func init() {
 	once.Do(func() {
 		logger = &Logger{}
+		loggingEnabled = true // Default: logging enabled
+		consoleEnabled = true // Default: console enabled
 	})
 }
 
@@ -68,6 +74,48 @@ func GetLevel() LogLevel {
 	mu.RLock()
 	defer mu.RUnlock()
 	return currentLevel
+}
+
+// EnableLogging enables all logging (file + console)
+func EnableLogging() {
+	mu.Lock()
+	defer mu.Unlock()
+	loggingEnabled = true
+}
+
+// DisableLogging disables all logging
+func DisableLogging() {
+	mu.Lock()
+	defer mu.Unlock()
+	loggingEnabled = false
+}
+
+// IsLoggingEnabled returns whether logging is enabled
+func IsLoggingEnabled() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return loggingEnabled
+}
+
+// EnableConsole enables console output
+func EnableConsole() {
+	mu.Lock()
+	defer mu.Unlock()
+	consoleEnabled = true
+}
+
+// DisableConsole disables console output
+func DisableConsole() {
+	mu.Lock()
+	defer mu.Unlock()
+	consoleEnabled = false
+}
+
+// IsConsoleEnabled returns whether console output is enabled
+func IsConsoleEnabled() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	return consoleEnabled
 }
 
 func EnableFileLogging(filePath string) error {
@@ -100,6 +148,12 @@ func DisableFileLogging() {
 }
 
 func logMessage(level LogLevel, component string, message string, fields map[string]interface{}) {
+	// Layer 1: Check master switch (loggingEnabled)
+	if !loggingEnabled {
+		return // Completely disable logging
+	}
+
+	// Layer 2: Check log level
 	if level < currentLevel {
 		return
 	}
@@ -119,11 +173,17 @@ func logMessage(level LogLevel, component string, message string, fields map[str
 		}
 	}
 
+	// File logging (always write if configured)
 	if logger.file != nil {
 		jsonData, err := json.Marshal(entry)
 		if err == nil {
 			logger.file.WriteString(string(jsonData) + "\n")
 		}
+	}
+
+	// Layer 3: Check console switch (consoleEnabled)
+	if !consoleEnabled {
+		return // Console output disabled
 	}
 
 	var fieldStr string

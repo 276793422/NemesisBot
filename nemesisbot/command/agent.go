@@ -44,12 +44,21 @@ func CmdAgent() {
 	message := ""
 	sessionKey := "cli:default"
 
+	// Load configuration first
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize logger from config
+	// Process command line args AFTER loading config
 	args := os.Args[2:]
+	InitLoggerFromConfig(cfg, args)
+
+	// Parse remaining arguments
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--debug", "-d":
-			logger.SetLevel(logger.DEBUG)
-			fmt.Println("🔍 Debug mode enabled")
 		case "-m", "--message":
 			if i+1 < len(args) {
 				message = args[i+1]
@@ -61,12 +70,6 @@ func CmdAgent() {
 				i++
 			}
 		}
-	}
-
-	cfg, err := LoadConfig()
-	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
 	}
 
 	provider, err := providers.CreateProvider(cfg)
@@ -217,6 +220,8 @@ func AgentHelp() {
 	fmt.Println("  -m, --message <text>    Send a single message and exit")
 	fmt.Println("  -s, --session <key>     Use specific session key (default: cli:default)")
 	fmt.Println("  -d, --debug             Enable debug logging")
+	fmt.Println("  -q, --quiet             Disable all logging")
+	fmt.Println("      --no-console         Disable console output (file only)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot agent                                          Interactive mode")

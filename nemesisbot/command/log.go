@@ -24,6 +24,10 @@ func CmdLog() {
 	case "llm":
 		cmdLogLLM()
 
+	// General logging subcommands (NEW)
+	case "general":
+		cmdLogGeneral()
+
 	// Backward compatibility: direct enable/disable default to llm
 	case "enable":
 		cmdLogLLMEnable()
@@ -48,6 +52,7 @@ func LogHelp() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  llm                Manage LLM request logging")
+	fmt.Println("  general            Manage general application logging")
 	fmt.Println("  enable              Enable LLM request logging (same as 'log llm enable')")
 	fmt.Println("  disable             Disable LLM request logging (same as 'log llm disable')")
 	fmt.Println("  status              Show all logging status")
@@ -55,12 +60,14 @@ func LogHelp() {
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot log llm enable          # Enable LLM logging")
-	fmt.Println("  nemesisbot log llm disable         # Disable LLM logging")
-	fmt.Println("  nemesisbot log llm status          # Check LLM logging status")
+	fmt.Println("  nemesisbot log general enable      # Enable general logging")
+	fmt.Println("  nemesisbot log general disable     # Disable general logging")
+	fmt.Println("  nemesisbot log general status      # Check general logging status")
 	fmt.Println("  nemesisbot log enable              # Legacy command (same as 'log llm enable')")
 	fmt.Println("  nemesisbot log status              # Show all logging status")
 	fmt.Println()
 	fmt.Println("Use 'nemesisbot log llm' for LLM logging specific commands.")
+	fmt.Println("Use 'nemesisbot log general' for general logging specific commands.")
 }
 
 func cmdLogLLM() {
@@ -378,4 +385,271 @@ func cmdLogConfig() {
 	fmt.Println("✅ Configuration updated")
 	fmt.Printf("📝 Detail level: %s\n", detailLevel)
 	fmt.Printf("📁 Log directory: %s\n", logDir)
+}
+
+// cmdLogGeneral manages general logging
+func cmdLogGeneral() {
+	if len(os.Args) < 4 {
+		LogGeneralHelp()
+		return
+	}
+
+	action := os.Args[3]
+
+	switch action {
+	case "enable":
+		cmdLogGeneralEnable()
+	case "disable":
+		cmdLogGeneralDisable()
+	case "status":
+		cmdLogGeneralStatus()
+	case "level":
+		cmdLogGeneralLevel()
+	case "file":
+		cmdLogGeneralFile()
+	case "console":
+		cmdLogGeneralConsole()
+	default:
+		fmt.Printf("Unknown general command: %s\n", action)
+		LogGeneralHelp()
+	}
+}
+
+// LogGeneralHelp prints general logging help
+func LogGeneralHelp() {
+	fmt.Println("\nManage general application logging")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  nemesisbot log general <command>")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  enable       Enable general logging")
+	fmt.Println("  disable      Disable general logging")
+	fmt.Println("  status       Show general logging status")
+	fmt.Println("  level        Set log level (DEBUG/INFO/WARN/ERROR/FATAL)")
+	fmt.Println("  file         Set log file path")
+	fmt.Println("  console      Enable/disable console output")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  nemesisbot log general enable          # Enable general logging")
+	fmt.Println("  nemesisbot log general disable         # Disable general logging")
+	fmt.Println("  nemesisbot log general status          # Show general logging status")
+	fmt.Println("  nemesisbot log general level DEBUG    # Set level to DEBUG")
+	fmt.Println("  nemesisbot log general file logs/app.log # Set log file")
+	fmt.Println("  nemesisbot log general console         # Toggle console output")
+}
+
+// cmdLogGeneralEnable enables general logging
+func cmdLogGeneralEnable() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{}
+	}
+	if cfg.Logging.General == nil {
+		cfg.Logging.General = &config.GeneralLogConfig{}
+	}
+
+	cfg.Logging.General.Enabled = true
+
+	configPath := GetConfigPath()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("✅ General logging enabled")
+}
+
+// cmdLogGeneralDisable disables general logging
+func cmdLogGeneralDisable() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{}
+	}
+	if cfg.Logging.General == nil {
+		cfg.Logging.General = &config.GeneralLogConfig{}
+	}
+
+	cfg.Logging.General.Enabled = false
+
+	configPath := GetConfigPath()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("❌ General logging disabled")
+}
+
+// cmdLogGeneralStatus shows general logging status
+func cmdLogGeneralStatus() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("General Logging Status:")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	enabled := false
+	level := "INFO"
+	enableConsole := true
+	file := ""
+
+	if cfg.Logging != nil && cfg.Logging.General != nil {
+		enabled = cfg.Logging.General.Enabled
+		if cfg.Logging.General.Level != "" {
+			level = cfg.Logging.General.Level
+		}
+		enableConsole = cfg.Logging.General.EnableConsole
+		file = cfg.Logging.General.File
+	}
+
+	if enabled {
+		fmt.Println("Logging:        ✅ Enabled")
+	} else {
+		fmt.Println("Logging:        ❌ Disabled")
+	}
+	fmt.Printf("Level:          %s\n", level)
+	if enabled {
+		if enableConsole {
+			fmt.Println("Console:        ✅ Enabled")
+		} else {
+			fmt.Println("Console:        ❌ Disabled")
+		}
+		if file != "" {
+			fmt.Printf("File:           %s\n", file)
+		} else {
+			fmt.Println("File:           (none)")
+		}
+	}
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+}
+
+// cmdLogGeneralLevel sets the log level
+func cmdLogGeneralLevel() {
+	if len(os.Args) < 5 {
+		fmt.Println("Usage: nemesisbot log general level <level>")
+		fmt.Println("Levels: DEBUG, INFO, WARN, ERROR, FATAL")
+		return
+	}
+
+	level := strings.ToUpper(os.Args[4])
+
+	validLevels := map[string]bool{
+		"DEBUG": true,
+		"INFO":  true,
+		"WARN":  true,
+		"ERROR": true,
+		"FATAL": true,
+	}
+
+	if !validLevels[level] {
+		fmt.Printf("Invalid log level: %s\n", level)
+		fmt.Println("Valid levels: DEBUG, INFO, WARN, ERROR, FATAL")
+		return
+	}
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{}
+	}
+	if cfg.Logging.General == nil {
+		cfg.Logging.General = &config.GeneralLogConfig{}
+	}
+
+	cfg.Logging.General.Level = level
+
+	configPath := GetConfigPath()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Log level set to %s\n", level)
+}
+
+// cmdLogGeneralFile sets the log file path
+func cmdLogGeneralFile() {
+	if len(os.Args) < 5 {
+		fmt.Println("Usage: nemesisbot log general file <filepath>")
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  nemesisbot log general file logs/nemesisbot.log")
+		fmt.Println("  nemesisbot log general file /var/log/nemesisbot.log")
+		return
+	}
+
+	filePath := os.Args[4]
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{}
+	}
+	if cfg.Logging.General == nil {
+		cfg.Logging.General = &config.GeneralLogConfig{}
+	}
+
+	cfg.Logging.General.File = filePath
+
+	configPath := GetConfigPath()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✅ Log file set to %s\n", filePath)
+}
+
+// cmdLogGeneralConsole toggles console output
+func cmdLogGeneralConsole() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging == nil {
+		cfg.Logging = &config.LoggingConfig{}
+	}
+	if cfg.Logging.General == nil {
+		cfg.Logging.General = &config.GeneralLogConfig{}
+	}
+
+	// Toggle console output
+	currentState := cfg.Logging.General.EnableConsole
+	cfg.Logging.General.EnableConsole = !currentState
+
+	configPath := GetConfigPath()
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		fmt.Printf("Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if cfg.Logging.General.EnableConsole {
+		fmt.Println("✅ Console output enabled")
+	} else {
+		fmt.Println("❌ Console output disabled")
+	}
 }

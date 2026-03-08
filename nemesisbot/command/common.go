@@ -359,3 +359,132 @@ func RunSimpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) err
 		fmt.Printf("\n%s %s\n\n", Logo, response)
 	}
 }
+
+// InitLoggerFromConfig initializes the logger from configuration
+// Returns a bitmask of what was overridden:
+//
+//	1 = --debug was used
+//	2 = --quiet was used
+//	4 = --no-console was used
+func InitLoggerFromConfig(cfg *config.Config, checkArgs []string) int {
+	// Default values
+	enabled := true       // Master switch default: enabled
+	enableConsole := true // Console switch default: enabled
+	level := "INFO"
+	file := ""
+
+	// Read from config file
+	if cfg.Logging != nil && cfg.Logging.General != nil {
+		generalCfg := cfg.Logging.General
+
+		// Read master switch
+		enabled = generalCfg.Enabled
+
+		// Read console switch
+		enableConsole = generalCfg.EnableConsole
+
+		// Read log level
+		if generalCfg.Level != "" {
+			level = generalCfg.Level
+		}
+
+		// Read file path
+		if generalCfg.File != "" {
+			file = generalCfg.File
+		}
+	}
+
+	// Check command line argument overrides
+	overrideFlags := 0
+
+	for _, arg := range checkArgs {
+		switch arg {
+		case "--quiet", "-q":
+			// Completely disable logging (highest priority)
+			enabled = false
+			overrideFlags |= 2
+			fmt.Println("🔇 Logging disabled (quiet mode)")
+		case "--no-console":
+			// Disable console output
+			enableConsole = false
+			overrideFlags |= 4
+			fmt.Println("📺 Console output disabled")
+		case "--debug", "-d":
+			// Enable DEBUG level
+			level = "DEBUG"
+			overrideFlags |= 1
+			fmt.Println("🔍 Debug mode enabled")
+		}
+	}
+
+	// Apply configuration
+
+	// 1. Set master switch
+	if enabled {
+		logger.EnableLogging()
+	} else {
+		logger.DisableLogging()
+		return overrideFlags // If logging disabled, return immediately
+	}
+
+	// 2. Set console switch
+	if enableConsole {
+		logger.EnableConsole()
+	} else {
+		logger.DisableConsole()
+	}
+
+	// 3. Set log level
+	switch strings.ToUpper(level) {
+	case "DEBUG":
+		logger.SetLevel(logger.DEBUG)
+	case "INFO":
+		logger.SetLevel(logger.INFO)
+	case "WARN":
+		logger.SetLevel(logger.WARN)
+	case "ERROR":
+		logger.SetLevel(logger.ERROR)
+	case "FATAL":
+		logger.SetLevel(logger.FATAL)
+	default:
+		logger.SetLevel(logger.INFO)
+		if level != "" && level != "INFO" {
+			fmt.Printf("⚠️  Invalid log level '%s', using INFO\n", level)
+		}
+	}
+
+	// 4. Enable file logging
+	if file != "" {
+		// Expand tilde
+		logPath := file
+		if strings.HasPrefix(logPath, "~") {
+			home, _ := os.UserHomeDir()
+			if len(logPath) > 1 && (logPath[1] == '/' || logPath[1] == '\\') {
+				logPath = filepath.Join(home, logPath[2:])
+			} else {
+				logPath = home
+			}
+		}
+
+		// If relative path, base on workspace
+		if !filepath.IsAbs(logPath) && !strings.HasPrefix(logPath, "~") {
+			workspace := cfg.WorkspacePath()
+			logPath = filepath.Join(workspace, logPath)
+		}
+
+		if err := logger.EnableFileLogging(logPath); err != nil {
+			fmt.Printf("⚠️  Failed to enable file logging: %v\n", err)
+		}
+	}
+
+	// Display current configuration status
+	if overrideFlags&1 == 0 { // If not --debug override
+		fmt.Printf("📊 Logging: %s, Level: %s, Console: %v\n",
+			map[bool]string{true: "✅", false: "❌"}[logger.IsLoggingEnabled()],
+			level,
+			logger.IsConsoleEnabled(),
+		)
+	}
+
+	return overrideFlags
+}

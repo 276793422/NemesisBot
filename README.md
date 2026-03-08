@@ -56,6 +56,24 @@
 
 ## 近期更新
 
+### 2026-03-08
+
+**配置系统增强**：
+- ✅ **全局日志配置** - 新增通用日志配置文件支持
+  - 主开关 (`enabled`) - 控制是否记录日志
+  - 控制台开关 (`enable_console`) - 控制控制台输出
+  - 日志级别配置 (`level`) - DEBUG/INFO/WARN/ERROR/FATAL
+  - 文件路径配置 (`file`) - 指定日志文件路径
+- ✅ **命令行参数支持** - 新增 `--quiet`, `--no-console`, `--debug` 参数
+- ✅ **日志管理命令** - `nemesisbot log general` 子命令系列
+  - `enable/disable` - 启用/禁用日志
+  - `status` - 查看日志状态
+  - `level` - 设置日志级别
+  - `file` - 设置日志文件路径
+  - `console` - 切换控制台输出
+- ✅ **双层开关架构** - 主开关 + 控制台开关，提供灵活的日志控制
+- ✅ **完整测试覆盖** - 10 个单元测试，确保线程安全和功能正确性
+
 ### 2026-03-05
 
 **重要修复**：
@@ -339,6 +357,125 @@ nemesisbot.exe --local gateway
 3. 自动检测              (当前目录有 .nemesisbot)
    ↓
 4. 默认路径              (~/.nemesisbot)
+```
+
+---
+
+## 日志配置
+
+NemesisBot 支持灵活的日志配置系统，可以通过配置文件和命令行参数控制日志行为。
+
+### 日志类型
+
+1. **LLM 请求日志** (`logging.llm`) - 记录所有 LLM API 请求和响应
+2. **通用应用日志** (`logging.general`) - 记录应用运行时的各种信息
+
+### 通用日志配置
+
+编辑 `~/.nemesisbot/config.json`：
+
+```json
+{
+  "logging": {
+    "general": {
+      "enabled": true,              // 主开关：是否记录日志（默认：true）
+      "enable_console": true,       // 控制台开关：是否输出到控制台（默认：true）
+      "level": "INFO",              // 日志级别：DEBUG/INFO/WARN/ERROR/FATAL
+      "file": ""                    // 日志文件路径（空=不记录文件）
+    }
+  }
+}
+```
+
+### 双层开关架构
+
+日志系统采用双层开关设计，提供灵活的控制：
+
+1. **主开关 (`enabled`)** - 控制是否记录日志
+   - `true`：启用日志记录（文件 + 控制台）
+   - `false`：完全禁用日志记录
+
+2. **控制台开关 (`enable_console`)** - 控制控制台输出
+   - `true`：输出到控制台
+   - `false`：仅记录到文件（如果配置了文件路径）
+
+**工作模式示例**：
+
+| 主开关 | 控制台开关 | 文件日志 | 控制台输出 | 使用场景 |
+|--------|-----------|---------|-----------|----------|
+| ✅ | ✅ | ✅ | ✅ | 开发调试 |
+| ✅ | ❌ | ✅ | ❌ | 生产环境（仅文件） |
+| ❌ | - | ❌ | ❌ | 性能测试/静默模式 |
+
+### 命令行参数
+
+命令行参数优先级高于配置文件：
+
+```bash
+# 完全禁用日志（最高优先级）
+nemesisbot gateway --quiet
+nemesisbot gateway -q
+
+# 禁用控制台输出（仅记录到文件）
+nemesisbot gateway --no-console
+
+# 启用调试级别
+nemesisbot gateway --debug
+nemesisbot gateway -d
+
+# 组合使用
+nemesisbot gateway --debug --no-console  # 调试级别，但不输出到控制台
+```
+
+**参数优先级**：`--quiet` > `--no-console` > `--debug` > 配置文件
+
+### 日志管理命令
+
+使用 `nemesisbot log general` 子命令管理通用日志：
+
+```bash
+# 启用/禁用日志
+nemesisbot log general enable
+nemesisbot log general disable
+
+# 查看日志状态
+nemesisbot log general status
+
+# 设置日志级别
+nemesisbot log general level DEBUG
+nemesisbot log general level INFO
+
+# 设置日志文件路径
+nemesisbot log general file logs/nemesisbot.log
+
+# 切换控制台输出
+nemesisbot log general console
+```
+
+### 日志级别说明
+
+| 级别 | 说明 | 使用场景 |
+|------|------|----------|
+| **DEBUG** | 详细调试信息 | 开发调试 |
+| **INFO** | 一般信息（默认） | 正常运行 |
+| **WARN** | 警告信息 | 需要注意但不影响运行 |
+| **ERROR** | 错误信息 | 功能异常但程序可继续 |
+| **FATAL** | 致命错误 | 程序无法继续运行 |
+
+### LLM 请求日志配置
+
+```bash
+# 启用 LLM 请求日志
+nemesisbot log llm enable
+
+# 禁用 LLM 请求日志
+nemesisbot log llm disable
+
+# 查看 LLM 日志状态
+nemesisbot log llm status
+
+# 配置 LLM 日志选项
+nemesisbot log config --detail-level full --log-dir logs/llm_requests
 ```
 
 ---

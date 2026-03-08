@@ -24,21 +24,16 @@ import (
 
 // CmdGateway starts the NemesisBot gateway server
 func CmdGateway() {
-	// Check for --debug flag
-	args := os.Args[2:]
-	for _, arg := range args {
-		if arg == "--debug" || arg == "-d" {
-			logger.SetLevel(logger.DEBUG)
-			fmt.Println("🔍 Debug mode enabled")
-			break
-		}
-	}
-
+	// Load configuration first
 	cfg, err := LoadConfig()
 	if err != nil {
 		fmt.Printf("Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Initialize logger from config
+	args := os.Args[2:]
+	InitLoggerFromConfig(cfg, args)
 
 	provider, err := providers.CreateProvider(cfg)
 	if err != nil {
@@ -224,6 +219,8 @@ func GatewayHelp() {
 	fmt.Println()
 	fmt.Println("Options:")
 	fmt.Println("  -d, --debug    Enable debug logging")
+	fmt.Println("  -q, --quiet    Disable all logging")
+	fmt.Println("      --no-console  Disable console output (file only)")
 	fmt.Println()
 	fmt.Println("The gateway starts all enabled channels and services:")
 	fmt.Println("  • Web chat interface")
