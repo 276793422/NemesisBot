@@ -190,10 +190,10 @@ func cmdClusterConfig() {
 
 	// Parse command line flags
 	type flags struct {
-		UDPPort           int    `json:"udp_port"`
-		RPCPort           int    `json:"rpc_port"`
-		BroadcastInterval int    `json:"broadcast_interval"`
-		ShowHelp          bool   `json:"-"`
+		UDPPort           int  `json:"udp_port"`
+		RPCPort           int  `json:"rpc_port"`
+		BroadcastInterval int  `json:"broadcast_interval"`
+		ShowHelp          bool `json:"-"`
 	}
 
 	f := &flags{}
@@ -923,11 +923,11 @@ func cmdClusterPeersAdd() {
 
 	// Create new peer
 	newPeer := cluster.PeerConfig{
-		ID:      f.ID,
-		Name:    f.Name,
-		Address: f.Address,
-		Role:    f.Role,
-		Enabled: true,
+		ID:       f.ID,
+		Name:     f.Name,
+		Address:  f.Address,
+		Role:     f.Role,
+		Enabled:  true,
 		Priority: f.Priority,
 	}
 

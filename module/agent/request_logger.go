@@ -23,9 +23,9 @@ const (
 	DetailLevelTruncated = "truncated"
 
 	// Truncate limits for truncated mode
-	truncateMessageLimit = 200
+	truncateMessageLimit  = 200
 	truncateResponseLimit = 500
-	truncateArgsLimit = 200
+	truncateArgsLimit     = 200
 )
 
 // RequestLogger handles logging of LLM requests and responses
@@ -67,8 +67,8 @@ type UserRequestInfo struct {
 
 // ProviderMetadata holds provider configuration metadata for logging
 type ProviderMetadata struct {
-	Name   string // Provider name (e.g., "zhipu", "openai")
-	APIKey string // Masked API key
+	Name    string // Provider name (e.g., "zhipu", "openai")
+	APIKey  string // Masked API key
 	APIBase string // API base URL
 }
 
@@ -89,16 +89,16 @@ type LLMRequestInfo struct {
 	Model     string
 
 	// New fields for comprehensive logging
-	ProviderName   string                   // Provider name (e.g., "zhipu", "openai")
-	APIKey         string                   // Masked API key
-	APIBase        string                   // API base URL
-	HTTPHeaders    map[string]string        // HTTP headers (excluding Authorization)
-	FullConfig     map[string]interface{}   // Complete request configuration
+	ProviderName     string                 // Provider name (e.g., "zhipu", "openai")
+	APIKey           string                 // Masked API key
+	APIBase          string                 // API base URL
+	HTTPHeaders      map[string]string      // HTTP headers (excluding Authorization)
+	FullConfig       map[string]interface{} // Complete request configuration
 	FallbackAttempts []FallbackAttemptInfo  // All attempted providers in fallback chain
 
 	// Legacy fields kept for backward compatibility
-	Messages  []providers.Message
-	Tools     []providers.ToolDefinition
+	Messages []providers.Message
+	Tools    []providers.ToolDefinition
 }
 
 // LLMResponseInfo holds information about an LLM response
@@ -150,12 +150,12 @@ func NewRequestLogger(cfg *config.LoggingConfig, workspace string) *RequestLogge
 	logDir := resolveLogPath(cfg.LogDir, workspace)
 
 	return &RequestLogger{
-		cfg:        cfg,
-		baseDir:    logDir,
-		fileIndex:  0,
-		enabled:    true,
-		startTime:  time.Now(),
-		mu:         newFileWriteMutex(),
+		cfg:       cfg,
+		baseDir:   logDir,
+		fileIndex: 0,
+		enabled:   true,
+		startTime: time.Now(),
+		mu:        newFileWriteMutex(),
 	}
 }
 

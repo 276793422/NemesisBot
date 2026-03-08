@@ -15,25 +15,25 @@ import (
 
 // Node represents a bot in the cluster
 type Node struct {
-	ID           string    `toml:"id"`
-	Name         string    `toml:"name"`
-	Address      string    `toml:"address"`      // Deprecated: Primary IP:Port (for backward compatibility)
-	Addresses    []string  `toml:"addresses"`     // List of all IP addresses
-	RPCPort      int       `toml:"rpc_port"`      // RPC port number
-	Role         string    `toml:"role"`          // Cluster role
-	Category     string    `toml:"category"`      // Business category
-	Tags         []string  `toml:"tags"`          // Custom tags
-	Capabilities []string  `toml:"capabilities"`
-	Priority     int       `toml:"priority"`
+	ID           string   `toml:"id"`
+	Name         string   `toml:"name"`
+	Address      string   `toml:"address"`   // Deprecated: Primary IP:Port (for backward compatibility)
+	Addresses    []string `toml:"addresses"` // List of all IP addresses
+	RPCPort      int      `toml:"rpc_port"`  // RPC port number
+	Role         string   `toml:"role"`      // Cluster role
+	Category     string   `toml:"category"`  // Business category
+	Tags         []string `toml:"tags"`      // Custom tags
+	Capabilities []string `toml:"capabilities"`
+	Priority     int      `toml:"priority"`
 
 	// Runtime state
-	Status       NodeStatus `toml:"-"`
-	LastSeen     time.Time  `toml:"-"`
-	TasksCompleted int      `toml:"-"`
-	SuccessRate  float64    `toml:"-"`
-	AvgResponseTime int     `toml:"-"`
-	LastError    string     `toml:"-"`
-	mu           sync.RWMutex `toml:"-"`
+	Status          NodeStatus   `toml:"-"`
+	LastSeen        time.Time    `toml:"-"`
+	TasksCompleted  int          `toml:"-"`
+	SuccessRate     float64      `toml:"-"`
+	AvgResponseTime int          `toml:"-"`
+	LastError       string       `toml:"-"`
+	mu              sync.RWMutex `toml:"-"`
 }
 
 // NodeStatus represents the current status of a node
@@ -110,9 +110,9 @@ func (n *Node) ToConfig() PeerConfig {
 	return PeerConfig{
 		ID:           n.ID,
 		Name:         n.Name,
-		Address:      n.Address,      // Primary address for backward compatibility
-		Addresses:    n.Addresses,    // All addresses
-		RPCPort:      n.RPCPort,      // RPC port
+		Address:      n.Address,   // Primary address for backward compatibility
+		Addresses:    n.Addresses, // All addresses
+		RPCPort:      n.RPCPort,   // RPC port
 		Role:         n.Role,
 		Category:     n.Category,
 		Tags:         n.Tags,
@@ -282,15 +282,15 @@ func getInterfacePriority(name string) int {
 
 	// Priority 1: Ethernet (eth, eno, ens, enp)
 	if strings.HasPrefix(lowerName, "eth") ||
-	   strings.HasPrefix(lowerName, "eno") ||
-	   strings.HasPrefix(lowerName, "ens") ||
-	   strings.HasPrefix(lowerName, "enp") {
+		strings.HasPrefix(lowerName, "eno") ||
+		strings.HasPrefix(lowerName, "ens") ||
+		strings.HasPrefix(lowerName, "enp") {
 		return 1
 	}
 
 	// Priority 2: WiFi (wlan, wlp)
 	if strings.HasPrefix(lowerName, "wlan") ||
-	   strings.HasPrefix(lowerName, "wlp") {
+		strings.HasPrefix(lowerName, "wlp") {
 		return 2
 	}
 

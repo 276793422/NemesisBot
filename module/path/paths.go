@@ -6,43 +6,43 @@
 //
 // Environment Variables:
 //
-//   NEMESISBOT_HOME
-//     Sets the root directory for NemesisBot project data.
-//     The actual project directory will be: $NEMESISBOT_HOME/.nemesisbot/
+//	NEMESISBOT_HOME
+//	  Sets the root directory for NemesisBot project data.
+//	  The actual project directory will be: $NEMESISBOT_HOME/.nemesisbot/
 //
-//     Example:
-//       export NEMESISBOT_HOME=/opt/nemesisbot
-//       # Actual directory: /opt/nemesisbot/.nemesisbot/
+//	  Example:
+//	    export NEMESISBOT_HOME=/opt/nemesisbot
+//	    # Actual directory: /opt/nemesisbot/.nemesisbot/
 //
-//   NEMESISBOT_CONFIG
-//     Override the main config.json file path (advanced usage)
+//	NEMESISBOT_CONFIG
+//	  Override the main config.json file path (advanced usage)
 //
 // Priority Order (for home directory resolution):
-//   1. LocalMode flag (set by --local parameter)
-//      → Uses ./.nemesisbot/ (current directory)
-//   2. NEMESISBOT_HOME environment variable
-//      → Uses $NEMESISBOT_HOME/.nemesisbot/
-//   3. Auto-detection
-//      → Uses ./.nemesisbot/ (if exists in current directory)
-//   4. Default
-//      → Uses ~/.nemesisbot/
+//  1. LocalMode flag (set by --local parameter)
+//     → Uses ./.nemesisbot/ (current directory)
+//  2. NEMESISBOT_HOME environment variable
+//     → Uses $NEMESISBOT_HOME/.nemesisbot/
+//  3. Auto-detection
+//     → Uses ./.nemesisbot/ (if exists in current directory)
+//  4. Default
+//     → Uses ~/.nemesisbot/
 //
 // Directory Structure:
 //
-//   When NEMESISBOT_HOME is set:
-//   $NEMESISBOT_HOME/
-//   └── .nemesisbot/           ← Project directory
-//       ├── config.json       ← Main configuration
-//       └── workspace/        ← Agent workspace
-//           ├── cluster/
-//           ├── agents/
-//           └── logs/
+//	When NEMESISBOT_HOME is set:
+//	$NEMESISBOT_HOME/
+//	└── .nemesisbot/           ← Project directory
+//	    ├── config.json       ← Main configuration
+//	    └── workspace/        ← Agent workspace
+//	        ├── cluster/
+//	        ├── agents/
+//	        └── logs/
 //
-//   This design ensures:
-//   - All project data is contained within .nemesisbot/ directory
-//   - Easy migration: just copy the .nemesisbot/ directory
-//   - Multi-instance support: multiple .nemesisbot/ directories
-//   - Clear separation between program and data
+//	This design ensures:
+//	- All project data is contained within .nemesisbot/ directory
+//	- Easy migration: just copy the .nemesisbot/ directory
+//	- Multi-instance support: multiple .nemesisbot/ directories
+//	- Clear separation between program and data
 package path
 
 import (
@@ -78,13 +78,13 @@ type PathManager struct {
 	mu sync.RWMutex
 
 	// Cached paths
-	homeDir     string
-	configPath  string
-	mcpConfigPath     string
+	homeDir            string
+	configPath         string
+	mcpConfigPath      string
 	securityConfigPath string
-	workspace   string
-	authPath    string
-	auditLogDir string
+	workspace          string
+	authPath           string
+	auditLogDir        string
 }
 
 // NewPathManager creates a new PathManager with default home directory.
@@ -269,13 +269,15 @@ func DetectLocal() bool {
 // Priority: LocalMode > NEMESISBOT_HOME > Auto-detect > Default
 //
 // When NEMESISBOT_HOME is set, the project directory is created as:
-//   $NEMESISBOT_HOME/.nemesisbot/
+//
+//	$NEMESISBOT_HOME/.nemesisbot/
 //
 // Examples:
-//   NEMESISBOT_HOME=/opt/nemesisbot  →  /opt/nemesisbot/.nemesisbot/
-//   LocalMode (--local)              →  ./.nemesisbot/
-//   Auto-detect                       →  ./.nemesisbot/
-//   Default                           →  ~/.nemesisbot/
+//
+//	NEMESISBOT_HOME=/opt/nemesisbot  →  /opt/nemesisbot/.nemesisbot/
+//	LocalMode (--local)              →  ./.nemesisbot/
+//	Auto-detect                       →  ./.nemesisbot/
+//	Default                           →  ~/.nemesisbot/
 func ResolveHomeDir() (string, error) {
 	// 1. Check if LocalMode is explicitly set (highest priority)
 	if LocalMode {

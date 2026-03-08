@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/gorilla/websocket"
 )
 
 // Server represents the HTTP server for the web channel

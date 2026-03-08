@@ -28,10 +28,10 @@ type Registrar func(action string, handler func(payload map[string]interface{}) 
 
 // ActionSchema defines the complete schema for a single action
 type ActionSchema struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-	Returns     map[string]interface{} `json:"returns,omitempty"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description"`
+	Parameters  map[string]interface{}   `json:"parameters,omitempty"`
+	Returns     map[string]interface{}   `json:"returns,omitempty"`
 	Examples    []map[string]interface{} `json:"examples,omitempty"`
 }
 
@@ -75,7 +75,7 @@ func RegisterDefaultHandlers(clusterHandler Logger, getNodeID func() string, get
 
 		return map[string]interface{}{
 			"node_id": getNodeID(),
-			"peers":    peerInfos,
+			"peers":   peerInfos,
 		}, nil
 	})
 

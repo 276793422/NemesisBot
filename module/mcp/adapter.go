@@ -16,7 +16,7 @@ import (
 
 // Adapter converts an MCP tool to a NemesisBot Tool.
 type Adapter struct {
-	client Client
+	client  Client
 	mcpTool Tool
 }
 
@@ -154,9 +154,9 @@ func CreateToolsFromClient(client Client) ([]tools.Tool, error) {
 
 		logger.DebugCF("mcp.adapter", "Created tool adapter",
 			map[string]interface{}{
-				"mcp_tool":      mcpTool.Name,
-				"nemesis_tool":  adapter.Name(),
-				"description":   adapter.Description(),
+				"mcp_tool":     mcpTool.Name,
+				"nemesis_tool": adapter.Name(),
+				"description":  adapter.Description(),
 			})
 	}
 

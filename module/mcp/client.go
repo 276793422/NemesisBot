@@ -23,10 +23,10 @@ type client struct {
 	serverInfo      *ServerInfo
 	capabilities    ServerCapabilities
 
-	mu            sync.RWMutex
-	reqID         int64
-	closed        bool
-	initialized   bool
+	mu          sync.RWMutex
+	reqID       int64
+	closed      bool
+	initialized bool
 }
 
 // NewClient creates a new MCP client with the given server configuration.
@@ -194,9 +194,9 @@ func (c *client) CallTool(ctx context.Context, name string, args map[string]inte
 
 	logger.DebugCF("mcp.client", "Calling MCP tool",
 		map[string]interface{}{
-			"server":  c.config.Name,
-			"tool":    name,
-			"args":    args,
+			"server": c.config.Name,
+			"tool":   name,
+			"args":   args,
 		})
 
 	req := &JSONRPCRequest{
@@ -427,9 +427,9 @@ func (c *client) GetPrompt(ctx context.Context, name string, args map[string]int
 
 	logger.DebugCF("mcp.client", "Prompt retrieved successfully",
 		map[string]interface{}{
-			"server":       c.config.Name,
-			"prompt":       name,
-			"msg_count":    len(result.Messages),
+			"server":    c.config.Name,
+			"prompt":    name,
+			"msg_count": len(result.Messages),
 		})
 
 	return &result, nil

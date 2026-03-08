@@ -202,8 +202,8 @@ func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		actualContent := removeCorrelationID(msg.Content)
 		logger.InfoCF("rpc", "Found pending request, delivering response",
 			map[string]interface{}{
-				"correlation_id": correlationID,
-				"content_len":    len(actualContent),
+				"correlation_id":  correlationID,
+				"content_len":     len(actualContent),
 				"content_preview": utils.Truncate(actualContent, 100),
 			})
 

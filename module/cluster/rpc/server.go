@@ -16,16 +16,16 @@ import (
 
 // Server handles incoming RPC requests
 type Server struct {
-	cluster   Cluster
-	mu        sync.RWMutex
-	handlers  map[string]RPCHandler
-	running   bool
-	listener  net.Listener
+	cluster  Cluster
+	mu       sync.RWMutex
+	handlers map[string]RPCHandler
+	running  bool
+	listener net.Listener
 
 	// Configuration
-	rpcPort      int
-	sendTimeout  time.Duration
-	idleTimeout  time.Duration
+	rpcPort     int
+	sendTimeout time.Duration
+	idleTimeout time.Duration
 
 	// Active connections
 	conns      map[string]*transport.TCPConn // remoteAddr -> conn
@@ -39,12 +39,12 @@ type RPCHandler func(payload map[string]interface{}) (map[string]interface{}, er
 // NewServer creates a new RPC server
 func NewServer(cluster Cluster) *Server {
 	return &Server{
-		cluster:       cluster,
-		handlers:      make(map[string]RPCHandler),
-		conns:         make(map[string]*transport.TCPConn),
-		sendTimeout:   10 * time.Second,
-		idleTimeout:   60 * time.Second,
-		shutdownCh:    make(chan struct{}),
+		cluster:     cluster,
+		handlers:    make(map[string]RPCHandler),
+		conns:       make(map[string]*transport.TCPConn),
+		sendTimeout: 10 * time.Second,
+		idleTimeout: 60 * time.Second,
+		shutdownCh:  make(chan struct{}),
 	}
 }
 
@@ -148,12 +148,12 @@ func (s *Server) handleConnection(netConn net.Conn) {
 
 	// Create TCPConn wrapper
 	config := &transport.TCPConnConfig{
-		NodeID:           "", // Will be set when we know the peer
-		Address:          remoteAddr,
-		ReadBufferSize:   100,
-		SendBufferSize:   100,
-		SendTimeout:      s.sendTimeout,
-		IdleTimeout:      s.idleTimeout,
+		NodeID:            "", // Will be set when we know the peer
+		Address:           remoteAddr,
+		ReadBufferSize:    100,
+		SendBufferSize:    100,
+		SendTimeout:       s.sendTimeout,
+		IdleTimeout:       s.idleTimeout,
 		HeartbeatInterval: 0,
 	}
 

@@ -31,23 +31,23 @@ type TCPConn struct {
 	address string
 
 	// Channels
-	sendChan    chan []byte  // Outgoing data
-	recvChan    chan *RPCMessage // Incoming messages
-	closeChan   chan struct{} // Close signal
+	sendChan  chan []byte      // Outgoing data
+	recvChan  chan *RPCMessage // Incoming messages
+	closeChan chan struct{}    // Close signal
 
 	// State
-	closed   atomic.Bool // Connection closed flag
-	started  atomic.Bool // Goroutines started flag
+	closed  atomic.Bool // Connection closed flag
+	started atomic.Bool // Goroutines started flag
 
 	// Timing
 	createdAt time.Time
 	lastUsed  atomic.Value // time.Time
 
 	// Configuration
-	readBufferSize  int
-	sendBufferSize  int
-	sendTimeout     time.Duration
-	idleTimeout     time.Duration
+	readBufferSize    int
+	sendBufferSize    int
+	sendTimeout       time.Duration
+	idleTimeout       time.Duration
 	heartbeatInterval time.Duration
 
 	// Synchronization
@@ -57,24 +57,24 @@ type TCPConn struct {
 
 // TCPConnConfig contains configuration for creating a new TCPConn
 type TCPConnConfig struct {
-	NodeID           string
-	Address          string
-	ReadBufferSize   int    // Size of receive channel
-	SendBufferSize   int    // Size of send channel
-	SendTimeout      time.Duration
-	IdleTimeout      time.Duration
+	NodeID            string
+	Address           string
+	ReadBufferSize    int // Size of receive channel
+	SendBufferSize    int // Size of send channel
+	SendTimeout       time.Duration
+	IdleTimeout       time.Duration
 	HeartbeatInterval time.Duration
 }
 
 // DefaultTCPConnConfig returns the default configuration
 func DefaultTCPConnConfig(nodeID, address string) *TCPConnConfig {
 	return &TCPConnConfig{
-		NodeID:           nodeID,
-		Address:          address,
-		ReadBufferSize:   100,
-		SendBufferSize:   100,
-		SendTimeout:      10 * time.Second,
-		IdleTimeout:      30 * time.Second,
+		NodeID:            nodeID,
+		Address:           address,
+		ReadBufferSize:    100,
+		SendBufferSize:    100,
+		SendTimeout:       10 * time.Second,
+		IdleTimeout:       30 * time.Second,
 		HeartbeatInterval: 0, // Disabled by default
 	}
 }
@@ -86,17 +86,17 @@ func NewTCPConn(conn net.Conn, config *TCPConnConfig) *TCPConn {
 	}
 
 	tc := &TCPConn{
-		conn:       conn,
-		nodeID:     config.NodeID,
-		address:    config.Address,
-		sendChan:   make(chan []byte, config.SendBufferSize),
-		recvChan:   make(chan *RPCMessage, config.ReadBufferSize),
-		closeChan:  make(chan struct{}),
-		createdAt:  time.Now(),
-		readBufferSize:  config.ReadBufferSize,
-		sendBufferSize:  config.SendBufferSize,
-		sendTimeout:     config.SendTimeout,
-		idleTimeout:     config.IdleTimeout,
+		conn:              conn,
+		nodeID:            config.NodeID,
+		address:           config.Address,
+		sendChan:          make(chan []byte, config.SendBufferSize),
+		recvChan:          make(chan *RPCMessage, config.ReadBufferSize),
+		closeChan:         make(chan struct{}),
+		createdAt:         time.Now(),
+		readBufferSize:    config.ReadBufferSize,
+		sendBufferSize:    config.SendBufferSize,
+		sendTimeout:       config.SendTimeout,
+		idleTimeout:       config.IdleTimeout,
 		heartbeatInterval: config.HeartbeatInterval,
 	}
 

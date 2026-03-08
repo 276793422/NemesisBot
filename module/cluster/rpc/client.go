@@ -46,7 +46,7 @@ type Cluster interface {
 	LogRPCInfo(msg string, args ...interface{})
 	LogRPCError(msg string, args ...interface{})
 	LogRPCDebug(msg string, args ...interface{})
-	GetPeer(peerID string) (interface{}, error) // Get peer directly
+	GetPeer(peerID string) (interface{}, error)                  // Get peer directly
 	GetLocalNetworkInterfaces() ([]LocalNetworkInterface, error) // Get local network interfaces
 }
 
@@ -58,14 +58,14 @@ type LocalNetworkInterface struct {
 
 // RateLimiter limits the rate of RPC calls
 type RateLimiter struct {
-	mu           sync.Mutex
-	tokens       map[string]int        // peer_id -> token count
-	lastRefill   time.Time             // last refill time
-	maxTokens    int                   // tokens per refill
-	refillRate   time.Duration         // refill interval
-	requests     map[string][]time.Time // peer_id -> request timestamps (for burst detection)
-	maxRequests  int                   // max requests per peer per window
-	window       time.Duration         // sliding window duration
+	mu          sync.Mutex
+	tokens      map[string]int         // peer_id -> token count
+	lastRefill  time.Time              // last refill time
+	maxTokens   int                    // tokens per refill
+	refillRate  time.Duration          // refill interval
+	requests    map[string][]time.Time // peer_id -> request timestamps (for burst detection)
+	maxRequests int                    // max requests per peer per window
+	window      time.Duration          // sliding window duration
 }
 
 // NewRateLimiter creates a new rate limiter
@@ -186,10 +186,10 @@ func NewClient(cluster Cluster) *Client {
 		cluster: cluster,
 		pool:    transport.NewPool(),
 		rateLimiter: NewRateLimiter(
-			10,                // maxTokens: 10 calls per second per peer
-			1*time.Second,    // refillRate: refill every second
-			30,               // maxRequests: 30 requests per peer per sliding window
-			10*time.Second,   // window: sliding window of 10 seconds
+			10,             // maxTokens: 10 calls per second per peer
+			1*time.Second,  // refillRate: refill every second
+			30,             // maxRequests: 30 requests per peer per sliding window
+			10*time.Second, // window: sliding window of 10 seconds
 		),
 		timeout: 30 * time.Second,
 	}

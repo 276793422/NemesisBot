@@ -90,7 +90,8 @@ type AsyncTool interface {
 //   - tool: The tool to convert
 //
 // Returns:
-//   A map representing the tool schema in OpenAI function calling format
+//
+//	A map representing the tool schema in OpenAI function calling format
 func ToolToSchema(tool Tool) map[string]interface{} {
 	return map[string]interface{}{
 		"type": "function",

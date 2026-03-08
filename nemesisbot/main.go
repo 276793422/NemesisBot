@@ -98,7 +98,7 @@ func onboard() {
 		fmt.Printf("Config already exists at %s\n", configPath)
 		fmt.Print("Overwrite? (y/n): ")
 		var response string
-		fmt.Scanln(& response)
+		fmt.Scanln(&response)
 		if response != "y" {
 			fmt.Println("Aborted.")
 			return
@@ -345,7 +345,7 @@ func onboardDefault() {
 	if cfg.Logging == nil {
 		cfg.Logging = &config.LoggingConfig{
 			LLMRequests: true,
-			LogDir:      "logs/request_logs",  // Relative path
+			LogDir:      "logs/request_logs", // Relative path
 			DetailLevel: "full",
 		}
 		if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -489,18 +489,18 @@ func initializeClusterConfig(workspace string) {
 	// Marshal to TOML manually (since we're not importing cluster package)
 	tomlData := fmt.Sprintf(
 		"[cluster]\n"+
-		"id = \"manual\"\n"+
-		"auto_discovery = true\n"+
-		"last_updated = \"%s\"\n\n"+
-		"[node]\n"+
-		"id = \"%s\"\n"+
-		"name = \"%s\"\n"+
-		"address = \"\"\n"+
-		"role = \"worker\"\n"+
-		"category = \"general\"\n"+
-		"tags = []\n"+
-		"capabilities = []\n\n"+
-		"peers = []\n",
+			"id = \"manual\"\n"+
+			"auto_discovery = true\n"+
+			"last_updated = \"%s\"\n\n"+
+			"[node]\n"+
+			"id = \"%s\"\n"+
+			"name = \"%s\"\n"+
+			"address = \"\"\n"+
+			"role = \"worker\"\n"+
+			"category = \"general\"\n"+
+			"tags = []\n"+
+			"capabilities = []\n\n"+
+			"peers = []\n",
 		time.Now().Format(time.RFC3339),
 		nodeID,
 		nodeName)
@@ -700,7 +700,7 @@ func runClusterDaemon() {
 						log("DEBUG", "RPC -> %s (%s): Starting RPC call...", n.ID, n.Address)
 						log("DEBUG", "RPC -> %s: Calling clusterInstance.Call()", n.ID)
 						response, err := clusterInstance.Call(n.ID, "hello", map[string]interface{}{
-							"from": clusterInstance.GetNodeID(),
+							"from":      clusterInstance.GetNodeID(),
 							"timestamp": time.Now().Format(time.RFC3339),
 						})
 						log("DEBUG", "RPC -> %s: Call returned, err=%v", n.ID, err)

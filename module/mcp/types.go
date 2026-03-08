@@ -104,9 +104,9 @@ type ResourceContent struct {
 
 // Prompt represents a prompt template available on the MCP server
 type Prompt struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Arguments   []PromptArgument       `json:"arguments,omitempty"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Arguments   []PromptArgument `json:"arguments,omitempty"`
 }
 
 // PromptArgument represents an argument for a prompt
@@ -118,8 +118,8 @@ type PromptArgument struct {
 
 // PromptMessage represents a message in a prompt result
 type PromptMessage struct {
-	Role    string                 `json:"role"` // "user" | "assistant" | "system"
-	Content PromptMessageContent   `json:"content"`
+	Role    string               `json:"role"` // "user" | "assistant" | "system"
+	Content PromptMessageContent `json:"content"`
 }
 
 // PromptMessageContent represents content in a prompt message
@@ -131,8 +131,8 @@ type PromptMessageContent struct {
 
 // PromptResult represents the result of getting a prompt
 type PromptResult struct {
-	Messages    []PromptMessage       `json:"messages"`
-	Description string                `json:"description,omitempty"`
+	Messages    []PromptMessage `json:"messages"`
+	Description string          `json:"description,omitempty"`
 }
 
 // ServerCapabilities describes the server's capabilities
@@ -157,15 +157,15 @@ type ClientInfo struct {
 // InitializeParams parameters for the initialize request
 type InitializeParams struct {
 	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities   ClientCapabilities `json:"capabilities"`
-	ClientInfo     ClientInfo         `json:"clientInfo"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ClientInfo      ClientInfo         `json:"clientInfo"`
 }
 
 // InitializeResult result of the initialize request
 type InitializeResult struct {
 	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities   ServerCapabilities  `json:"capabilities"`
-	ServerInfo     ServerInfo          `json:"serverInfo"`
+	Capabilities    ServerCapabilities `json:"capabilities"`
+	ServerInfo      ServerInfo         `json:"serverInfo"`
 }
 
 // ClientCapabilities describes the client's capabilities

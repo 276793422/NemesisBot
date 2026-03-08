@@ -34,12 +34,12 @@ type ClusterCallbacks interface {
 
 // Discovery handles UDP broadcast discovery
 type Discovery struct {
-	cluster     ClusterCallbacks
-	listener    *UDPListener
+	cluster           ClusterCallbacks
+	listener          *UDPListener
 	broadcastInterval time.Duration
-	mu          sync.RWMutex
-	running     bool
-	stopCh      chan struct{}
+	mu                sync.RWMutex
+	running           bool
+	stopCh            chan struct{}
 }
 
 // NewDiscovery creates a new discovery instance
@@ -50,10 +50,10 @@ func NewDiscovery(port int, cluster ClusterCallbacks) (*Discovery, error) {
 	}
 
 	return &Discovery{
-		cluster:          cluster,
-		listener:         listener,
+		cluster:           cluster,
+		listener:          listener,
 		broadcastInterval: 30 * time.Second,
-		stopCh:           make(chan struct{}),
+		stopCh:            make(chan struct{}),
 	}, nil
 }
 

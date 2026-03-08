@@ -99,7 +99,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 		correlationID := getCorrelationIDFromContext(ctx)
 		logger.InfoCF("agent", "MessageTool: RPC channel detected",
 			map[string]interface{}{
-				"correlation_id": correlationID,
+				"correlation_id":  correlationID,
 				"content_preview": utils.Truncate(content, 100),
 			})
 
@@ -107,7 +107,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]interface{}) 
 			finalContent = fmt.Sprintf("[rpc:%s] %s", correlationID, content)
 			logger.InfoCF("agent", "MessageTool: Added correlation ID prefix to RPC message",
 				map[string]interface{}{
-					"correlation_id": correlationID,
+					"correlation_id":        correlationID,
 					"final_content_preview": utils.Truncate(finalContent, 120),
 				})
 		} else {

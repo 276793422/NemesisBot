@@ -36,22 +36,22 @@ type Cluster struct {
 	nodeID   string
 	nodeName string
 	address  string
-	role      string
-	category  string
-	tags      []string
+	role     string
+	category string
+	tags     []string
 
 	// Paths
-	workspace       string
-	staticConfigPath string  // peers.toml (static configuration)
-	dynamicStatePath string  // state.toml (dynamic state)
-	logDir          string
+	workspace        string
+	staticConfigPath string // peers.toml (static configuration)
+	dynamicStatePath string // state.toml (dynamic state)
+	logDir           string
 
 	// Components
 	registry   *Registry
 	logger     *ClusterLogger
 	discovery  *discovery.Discovery
 	rpcClient  *rpc.Client
-	rpcServer  *rpc.Server      // RPC server instance
+	rpcServer  *rpc.Server          // RPC server instance
 	rpcChannel *channels.RPCChannel // RPC channel for LLM communication
 
 	// Configuration
@@ -81,8 +81,8 @@ func NewCluster(workspace string) (*Cluster, error) {
 	}
 
 	// Config paths
-	staticConfigPath := filepath.Join(clusterDir, "peers.toml")   // Static configuration
-	dynamicStatePath := filepath.Join(clusterDir, "state.toml")   // Dynamic state
+	staticConfigPath := filepath.Join(clusterDir, "peers.toml") // Static configuration
+	dynamicStatePath := filepath.Join(clusterDir, "state.toml") // Dynamic state
 
 	// Create logger
 	logger, err := NewClusterLogger(workspace)
@@ -91,21 +91,21 @@ func NewCluster(workspace string) (*Cluster, error) {
 	}
 
 	cluster := &Cluster{
-		nodeID:           nodeID,
-		nodeName:         "Bot " + nodeID,
-		workspace:        workspace,
-		staticConfigPath: staticConfigPath,
-		dynamicStatePath: dynamicStatePath,
-		registry:         NewRegistry(),
-		logger:           logger,
-		udpPort:          DefaultUDPPort,  // Default UDP port
-		rpcPort:          DefaultRPCPort,  // Default RPC port
+		nodeID:            nodeID,
+		nodeName:          "Bot " + nodeID,
+		workspace:         workspace,
+		staticConfigPath:  staticConfigPath,
+		dynamicStatePath:  dynamicStatePath,
+		registry:          NewRegistry(),
+		logger:            logger,
+		udpPort:           DefaultUDPPort, // Default UDP port
+		rpcPort:           DefaultRPCPort, // Default RPC port
 		broadcastInterval: DefaultBroadcastInterval,
-		timeout:          DefaultTimeout,
-		stopCh:           make(chan struct{}),
-		role:             "worker",  // Default role
-		category:         "general", // Default category
-		tags:             []string{},// Default tags
+		timeout:           DefaultTimeout,
+		stopCh:            make(chan struct{}),
+		role:              "worker",   // Default role
+		category:          "general",  // Default category
+		tags:              []string{}, // Default tags
 	}
 
 	// Load static config to get local node info (role, category, tags)
@@ -583,8 +583,8 @@ func (c *Cluster) HandleDiscoveredNode(nodeID, name string, addresses []string, 
 	node := &Node{
 		ID:           nodeID,
 		Name:         name,
-		Address:      primaryAddress,  // Primary address for backward compatibility
-		Addresses:    addresses,       // All addresses - RPC client will try all of them
+		Address:      primaryAddress, // Primary address for backward compatibility
+		Addresses:    addresses,      // All addresses - RPC client will try all of them
 		RPCPort:      rpcPort,
 		Role:         role,
 		Category:     category,
@@ -638,10 +638,10 @@ func (c *Cluster) RegisterRPCHandler(action string, handler func(payload map[str
 // This is called by loop.go after creating the RPCChannel
 //
 // Thread safety: This method uses lock-free pattern to avoid deadlock:
-// - Acquires lock only to set c.rpcChannel and read state
-// - Releases lock before calling registerPeerChatHandlers()
-// - This avoids deadlock: registerPeerChatHandlers() internally calls RegisterRPCHandler()
-//   which tries to acquire a read lock while we might be holding a write lock
+//   - Acquires lock only to set c.rpcChannel and read state
+//   - Releases lock before calling registerPeerChatHandlers()
+//   - This avoids deadlock: registerPeerChatHandlers() internally calls RegisterRPCHandler()
+//     which tries to acquire a read lock while we might be holding a write lock
 //
 // There's a tiny race window between Unlock() and registerPeerChatHandlers() where
 // Stop() or server shutdown could occur. This is acceptable as:

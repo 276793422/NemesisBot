@@ -10,18 +10,19 @@ import (
 
 // MatchPattern checks if a target matches a pattern with wildcard support
 // Supported wildcards:
-//   *  - matches any sequence in a single directory level (e.g., *.key, D:/123/*.key)
-//   ** - matches any sequence across multiple directory levels (e.g., D:/123/**.key)
-//   No wildcard - exact match (e.g., /etc/passwd)
+//   - - matches any sequence in a single directory level (e.g., *.key, D:/123/*.key)
+//     ** - matches any sequence across multiple directory levels (e.g., D:/123/**.key)
+//     No wildcard - exact match (e.g., /etc/passwd)
 //
 // Special case: patterns without directory separator (e.g., *.key) match globally
 // across all directories (e.g., *.key matches /home/user/test.key)
 //
 // Examples:
-//   *.key              matches all .key files in all directories (global pattern)
-//   D:/123/*.key        matches .key files directly in D:/123/
-//   D:/123/**.key       matches .key files in D:/123/ and all subdirectories
-//   /etc/passwd        matches exactly /etc/passwd
+//
+//	*.key              matches all .key files in all directories (global pattern)
+//	D:/123/*.key        matches .key files directly in D:/123/
+//	D:/123/**.key       matches .key files in D:/123/ and all subdirectories
+//	/etc/passwd        matches exactly /etc/passwd
 func MatchPattern(pattern, target string) bool {
 	// Normalize path separators to /
 	pattern = normalizePath(pattern)
@@ -54,8 +55,8 @@ func normalizePath(path string) string {
 
 // wildcardToRegex converts a wildcard pattern to a regex pattern
 // Supports:
-//   *  - matches any sequence except / (single directory level)
-//   ** - matches any sequence including / (multiple directory levels)
+//   - - matches any sequence except / (single directory level)
+//     ** - matches any sequence including / (multiple directory levels)
 func wildcardToRegex(pattern string) string {
 	var regex strings.Builder
 	regex.WriteString("^")
@@ -89,9 +90,10 @@ func wildcardToRegex(pattern string) string {
 // MatchCommandPattern checks if a command matches a pattern
 // Supports * wildcard for command arguments
 // Examples:
-//   "git *"         matches "git status", "git commit -m 'msg'"
-//   "rm -rf *"      matches "rm -rf /tmp/test"
-//   "*sudo*"        matches "sudo apt-get install", "sudo vim"
+//
+//	"git *"         matches "git status", "git commit -m 'msg'"
+//	"rm -rf *"      matches "rm -rf /tmp/test"
+//	"*sudo*"        matches "sudo apt-get install", "sudo vim"
 func MatchCommandPattern(pattern, command string) bool {
 	// For commands, * matches any characters including spaces
 	// We need to replace * with .* BEFORE quoting the rest of the pattern
@@ -107,9 +109,10 @@ func MatchCommandPattern(pattern, command string) bool {
 
 // MatchDomainPattern checks if a domain matches a pattern
 // Examples:
-//   "*.github.com"  matches "api.github.com", "raw.githubusercontent.com"
-//   "*.openai.com"  matches "api.openai.com"
-//   "github.com"    matches exactly "github.com"
+//
+//	"*.github.com"  matches "api.github.com", "raw.githubusercontent.com"
+//	"*.openai.com"  matches "api.openai.com"
+//	"github.com"    matches exactly "github.com"
 func MatchDomainPattern(pattern, domain string) bool {
 	domain = strings.ToLower(domain)
 	pattern = strings.ToLower(pattern)

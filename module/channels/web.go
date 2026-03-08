@@ -112,7 +112,7 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	if !c.IsRunning() {
 		logger.WarnCF("web", "Web channel not running, cannot send message",
 			map[string]interface{}{
-				"chat_id": msg.ChatID,
+				"chat_id":     msg.ChatID,
 				"content_len": len(msg.Content),
 			})
 		return fmt.Errorf("web channel not running")
@@ -134,7 +134,7 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	} else {
 		logger.ErrorCF("web", "Invalid chat ID format",
 			map[string]interface{}{
-				"chat_id": msg.ChatID,
+				"chat_id":         msg.ChatID,
 				"expected_format": "web:<session-id>",
 			})
 		return fmt.Errorf("invalid chat ID format: %s", msg.ChatID)
@@ -142,8 +142,8 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 
 	logger.DebugCF("web", "Sending message to session",
 		map[string]interface{}{
-			"session_id": sessionID,
-			"chat_id":    msg.ChatID,
+			"session_id":  sessionID,
+			"chat_id":     msg.ChatID,
 			"content_len": len(msg.Content),
 		})
 

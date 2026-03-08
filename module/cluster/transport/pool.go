@@ -21,23 +21,23 @@ const (
 
 // Pool manages a pool of TCP connections
 type Pool struct {
-	mu        sync.RWMutex
-	conns     map[string]*TCPConn // node_id:address -> TCPConn
-	timeout   time.Duration
+	mu      sync.RWMutex
+	conns   map[string]*TCPConn // node_id:address -> TCPConn
+	timeout time.Duration
 
 	// Connection limits
-	maxConns           int // Maximum total concurrent connections
-	maxConnsPerNode    int // Maximum concurrent connections per node
-	semaphore          chan struct{} // Semaphore for limiting total connections
-	activeConns        int // Counter for active connections (must hold mu to access)
+	maxConns        int           // Maximum total concurrent connections
+	maxConnsPerNode int           // Maximum concurrent connections per node
+	semaphore       chan struct{} // Semaphore for limiting total connections
+	activeConns     int           // Counter for active connections (must hold mu to access)
 
 	// Per-node connection counters (must hold mu to access)
 	nodeConns map[string]int // node_id -> active connection count
 
 	// Configuration
-	dialTimeout   time.Duration
-	idleTimeout   time.Duration
-	sendTimeout   time.Duration
+	dialTimeout time.Duration
+	idleTimeout time.Duration
+	sendTimeout time.Duration
 }
 
 // PoolConfig contains configuration for creating a new Pool
@@ -68,15 +68,15 @@ func NewPool() *Pool {
 // NewPoolWithConfig creates a new connection pool with custom configuration
 func NewPoolWithConfig(config *PoolConfig) *Pool {
 	return &Pool{
-		conns:            make(map[string]*TCPConn),
-		timeout:           10 * time.Second,
-		maxConns:          config.MaxConns,
-		maxConnsPerNode:   config.MaxConnsPerNode,
-		semaphore:         make(chan struct{}, config.MaxConns),
-		nodeConns:         make(map[string]int),
-		dialTimeout:       config.DialTimeout,
-		idleTimeout:       config.IdleTimeout,
-		sendTimeout:       config.SendTimeout,
+		conns:           make(map[string]*TCPConn),
+		timeout:         10 * time.Second,
+		maxConns:        config.MaxConns,
+		maxConnsPerNode: config.MaxConnsPerNode,
+		semaphore:       make(chan struct{}, config.MaxConns),
+		nodeConns:       make(map[string]int),
+		dialTimeout:     config.DialTimeout,
+		idleTimeout:     config.IdleTimeout,
+		sendTimeout:     config.SendTimeout,
 	}
 }
 
@@ -211,12 +211,12 @@ func (p *Pool) dial(ctx context.Context, nodeID, address string) (*TCPConn, erro
 
 	// Create TCPConn wrapper
 	config := &TCPConnConfig{
-		NodeID:           nodeID,
-		Address:          address,
-		ReadBufferSize:   100,
-		SendBufferSize:   100,
-		SendTimeout:      p.sendTimeout,
-		IdleTimeout:      p.idleTimeout,
+		NodeID:            nodeID,
+		Address:           address,
+		ReadBufferSize:    100,
+		SendBufferSize:    100,
+		SendTimeout:       p.sendTimeout,
+		IdleTimeout:       p.idleTimeout,
 		HeartbeatInterval: 0,
 	}
 
@@ -267,8 +267,8 @@ func (p *Pool) GetStats() PoolStats {
 	defer p.mu.RUnlock()
 
 	stats := PoolStats{
-		ActiveConns:   p.activeConns,
-		MaxConns:      p.maxConns,
+		ActiveConns:    p.activeConns,
+		MaxConns:       p.maxConns,
 		AvailableSlots: cap(p.semaphore) - len(p.semaphore),
 	}
 

@@ -12,7 +12,7 @@ import (
 // Registry manages the cluster node registry
 type Registry struct {
 	mu    sync.RWMutex
-	nodes map[string]*Node  // node_id -> Node
+	nodes map[string]*Node // node_id -> Node
 }
 
 // NewRegistry creates a new registry

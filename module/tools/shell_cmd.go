@@ -1,3 +1,4 @@
+//go:build !powershell
 // +build !powershell
 
 // NemesisBot - AI agent
@@ -15,10 +16,12 @@ import (
 // This file is used when the "powershell" build tag is NOT set (default).
 //
 // To build with cmd.exe (default):
-//   go build -o nemesisbot.exe ./nemesisbot
+//
+//	go build -o nemesisbot.exe ./nemesisbot
 //
 // To build with PowerShell instead:
-//   go build -tags powershell -o nemesisbot.exe ./nemesisbot
+//
+//	go build -tags powershell -o nemesisbot.exe ./nemesisbot
 func (t *ExecTool) buildWindowsCommand(cmdCtx context.Context, command string) (*exec.Cmd, error) {
 	// Use cmd.exe on Windows (more reliable than PowerShell for simple commands)
 	// Using /c flag to execute the command and terminate

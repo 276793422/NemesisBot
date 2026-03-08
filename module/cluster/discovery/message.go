@@ -25,17 +25,17 @@ const (
 
 // DiscoveryMessage represents a UDP broadcast message
 type DiscoveryMessage struct {
-	Version      string      `json:"version"`       // Protocol version
-	Type         MessageType `json:"type"`          // Message type
-	NodeID       string      `json:"node_id"`       // Unique node identifier
-	Name         string      `json:"name"`          // Human-readable name
-	Addresses    []string    `json:"addresses"`     // List of IP addresses (multiple NICs support)
-	RPCPort      int         `json:"rpc_port"`      // RPC port number
-	Role         string      `json:"role"`          // Cluster role: manager, coordinator, worker, observer, standby
-	Category     string      `json:"category"`      // Business category: design, development, testing, etc.
-	Tags         []string    `json:"tags"`          // Custom tags
-	Capabilities []string    `json:"capabilities"`  // List of capabilities
-	Timestamp    int64       `json:"timestamp"`     // Unix timestamp
+	Version      string      `json:"version"`      // Protocol version
+	Type         MessageType `json:"type"`         // Message type
+	NodeID       string      `json:"node_id"`      // Unique node identifier
+	Name         string      `json:"name"`         // Human-readable name
+	Addresses    []string    `json:"addresses"`    // List of IP addresses (multiple NICs support)
+	RPCPort      int         `json:"rpc_port"`     // RPC port number
+	Role         string      `json:"role"`         // Cluster role: manager, coordinator, worker, observer, standby
+	Category     string      `json:"category"`     // Business category: design, development, testing, etc.
+	Tags         []string    `json:"tags"`         // Custom tags
+	Capabilities []string    `json:"capabilities"` // List of capabilities
+	Timestamp    int64       `json:"timestamp"`    // Unix timestamp
 }
 
 // NewAnnounceMessage creates a new announce message

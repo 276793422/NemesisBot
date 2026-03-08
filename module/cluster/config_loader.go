@@ -18,9 +18,9 @@ import (
 // This is separate from ClusterConfig which contains runtime state (peers.toml)
 type AppConfig struct {
 	Enabled           bool `json:"enabled" env:"CLUSTER_ENABLED"`
-	Port              int `json:"port" env:"CLUSTER_UDP_PORT"`
-	RPCPort           int `json:"rpc_port" env:"CLUSTER_RPC_PORT"`
-	BroadcastInterval int `json:"broadcast_interval" env:"CLUSTER_BROADCAST_INTERVAL"`
+	Port              int  `json:"port" env:"CLUSTER_UDP_PORT"`
+	RPCPort           int  `json:"rpc_port" env:"CLUSTER_RPC_PORT"`
+	BroadcastInterval int  `json:"broadcast_interval" env:"CLUSTER_BROADCAST_INTERVAL"`
 }
 
 // DefaultAppConfig returns the default cluster application configuration

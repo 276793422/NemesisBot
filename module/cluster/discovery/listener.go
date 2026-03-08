@@ -14,12 +14,12 @@ import (
 
 // UDPListener handles UDP broadcast discovery
 type UDPListener struct {
-	conn       *net.UDPConn
-	port       int
-	mu         sync.RWMutex
-	running    bool
-	stopCh     chan struct{}
-	onMessage  func(*DiscoveryMessage, *net.UDPAddr)
+	conn      *net.UDPConn
+	port      int
+	mu        sync.RWMutex
+	running   bool
+	stopCh    chan struct{}
+	onMessage func(*DiscoveryMessage, *net.UDPAddr)
 }
 
 // NewUDPListener creates a new UDP listener
@@ -36,8 +36,8 @@ func NewUDPListener(port int) (*UDPListener, error) {
 	}
 
 	return &UDPListener{
-		conn:  conn,
-		port:  port,
+		conn:   conn,
+		port:   port,
 		stopCh: make(chan struct{}),
 	}, nil
 }
@@ -151,7 +151,7 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 	}
 
 	// Also broadcast to a range of ports to support multi-port discovery
-	for port := basePort + 1; port <= basePort + 10; port++ {
+	for port := basePort + 1; port <= basePort+10; port++ {
 		for _, addr := range broadcastAddrs {
 			targetAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, port))
 			if err != nil {

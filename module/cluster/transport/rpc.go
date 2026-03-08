@@ -27,14 +27,14 @@ const (
 
 // RPCMessage represents a WebSocket RPC message
 type RPCMessage struct {
-	Version   string                 `json:"version"`   // Protocol version
-	ID        string                 `json:"id"`        // Unique message ID
-	Type      RPCType                `json:"type"`      // Message type
-	From      string                 `json:"from"`      // Sender node ID
-	To        string                 `json:"to"`        // Receiver node ID
-	Action    string                 `json:"action"`    // Action to perform
-	Payload   map[string]interface{} `json:"payload"`   // Action payload
-	Timestamp int64                  `json:"timestamp"` // Unix timestamp
+	Version   string                 `json:"version"`         // Protocol version
+	ID        string                 `json:"id"`              // Unique message ID
+	Type      RPCType                `json:"type"`            // Message type
+	From      string                 `json:"from"`            // Sender node ID
+	To        string                 `json:"to"`              // Receiver node ID
+	Action    string                 `json:"action"`          // Action to perform
+	Payload   map[string]interface{} `json:"payload"`         // Action payload
+	Timestamp int64                  `json:"timestamp"`       // Unix timestamp
 	Error     string                 `json:"error,omitempty"` // Error message if type is "error"
 }
 

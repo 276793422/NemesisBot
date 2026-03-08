@@ -35,6 +35,7 @@ type ModelResolution struct {
 // modelRef can be:
 //   - "model_name" (searches by ModelConfig.ModelName)
 //   - "vendor/model" (searches by ModelConfig.Model)
+//
 // Returns ProviderResolution with all configuration needed to make API calls.
 func ResolveModelConfig(cfg *Config, modelRef string) (*ProviderResolution, error) {
 	if cfg == nil {

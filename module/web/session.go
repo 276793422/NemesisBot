@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/276793422/NemesisBot/module/logger"
 )
 
 // Session represents an active WebSocket client session
@@ -95,7 +95,7 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 	if !ok {
 		logger.WarnCF("web", "Session not found for broadcast",
 			map[string]interface{}{
-				"session_id": sessionID,
+				"session_id":  sessionID,
 				"message_len": len(message),
 			})
 		return fmt.Errorf("session not found: %s", sessionID)
@@ -103,7 +103,7 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 
 	logger.DebugCF("web", "Broadcasting to session",
 		map[string]interface{}{
-			"session_id": sessionID,
+			"session_id":  sessionID,
 			"message_len": len(message),
 		})
 
@@ -129,13 +129,13 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 			logger.ErrorCF("web", "Failed to send via queue",
 				map[string]interface{}{
 					"session_id": sessionID,
-					"error": err.Error(),
+					"error":      err.Error(),
 				})
 			return fmt.Errorf("failed to send via queue: %w", err)
 		}
 		logger.DebugCF("web", "Message sent via queue",
 			map[string]interface{}{
-				"session_id": sessionID,
+				"session_id":  sessionID,
 				"message_len": len(message),
 			})
 		return nil
@@ -152,7 +152,7 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 		logger.ErrorCF("web", "Failed to set write deadline",
 			map[string]interface{}{
 				"session_id": sessionID,
-				"error": err.Error(),
+				"error":      err.Error(),
 			})
 		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
@@ -162,14 +162,14 @@ func (sm *SessionManager) Broadcast(sessionID string, message []byte) error {
 		logger.ErrorCF("web", "Failed to write message",
 			map[string]interface{}{
 				"session_id": sessionID,
-				"error": err.Error(),
+				"error":      err.Error(),
 			})
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
 	logger.DebugCF("web", "Message sent successfully",
 		map[string]interface{}{
-			"session_id": sessionID,
+			"session_id":  sessionID,
 			"message_len": len(message),
 		})
 
@@ -284,7 +284,7 @@ func (sm *SessionManager) cleanupInactiveSessions() {
 		session, ok := sm.GetSession(sessionID)
 		if ok {
 			logger.InfoCF("web", "Removing inactive session", map[string]interface{}{
-				"session_id": sessionID,
+				"session_id":        sessionID,
 				"inactive_duration": time.Since(session.LastActive).String(),
 			})
 			session.mu.Lock()

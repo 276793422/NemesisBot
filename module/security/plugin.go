@@ -22,12 +22,12 @@ import (
 // SecurityPlugin implements the plugin interface for security checks
 type SecurityPlugin struct {
 	*plugin.BasePlugin
-	auditor      *SecurityAuditor
-	enabled      bool
-	configPath   string
-	mu           sync.RWMutex
-	logFile      *os.File
-	logFilePath  string
+	auditor     *SecurityAuditor
+	enabled     bool
+	configPath  string
+	mu          sync.RWMutex
+	logFile     *os.File
+	logFilePath string
 }
 
 // NewSecurityPlugin creates a new security plugin

@@ -164,15 +164,15 @@ func LoadEmbeddedConfig() (*Config, error) {
 }
 
 type Config struct {
-	Agents    AgentsConfig  `json:"agents"`
-	Bindings  []AgentBinding `json:"bindings,omitempty"`
-	Session   SessionConfig  `json:"session,omitempty"`
-	Channels  ChannelsConfig `json:"channels"`
-	ModelList []ModelConfig  `json:"model_list"` // Model-centric provider configuration
-	Gateway   GatewayConfig  `json:"gateway"`
-	Tools     ToolsConfig    `json:"tools"`
-	Heartbeat HeartbeatConfig `json:"heartbeat"`
-	Devices   DevicesConfig  `json:"devices"`
+	Agents    AgentsConfig        `json:"agents"`
+	Bindings  []AgentBinding      `json:"bindings,omitempty"`
+	Session   SessionConfig       `json:"session,omitempty"`
+	Channels  ChannelsConfig      `json:"channels"`
+	ModelList []ModelConfig       `json:"model_list"` // Model-centric provider configuration
+	Gateway   GatewayConfig       `json:"gateway"`
+	Tools     ToolsConfig         `json:"tools"`
+	Heartbeat HeartbeatConfig     `json:"heartbeat"`
+	Devices   DevicesConfig       `json:"devices"`
 	Logging   *LoggingConfig      `json:"logging,omitempty"`
 	Security  *SecurityFlagConfig `json:"security,omitempty"`
 	mu        sync.RWMutex
@@ -270,23 +270,23 @@ type AgentDefaults struct {
 	Temperature           float64  `json:"temperature" env:"NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations     int      `json:"max_tool_iterations" env:"NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
 	ConcurrentRequestMode string   `json:"concurrent_request_mode" env:"NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE"` // "reject" or "queue"
-	QueueSize             int      `json:"queue_size" env:"NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE"`                         // Only effective in queue mode
+	QueueSize             int      `json:"queue_size" env:"NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE"`                           // Only effective in queue mode
 }
 
 type ChannelsConfig struct {
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
-	Telegram TelegramConfig `json:"telegram"`
-	Feishu   FeishuConfig   `json:"feishu"`
-	Discord  DiscordConfig  `json:"discord"`
-	MaixCam  MaixCamConfig  `json:"maixcam"`
-	QQ       QQConfig       `json:"qq"`
-	DingTalk DingTalkConfig `json:"dingtalk"`
-	Slack    SlackConfig    `json:"slack"`
-	LINE     LINEConfig     `json:"line"`
-	OneBot   OneBotConfig   `json:"onebot"`
-	Web      WebChannelConfig `json:"web"`
+	WhatsApp  WhatsAppConfig         `json:"whatsapp"`
+	Telegram  TelegramConfig         `json:"telegram"`
+	Feishu    FeishuConfig           `json:"feishu"`
+	Discord   DiscordConfig          `json:"discord"`
+	MaixCam   MaixCamConfig          `json:"maixcam"`
+	QQ        QQConfig               `json:"qq"`
+	DingTalk  DingTalkConfig         `json:"dingtalk"`
+	Slack     SlackConfig            `json:"slack"`
+	LINE      LINEConfig             `json:"line"`
+	OneBot    OneBotConfig           `json:"onebot"`
+	Web       WebChannelConfig       `json:"web"`
 	WebSocket WebSocketChannelConfig `json:"websocket"`
-	External ExternalConfig `json:"external"`
+	External  ExternalConfig         `json:"external"`
 }
 
 type WhatsAppConfig struct {
@@ -330,11 +330,11 @@ type MaixCamConfig struct {
 }
 
 type QQConfig struct {
-	Enabled     bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_QQ_ENABLED"`
-	AppID       string              `json:"app_id" env:"NEMESISBOT_CHANNELS_QQ_APP_ID"`
-	AppSecret   string              `json:"app_secret" env:"NEMESISBOT_CHANNELS_QQ_APP_SECRET"`
-	AllowFrom   FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_QQ_ALLOW_FROM"`
-	SyncTo      []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_QQ_SYNC_TO"`
+	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_QQ_ENABLED"`
+	AppID     string              `json:"app_id" env:"NEMESISBOT_CHANNELS_QQ_APP_ID"`
+	AppSecret string              `json:"app_secret" env:"NEMESISBOT_CHANNELS_QQ_APP_SECRET"`
+	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_QQ_ALLOW_FROM"`
+	SyncTo    []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_QQ_SYNC_TO"`
 }
 
 type DingTalkConfig struct {
@@ -382,7 +382,7 @@ type WebChannelConfig struct {
 	AuthToken         string              `json:"auth_token" env:"NEMESISBOT_CHANNELS_WEB_AUTH_TOKEN"`
 	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEB_ALLOW_FROM"`
 	HeartbeatInterval int                 `json:"heartbeat_interval" env:"NEMESISBOT_CHANNELS_WEB_HEARTBEAT_INTERVAL"` // seconds
-	SessionTimeout    int                 `json:"session_timeout" env:"NEMESISBOT_CHANNELS_WEB_SESSION_TIMEOUT"`      // seconds
+	SessionTimeout    int                 `json:"session_timeout" env:"NEMESISBOT_CHANNELS_WEB_SESSION_TIMEOUT"`       // seconds
 	SyncTo            []string            `json:"sync_to,omitempty" env:"NEMESISBOT_CHANNELS_WEB_SYNC_TO"`
 }
 
@@ -402,12 +402,12 @@ type ExternalConfig struct {
 
 // WebSocketChannelConfig configures the standalone WebSocket channel for external program integration
 type WebSocketChannelConfig struct {
-	Enabled    bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ENABLED"`
-	Host       string              `json:"host" env:"NEMESISBOT_CHANNELS_WEBSOCKET_HOST"`
-	Port       int                 `json:"port" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PORT"`
-	Path       string              `json:"path" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PATH"`
-	AuthToken  string              `json:"auth_token" env:"NEMESISBOT_CHANNELS_WEBSOCKET_AUTH_TOKEN"`
-	AllowFrom  FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ALLOW_FROM"`
+	Enabled   bool                `json:"enabled" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ENABLED"`
+	Host      string              `json:"host" env:"NEMESISBOT_CHANNELS_WEBSOCKET_HOST"`
+	Port      int                 `json:"port" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PORT"`
+	Path      string              `json:"path" env:"NEMESISBOT_CHANNELS_WEBSOCKET_PATH"`
+	AuthToken string              `json:"auth_token" env:"NEMESISBOT_CHANNELS_WEBSOCKET_AUTH_TOKEN"`
+	AllowFrom FlexibleStringSlice `json:"allow_from" env:"NEMESISBOT_CHANNELS_WEBSOCKET_ALLOW_FROM"`
 	// SyncTo specifies channels to sync messages to (e.g., ["web"])
 	SyncTo []string `json:"sync_to" env:"NEMESISBOT_CHANNELS_WEBSOCKET_SYNC_TO"`
 	// Deprecated: Use SyncTo instead. These fields are auto-populated from SyncTo.
@@ -502,9 +502,9 @@ type ToolsConfig struct {
 
 // MCPConfig holds Model Context Protocol (MCP) server configurations
 type MCPConfig struct {
-	Enabled bool             `json:"enabled" env:"NEMESISBOT_MCP_ENABLED"`
+	Enabled bool              `json:"enabled" env:"NEMESISBOT_MCP_ENABLED"`
 	Servers []MCPServerConfig `json:"servers"`
-	Timeout int              `json:"timeout" env:"NEMESISBOT_MCP_TIMEOUT"` // seconds, default 30
+	Timeout int               `json:"timeout" env:"NEMESISBOT_MCP_TIMEOUT"` // seconds, default 30
 }
 
 // MCPServerConfig holds configuration for a single MCP server
@@ -532,7 +532,8 @@ type SecurityFlagConfig struct {
 // This provides a working out-of-the-box configuration that can be customized.
 //
 // Returns:
-//   A Config instance with default settings for all components
+//
+//	A Config instance with default settings for all components
 //
 // Default values include:
 //   - Workspace: Resolved dynamically using path package (respects NEMESISBOT_HOME)
@@ -640,12 +641,12 @@ func DefaultConfig() *Config {
 				SessionTimeout:    3600,
 			},
 			External: ExternalConfig{
-				Enabled:     false,
-				InputEXE:    "",
-				OutputEXE:   "",
-				ChatID:      "external:main",
-				AllowFrom:   FlexibleStringSlice{},
-				SyncTo:      []string{"web"},
+				Enabled:   false,
+				InputEXE:  "",
+				OutputEXE: "",
+				ChatID:    "external:main",
+				AllowFrom: FlexibleStringSlice{},
+				SyncTo:    []string{"web"},
 			},
 		},
 		ModelList: []ModelConfig{}, // Empty model list by default
@@ -791,8 +792,8 @@ func SaveConfig(configPath string, cfg *Config) error {
 
 			// Check if workspace is using default path pattern (~/ or absolute default)
 			if strings.HasPrefix(cfg.Agents.Defaults.Workspace, "~/") ||
-			   strings.HasPrefix(cfg.Agents.Defaults.Workspace, filepath.Join("~", ".nemesisbot")) ||
-			   cfg.Agents.Defaults.Workspace == defaultWorkspacePath {
+				strings.HasPrefix(cfg.Agents.Defaults.Workspace, filepath.Join("~", ".nemesisbot")) ||
+				cfg.Agents.Defaults.Workspace == defaultWorkspacePath {
 				// Update workspace to use relative path from config directory
 				cfg.Agents.Defaults.Workspace = filepath.Join(".nemesisbot", "workspace")
 			}
@@ -915,21 +916,21 @@ func SaveMCPConfig(path string, cfg *MCPConfig) error {
 
 // SecurityConfig holds detailed security configuration
 type SecurityConfig struct {
-	DefaultAction         string  `json:"default_action"` // "allow", "deny", "ask"
-	LogAllOperations      bool    `json:"log_all_operations"`
-	LogDenialsOnly        bool    `json:"log_denials_only"`
-	ApprovalTimeout       int     `json:"approval_timeout_seconds"`
-	MaxPendingRequests    int     `json:"max_pending_requests"`
-	AuditLogRetentionDays int     `json:"audit_log_retention_days"`
-	AuditLogPath          string  `json:"audit_log_path,omitempty"`
-	AuditLogFileEnabled   bool    `json:"audit_log_file_enabled"`
-	SynchronousMode       bool    `json:"synchronous_mode"`
-	FileRules             *FileSecurityRules        `json:"file_rules,omitempty"`
-	DirectoryRules        *DirectorySecurityRules   `json:"directory_rules,omitempty"`
-	ProcessRules          *ProcessSecurityRules     `json:"process_rules,omitempty"`
-	NetworkRules          *NetworkSecurityRules     `json:"network_rules,omitempty"`
-	HardwareRules         *HardwareSecurityRules    `json:"hardware_rules,omitempty"`
-	RegistryRules         *RegistrySecurityRules    `json:"registry_rules,omitempty"`
+	DefaultAction         string                  `json:"default_action"` // "allow", "deny", "ask"
+	LogAllOperations      bool                    `json:"log_all_operations"`
+	LogDenialsOnly        bool                    `json:"log_denials_only"`
+	ApprovalTimeout       int                     `json:"approval_timeout_seconds"`
+	MaxPendingRequests    int                     `json:"max_pending_requests"`
+	AuditLogRetentionDays int                     `json:"audit_log_retention_days"`
+	AuditLogPath          string                  `json:"audit_log_path,omitempty"`
+	AuditLogFileEnabled   bool                    `json:"audit_log_file_enabled"`
+	SynchronousMode       bool                    `json:"synchronous_mode"`
+	FileRules             *FileSecurityRules      `json:"file_rules,omitempty"`
+	DirectoryRules        *DirectorySecurityRules `json:"directory_rules,omitempty"`
+	ProcessRules          *ProcessSecurityRules   `json:"process_rules,omitempty"`
+	NetworkRules          *NetworkSecurityRules   `json:"network_rules,omitempty"`
+	HardwareRules         *HardwareSecurityRules  `json:"hardware_rules,omitempty"`
+	RegistryRules         *RegistrySecurityRules  `json:"registry_rules,omitempty"`
 }
 
 // SecurityRule defines a single security rule with pattern and action
@@ -976,8 +977,8 @@ type HardwareSecurityRules struct {
 
 // RegistrySecurityRules defines registry operation rules (Windows)
 type RegistrySecurityRules struct {
-	Read  []SecurityRule `json:"read,omitempty"`
-	Write []SecurityRule `json:"write,omitempty"`
+	Read   []SecurityRule `json:"read,omitempty"`
+	Write  []SecurityRule `json:"write,omitempty"`
 	Delete []SecurityRule `json:"delete,omitempty"`
 }
 

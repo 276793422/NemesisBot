@@ -50,15 +50,15 @@ const (
 	OpHardwareGPIO OperationType = "hardware_gpio"
 
 	// System operations
-	OpSystemShutdown   OperationType = "system_shutdown"
-	OpSystemReboot     OperationType = "system_reboot"
-	OpSystemConfig     OperationType = "system_config"
-	OpSystemService    OperationType = "system_service"
-	OpSystemInstall    OperationType = "system_install"
+	OpSystemShutdown OperationType = "system_shutdown"
+	OpSystemReboot   OperationType = "system_reboot"
+	OpSystemConfig   OperationType = "system_config"
+	OpSystemService  OperationType = "system_service"
+	OpSystemInstall  OperationType = "system_install"
 
 	// Registry operations (Windows)
-	OpRegistryRead  OperationType = "registry_read"
-	OpRegistryWrite OperationType = "registry_write"
+	OpRegistryRead   OperationType = "registry_read"
+	OpRegistryWrite  OperationType = "registry_write"
 	OpRegistryDelete OperationType = "registry_delete"
 )
 
@@ -66,10 +66,10 @@ const (
 type DangerLevel int
 
 const (
-	DangerLow    DangerLevel = iota // Safe operations with minimal risk
-	DangerMedium                    // Operations that modify data/state
-	DangerHigh                      // Operations that can cause significant damage
-	DangerCritical                  // Operations that can compromise system security
+	DangerLow      DangerLevel = iota // Safe operations with minimal risk
+	DangerMedium                      // Operations that modify data/state
+	DangerHigh                        // Operations that can cause significant damage
+	DangerCritical                    // Operations that can compromise system security
 )
 
 func (d DangerLevel) String() string {
@@ -89,61 +89,61 @@ func (d DangerLevel) String() string {
 
 // OperationRequest represents a request for a dangerous operation
 type OperationRequest struct {
-	ID            string            // Unique request ID
-	Type          OperationType     // Type of operation
-	DangerLevel   DangerLevel       // Risk level
-	User          string            // User/agent requesting the operation
-	Source        string            // Source (cli, web, telegram, etc.)
-	Target        string            // Target of operation (file path, command, URL, etc.)
-	Context       map[string]interface{} // Additional context
-	Timestamp     time.Time         // When the request was made
-	Approver      string            // Who approved (if applicable)
-	ApprovedAt    time.Time         // When approved
-	DeniedReason  string            // Reason for denial (if denied)
-	AuditLog      string            // Audit trail entry
+	ID           string                 // Unique request ID
+	Type         OperationType          // Type of operation
+	DangerLevel  DangerLevel            // Risk level
+	User         string                 // User/agent requesting the operation
+	Source       string                 // Source (cli, web, telegram, etc.)
+	Target       string                 // Target of operation (file path, command, URL, etc.)
+	Context      map[string]interface{} // Additional context
+	Timestamp    time.Time              // When the request was made
+	Approver     string                 // Who approved (if applicable)
+	ApprovedAt   time.Time              // When approved
+	DeniedReason string                 // Reason for denial (if denied)
+	AuditLog     string                 // Audit trail entry
 }
 
 // Permission defines what operations are allowed
 type Permission struct {
 	AllowedTypes    map[OperationType]bool
-	AllowedTargets  []string            // Whitelist patterns (regexp)
-	DeniedTargets   []string            // Blacklist patterns (regexp)
+	AllowedTargets  []string               // Whitelist patterns (regexp)
+	DeniedTargets   []string               // Blacklist patterns (regexp)
 	RequireApproval map[OperationType]bool // Ops requiring explicit approval
-	MaxDangerLevel  DangerLevel         // Maximum danger level allowed
+	MaxDangerLevel  DangerLevel            // Maximum danger level allowed
 }
 
 // AuditEvent represents an audit log entry
 type AuditEvent struct {
-	EventID     string        // Unique event ID
-	Request     OperationRequest // Original request
-	Decision    string        // "allowed", "denied", "approved", "pending"
-	Reason      string        // Reason for decision
-	Timestamp   time.Time     // When the decision was made
-	Duration    time.Duration // Time to process
-	PolicyRule  string        // Which policy rule matched
+	EventID    string           // Unique event ID
+	Request    OperationRequest // Original request
+	Decision   string           // "allowed", "denied", "approved", "pending"
+	Reason     string           // Reason for decision
+	Timestamp  time.Time        // When the decision was made
+	Duration   time.Duration    // Time to process
+	PolicyRule string           // Which policy rule matched
 }
 
 // Policy defines security rules
 type Policy struct {
-	Name              string
-	Description       string
-	Enabled           bool
-	Rules             []PolicyRule
-	DefaultAction     string // "allow", "deny", "require_approval"
-	LogOnly           bool   // If true, log but don't block
-	RequireMFA        bool   // Require multi-factor approval for critical ops
+	Name          string
+	Description   string
+	Enabled       bool
+	Rules         []PolicyRule
+	DefaultAction string // "allow", "deny", "require_approval"
+	LogOnly       bool   // If true, log but don't block
+	RequireMFA    bool   // Require multi-factor approval for critical ops
 }
 
 // PolicyRule defines a single security rule
 type PolicyRule struct {
 	Name        string
 	MatchOpType OperationType
-	MatchTarget string         // Regexp pattern for target
-	MatchUser   string         // Regexp pattern for user
-	MatchSource string         // Regexp pattern for source
-	MinDanger   DangerLevel    // Minimum danger level to match
-	Action      string         // "allow", "deny", "require_approval"
-	Reason      string         // Explanation for this rule
+	MatchTarget string      // Regexp pattern for target
+	MatchUser   string      // Regexp pattern for user
+	MatchSource string      // Regexp pattern for source
+	MinDanger   DangerLevel // Minimum danger level to match
+	Action      string      // "allow", "deny", "require_approval"
+	Reason      string      // Explanation for this rule
 }
 
 // SecurityAuditor is the main security auditor
@@ -194,17 +194,17 @@ var DefaultDenyPatterns = map[OperationType][]string{
 		`\bsource\s+.*\.sh\b`,
 	},
 	OpFileWrite: {
-		`\.\.[/\\]`,           // Path traversal
-		`^/etc/`,              // System config
-		`^/sys/`,              // System filesystem
-		`^/proc/`,             // Process filesystem
-		`^/dev/`,              // Device files (except allowed)
+		`\.\.[/\\]`, // Path traversal
+		`^/etc/`,    // System config
+		`^/sys/`,    // System filesystem
+		`^/proc/`,   // Process filesystem
+		`^/dev/`,    // Device files (except allowed)
 		`C:\\Windows\\System32`,
 		`C:\\Windows\\System32\\drivers\\etc\\hosts`,
 	},
 	OpNetworkDownload: {
-		`file://`,             // Local file access
-		`ftp://`,              // Unencrypted FTP
+		`file://`, // Local file access
+		`ftp://`,  // Unencrypted FTP
 	},
 }
 
@@ -281,11 +281,11 @@ func (sa *SecurityAuditor) RequestPermission(ctx context.Context, req *Operation
 
 	// Create audit event
 	event := AuditEvent{
-		EventID:  generateEventID(),
-		Request:  *req,
-		Decision: decision,
-		Reason:   reason,
-		Timestamp: time.Now(),
+		EventID:    generateEventID(),
+		Request:    *req,
+		Decision:   decision,
+		Reason:     reason,
+		Timestamp:  time.Now(),
 		PolicyRule: policy,
 	}
 
@@ -639,7 +639,7 @@ func (sa *SecurityAuditor) CleanupOldAuditLogs() error {
 
 	if removed > 0 {
 		logger.InfoCF("security", "Cleaned up old audit logs", map[string]interface{}{
-			"removed": removed,
+			"removed":   removed,
 			"remaining": len(sa.auditLog),
 		})
 	}
@@ -653,10 +653,10 @@ func (sa *SecurityAuditor) GetStatistics() map[string]interface{} {
 	defer sa.mu.RUnlock()
 
 	stats := map[string]interface{}{
-		"total_events":      len(sa.auditLog),
-		"pending_requests":  len(sa.activeRequests),
-		"enabled":           sa.enabled,
-		"rule_types":        len(sa.rules),
+		"total_events":     len(sa.auditLog),
+		"pending_requests": len(sa.activeRequests),
+		"enabled":          sa.enabled,
+		"rule_types":       len(sa.rules),
 	}
 
 	decisionCounts := make(map[string]int)
@@ -704,7 +704,7 @@ func (sa *SecurityAuditor) ExportAuditLog(filePath string) error {
 	}
 
 	logger.InfoCF("security", "Audit log exported", map[string]interface{}{
-		"path": filePath,
+		"path":    filePath,
 		"entries": len(sa.auditLog),
 	})
 

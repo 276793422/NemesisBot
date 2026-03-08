@@ -302,9 +302,9 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 
 			logger.DebugCF("channels", "Received outbound message from bus",
 				map[string]interface{}{
-					"channel":      msg.Channel,
-					"chat_id":      msg.ChatID,
-					"content_len":  len(msg.Content),
+					"channel":         msg.Channel,
+					"chat_id":         msg.ChatID,
+					"content_len":     len(msg.Content),
 					"content_preview": msg.Content[:min(80, len(msg.Content))],
 				})
 
@@ -432,7 +432,7 @@ func (m *Manager) setupSyncTargets() {
 
 		logger.DebugCF("channels", "Checking channel for sync targets", map[string]interface{}{
 			"channel":      sourceName,
-			"sync_targets":  syncTargets,
+			"sync_targets": syncTargets,
 			"num_targets":  len(syncTargets),
 		})
 

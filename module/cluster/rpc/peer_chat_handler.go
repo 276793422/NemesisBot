@@ -15,16 +15,16 @@ import (
 
 // PeerChatPayload represents the payload for peer_chat action
 type PeerChatPayload struct {
-	Type    string                 `json:"type"`     // chat|request|task|query
-	Content string                 `json:"content"`   // 对话内容或任务描述
-	Context map[string]interface{} `json:"context"`   // 附加上下文信息
+	Type    string                 `json:"type"`    // chat|request|task|query
+	Content string                 `json:"content"` // 对话内容或任务描述
+	Context map[string]interface{} `json:"context"` // 附加上下文信息
 }
 
 // PeerChatResponse represents the response from peer_chat action
 type PeerChatResponse struct {
-	Response string                 `json:"response"` // 节点的响应内容
+	Response string                 `json:"response"`         // 节点的响应内容
 	Result   map[string]interface{} `json:"result,omitempty"` // 结构化结果
-	Status   string                 `json:"status"`   // success|error|busy
+	Status   string                 `json:"status"`           // success|error|busy
 }
 
 // PeerChatHandler handles peer-to-peer chat and collaboration requests

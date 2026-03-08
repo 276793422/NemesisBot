@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/gorilla/websocket"
 )
 
 // WebSocket message types
@@ -34,7 +34,7 @@ type ClientMessage struct {
 // ServerMessage is a message sent from the server to the client
 type ServerMessage struct {
 	Type      string    `json:"type"`
-	Role      string    `json:"role,omitempty"`      // "user" or "assistant"
+	Role      string    `json:"role,omitempty"` // "user" or "assistant"
 	Content   string    `json:"content,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
@@ -58,12 +58,12 @@ type sendRequest struct {
 
 // sendQueue handles concurrent writes to WebSocket safely
 type sendQueue struct {
-	conn    *websocket.Conn
-	queue    chan sendRequest
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	once     sync.Once
+	conn   *websocket.Conn
+	queue  chan sendRequest
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	once   sync.Once
 }
 
 // newSendQueue creates a new send queue for the connection
@@ -71,9 +71,9 @@ func newSendQueue(conn *websocket.Conn) *sendQueue {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sq := &sendQueue{
-		conn: conn,
-		queue: make(chan sendRequest, 256), // Buffer for pending sends
-		ctx:  ctx,
+		conn:   conn,
+		queue:  make(chan sendRequest, 256), // Buffer for pending sends
+		ctx:    ctx,
 		cancel: cancel,
 	}
 
@@ -217,7 +217,7 @@ func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan c
 		if messageType != websocket.TextMessage {
 			logger.WarnCF("web", "Received non-text message", map[string]interface{}{
 				"message_type": messageType,
-				"session_id":  session.ID,
+				"session_id":   session.ID,
 			})
 			continue
 		}
@@ -282,7 +282,7 @@ func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan c
 		default:
 			logger.WarnCF("web", "Unknown message type", map[string]interface{}{
 				"message_type": clientMsg.Type,
-				"session_id":  session.ID,
+				"session_id":   session.ID,
 			})
 			sendErrorViaQueue(sq, fmt.Sprintf("Unknown message type: %s", clientMsg.Type))
 		}
@@ -322,9 +322,9 @@ func sendErrorViaQueue(sq *sendQueue, message string) {
 func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, content string) error {
 	logger.DebugCF("web", "BroadcastToSession called",
 		map[string]interface{}{
-			"session_id": sessionID,
-			"role": role,
-			"content_len": len(content),
+			"session_id":      sessionID,
+			"role":            role,
+			"content_len":     len(content),
 			"content_preview": content[:min(100, len(content))],
 		})
 
@@ -340,7 +340,7 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 		logger.ErrorCF("web", "Failed to marshal message",
 			map[string]interface{}{
 				"session_id": sessionID,
-				"error": err.Error(),
+				"error":      err.Error(),
 			})
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
@@ -348,7 +348,7 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 	logger.DebugCF("web", "Message marshaled, broadcasting to session",
 		map[string]interface{}{
 			"session_id": sessionID,
-			"data_len": len(data),
+			"data_len":   len(data),
 		})
 
 	err = sessionMgr.Broadcast(sessionID, data)
@@ -356,7 +356,7 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 		logger.ErrorCF("web", "Failed to broadcast to session",
 			map[string]interface{}{
 				"session_id": sessionID,
-				"error": err.Error(),
+				"error":      err.Error(),
 			})
 		return err
 	}
@@ -364,7 +364,7 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 	logger.InfoCF("web", "BroadcastToSession completed successfully",
 		map[string]interface{}{
 			"session_id": sessionID,
-			"role": role,
+			"role":       role,
 		})
 
 	return nil

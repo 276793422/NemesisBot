@@ -10,10 +10,10 @@ import (
 
 // ActionSchema 定义了单个 action 的完整 schema
 type ActionSchema struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"`
-	Returns     map[string]interface{} `json:"returns,omitempty"`
+	Name        string                   `json:"name"`
+	Description string                   `json:"description"`
+	Parameters  map[string]interface{}   `json:"parameters,omitempty"`
+	Returns     map[string]interface{}   `json:"returns,omitempty"`
 	Examples    []map[string]interface{} `json:"examples,omitempty"`
 }
 
@@ -23,13 +23,13 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 		{
 			Name:        "ping",
 			Description: "健康检查，测试节点是否在线",
-			Parameters: nil,
+			Parameters:  nil,
 			Returns: map[string]interface{}{
 				"properties": map[string]interface{}{
 					"status": map[string]interface{}{
 						"type":        "string",
 						"description": "响应状态",
-						"enum":         []string{"ok"},
+						"enum":        []string{"ok"},
 					},
 					"node_id": map[string]interface{}{
 						"type":        "string",
@@ -40,7 +40,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 			Examples: []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "ping",
+						"action":  "ping",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
@@ -53,7 +53,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 		{
 			Name:        "get_capabilities",
 			Description: "获取节点的功能能力列表",
-			Parameters: nil,
+			Parameters:  nil,
 			Returns: map[string]interface{}{
 				"properties": map[string]interface{}{
 					"capabilities": map[string]interface{}{
@@ -68,7 +68,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 			Examples: []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "get_capabilities",
+						"action":  "get_capabilities",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
@@ -80,7 +80,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 		{
 			Name:        "get_info",
 			Description: "获取集群信息和在线节点列表",
-			Parameters: nil,
+			Parameters:  nil,
 			Returns: map[string]interface{}{
 				"properties": map[string]interface{}{
 					"node_id": map[string]interface{}{
@@ -88,7 +88,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 						"description": "当前节点 ID",
 					},
 					"peers": map[string]interface{}{
-						"type": "array",
+						"type":        "array",
 						"description": "在线节点列表",
 						"items": map[string]interface{}{
 							"type": "object",
@@ -117,7 +117,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 			Examples: []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "get_info",
+						"action":  "get_info",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
@@ -143,8 +143,8 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 					"type": map[string]interface{}{
 						"type":        "string",
 						"description": "对话类型：chat(聊天), request(请求帮助), task(任务协作), query(查询信息)",
-						"enum":         []string{"chat", "request", "task", "query"},
-						"default":      "request",
+						"enum":        []string{"chat", "request", "task", "query"},
+						"default":     "request",
 					},
 					"content": map[string]interface{}{
 						"type":        "string",
@@ -170,7 +170,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 					"status": map[string]interface{}{
 						"type":        "string",
 						"description": "响应状态",
-						"enum":         []string{"success", "error", "busy"},
+						"enum":        []string{"success", "error", "busy"},
 					},
 				},
 			},
@@ -206,7 +206,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 		{
 			Name:        "list_actions",
 			Description: "获取当前节点所有可用的 actions 及其详细说明。此功能用于服务发现，让外部设备了解当前节点的功能。",
-			Parameters: nil,
+			Parameters:  nil,
 			Returns: map[string]interface{}{
 				"properties": map[string]interface{}{
 					"actions": map[string]interface{}{
@@ -221,7 +221,7 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 			Examples: []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "list_actions",
+						"action":  "list_actions",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{

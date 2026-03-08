@@ -93,7 +93,8 @@ type ReadFileTool struct {
 //   - restrict: If true, only files within the workspace can be accessed.
 //
 // Returns:
-//   A configured ReadFileTool ready for use.
+//
+//	A configured ReadFileTool ready for use.
 //
 // Security:
 //   - When restrict is true, symbolic links are resolved to prevent escape attacks
@@ -156,7 +157,8 @@ type WriteFileTool struct {
 //   - restrict: If true, only files within the workspace can be written.
 //
 // Returns:
-//   A configured WriteFileTool ready for use.
+//
+//	A configured WriteFileTool ready for use.
 //
 // Security:
 //   - When restrict is true, symbolic links are resolved to prevent escape attacks
@@ -232,7 +234,8 @@ type ListDirTool struct {
 //   - restrict: If true, only directories within the workspace can be listed.
 //
 // Returns:
-//   A configured ListDirTool ready for use.
+//
+//	A configured ListDirTool ready for use.
 //
 // Security:
 //   - When restrict is true, symbolic links are resolved to prevent escape attacks

@@ -14,24 +14,24 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/gorilla/websocket"
 )
 
 // WebSocketChannel manages a standalone WebSocket server for external program integration
 // Only allows one client connection at a time
 type WebSocketChannel struct {
 	*BaseChannel
-	config       *config.WebSocketChannelConfig
-	server       *http.Server
-	running      atomic.Bool
-	stopped      chan struct{}
-	connMu       sync.RWMutex
-	conn         *websocket.Conn
-	clientID     string
-	wg           sync.WaitGroup
+	config   *config.WebSocketChannelConfig
+	server   *http.Server
+	running  atomic.Bool
+	stopped  chan struct{}
+	connMu   sync.RWMutex
+	conn     *websocket.Conn
+	clientID string
+	wg       sync.WaitGroup
 }
 
 // Message types for WebSocket communication
@@ -52,7 +52,7 @@ type ClientMessage struct {
 // ServerMessage is a message sent from the server to the client
 type ServerMessage struct {
 	Type      string    `json:"type"`
-	Role      string    `json:"role,omitempty"`      // "user" or "assistant"
+	Role      string    `json:"role,omitempty"` // "user" or "assistant"
 	Content   string    `json:"content,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Error     string    `json:"error,omitempty"`
@@ -200,7 +200,7 @@ func (c *WebSocketChannel) Send(ctx context.Context, msg bus.OutboundMessage) er
 
 	// Sync to configured targets
 	logger.DebugCF("websocket", "Checking sync config", map[string]interface{}{
-		"sync_to":    c.config.SyncTo,
+		"sync_to":     c.config.SyncTo,
 		"len_sync_to": len(c.config.SyncTo),
 	})
 
@@ -370,7 +370,7 @@ func (c *WebSocketChannel) handleConnection(conn *websocket.Conn) {
 			// Send to message bus
 			chatID := fmt.Sprintf("websocket:%s", c.clientID)
 			logger.InfoCF("websocket", "Received message from client", map[string]interface{}{
-				"content":  clientMsg.Content,
+				"content": clientMsg.Content,
 				"chat_id": chatID,
 			})
 
@@ -386,7 +386,7 @@ func (c *WebSocketChannel) handleConnection(conn *websocket.Conn) {
 
 			// Sync to configured targets
 			logger.DebugCF("websocket", "Checking sync config for user message", map[string]interface{}{
-				"sync_to":    c.config.SyncTo,
+				"sync_to":     c.config.SyncTo,
 				"len_sync_to": len(c.config.SyncTo),
 			})
 			if len(c.config.SyncTo) > 0 {

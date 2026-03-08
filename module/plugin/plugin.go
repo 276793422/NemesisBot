@@ -48,8 +48,8 @@ type ToolInvocation struct {
 	Context context.Context
 
 	// User information
-	User string
-	Source string
+	User      string
+	Source    string
 	Workspace string
 
 	// Result (can be modified by plugins)
@@ -78,7 +78,8 @@ type BasePlugin struct {
 //   - version: The plugin version following semantic versioning (e.g., "1.0.0")
 //
 // Returns:
-//   A BasePlugin instance with default implementations of Name(), Version(), Init(), and Cleanup()
+//
+//	A BasePlugin instance with default implementations of Name(), Version(), Init(), and Cleanup()
 //
 // Example:
 //
@@ -126,7 +127,8 @@ type Manager struct {
 // execution, and lifecycle management.
 //
 // Returns:
-//   A new Manager instance ready to register and execute plugins
+//
+//	A new Manager instance ready to register and execute plugins
 //
 // The manager provides:
 //   - Plugin registration and unregistration

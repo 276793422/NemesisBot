@@ -146,10 +146,10 @@ func ConvertConfig(data map[string]interface{}) (*config.Config, []string, error
 
 			// Create ModelConfig from provider config
 			mc := config.ModelConfig{
-				ModelName:  modelName,
-				Model:      modelIdentifier,
-				APIKey:     apiKey,
-				APIBase:    apiBase,
+				ModelName: modelName,
+				Model:     modelIdentifier,
+				APIKey:    apiKey,
+				APIBase:   apiBase,
 			}
 
 			// Add to ModelList if not already present

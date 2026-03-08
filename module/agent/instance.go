@@ -121,7 +121,7 @@ func NewAgentInstance(
 	toolsRegistry.RegisterWithPlugin(tools.NewDeleteDirTool(workspace, restrict), pluginMgr, user, source, workspace)
 	toolsRegistry.RegisterWithPlugin(tools.NewExecToolWithConfig(workspace, restrict, cfg), pluginMgr, user, source, workspace)
 	toolsRegistry.RegisterWithPlugin(tools.NewAsyncExecToolWithConfig(workspace, restrict, cfg), pluginMgr, user, source, workspace) // Async exec tool
-	toolsRegistry.Register(tools.NewCompleteBootstrapTool(workspace)) // Bootstrap tool doesn't need security
+	toolsRegistry.Register(tools.NewCompleteBootstrapTool(workspace))                                                                // Bootstrap tool doesn't need security
 
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessionsManager := session.NewSessionManager(sessionsDir)

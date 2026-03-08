@@ -42,9 +42,9 @@ type AgentLoop struct {
 	channelManager *channels.Manager
 	cluster        *cluster.Cluster
 	// Session-level busy state management
-	sessionBusy     sync.Map    // sessionKey -> *sessionBusyState
-	concurrentMode  string      // "reject" or "queue"
-	queueSize       int         // Only effective in queue mode
+	sessionBusy    sync.Map // sessionKey -> *sessionBusyState
+	concurrentMode string   // "reject" or "queue"
+	queueSize      int      // Only effective in queue mode
 }
 
 // sessionBusyState tracks the busy state and queue for a session
@@ -59,14 +59,14 @@ const busyMessage = "⏳ AI 正在处理上一个请求，请稍后再试"
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string // Session identifier for history/context
-	Channel         string // Target channel for tool execution
-	ChatID          string // Target chat ID for tool execution
-	UserMessage     string // User message content (may include prefix)
-	DefaultResponse string // Response when LLM returns empty
-	EnableSummary   bool   // Whether to trigger summarization
-	SendResponse    bool   // Whether to send response via bus
-	NoHistory       bool   // If true, don't load session history (for heartbeat)
+	SessionKey      string         // Session identifier for history/context
+	Channel         string         // Target channel for tool execution
+	ChatID          string         // Target chat ID for tool execution
+	UserMessage     string         // User message content (may include prefix)
+	DefaultResponse string         // Response when LLM returns empty
+	EnableSummary   bool           // Whether to trigger summarization
+	SendResponse    bool           // Whether to send response via bus
+	NoHistory       bool           // If true, don't load session history (for heartbeat)
 	RequestLogger   *RequestLogger // Request logger instance
 }
 
@@ -234,8 +234,8 @@ func registerSharedTools(cfg *config.Config, msgBus *bus.MessageBus, registry *A
 				}
 				logger.InfoCF("agent", "Registered MCP tools",
 					map[string]interface{}{
-						"agent_id":    agentID,
-						"tool_count":  len(mcpTools),
+						"agent_id":   agentID,
+						"tool_count": len(mcpTools),
 					})
 			}
 		}
@@ -273,7 +273,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				response = fmt.Sprintf("Error processing message: %v", err)
 				logger.DebugCF("agent", "Error captured, creating error response",
 					map[string]interface{}{
-						"error": err.Error(),
+						"error":            err.Error(),
 						"response_preview": utils.Truncate(response, 100),
 					})
 			}
@@ -281,9 +281,9 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			if response != "" {
 				logger.DebugCF("agent", "Response ready to send",
 					map[string]interface{}{
-						"channel":       msg.Channel,
-						"chat_id":       msg.ChatID,
-						"response_len":  len(response),
+						"channel":          msg.Channel,
+						"chat_id":          msg.ChatID,
+						"response_len":     len(response),
 						"response_preview": utils.Truncate(response, 80),
 					})
 
@@ -299,7 +299,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							logger.DebugCF("agent", "MessageTool alreadySent check",
 								map[string]interface{}{
 									"alreadySent": alreadySent,
-									"agent_id": defaultAgent.ID,
+									"agent_id":    defaultAgent.ID,
 								})
 						} else {
 							logger.DebugCF("agent", "MessageTool not a MessageTool instance",
@@ -315,9 +315,9 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				if !alreadySent {
 					logger.DebugCF("agent", "Publishing outbound response",
 						map[string]interface{}{
-							"channel":      msg.Channel,
-							"chat_id":      msg.ChatID,
-							"content_len":  len(response),
+							"channel":     msg.Channel,
+							"chat_id":     msg.ChatID,
+							"content_len": len(response),
 						})
 
 					// For RPC channel, we need to add correlation ID prefix
@@ -327,7 +327,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 						finalContent = fmt.Sprintf("[rpc:%s] %s", msg.CorrelationID, response)
 						logger.InfoCF("agent", "Added correlation ID prefix to RPC response",
 							map[string]interface{}{
-								"correlation_id": msg.CorrelationID,
+								"correlation_id":  msg.CorrelationID,
 								"content_preview": utils.Truncate(finalContent, 100),
 							})
 					}
@@ -1083,7 +1083,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 		if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() && len(localOperations[iteration]) > 0 {
 			opts.RequestLogger.LogLocalOperations(LocalOperationInfo{
 				Round:      iteration,
-				Timestamp: time.Now(),
+				Timestamp:  time.Now(),
 				Operations: localOperations[iteration],
 			})
 		}
@@ -1508,8 +1508,8 @@ func registerMCPTools(mcpConfig *config.MCPConfig, agent *AgentInstance) ([]tool
 
 	logger.InfoCF("agent", "Initializing MCP tools",
 		map[string]interface{}{
-			"agent_id":      agent.ID,
-			"server_count":  len(mcpConfig.Servers),
+			"agent_id":     agent.ID,
+			"server_count": len(mcpConfig.Servers),
 		})
 
 	for _, serverCfg := range mcpConfig.Servers {

@@ -181,9 +181,9 @@ func (c *BaseChannel) SyncToTargets(role, content string) {
 		}
 
 		logger.DebugCF(c.name, "Sending to sync target", map[string]interface{}{
-			"target":     targetName,
+			"target":      targetName,
 			"content_len": len(content),
-			"chat_id":    msg.ChatID,
+			"chat_id":     msg.ChatID,
 		})
 
 		// Send with timeout to avoid blocking

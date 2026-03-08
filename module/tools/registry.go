@@ -23,7 +23,8 @@ type ToolRegistry struct {
 // The registry is thread-safe and can be used to manage tool lifecycle.
 //
 // Returns:
-//   A new ToolRegistry instance ready to register and execute tools.
+//
+//	A new ToolRegistry instance ready to register and execute tools.
 //
 // Example:
 //
@@ -199,11 +200,11 @@ func (r *ToolRegistry) RegisterWithPlugin(tool Tool, pluginMgr *plugin.Manager, 
 
 	// Wrap tool with plugin support
 	pluginableTool := &PluginableTool{
-		Tool:       tool,
-		pluginMgr:  pluginMgr,
-		user:       user,
-		source:     source,
-		workspace:  workspace,
+		Tool:      tool,
+		pluginMgr: pluginMgr,
+		user:      user,
+		source:    source,
+		workspace: workspace,
 	}
 
 	r.tools[tool.Name()] = pluginableTool
@@ -211,11 +212,11 @@ func (r *ToolRegistry) RegisterWithPlugin(tool Tool, pluginMgr *plugin.Manager, 
 
 // PluginableTool wraps a Tool to add plugin support
 type PluginableTool struct {
-	Tool       Tool
-	pluginMgr  *plugin.Manager
-	user       string
-	source     string
-	workspace  string
+	Tool      Tool
+	pluginMgr *plugin.Manager
+	user      string
+	source    string
+	workspace string
 }
 
 // Name returns the tool name

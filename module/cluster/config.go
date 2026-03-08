@@ -17,8 +17,8 @@ import (
 // This file is created during onboard and contains the current node's information
 // Users can manually edit this file to add known peers
 type StaticConfig struct {
-	Cluster ClusterMeta `toml:"cluster"`
-	Node    NodeInfo    `toml:"node"`
+	Cluster ClusterMeta  `toml:"cluster"`
+	Node    NodeInfo     `toml:"node"`
 	Peers   []PeerConfig `toml:"peers"`
 }
 
@@ -34,47 +34,47 @@ type NodeInfo struct {
 	ID           string   `toml:"id"`
 	Name         string   `toml:"name"`
 	Address      string   `toml:"address"`
-	Role         string   `toml:"role"`         // Cluster role: manager, coordinator, worker, observer, standby
-	Category     string   `toml:"category"`      // Business category: design, development, testing, ops, deployment, analysis, general
-	Tags         []string `toml:"tags"`          // Custom tags for flexible classification
+	Role         string   `toml:"role"`     // Cluster role: manager, coordinator, worker, observer, standby
+	Category     string   `toml:"category"` // Business category: design, development, testing, ops, deployment, analysis, general
+	Tags         []string `toml:"tags"`     // Custom tags for flexible classification
 	Capabilities []string `toml:"capabilities"`
 }
 
 // PeerConfig represents a peer node configuration
 type PeerConfig struct {
-	ID           string      `toml:"id"`
-	Name         string      `toml:"name"`
-	Address      string      `toml:"address"`       // Deprecated: Primary address for backward compatibility
-	Addresses    []string    `toml:"addresses"`     // List of all IP addresses
-	RPCPort      int         `toml:"rpc_port"`      // RPC port number
-	Role         string      `toml:"role"`         // Cluster role: manager, coordinator, worker, observer, standby
-	Category     string      `toml:"category"`      // Business category: design, development, testing, ops, deployment, analysis, general
-	Tags         []string    `toml:"tags"`          // Custom tags for flexible classification
-	Capabilities []string    `toml:"capabilities"`
-	Priority     int         `toml:"priority"`
-	Enabled      bool        `toml:"enabled"`
-	Status       PeerStatus  `toml:"status"`
+	ID           string     `toml:"id"`
+	Name         string     `toml:"name"`
+	Address      string     `toml:"address"`   // Deprecated: Primary address for backward compatibility
+	Addresses    []string   `toml:"addresses"` // List of all IP addresses
+	RPCPort      int        `toml:"rpc_port"`  // RPC port number
+	Role         string     `toml:"role"`      // Cluster role: manager, coordinator, worker, observer, standby
+	Category     string     `toml:"category"`  // Business category: design, development, testing, ops, deployment, analysis, general
+	Tags         []string   `toml:"tags"`      // Custom tags for flexible classification
+	Capabilities []string   `toml:"capabilities"`
+	Priority     int        `toml:"priority"`
+	Enabled      bool       `toml:"enabled"`
+	Status       PeerStatus `toml:"status"`
 }
 
 // PeerStatus contains runtime status of a peer
 type PeerStatus struct {
-	State            string     `toml:"state"`
-	LastSeen         time.Time  `toml:"last_seen"`
-	Uptime           string     `toml:"uptime"`           // Human-readable uptime
-	TasksCompleted   int        `toml:"tasks_completed"`
-	SuccessRate      float64    `toml:"success_rate"`
-	AvgResponseTime  int        `toml:"avg_response_time"` // milliseconds
-	LastError        string     `toml:"last_error"`
+	State           string    `toml:"state"`
+	LastSeen        time.Time `toml:"last_seen"`
+	Uptime          string    `toml:"uptime"` // Human-readable uptime
+	TasksCompleted  int       `toml:"tasks_completed"`
+	SuccessRate     float64   `toml:"success_rate"`
+	AvgResponseTime int       `toml:"avg_response_time"` // milliseconds
+	LastError       string    `toml:"last_error"`
 }
 
 // DynamicState represents the dynamic cluster state (state.toml)
 // This file is automatically managed by the cluster module
 // It contains runtime information about discovered peers
 type DynamicState struct {
-	Cluster   ClusterMeta `toml:"cluster"`
-	LocalNode NodeInfo    `toml:"local_node"`
+	Cluster    ClusterMeta  `toml:"cluster"`
+	LocalNode  NodeInfo     `toml:"local_node"`
 	Discovered []PeerConfig `toml:"discovered"`
-	LastSync  time.Time   `toml:"last_sync"`
+	LastSync   time.Time    `toml:"last_sync"`
 }
 
 // LoadStaticConfig loads the static cluster configuration from peers.toml

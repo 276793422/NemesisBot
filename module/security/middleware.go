@@ -39,17 +39,17 @@ func GetGlobalAuditor() *SecurityAuditor {
 
 // SecureFileWrapper wraps file operations with security checks
 type SecureFileWrapper struct {
-	auditor  *SecurityAuditor
-	user     string
-	source   string
+	auditor   *SecurityAuditor
+	user      string
+	source    string
 	workspace string
 }
 
 func NewSecureFileWrapper(auditor *SecurityAuditor, user, source, workspace string) *SecureFileWrapper {
 	return &SecureFileWrapper{
-		auditor:  auditor,
-		user:     user,
-		source:   source,
+		auditor:   auditor,
+		user:      user,
+		source:    source,
 		workspace: workspace,
 	}
 }
@@ -482,17 +482,17 @@ func (w *SecureHardwareWrapper) SPIWrite(device string, data []byte) error {
 
 // SecurityMiddleware provides a unified security interface for tools
 type SecurityMiddleware struct {
-	auditor  *SecurityAuditor
-	user     string
-	source   string
+	auditor   *SecurityAuditor
+	user      string
+	source    string
 	workspace string
 }
 
 func NewSecurityMiddleware(auditor *SecurityAuditor, user, source, workspace string) *SecurityMiddleware {
 	return &SecurityMiddleware{
-		auditor:  auditor,
-		user:     user,
-		source:   source,
+		auditor:   auditor,
+		user:      user,
+		source:    source,
 		workspace: workspace,
 	}
 }
@@ -576,22 +576,22 @@ func (sm *SecurityMiddleware) GetSecuritySummary() map[string]interface{} {
 	pending := sm.auditor.GetPendingRequests()
 
 	summary := map[string]interface{}{
-		"statistics":      stats,
+		"statistics":       stats,
 		"pending_requests": len(pending),
-		"user":            sm.user,
-		"source":          sm.source,
-		"workspace":       sm.workspace,
+		"user":             sm.user,
+		"source":           sm.source,
+		"workspace":        sm.workspace,
 	}
 
 	// Add pending request summaries
 	pendingSummaries := make([]map[string]interface{}, 0, len(pending))
 	for _, req := range pending {
 		pendingSummaries = append(pendingSummaries, map[string]interface{}{
-			"id":          req.ID,
-			"type":        req.Type,
-			"target":      req.Target,
-			"danger":      req.DangerLevel.String(),
-			"timestamp":   req.Timestamp,
+			"id":        req.ID,
+			"type":      req.Type,
+			"target":    req.Target,
+			"danger":    req.DangerLevel.String(),
+			"timestamp": req.Timestamp,
 		})
 	}
 	summary["pending"] = pendingSummaries
@@ -623,14 +623,14 @@ func (sm *SecurityMiddleware) ExportAuditLog(filePath string) error {
 func CreateCLIPermission() *Permission {
 	return &Permission{
 		AllowedTypes: map[OperationType]bool{
-			OpFileRead:         true,
-			OpFileWrite:        true,
-			OpFileDelete:       true,
-			OpDirRead:          true,
-			OpDirCreate:        true,
-			OpProcessExec:      true,
-			OpNetworkDownload:  true,
-			OpNetworkRequest:   true,
+			OpFileRead:        true,
+			OpFileWrite:       true,
+			OpFileDelete:      true,
+			OpDirRead:         true,
+			OpDirCreate:       true,
+			OpProcessExec:     true,
+			OpNetworkDownload: true,
+			OpNetworkRequest:  true,
 		},
 		DeniedTargets: []string{
 			`^/etc/sudoers`,
@@ -638,7 +638,7 @@ func CreateCLIPermission() *Permission {
 			`^C:\\Windows\\System32\\drivers\\etc\\hosts`,
 		},
 		RequireApproval: map[OperationType]bool{
-			OpProcessKill:   true,
+			OpProcessKill:    true,
 			OpSystemShutdown: true,
 			OpSystemReboot:   true,
 		},
@@ -650,10 +650,10 @@ func CreateCLIPermission() *Permission {
 func CreateWebPermission() *Permission {
 	return &Permission{
 		AllowedTypes: map[OperationType]bool{
-			OpFileRead:   true,
-			OpFileWrite:  true,
-			OpDirRead:    true,
-			OpDirCreate:  true,
+			OpFileRead:  true,
+			OpFileWrite: true,
+			OpDirRead:   true,
+			OpDirCreate: true,
 		},
 		RequireApproval: map[OperationType]bool{
 			OpFileDelete:      true,
@@ -668,12 +668,12 @@ func CreateWebPermission() *Permission {
 func CreateAgentPermission(agentID string) *Permission {
 	return &Permission{
 		AllowedTypes: map[OperationType]bool{
-			OpFileRead:        true,
-			OpFileWrite:       true,
-			OpDirRead:         true,
-			OpDirCreate:       true,
-			OpProcessExec:     true,
-			OpNetworkRequest:  true,
+			OpFileRead:       true,
+			OpFileWrite:      true,
+			OpDirRead:        true,
+			OpDirCreate:      true,
+			OpProcessExec:    true,
+			OpNetworkRequest: true,
 		},
 		RequireApproval: map[OperationType]bool{
 			OpFileDelete:      true,

@@ -62,27 +62,27 @@ func (sa *SecurityAuditor) logAuditEvent(event AuditEvent) {
 
 	if level == "info" {
 		logger.InfoCF("security", "Security audit event", map[string]interface{}{
-			"event_id":   event.EventID,
-			"decision":   event.Decision,
-			"operation":  event.Request.Type,
-			"user":       event.Request.User,
-			"source":     event.Request.Source,
-			"target":     event.Request.Target,
-			"danger":     event.Request.DangerLevel.String(),
-			"reason":     event.Reason,
-			"policy":     event.PolicyRule,
+			"event_id":  event.EventID,
+			"decision":  event.Decision,
+			"operation": event.Request.Type,
+			"user":      event.Request.User,
+			"source":    event.Request.Source,
+			"target":    event.Request.Target,
+			"danger":    event.Request.DangerLevel.String(),
+			"reason":    event.Reason,
+			"policy":    event.PolicyRule,
 		})
 	} else {
 		logger.WarnCF("security", "Security audit event", map[string]interface{}{
-			"event_id":   event.EventID,
-			"decision":   event.Decision,
-			"operation":  event.Request.Type,
-			"user":       event.Request.User,
-			"source":     event.Request.Source,
-			"target":     event.Request.Target,
-			"danger":     event.Request.DangerLevel.String(),
-			"reason":     event.Reason,
-			"policy":     event.PolicyRule,
+			"event_id":  event.EventID,
+			"decision":  event.Decision,
+			"operation": event.Request.Type,
+			"user":      event.Request.User,
+			"source":    event.Request.Source,
+			"target":    event.Request.Target,
+			"danger":    event.Request.DangerLevel.String(),
+			"reason":    event.Reason,
+			"policy":    event.PolicyRule,
 		})
 	}
 
