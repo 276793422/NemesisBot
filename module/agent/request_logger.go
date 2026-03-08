@@ -142,12 +142,12 @@ type FinalResponseInfo struct {
 
 // NewRequestLogger creates a new request logger
 func NewRequestLogger(cfg *config.LoggingConfig, workspace string) *RequestLogger {
-	if cfg == nil || !cfg.LLMRequests {
+	if cfg == nil || cfg.LLM == nil || !cfg.LLM.Enabled {
 		return &RequestLogger{enabled: false}
 	}
 
 	// Resolve log directory relative to workspace
-	logDir := resolveLogPath(cfg.LogDir, workspace)
+	logDir := resolveLogPath(cfg.LLM.LogDir, workspace)
 
 	return &RequestLogger{
 		cfg:       cfg,
@@ -329,7 +329,7 @@ func (rl *RequestLogger) LogLLMRequest(info LLMRequestInfo) error {
 		if len(msg.ToolCalls) > 0 {
 			builder.WriteString("Tool Calls:\n")
 			for _, tc := range msg.ToolCalls {
-				arguments := formatArguments(tc.Arguments, rl.cfg.DetailLevel)
+				arguments := formatArguments(tc.Arguments, rl.cfg.LLM.DetailLevel)
 				builder.WriteString(fmt.Sprintf("- ID: %s, Type: %s, Name: %s\n", tc.ID, tc.Type, tc.Name))
 				builder.WriteString(fmt.Sprintf("  Arguments: %s\n", arguments))
 			}
@@ -337,7 +337,7 @@ func (rl *RequestLogger) LogLLMRequest(info LLMRequestInfo) error {
 
 		if msg.Content != "" {
 			content := msg.Content
-			if rl.cfg.DetailLevel == DetailLevelTruncated && len(content) > truncateMessageLimit {
+			if rl.cfg.LLM.DetailLevel == DetailLevelTruncated && len(content) > truncateMessageLimit {
 				content = content[:truncateMessageLimit] + "\n\n... [truncated]"
 			}
 			builder.WriteString(fmt.Sprintf("\n%s\n\n", content))
@@ -358,7 +358,7 @@ func (rl *RequestLogger) LogLLMRequest(info LLMRequestInfo) error {
 			if len(tool.Function.Parameters) > 0 {
 				paramsJSON, _ := json.Marshal(tool.Function.Parameters)
 				paramsStr := string(paramsJSON)
-				if rl.cfg.DetailLevel == DetailLevelTruncated && len(paramsStr) > truncateArgsLimit {
+				if rl.cfg.LLM.DetailLevel == DetailLevelTruncated && len(paramsStr) > truncateArgsLimit {
 					paramsStr = paramsStr[:truncateArgsLimit] + "... [truncated]"
 				}
 				builder.WriteString(fmt.Sprintf("**Parameters**:\n```json\n%s\n```\n", paramsStr))
@@ -389,7 +389,7 @@ func (rl *RequestLogger) LogLLMResponse(info LLMResponseInfo) error {
 	// Response Content
 	if info.Content != "" {
 		content := info.Content
-		if rl.cfg.DetailLevel == DetailLevelTruncated && len(content) > truncateResponseLimit {
+		if rl.cfg.LLM.DetailLevel == DetailLevelTruncated && len(content) > truncateResponseLimit {
 			content = content[:truncateResponseLimit] + "\n\n... [truncated]"
 		}
 		builder.WriteString(fmt.Sprintf("## Response Content\n\n%s\n\n", content))
@@ -399,7 +399,7 @@ func (rl *RequestLogger) LogLLMResponse(info LLMResponseInfo) error {
 	if len(info.ToolCalls) > 0 {
 		builder.WriteString(fmt.Sprintf("## Tool Calls (%d tool call)\n\n", len(info.ToolCalls)))
 		for i, tc := range info.ToolCalls {
-			arguments := formatArguments(tc.Arguments, rl.cfg.DetailLevel)
+			arguments := formatArguments(tc.Arguments, rl.cfg.LLM.DetailLevel)
 			builder.WriteString(fmt.Sprintf("### Tool Call %d: %s\n", i+1, tc.Name))
 			builder.WriteString(fmt.Sprintf("**ID**: %s\n", tc.ID))
 			builder.WriteString(fmt.Sprintf("**Arguments**:\n```json\n%s\n```\n\n", arguments))
@@ -453,7 +453,7 @@ func (rl *RequestLogger) LogLocalOperations(info LocalOperationInfo) error {
 		if op.Arguments != nil {
 			argsJSON, _ := json.Marshal(op.Arguments)
 			argsStr := string(argsJSON)
-			if rl.cfg.DetailLevel == DetailLevelTruncated && len(argsStr) > truncateArgsLimit {
+			if rl.cfg.LLM.DetailLevel == DetailLevelTruncated && len(argsStr) > truncateArgsLimit {
 				argsStr = argsStr[:truncateArgsLimit] + "... [truncated]"
 			}
 			builder.WriteString(fmt.Sprintf("### Arguments\n```json\n%s\n```\n\n", argsStr))
@@ -462,7 +462,7 @@ func (rl *RequestLogger) LogLocalOperations(info LocalOperationInfo) error {
 		if op.Result != nil && op.Status == "Success" {
 			resultJSON, _ := json.MarshalIndent(op.Result, "", "  ")
 			resultStr := string(resultJSON)
-			if rl.cfg.DetailLevel == DetailLevelTruncated && len(resultStr) > truncateArgsLimit {
+			if rl.cfg.LLM.DetailLevel == DetailLevelTruncated && len(resultStr) > truncateArgsLimit {
 				resultStr = resultStr[:truncateArgsLimit] + "... [truncated]"
 			}
 			builder.WriteString(fmt.Sprintf("### Result\n```json\n%s\n```\n\n", resultStr))

@@ -516,11 +516,24 @@ type MCPServerConfig struct {
 	Timeout int      `json:"timeout,omitempty"` // overrides global timeout, 0 means use global
 }
 
-// LoggingConfig holds logging configuration
+// LLMLogConfig holds LLM request logging configuration
+type LLMLogConfig struct {
+	Enabled     bool   `json:"enabled" env:"NEMESISBOT_LOGGING_LLM_ENABLED"`
+	LogDir      string `json:"log_dir" env:"NEMESISBOT_LOGGING_LLM_LOG_DIR"`
+	DetailLevel string `json:"detail_level" env:"NEMESISBOT_LOGGING_LLM_DETAIL_LEVEL"` // "full" or "truncated"
+}
+
+// GeneralLogConfig holds general application logging configuration
+type GeneralLogConfig struct {
+	Level         string `json:"level" env:"NEMESISBOT_LOGGING_GENERAL_LEVEL"`                   // "DEBUG", "INFO", "WARN", "ERROR"
+	File          string `json:"file" env:"NEMESISBOT_LOGGING_GENERAL_FILE"`                       // file path
+	EnableConsole bool   `json:"enable_console" env:"NEMESISBOT_LOGGING_GENERAL_ENABLE_CONSOLE"` // output to console
+}
+
+// LoggingConfig holds logging configuration for all modules
 type LoggingConfig struct {
-	LLMRequests bool   `json:"llm_requests" env:"NEMESISBOT_LOGGING_LLM_REQUESTS"`
-	LogDir      string `json:"log_dir" env:"NEMESISBOT_LOGGING_LOG_DIR"`
-	DetailLevel string `json:"detail_level" env:"NEMESISBOT_LOGGING_DETAIL_LEVEL"` // "full" or "truncated"
+	LLM     *LLMLogConfig     `json:"llm,omitempty"`     // LLM request logging
+	General *GeneralLogConfig `json:"general,omitempty"` // General application logging (future)
 }
 
 // SecurityFlagConfig is a simple flag in main config to enable/disable security
@@ -687,9 +700,11 @@ func DefaultConfig() *Config {
 			MonitorUSB: true,
 		},
 		Logging: &LoggingConfig{
-			LLMRequests: false,
-			LogDir:      filepath.Join(defaultWorkspace, "logs", "request_logs"),
-			DetailLevel: "full",
+			LLM: &LLMLogConfig{
+				Enabled:     false,
+				LogDir:      "logs/request_logs",
+				DetailLevel: "full",
+			},
 		},
 		Security: &SecurityFlagConfig{
 			Enabled: false, // Default disabled for backward compatibility
@@ -799,9 +814,9 @@ func SaveConfig(configPath string, cfg *Config) error {
 			}
 
 			// Normalize logging directory to use relative path
-			if cfg.Logging != nil {
-				if cfg.Logging.LogDir == "" {
-					cfg.Logging.LogDir = "logs/request_logs"
+			if cfg.Logging != nil && cfg.Logging.LLM != nil {
+				if cfg.Logging.LLM.LogDir == "" {
+					cfg.Logging.LLM.LogDir = "logs/request_logs"
 				}
 			}
 		}
@@ -1137,7 +1152,7 @@ func (c *Config) adjustPathsForEnvironment() {
 	}
 
 	// Same for LogDir - use relative path
-	if c.Logging != nil && c.Logging.LogDir == "" {
-		c.Logging.LogDir = "logs/request_logs"
+	if c.Logging != nil && c.Logging.LLM != nil && c.Logging.LLM.LogDir == "" {
+		c.Logging.LLM.LogDir = "logs/request_logs"
 	}
 }

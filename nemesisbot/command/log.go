@@ -113,14 +113,18 @@ func cmdLogLLMEnable() {
 		cfg.Logging = &config.LoggingConfig{}
 	}
 
-	cfg.Logging.LLMRequests = true
+	if cfg.Logging.LLM == nil {
+		cfg.Logging.LLM = &config.LLMLogConfig{}
+	}
+
+	cfg.Logging.LLM.Enabled = true
 
 	// Set defaults if not set
-	if cfg.Logging.LogDir == "" {
-		cfg.Logging.LogDir = "logs/request_logs"
+	if cfg.Logging.LLM.LogDir == "" {
+		cfg.Logging.LLM.LogDir = "logs/request_logs"
 	}
-	if cfg.Logging.DetailLevel == "" {
-		cfg.Logging.DetailLevel = "full"
+	if cfg.Logging.LLM.DetailLevel == "" {
+		cfg.Logging.LLM.DetailLevel = "full"
 	}
 
 	configPath := GetConfigPath()
@@ -131,13 +135,13 @@ func cmdLogLLMEnable() {
 
 	fmt.Println("✅ LLM request logging enabled")
 	// Display absolute path to user
-	displayLogDir := cfg.Logging.LogDir
+	displayLogDir := cfg.Logging.LLM.LogDir
 	isUnixStyleAbs := len(displayLogDir) > 0 && (displayLogDir[0] == '/' || displayLogDir[0] == '\\')
 	if !filepath.IsAbs(displayLogDir) && !strings.HasPrefix(displayLogDir, "~") && !isUnixStyleAbs {
 		displayLogDir = filepath.Join(cfg.WorkspacePath(), displayLogDir)
 	}
 	fmt.Printf("📁 Log directory: %s\n", displayLogDir)
-	fmt.Printf("📝 Detail level: %s\n", cfg.Logging.DetailLevel)
+	fmt.Printf("📝 Detail level: %s\n", cfg.Logging.LLM.DetailLevel)
 }
 
 func cmdLogLLMDisable() {
@@ -151,7 +155,11 @@ func cmdLogLLMDisable() {
 		cfg.Logging = &config.LoggingConfig{}
 	}
 
-	cfg.Logging.LLMRequests = false
+	if cfg.Logging.LLM == nil {
+		cfg.Logging.LLM = &config.LLMLogConfig{}
+	}
+
+	cfg.Logging.LLM.Enabled = false
 
 	configPath := GetConfigPath()
 	if err := config.SaveConfig(configPath, cfg); err != nil {
@@ -177,13 +185,13 @@ func cmdLogStatus() {
 	logDir := filepath.Join(pm.Workspace(), "logs", "request_logs")
 	detailLevel := "full"
 
-	if cfg.Logging != nil {
-		enabled = cfg.Logging.LLMRequests
-		if cfg.Logging.LogDir != "" {
-			logDir = cfg.Logging.LogDir
+	if cfg.Logging != nil && cfg.Logging.LLM != nil {
+		enabled = cfg.Logging.LLM.Enabled
+		if cfg.Logging.LLM.LogDir != "" {
+			logDir = cfg.Logging.LLM.LogDir
 		}
-		if cfg.Logging.DetailLevel != "" {
-			detailLevel = cfg.Logging.DetailLevel
+		if cfg.Logging.LLM.DetailLevel != "" {
+			detailLevel = cfg.Logging.LLM.DetailLevel
 		}
 	}
 
@@ -257,13 +265,13 @@ func cmdLogLLMStatus() {
 	logDir := filepath.Join(pm.Workspace(), "logs", "request_logs")
 	detailLevel := "full"
 
-	if cfg.Logging != nil {
-		enabled = cfg.Logging.LLMRequests
-		if cfg.Logging.LogDir != "" {
-			logDir = cfg.Logging.LogDir
+	if cfg.Logging != nil && cfg.Logging.LLM != nil {
+		enabled = cfg.Logging.LLM.Enabled
+		if cfg.Logging.LLM.LogDir != "" {
+			logDir = cfg.Logging.LLM.LogDir
 		}
-		if cfg.Logging.DetailLevel != "" {
-			detailLevel = cfg.Logging.DetailLevel
+		if cfg.Logging.LLM.DetailLevel != "" {
+			detailLevel = cfg.Logging.LLM.DetailLevel
 		}
 	}
 
@@ -333,9 +341,13 @@ func cmdLogConfig() {
 		cfg.Logging = &config.LoggingConfig{}
 	}
 
+	if cfg.Logging.LLM == nil {
+		cfg.Logging.LLM = &config.LLMLogConfig{}
+	}
+
 	// Parse command line options
-	detailLevel := cfg.Logging.DetailLevel
-	logDir := cfg.Logging.LogDir
+	detailLevel := cfg.Logging.LLM.DetailLevel
+	logDir := cfg.Logging.LLM.LogDir
 
 	for i := 3; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -354,8 +366,8 @@ func cmdLogConfig() {
 	}
 
 	// Update config
-	cfg.Logging.DetailLevel = detailLevel
-	cfg.Logging.LogDir = logDir
+	cfg.Logging.LLM.DetailLevel = detailLevel
+	cfg.Logging.LLM.LogDir = logDir
 
 	configPath := GetConfigPath()
 	if err := config.SaveConfig(configPath, cfg); err != nil {

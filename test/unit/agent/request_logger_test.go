@@ -24,11 +24,13 @@ func TestNewRequestLogger_Disabled(t *testing.T) {
 
 	// Test with logging disabled
 	cfg := &config.LoggingConfig{
-		LLMRequests: false,
+		LLM: &config.LLMLogConfig{
+			Enabled: false,
+		},
 	}
 	logger = agent.NewRequestLogger(cfg, "")
 	if logger.IsEnabled() {
-		t.Error("Expected logger to be disabled when LLMRequests is false")
+		t.Error("Expected logger to be disabled when LLM.Enabled is false")
 	}
 }
 
@@ -37,8 +39,11 @@ func TestNewRequestLogger_Enabled(t *testing.T) {
 	tempDir := t.TempDir()
 
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "logs/request_logs",
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "logs/request_logs",
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, tempDir)
@@ -56,8 +61,11 @@ func TestNewRequestLogger_Enabled(t *testing.T) {
 func TestNewRequestLogger_RelativePath(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "logs/request_logs",
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "logs/request_logs",
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, workspace)
@@ -80,8 +88,11 @@ func TestNewRequestLogger_AbsolutePath(t *testing.T) {
 	logDir := t.TempDir() // Use temp dir as absolute path
 
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      logDir,
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      logDir,
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, workspace)
@@ -115,8 +126,11 @@ func TestNewRequestLogger_TildeExpansion(t *testing.T) {
 	defer os.RemoveAll(testLogDir)
 
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "~/nemesisbot_test_logs",
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "~/nemesisbot_test_logs",
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, "")
@@ -135,8 +149,11 @@ func TestNewRequestLogger_EmptyLogDir(t *testing.T) {
 	workspace := t.TempDir()
 
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "", // Empty should use workspace
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "", // Empty should use workspace
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, workspace)
@@ -160,8 +177,11 @@ func TestNewRequestLogger_UnixStylePath(t *testing.T) {
 
 	// Unix-style absolute path should be treated as absolute
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "/var/log/nemesisbot",
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "/var/log/nemesisbot",
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, workspace)
@@ -180,8 +200,11 @@ func TestNewRequestLogger_UnixStylePath(t *testing.T) {
 func TestRequestLogger_LogFileCreation(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := &config.LoggingConfig{
-		LLMRequests: true,
-		LogDir:      "logs",
+		LLM: &config.LLMLogConfig{
+			Enabled:     true,
+			LogDir:      "logs",
+			DetailLevel: "full",
+		},
 	}
 
 	logger := agent.NewRequestLogger(cfg, workspace)

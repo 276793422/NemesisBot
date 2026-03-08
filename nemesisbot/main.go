@@ -344,9 +344,11 @@ func onboardDefault() {
 	// Step 5: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
 		cfg.Logging = &config.LoggingConfig{
-			LLMRequests: true,
-			LogDir:      "logs/request_logs", // Relative path
-			DetailLevel: "full",
+			LLM: &config.LLMLogConfig{
+				Enabled:     true,
+				LogDir:      "logs/request_logs", // Relative path
+				DetailLevel: "full",
+			},
 		}
 		if err := config.SaveConfig(configPath, cfg); err != nil {
 			fmt.Printf("⚠️  Warning: Failed to enable LLM logging: %v\n", err)

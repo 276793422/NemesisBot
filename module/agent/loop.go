@@ -651,7 +651,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opts processOptions) (string, error) {
 	// Initialize request logger if enabled
 	var reqLogger *RequestLogger
-	if al.cfg.Logging != nil && al.cfg.Logging.LLMRequests {
+	if al.cfg.Logging != nil && al.cfg.Logging.LLM != nil && al.cfg.Logging.LLM.Enabled {
 		workspace := al.cfg.WorkspacePath()
 		reqLogger = NewRequestLogger(al.cfg.Logging, workspace)
 		if reqLogger.IsEnabled() {
