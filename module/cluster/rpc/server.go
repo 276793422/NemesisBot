@@ -62,7 +62,6 @@ func (s *Server) Start(port int) error {
 		s.mu.Unlock()
 		return fmt.Errorf("server already running")
 	}
-	s.rpcPort = port
 	s.mu.Unlock()
 
 	// Register default handlers
@@ -75,12 +74,17 @@ func (s *Server) Start(port int) error {
 		return fmt.Errorf("failed to bind port %d: %w", port, err)
 	}
 
+	// Get the actual port assigned (important if port was 0 for dynamic allocation)
+	actualAddr := listener.Addr().(*net.TCPAddr)
+	actualPort := actualAddr.Port
+
 	s.mu.Lock()
 	s.listener = listener
 	s.running = true
+	s.rpcPort = actualPort // Store the actual assigned port
 	s.mu.Unlock()
 
-	s.cluster.LogRPCInfo("RPC server started on %s", addr)
+	s.cluster.LogRPCInfo("RPC server started on %s", actualAddr.String())
 
 	// Start accept loop in background
 	go s.acceptLoop()
@@ -314,4 +318,11 @@ func (s *Server) IsRunning() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.running
+}
+
+// GetPort returns the actual port the server is listening on
+func (s *Server) GetPort() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rpcPort
 }

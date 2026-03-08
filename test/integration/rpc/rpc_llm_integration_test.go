@@ -19,6 +19,29 @@ import (
 	"github.com/276793422/NemesisBot/module/tools"
 )
 
+// startTestDispatchLoop starts a test dispatcher that mimics ChannelManager.dispatchOutbound
+// This helper simulates the production environment's outbound message routing
+func startTestDispatchLoop(ctx context.Context, msgBus *bus.MessageBus, channelMap map[string]interface{}) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgBus.OutboundChannel():
+				if !ok {
+					return
+				}
+				// Route message to appropriate channel (mimics ChannelManager behavior)
+				if ch, exists := channelMap[msg.Channel]; exists {
+					if rpcCh, ok := ch.(*channels.RPCChannel); ok {
+						rpcCh.Send(ctx, msg)
+					}
+				}
+			}
+		}
+	}()
+}
+
 // TestBotToBotRPCIntegration tests the complete Bot-to-Bot RPC LLM call flow
 // This demonstrates:
 // 1. Bot A (client) sends RPC request to Bot B (server)
@@ -28,9 +51,9 @@ import (
 func TestBotToBotRPCIntegration(t *testing.T) {
 	t.Log("=== Bot-to-Bot RPC LLM Integration Test ===")
 
-	// Setup: Create two bot instances
-	botB := createTestBot("Bot-B", 21950) // Server bot
-	botA := createTestBot("Bot-A", 21949) // Client bot
+	// Setup: Create two bot instances with dynamic port allocation (port 0)
+	botB := createTestBot("Bot-B", 0) // Server bot - system will assign available port
+	botA := createTestBot("Bot-A", 0) // Client bot - system will assign available port
 
 	// Start Bot B (server)
 	if err := botB.Start(); err != nil {
@@ -38,7 +61,7 @@ func TestBotToBotRPCIntegration(t *testing.T) {
 	}
 	defer botB.Stop()
 
-	t.Logf("Bot B started on port %d", botB.RPCPort)
+	t.Logf("Bot B started on port %d (requested %d)", botB.ActualPort, botB.RPCPort)
 
 	// Wait for Bot B to be ready
 	time.Sleep(500 * time.Millisecond)
@@ -55,8 +78,8 @@ func TestBotToBotRPCIntegration(t *testing.T) {
 		},
 	}
 
-	// Send request from Bot A to Bot B
-	response, err := botA.SendRPCRequest("127.0.0.1:21950", "peer_chat", requestPayload)
+	// Send request from Bot A to Bot B using actual assigned port
+	response, err := botA.SendRPCRequest(fmt.Sprintf("127.0.0.1:%d", botB.ActualPort), "peer_chat", requestPayload)
 	if err != nil {
 		t.Fatalf("Failed to send RPC request: %v", err)
 	}
@@ -102,7 +125,13 @@ func TestRPCChannelLLMForwarding(t *testing.T) {
 		t.Fatalf("Failed to create RPC channel: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start test dispatch loop to simulate production environment
+	channelMap := map[string]interface{}{"rpc": rpcCh}
+	startTestDispatchLoop(ctx, msgBus, channelMap)
+
 	if err := rpcCh.Start(ctx); err != nil {
 		t.Fatalf("Failed to start RPC channel: %v", err)
 	}
@@ -219,11 +248,12 @@ func TestMessageToolWithCorrelationID(t *testing.T) {
 
 // testBot represents a test bot instance
 type testBot struct {
-	Name    string
-	RPCPort int
-	rpcCh   *channels.RPCChannel
-	msgBus  *bus.MessageBus
-	rpcSrv  *clusterrpc.Server
+	Name     string
+	RPCPort  int       // Requested port (0 for dynamic)
+	ActualPort int       // Actual port assigned by server
+	rpcCh    *channels.RPCChannel
+	msgBus   *bus.MessageBus
+	rpcSrv   *clusterrpc.Server
 }
 
 // createTestBot creates a test bot instance
@@ -244,10 +274,11 @@ func createTestBot(name string, rpcPort int) *testBot {
 	})
 
 	return &testBot{
-		Name:   name,
+		Name:    name,
 		RPCPort: rpcPort,
-		rpcCh:  rpcCh,
-		msgBus: msgBus,
+		ActualPort: 0, // Will be set after Start()
+		rpcCh:   rpcCh,
+		msgBus:  msgBus,
 		rpcSrv:  rpcSrv,
 	}
 }
@@ -268,10 +299,19 @@ func (b *testBot) Start() error {
 	}
 	b.rpcSrv.RegisterHandler("peer_chat", handler.Handle)
 
+	// Start dispatch loop to simulate production environment
+	// This routes messages from msgBus.OutboundChannel() to appropriate channels
+	channelMap := map[string]interface{}{"rpc": b.rpcCh}
+	startTestDispatchLoop(ctx, b.msgBus, channelMap)
+
 	// Start RPC Server
+	// Note: If RPCPort is 0, the server will auto-allocate a port
 	if err := b.rpcSrv.Start(b.RPCPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}
+
+	// Get the actual port assigned (important if RPCPort was 0)
+	b.ActualPort = b.rpcSrv.GetPort()
 
 	return nil
 }
