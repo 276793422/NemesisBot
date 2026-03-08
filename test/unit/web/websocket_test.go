@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/276793422/NemesisBot/module/web"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/web"
 )
 
 // TestHandleWebSocketWithToken tests WebSocket connection with valid auth token

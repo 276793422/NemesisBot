@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/config"
 )
 

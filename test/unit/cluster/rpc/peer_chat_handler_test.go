@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/276793422/NemesisBot/module/bus"
-	clusterrpc "github.com/276793422/NemesisBot/module/cluster/rpc"
 	"github.com/276793422/NemesisBot/module/channels"
+	clusterrpc "github.com/276793422/NemesisBot/module/cluster/rpc"
 )
 
 // mockClusterForPeerChat is a mock Cluster for testing PeerChatHandler
@@ -23,12 +23,12 @@ type mockClusterForPeerChat struct {
 	mu          sync.Mutex
 }
 
-func (m *mockClusterForPeerChat) GetRegistry() interface{}                        { return nil }
-func (m *mockClusterForPeerChat) GetNodeID() string                              { return "test-node" }
-func (m *mockClusterForPeerChat) GetAddress() string                             { return "" }
-func (m *mockClusterForPeerChat) GetCapabilities() []string                      { return []string{"peer_chat", "llm"} }
-func (m *mockClusterForPeerChat) GetOnlinePeers() []interface{}                   { return nil }
-func (m *mockClusterForPeerChat) GetActionsSchema() []interface{}                 { return nil }
+func (m *mockClusterForPeerChat) GetRegistry() interface{}        { return nil }
+func (m *mockClusterForPeerChat) GetNodeID() string               { return "test-node" }
+func (m *mockClusterForPeerChat) GetAddress() string              { return "" }
+func (m *mockClusterForPeerChat) GetCapabilities() []string       { return []string{"peer_chat", "llm"} }
+func (m *mockClusterForPeerChat) GetOnlinePeers() []interface{}   { return nil }
+func (m *mockClusterForPeerChat) GetActionsSchema() []interface{} { return nil }
 func (m *mockClusterForPeerChat) LogRPCInfo(msg string, args ...interface{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -47,7 +47,7 @@ func (m *mockClusterForPeerChat) LogRPCDebug(msg string, args ...interface{}) {
 	formatted := fmt.Sprintf(msg, args...)
 	m.logMessages = append(m.logMessages, "DEBUG: "+formatted)
 }
-func (m *mockClusterForPeerChat) GetPeer(peerID string) (interface{}, error)    { return nil, nil }
+func (m *mockClusterForPeerChat) GetPeer(peerID string) (interface{}, error) { return nil, nil }
 func (m *mockClusterForPeerChat) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetworkInterface, error) {
 	return []clusterrpc.LocalNetworkInterface{{IP: "127.0.0.1", Mask: "255.255.255.0"}}, nil
 }
@@ -155,10 +155,10 @@ func TestPeerChatHandler_WithContext(t *testing.T) {
 		"type":    "task",
 		"content": "帮我分析",
 		"context": map[string]interface{}{
-			"chat_id":      "user-456",
-			"session_key":  "session-xyz",
-			"sender_id":    "node-abc",
-			"extra_data":   12345,
+			"chat_id":     "user-456",
+			"session_key": "session-xyz",
+			"sender_id":   "node-abc",
+			"extra_data":  12345,
 		},
 	}
 

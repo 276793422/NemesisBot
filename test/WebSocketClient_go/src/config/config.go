@@ -22,16 +22,16 @@ type ServerConfig struct {
 }
 
 type ReconnectConfig struct {
-	Enabled         bool          `json:"enabled"`
-	InitialDelaySec int           `json:"initial_delay_sec"`
-	MaxDelaySec     int           `json:"max_delay_sec"`
-	DelayMultiplier float64       `json:"delay_multiplier"`
-	MaxAttempts     int           `json:"max_attempts"`
+	Enabled         bool    `json:"enabled"`
+	InitialDelaySec int     `json:"initial_delay_sec"`
+	MaxDelaySec     int     `json:"max_delay_sec"`
+	DelayMultiplier float64 `json:"delay_multiplier"`
+	MaxAttempts     int     `json:"max_attempts"`
 }
 
 type HeartbeatConfig struct {
-	Enabled    bool `json:"enabled"`
-	IntervalSec int `json:"interval_sec"`
+	Enabled     bool `json:"enabled"`
+	IntervalSec int  `json:"interval_sec"`
 }
 
 type LoggingConfig struct {
@@ -83,7 +83,7 @@ func GetDefaultConfig() *Config {
 			MaxAttempts:     0,
 		},
 		Heartbeat: HeartbeatConfig{
-			Enabled:    true,
+			Enabled:     true,
 			IntervalSec: 30,
 		},
 		Logging: LoggingConfig{

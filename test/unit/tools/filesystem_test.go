@@ -110,7 +110,7 @@ func TestWriteFileTool_PathValidation(t *testing.T) {
 	// Try to write outside workspace (should fail or be restricted)
 	// Note: Depending on implementation, it might write to tmpDir instead
 	args := map[string]interface{}{
-		"path":    "../etc/passwd",  // Try to escape workspace
+		"path":    "../etc/passwd", // Try to escape workspace
 		"content": "malicious",
 	}
 

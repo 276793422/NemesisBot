@@ -14,21 +14,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/gorilla/websocket"
 )
 
 // TestNewWebSocketChannelSuccess tests successful creation of WebSocket channel
 func TestNewWebSocketChannelSuccess(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49901,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49901,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -50,12 +50,12 @@ func TestNewWebSocketChannelSuccess(t *testing.T) {
 // TestWebSocketChannelStartStop tests starting and stopping the WebSocket server
 func TestWebSocketChannelStartStop(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49902,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49902,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -92,12 +92,12 @@ func TestWebSocketChannelStartStop(t *testing.T) {
 // TestWebSocketChannelClientConnection tests client connection
 func TestWebSocketChannelClientConnection(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49903,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49903,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -145,12 +145,12 @@ func TestWebSocketChannelClientConnection(t *testing.T) {
 // TestWebSocketChannelSingleClientOnly tests that only one client can connect
 func TestWebSocketChannelSingleClientOnly(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49904,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49904,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -204,12 +204,12 @@ func TestWebSocketChannelSingleClientOnly(t *testing.T) {
 // TestWebSocketChannelMessageExchange tests sending and receiving messages
 func TestWebSocketChannelMessageExchange(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49905,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49905,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -296,12 +296,12 @@ func TestWebSocketChannelMessageExchange(t *testing.T) {
 // TestWebSocketChannelSendToClient tests sending messages to the client
 func TestWebSocketChannelSendToClient(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49906,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49906,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -366,12 +366,12 @@ func TestWebSocketChannelSendToClient(t *testing.T) {
 // TestWebSocketChannelAuthentication tests token authentication
 func TestWebSocketChannelAuthentication(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49907,
-		Path:       "/ws",
-		AuthToken:  "test_token",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49907,
+		Path:      "/ws",
+		AuthToken: "test_token",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()

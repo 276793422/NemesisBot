@@ -69,8 +69,8 @@ func TestNewRPCChannel(t *testing.T) {
 func TestRPCChannelLifecycle(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &channels.RPCChannelConfig{
-		MessageBus:      msgBus,
-		RequestTimeout:  5 * time.Second,
+		MessageBus:     msgBus,
+		RequestTimeout: 5 * time.Second,
 	}
 	ch, err := channels.NewRPCChannel(cfg)
 	if err != nil {
@@ -112,8 +112,8 @@ func TestRPCChannelLifecycle(t *testing.T) {
 func TestRPCChannelInput(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &channels.RPCChannelConfig{
-		MessageBus:      msgBus,
-		RequestTimeout:  5 * time.Second,
+		MessageBus:     msgBus,
+		RequestTimeout: 5 * time.Second,
 	}
 	ch, err := channels.NewRPCChannel(cfg)
 	if err != nil {
@@ -147,8 +147,8 @@ func TestRPCChannelInput(t *testing.T) {
 
 	// Test Input with provided correlation ID
 	inbound2 := bus.InboundMessage{
-		ChatID:       "test-user-2",
-		Content:      "Hello RPC 2",
+		ChatID:        "test-user-2",
+		Content:       "Hello RPC 2",
 		CorrelationID: "test-id-123",
 	}
 
@@ -193,8 +193,8 @@ func TestRPCChannelInputWhenNotRunning(t *testing.T) {
 func TestRPCChannelResponseDelivery(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &channels.RPCChannelConfig{
-		MessageBus:      msgBus,
-		RequestTimeout:  5 * time.Second,
+		MessageBus:     msgBus,
+		RequestTimeout: 5 * time.Second,
 	}
 	ch, err := channels.NewRPCChannel(cfg)
 	if err != nil {
@@ -216,8 +216,8 @@ func TestRPCChannelResponseDelivery(t *testing.T) {
 	// Submit a request
 	correlationID := "test-correlation-123"
 	inbound := bus.InboundMessage{
-		ChatID:       "test-user",
-		Content:      "Test message",
+		ChatID:        "test-user",
+		Content:       "Test message",
 		CorrelationID: correlationID,
 	}
 
@@ -251,8 +251,8 @@ func TestRPCChannelResponseDelivery(t *testing.T) {
 func TestRPCChannelResponseMatching(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &channels.RPCChannelConfig{
-		MessageBus:      msgBus,
-		RequestTimeout:  5 * time.Second,
+		MessageBus:     msgBus,
+		RequestTimeout: 5 * time.Second,
 	}
 	ch, err := channels.NewRPCChannel(cfg)
 	if err != nil {
@@ -284,8 +284,8 @@ func TestRPCChannelResponseMatching(t *testing.T) {
 	respChs := make([]<-chan string, len(requests))
 	for i, req := range requests {
 		inbound := bus.InboundMessage{
-			ChatID:       fmt.Sprintf("user-%d", i),
-			Content:      req.content,
+			ChatID:        fmt.Sprintf("user-%d", i),
+			Content:       req.content,
 			CorrelationID: req.correlationID,
 		}
 		respCh, err := ch.Input(ctx, &inbound)
@@ -354,8 +354,8 @@ func TestRPCChannelTimeout(t *testing.T) {
 
 	// Submit a request
 	inbound := bus.InboundMessage{
-		ChatID:       "test-user",
-		Content:      "Test message",
+		ChatID:        "test-user",
+		Content:       "Test message",
 		CorrelationID: "timeout-test-id",
 	}
 
@@ -380,8 +380,8 @@ func TestRPCChannelTimeout(t *testing.T) {
 func TestRPCChannelIgnoresOtherChannels(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	cfg := &channels.RPCChannelConfig{
-		MessageBus:      msgBus,
-		RequestTimeout:  5 * time.Second,
+		MessageBus:     msgBus,
+		RequestTimeout: 5 * time.Second,
 	}
 	ch, err := channels.NewRPCChannel(cfg)
 	if err != nil {
@@ -402,8 +402,8 @@ func TestRPCChannelIgnoresOtherChannels(t *testing.T) {
 
 	// Submit a request
 	inbound := bus.InboundMessage{
-		ChatID:       "test-user",
-		Content:      "Test message",
+		ChatID:        "test-user",
+		Content:       "Test message",
 		CorrelationID: "test-id",
 	}
 

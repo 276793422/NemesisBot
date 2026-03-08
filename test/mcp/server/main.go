@@ -46,15 +46,15 @@ type ServerInfo struct {
 // InitializeParams for the initialize request
 type InitializeParams struct {
 	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities   map[string]interface{} `json:"capabilities"`
-	ClientInfo     map[string]interface{} `json:"clientInfo"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ClientInfo      map[string]interface{} `json:"clientInfo"`
 }
 
 // InitializeResult for the initialize response
 type InitializeResult struct {
 	ProtocolVersion string             `json:"protocolVersion"`
-	Capabilities   ServerCapabilities `json:"capabilities"`
-	ServerInfo     ServerInfo         `json:"serverInfo"`
+	Capabilities    ServerCapabilities `json:"capabilities"`
+	ServerInfo      ServerInfo         `json:"serverInfo"`
 }
 
 // ServerCapabilities describes server capabilities
@@ -122,7 +122,7 @@ type PromptArgument struct {
 
 // PromptMessage represents a message in a prompt result
 type PromptMessage struct {
-	Role    string             `json:"role"`
+	Role    string               `json:"role"`
 	Content PromptMessageContent `json:"content"`
 }
 

@@ -56,7 +56,7 @@ func TestSecurityFileRules(t *testing.T) {
 
 	// 设置文件写入规则 - 注意顺序！具体的规则要放在前面
 	auditor.SetRules(OpFileWrite, []config.SecurityRule{
-		{Pattern: "*.key", Action: "deny"},        // 具体规则先匹配
+		{Pattern: "*.key", Action: "deny"},          // 具体规则先匹配
 		{Pattern: "/workspace/**", Action: "allow"}, // 通用规则后匹配
 	})
 

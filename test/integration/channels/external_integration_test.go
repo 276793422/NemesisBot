@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/config"
 )
 
@@ -120,11 +120,11 @@ func TestIntegrationExternalChannelWithWebSync(t *testing.T) {
 	writeMockSinkExecutable(t, outputEXE)
 
 	cfg := &config.ExternalConfig{
-		Enabled:     true,
-		InputEXE:    inputEXE,
-		OutputEXE:   outputEXE,
-		ChatID:      "external:sync-test",
-		SyncToWeb:   true,
+		Enabled:      true,
+		InputEXE:     inputEXE,
+		OutputEXE:    outputEXE,
+		ChatID:       "external:sync-test",
+		SyncToWeb:    true,
 		WebSessionID: "",
 	}
 

@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -183,7 +184,7 @@ func main() {
 	fmt.Println("")
 	fmt.Println("═══════════════════════════════════════════════════")
 	fmt.Println("       建议")
-	fmt═════════════════════════════════════════════════════")
+	fmt.Println("═══════════════════════════════════════════════════")
 	fmt.Println("")
 	fmt.Println("1. 检查 rpc.log 中是否有 'Received request: action=hello'")
 	fmt.Println("   - 如果有，说明 Server 接收到了请求")
@@ -201,10 +202,10 @@ func main() {
 	fmt.Println("")
 	fmt.Println("4. 解决方案: 注册 'hello' handler")
 	fmt.Println("   在 Server 启动时添加:")
-	fmt.Println("   cluster.RegisterRPCHandler('hello', func(payload map[string]interface{}) (map[string]interface{}, error) {")
+	fmt.Println("   cluster.RegisterRPCHandler(\"hello\", func(payload map[string]interface{}) (map[string]interface{}, error) {")
 	fmt.Println("       return map[string]interface{}{")
-	fmt.Println("           'greeting': 'Hello from ' + payload['from"].(string),")
-	fmt.Println("           'timestamp': time.Now().Format(time.RFC3339),")
+	fmt.Println(`           "greeting": "Hello from " + payload["from"].(string),`)
+	fmt.Println("           \"timestamp\": time.Now().Format(time.RFC3339),")
 	fmt.Println("       }, nil")
 	fmt.Println("   })")
 }

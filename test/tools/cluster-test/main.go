@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main

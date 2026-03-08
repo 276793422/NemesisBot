@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -117,15 +118,21 @@ func main() {
 // rpcServerCluster implements the Cluster interface for the server
 type rpcServerCluster struct{}
 
-func (m *rpcServerCluster) GetRegistry() interface{}                      { return nil }
-func (m *rpcServerCluster) GetNodeID() string                            { return "test-server" }
-func (m *rpcServerCluster) GetAddress() string                           { return "" }
-func (m *rpcServerCluster) GetCapabilities() []string                    { return []string{"test"} }
-func (m *rpcServerCluster) GetOnlinePeers() []interface{}                { return nil }
-func (m *rpcServerCluster) LogRPCInfo(msg string, args ...interface{})   { fmt.Printf("[INFO] %s\n", fmt.Sprintf(msg, args...)) }
-func (m *rpcServerCluster) LogRPCError(msg string, args ...interface{})  { fmt.Printf("[ERROR] %s\n", fmt.Sprintf(msg, args...)) }
-func (m *rpcServerCluster) LogRPCDebug(msg string, args ...interface{})  { fmt.Printf("[DEBUG] %s\n", fmt.Sprintf(msg, args...)) }
-func (m *rpcServerCluster) GetPeer(peerID string) (interface{}, error)   { return nil, nil }
+func (m *rpcServerCluster) GetRegistry() interface{}      { return nil }
+func (m *rpcServerCluster) GetNodeID() string             { return "test-server" }
+func (m *rpcServerCluster) GetAddress() string            { return "" }
+func (m *rpcServerCluster) GetCapabilities() []string     { return []string{"test"} }
+func (m *rpcServerCluster) GetOnlinePeers() []interface{} { return nil }
+func (m *rpcServerCluster) LogRPCInfo(msg string, args ...interface{}) {
+	fmt.Printf("[INFO] %s\n", fmt.Sprintf(msg, args...))
+}
+func (m *rpcServerCluster) LogRPCError(msg string, args ...interface{}) {
+	fmt.Printf("[ERROR] %s\n", fmt.Sprintf(msg, args...))
+}
+func (m *rpcServerCluster) LogRPCDebug(msg string, args ...interface{}) {
+	fmt.Printf("[DEBUG] %s\n", fmt.Sprintf(msg, args...))
+}
+func (m *rpcServerCluster) GetPeer(peerID string) (interface{}, error) { return nil, nil }
 func (m *rpcServerCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
 	return []rpc.LocalNetworkInterface{
 		{IP: "127.0.0.1", Mask: "255.255.255.0"},

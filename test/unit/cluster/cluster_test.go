@@ -43,17 +43,17 @@ func TestRegistryGetOnline(t *testing.T) {
 
 	// Add online node
 	onlineNode := &cluster.Node{
-		ID:       "bot-online",
-		Name:     "Online Bot",
-		Address:  "192.168.1.1:49200",
+		ID:      "bot-online",
+		Name:    "Online Bot",
+		Address: "192.168.1.1:49200",
 	}
 	registry.AddOrUpdate(onlineNode)
 
 	// Add offline node (manually set after adding)
 	offlineNode := &cluster.Node{
-		ID:       "bot-offline",
-		Name:     "Offline Bot",
-		Address:  "192.168.1.2:49200",
+		ID:      "bot-offline",
+		Name:    "Offline Bot",
+		Address: "192.168.1.2:49200",
 	}
 	registry.AddOrUpdate(offlineNode)
 	// Manually mark as offline after adding
@@ -216,16 +216,16 @@ func TestNodeHasCapability(t *testing.T) {
 // TestNodeToConfig tests converting node to config
 func TestNodeToConfig(t *testing.T) {
 	node := &cluster.Node{
-		ID:           "bot-test",
-		Name:         "Test Bot",
-		Address:      "192.168.1.1:49200",
-		Role:         "worker",
-		Capabilities: []string{"code"},
-		Priority:     1,
-		Status:       cluster.StatusOnline,
-		LastSeen:     time.Now(),
+		ID:             "bot-test",
+		Name:           "Test Bot",
+		Address:        "192.168.1.1:49200",
+		Role:           "worker",
+		Capabilities:   []string{"code"},
+		Priority:       1,
+		Status:         cluster.StatusOnline,
+		LastSeen:       time.Now(),
 		TasksCompleted: 10,
-		SuccessRate:  0.95,
+		SuccessRate:    0.95,
 	}
 
 	config := node.ToConfig()

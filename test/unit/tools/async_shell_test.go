@@ -47,7 +47,7 @@ func TestAsyncExecTool_Calc(t *testing.T) {
 
 	// Test async execution with custom wait time
 	result := tool.Execute(ctx, map[string]interface{}{
-		"command":       "calc.exe",
+		"command":      "calc.exe",
 		"wait_seconds": 3.0,
 	})
 

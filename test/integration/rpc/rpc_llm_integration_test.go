@@ -248,12 +248,12 @@ func TestMessageToolWithCorrelationID(t *testing.T) {
 
 // testBot represents a test bot instance
 type testBot struct {
-	Name     string
-	RPCPort  int       // Requested port (0 for dynamic)
-	ActualPort int       // Actual port assigned by server
-	rpcCh    *channels.RPCChannel
-	msgBus   *bus.MessageBus
-	rpcSrv   *clusterrpc.Server
+	Name       string
+	RPCPort    int // Requested port (0 for dynamic)
+	ActualPort int // Actual port assigned by server
+	rpcCh      *channels.RPCChannel
+	msgBus     *bus.MessageBus
+	rpcSrv     *clusterrpc.Server
 }
 
 // createTestBot creates a test bot instance
@@ -274,12 +274,12 @@ func createTestBot(name string, rpcPort int) *testBot {
 	})
 
 	return &testBot{
-		Name:    name,
-		RPCPort: rpcPort,
+		Name:       name,
+		RPCPort:    rpcPort,
 		ActualPort: 0, // Will be set after Start()
-		rpcCh:   rpcCh,
-		msgBus:  msgBus,
-		rpcSrv:  rpcSrv,
+		rpcCh:      rpcCh,
+		msgBus:     msgBus,
+		rpcSrv:     rpcSrv,
 	}
 }
 
@@ -368,12 +368,12 @@ type mockClusterForTest struct {
 	msgBus *bus.MessageBus
 }
 
-func (m *mockClusterForTest) GetRegistry() interface{}                        { return nil }
-func (m *mockClusterForTest) GetNodeID() string                              { return m.name }
-func (m *mockClusterForTest) GetAddress() string                             { return "" }
-func (m *mockClusterForTest) GetCapabilities() []string                      { return []string{"peer_chat", "llm"} }
-func (m *mockClusterForTest) GetOnlinePeers() []interface{}                   { return nil }
-func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
+func (m *mockClusterForTest) GetRegistry() interface{}      { return nil }
+func (m *mockClusterForTest) GetNodeID() string             { return m.name }
+func (m *mockClusterForTest) GetAddress() string            { return "" }
+func (m *mockClusterForTest) GetCapabilities() []string     { return []string{"peer_chat", "llm"} }
+func (m *mockClusterForTest) GetOnlinePeers() []interface{} { return nil }
+func (m *mockClusterForTest) GetActionsSchema() []interface{} {
 	// Return default action schemas for testing
 	return []interface{}{
 		map[string]interface{}{
@@ -385,7 +385,7 @@ func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
 					"status": map[string]interface{}{
 						"type":        "string",
 						"description": "响应状态",
-						"enum":         []string{"ok"},
+						"enum":        []string{"ok"},
 					},
 					"node_id": map[string]interface{}{
 						"type":        "string",
@@ -424,7 +424,7 @@ func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
 			"examples": []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "get_capabilities",
+						"action":  "get_capabilities",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
@@ -452,12 +452,12 @@ func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
 			"examples": []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "get_info",
+						"action":  "get_info",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
 						"node_id": "node-abc123",
-						"peers":    []interface{}{},
+						"peers":   []interface{}{},
 					},
 				},
 			},
@@ -477,7 +477,7 @@ func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
 			"examples": []map[string]interface{}{
 				{
 					"request": map[string]interface{}{
-						"action": "list_actions",
+						"action":  "list_actions",
 						"payload": nil,
 					},
 					"response": map[string]interface{}{
@@ -488,10 +488,16 @@ func (m *mockClusterForTest) GetActionsSchema() []interface{}                 {
 		},
 	}
 }
-func (m *mockClusterForTest) LogRPCInfo(msg string, args ...interface{})    { fmt.Printf("[INFO] %s\n", msg) }
-func (m *mockClusterForTest) LogRPCError(msg string, args ...interface{})   { fmt.Printf("[ERROR] %s\n", msg) }
-func (m *mockClusterForTest) LogRPCDebug(msg string, args ...interface{})  { fmt.Printf("[DEBUG] %s\n", msg) }
-func (m *mockClusterForTest) GetPeer(peerID string) (interface{}, error)    { return nil, nil }
+func (m *mockClusterForTest) LogRPCInfo(msg string, args ...interface{}) {
+	fmt.Printf("[INFO] %s\n", msg)
+}
+func (m *mockClusterForTest) LogRPCError(msg string, args ...interface{}) {
+	fmt.Printf("[ERROR] %s\n", msg)
+}
+func (m *mockClusterForTest) LogRPCDebug(msg string, args ...interface{}) {
+	fmt.Printf("[DEBUG] %s\n", msg)
+}
+func (m *mockClusterForTest) GetPeer(peerID string) (interface{}, error) { return nil, nil }
 func (m *mockClusterForTest) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetworkInterface, error) {
 	return []clusterrpc.LocalNetworkInterface{
 		{IP: "127.0.0.1", Mask: "255.255.255.0"},

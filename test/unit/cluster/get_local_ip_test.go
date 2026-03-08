@@ -51,18 +51,18 @@ func TestVirtualInterfaceDetection(t *testing.T) {
 		name     string
 		expected bool
 	}{
-		{"eth0", false},          // Ethernet - real
-		{"en0", false},           // macOS Ethernet - real
-		{"wlan0", false},         // WiFi - real
-		{"wlp3s0", false},        // WiFi - real
-		{"veth123", true},        // Docker virtual
-		{"docker0", true},        // Docker bridge - virtual
-		{"br-123", true},         // Bridge - virtual
-		{"virbr0", true},         // VirtualBox - virtual
-		{"tun0", true},           // VPN - virtual
-		{"tap0", true},           // TAP - virtual
-		{"lo", true},             // Loopback - virtual
-		{"Loopback", true},       // Loopback - virtual
+		{"eth0", false},    // Ethernet - real
+		{"en0", false},     // macOS Ethernet - real
+		{"wlan0", false},   // WiFi - real
+		{"wlp3s0", false},  // WiFi - real
+		{"veth123", true},  // Docker virtual
+		{"docker0", true},  // Docker bridge - virtual
+		{"br-123", true},   // Bridge - virtual
+		{"virbr0", true},   // VirtualBox - virtual
+		{"tun0", true},     // VPN - virtual
+		{"tap0", true},     // TAP - virtual
+		{"lo", true},       // Loopback - virtual
+		{"Loopback", true}, // Loopback - virtual
 	}
 
 	for _, tc := range testCases {

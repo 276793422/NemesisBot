@@ -138,7 +138,7 @@ func (c *WebSocketClient) connectAndRun() error {
 				errorChannel <- fmt.Errorf("server closed connection")
 				return
 			}
-			
+
 			fmt.Println("Recv message")
 			if messageType == websocket.TextMessage {
 				receiveChannel <- data
@@ -149,7 +149,7 @@ func (c *WebSocketClient) connectAndRun() error {
 	cliClosed := false
 	idleTimeout := 30 * time.Second
 	cliClosedTime := time.Time{}
-	cliChannel := c.cliChannel  // Local variable so we can nil it
+	cliChannel := c.cliChannel // Local variable so we can nil it
 
 	for c.running.Load() {
 		select {
@@ -168,7 +168,7 @@ func (c *WebSocketClient) connectAndRun() error {
 					fmt.Println("📤 CLI closed, waiting for responses...")
 					cliClosed = true
 					cliClosedTime = time.Now()
-					cliChannel = nil  // Prevent this case from being selected again
+					cliChannel = nil // Prevent this case from being selected again
 				}
 				continue
 			}
@@ -238,7 +238,7 @@ drainMessages:
 	// Process any remaining messages in the receiveChannel before exiting
 	fmt.Println("📥 Processing remaining messages...")
 	drainCount := 0
-	maxDrainTime := 2 * time.Second  // Only wait up to 2 seconds for remaining messages
+	maxDrainTime := 2 * time.Second // Only wait up to 2 seconds for remaining messages
 	drainStart := time.Now()
 
 	for time.Since(drainStart) < maxDrainTime {

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/276793422/NemesisBot/module/web"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/web"
 )
 
 // TestIntegrationServerLifecycle tests complete server lifecycle with auth
@@ -270,8 +270,8 @@ func TestIntegrationServerConfigVariations(t *testing.T) {
 	testBus := bus.NewMessageBus()
 
 	configs := []struct {
-		name    string
-		config  ServerConfig
+		name   string
+		config ServerConfig
 	}{
 		{
 			name: "Default config",

@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -319,7 +320,7 @@ func testLargePayload() bool {
 	server := rpc.NewServer(&mockCluster{})
 	server.RegisterHandler("large", func(payload map[string]interface{}) (map[string]interface{}, error) {
 		return map[string]interface{}{
-			"status":      "ok",
+			"status":        "ok",
 			"received_size": len(payload),
 		}, nil
 	})
@@ -498,15 +499,19 @@ func testConnectionPool() bool {
 // mockCluster implements Cluster interface for testing
 type mockCluster struct{}
 
-func (m *mockCluster) GetRegistry() interface{}                      { return nil }
-func (m *mockCluster) GetNodeID() string                            { return "test-server" }
-func (m *mockCluster) GetAddress() string                           { return "" }
-func (m *mockCluster) GetCapabilities() []string                    { return []string{"test"} }
-func (m *mockCluster) GetOnlinePeers() []interface{}                { return nil }
-func (m *mockCluster) LogRPCInfo(msg string, args ...interface{})   { fmt.Printf("[INFO] %s\n", fmt.Sprintf(msg, args...)) }
-func (m *mockCluster) LogRPCError(msg string, args ...interface{})  { fmt.Printf("[ERROR] %s\n", fmt.Sprintf(msg, args...)) }
-func (m *mockCluster) LogRPCDebug(msg string, args ...interface{})  { }
-func (m *mockCluster) GetPeer(peerID string) (interface{}, error)   { return nil, nil }
+func (m *mockCluster) GetRegistry() interface{}      { return nil }
+func (m *mockCluster) GetNodeID() string             { return "test-server" }
+func (m *mockCluster) GetAddress() string            { return "" }
+func (m *mockCluster) GetCapabilities() []string     { return []string{"test"} }
+func (m *mockCluster) GetOnlinePeers() []interface{} { return nil }
+func (m *mockCluster) LogRPCInfo(msg string, args ...interface{}) {
+	fmt.Printf("[INFO] %s\n", fmt.Sprintf(msg, args...))
+}
+func (m *mockCluster) LogRPCError(msg string, args ...interface{}) {
+	fmt.Printf("[ERROR] %s\n", fmt.Sprintf(msg, args...))
+}
+func (m *mockCluster) LogRPCDebug(msg string, args ...interface{}) {}
+func (m *mockCluster) GetPeer(peerID string) (interface{}, error)  { return nil, nil }
 func (m *mockCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
 	return nil, nil
 }

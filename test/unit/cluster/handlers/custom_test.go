@@ -14,10 +14,10 @@ import (
 // TestRegisterCustomHandlers tests that all custom handlers are registered
 func TestRegisterCustomHandlers(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
 		capabilities: []string{"hello"},
-		logMessages: []string{},
+		logMessages:  []string{},
 	}
 
 	registeredHandlers := make(map[string]bool)
@@ -44,10 +44,10 @@ func TestRegisterCustomHandlers(t *testing.T) {
 // TestHelloHandler tests the hello handler response
 func TestHelloHandler(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
 		capabilities: []string{"hello"},
-		logMessages: []string{},
+		logMessages:  []string{},
 	}
 
 	var helloHandler func(map[string]interface{}) (map[string]interface{}, error)
@@ -103,10 +103,10 @@ func TestHelloHandler(t *testing.T) {
 // TestHelloHandlerWithEmptyPayload tests hello handler with empty payload
 func TestHelloHandlerWithEmptyPayload(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
 		capabilities: []string{"hello"},
-		logMessages: []string{},
+		logMessages:  []string{},
 	}
 
 	var helloHandler func(map[string]interface{}) (map[string]interface{}, error)
@@ -149,10 +149,10 @@ func TestHelloHandlerWithEmptyPayload(t *testing.T) {
 // TestHelloHandlerLogsMessage tests that hello handler logs messages
 func TestHelloHandlerLogsMessage(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
 		capabilities: []string{"hello"},
-		logMessages: []string{},
+		logMessages:  []string{},
 	}
 
 	var helloHandler func(map[string]interface{}) (map[string]interface{}, error)

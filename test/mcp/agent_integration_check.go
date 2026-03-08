@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -66,7 +67,7 @@ func main() {
 
 			// Import MCP package
 			mcpPkg := struct {
-				NewClient func(interface{}) (interface{}, error)
+				NewClient             func(interface{}) (interface{}, error)
 				CreateToolsFromClient func(interface{}) (interface {
 					Length() int
 				}, error)

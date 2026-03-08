@@ -2,6 +2,7 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+//go:build ignore
 // +build ignore
 
 package main
@@ -23,10 +24,10 @@ type JSONRPCRequest struct {
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      interface{}     `json:"id"`
 	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
 }
 
 type RPCError struct {
@@ -64,7 +65,7 @@ func main() {
 		JSONRPC: "2.0",
 		ID:      1,
 		Method:  "initialize",
-		Params: json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}`),
+		Params:  json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}`),
 	}
 
 	fmt.Println("Test 1: Sending initialize request")
@@ -100,7 +101,7 @@ func main() {
 		JSONRPC: "2.0",
 		ID:      3,
 		Method:  "tools/call",
-		Params: json.RawMessage(`{"name":"echo","arguments":{"text":"Hello from test!"}}`),
+		Params:  json.RawMessage(`{"name":"echo","arguments":{"text":"Hello from test!"}}`),
 	}
 
 	fmt.Println("\nTest 3: Calling echo tool")

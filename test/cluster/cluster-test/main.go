@@ -23,12 +23,12 @@ import (
 )
 
 var (
-	nodeName    = flag.String("node", "", "Node name (e.g., A, B, C)")
-	udpPort     = flag.Int("udp-port", 49101, "UDP discovery port (each node should use different port)")
-	rpcPort     = flag.Int("rpc-port", 49201, "WebSocket RPC port (must be unique per node)")
-	workspace   = flag.String("workspace", "", "Workspace directory (default: ./test-cluster/<node-name>)")
-	testRPC     = flag.Bool("test-rpc", false, "Test RPC communication after discovery")
-	verbose     = flag.Bool("verbose", false, "Enable verbose logging")
+	nodeName  = flag.String("node", "", "Node name (e.g., A, B, C)")
+	udpPort   = flag.Int("udp-port", 49101, "UDP discovery port (each node should use different port)")
+	rpcPort   = flag.Int("rpc-port", 49201, "WebSocket RPC port (must be unique per node)")
+	workspace = flag.String("workspace", "", "Workspace directory (default: ./test-cluster/<node-name>)")
+	testRPC   = flag.Bool("test-rpc", false, "Test RPC communication after discovery")
+	verbose   = flag.Bool("verbose", false, "Enable verbose logging")
 )
 
 func main() {
@@ -94,7 +94,7 @@ func main() {
 
 		for i := 0; i < 15; i++ {
 			<-ticker.C
-		 peers := clusterInst.GetOnlinePeers()
+			peers := clusterInst.GetOnlinePeers()
 			if len(peers) > 0 {
 				fmt.Printf("[%s] Discovery successful! Found %d peer(s)\n", *nodeName, len(peers))
 			} else {

@@ -73,20 +73,20 @@ type mockNode struct {
 	online       bool
 }
 
-func (m *mockNode) GetID() string                { return m.id }
-func (m *mockNode) GetName() string              { return m.name }
-func (m *mockNode) GetAddress() string           { return m.address }
-func (m *mockNode) GetAddresses() []string       { return m.addresses }
-func (m *mockNode) GetRPCPort() int              { return m.rpcPort }
-func (m *mockNode) GetCapabilities() []string    { return m.capabilities }
-func (m *mockNode) GetStatus() string            { return m.status }
-func (m *mockNode) IsOnline() bool               { return m.online }
+func (m *mockNode) GetID() string             { return m.id }
+func (m *mockNode) GetName() string           { return m.name }
+func (m *mockNode) GetAddress() string        { return m.address }
+func (m *mockNode) GetAddresses() []string    { return m.addresses }
+func (m *mockNode) GetRPCPort() int           { return m.rpcPort }
+func (m *mockNode) GetCapabilities() []string { return m.capabilities }
+func (m *mockNode) GetStatus() string         { return m.status }
+func (m *mockNode) IsOnline() bool            { return m.online }
 
 // TestRegisterDefaultHandlers tests that all default handlers are registered
 func TestRegisterDefaultHandlers(t *testing.T) {
 	mockCluster := &mockClusterForHandlers{
-		nodeID:      "test-node-1",
-		address:     "127.0.0.1:21950",
+		nodeID:       "test-node-1",
+		address:      "127.0.0.1:21950",
 		capabilities: []string{"peer_chat", "hello"},
 		peers: []interface{}{
 			&mockNode{
@@ -352,8 +352,8 @@ func TestGetInfoHandlerWithNonNodePeers(t *testing.T) {
 				status: "online",
 				online: true,
 			},
-			"invalid peer string",      // Should be filtered out
-			12345,                      // Should be filtered out
+			"invalid peer string",     // Should be filtered out
+			12345,                     // Should be filtered out
 			struct{ id string }{"id"}, // Should be filtered out (doesn't implement Node)
 		},
 	}
@@ -408,7 +408,7 @@ func TestListActionsHandler(t *testing.T) {
 						"status": map[string]interface{}{
 							"type":        "string",
 							"description": "Response status",
-							"enum":         []string{"ok"},
+							"enum":        []string{"ok"},
 						},
 						"node_id": map[string]interface{}{
 							"type":        "string",

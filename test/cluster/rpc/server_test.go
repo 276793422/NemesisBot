@@ -22,16 +22,16 @@ type mockCluster struct {
 	capabilities []string
 }
 
-func (m *mockCluster) GetRegistry() interface{}                 { return nil }
-func (m *mockCluster) GetNodeID() string                       { return m.nodeID }
-func (m *mockCluster) GetAddress() string                      { return "" }
-func (m *mockCluster) GetCapabilities() []string               { return m.capabilities }
-func (m *mockCluster) GetOnlinePeers() []interface{}           { return nil }
-func (m *mockCluster) GetActionsSchema() []interface{}         { return []interface{}{} }
-func (m *mockCluster) LogRPCInfo(msg string, args ...interface{}) {}
+func (m *mockCluster) GetRegistry() interface{}                    { return nil }
+func (m *mockCluster) GetNodeID() string                           { return m.nodeID }
+func (m *mockCluster) GetAddress() string                          { return "" }
+func (m *mockCluster) GetCapabilities() []string                   { return m.capabilities }
+func (m *mockCluster) GetOnlinePeers() []interface{}               { return nil }
+func (m *mockCluster) GetActionsSchema() []interface{}             { return []interface{}{} }
+func (m *mockCluster) LogRPCInfo(msg string, args ...interface{})  {}
 func (m *mockCluster) LogRPCError(msg string, args ...interface{}) {}
 func (m *mockCluster) LogRPCDebug(msg string, args ...interface{}) {}
-func (m *mockCluster) GetPeer(peerID string) (interface{}, error) { return nil, nil }
+func (m *mockCluster) GetPeer(peerID string) (interface{}, error)  { return nil, nil }
 func (m *mockCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
 	return nil, nil
 }

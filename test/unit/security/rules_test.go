@@ -281,8 +281,8 @@ func TestSecurityRules_RuleOrdering(t *testing.T) {
 	cfg := &config.SecurityConfig{
 		FileRules: &config.FileSecurityRules{
 			Write: []config.SecurityRule{
-				{Pattern: "/workspace/*.key", Action: "deny"},  // 具体路径模式
-				{Pattern: "/workspace/**", Action: "allow"},      // 通用通配符
+				{Pattern: "/workspace/*.key", Action: "deny"}, // 具体路径模式
+				{Pattern: "/workspace/**", Action: "allow"},   // 通用通配符
 			},
 		},
 	}
@@ -297,10 +297,10 @@ func TestSecurityRules_RuleOrdering(t *testing.T) {
 		target   string
 		expected bool // true=allowed, false=denied
 	}{
-		{"/workspace/test.txt", true},      // 匹配通用规则 allow
-		{"/workspace/secret.key", false},  // 匹配具体规则 deny
-		{"/tmp/private.key", false},       // 不匹配任何规则（默认拒绝）
-		{"/etc/passwd", false},             // 不匹配任何规则（默认拒绝）
+		{"/workspace/test.txt", true},    // 匹配通用规则 allow
+		{"/workspace/secret.key", false}, // 匹配具体规则 deny
+		{"/tmp/private.key", false},      // 不匹配任何规则（默认拒绝）
+		{"/etc/passwd", false},           // 不匹配任何规则（默认拒绝）
 	}
 
 	for _, tt := range tests {
@@ -352,8 +352,8 @@ func TestSecurityRules_ConfigPersistence(t *testing.T) {
 
 	// 创建完整配置
 	cfg := &config.SecurityConfig{
-		DefaultAction:         "deny",
-		LogAllOperations:      true,
+		DefaultAction:    "deny",
+		LogAllOperations: true,
 		FileRules: &config.FileSecurityRules{
 			Read: []config.SecurityRule{
 				{Pattern: "/workspace/**", Action: "allow"},

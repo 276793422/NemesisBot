@@ -141,35 +141,35 @@ func TestResolveConfigPath_Priority(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name            string
-		setHomeEnv      bool
-		homeValue       string
-		setConfigEnv    bool
-		configValue     string
+		name             string
+		setHomeEnv       bool
+		homeValue        string
+		setConfigEnv     bool
+		configValue      string
 		expectedContains string
 	}{
 		{
-			name:            "NEMESISBOT_CONFIG highest priority",
-			setHomeEnv:      true,
-			homeValue:       "/home/custom",
-			setConfigEnv:    true,
-			configValue:     "/custom/config.json",
+			name:             "NEMESISBOT_CONFIG highest priority",
+			setHomeEnv:       true,
+			homeValue:        "/home/custom",
+			setConfigEnv:     true,
+			configValue:      "/custom/config.json",
 			expectedContains: "/custom/config.json",
 		},
 		{
-			name:            "NEMESISBOT_HOME secondary",
-			setHomeEnv:      true,
-			homeValue:       "/home/custom",
-			setConfigEnv:    false,
-			configValue:     "",
+			name:             "NEMESISBOT_HOME secondary",
+			setHomeEnv:       true,
+			homeValue:        "/home/custom",
+			setConfigEnv:     false,
+			configValue:      "",
 			expectedContains: "/home/custom/config.json",
 		},
 		{
-			name:            "default when both unset",
-			setHomeEnv:      false,
-			homeValue:       "",
-			setConfigEnv:    false,
-			configValue:     "",
+			name:             "default when both unset",
+			setHomeEnv:       false,
+			homeValue:        "",
+			setConfigEnv:     false,
+			configValue:      "",
 			expectedContains: ".nemesisbot/config.json",
 		},
 	}

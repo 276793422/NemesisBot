@@ -14,21 +14,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/bus"
+	. "github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/gorilla/websocket"
 )
 
 // TestIntegrationWebSocketChannelFullLifecycle tests complete lifecycle with real WebSocket communication
 func TestIntegrationWebSocketChannelFullLifecycle(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49910,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49910,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -142,12 +142,12 @@ func TestIntegrationWebSocketChannelFullLifecycle(t *testing.T) {
 // TestIntegrationWebSocketChannelBidirectionalCommunication tests bidirectional message flow
 func TestIntegrationWebSocketChannelBidirectionalCommunication(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49911,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49911,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -242,12 +242,12 @@ func TestIntegrationWebSocketChannelBidirectionalCommunication(t *testing.T) {
 // TestIntegrationWebSocketChannelPingPong tests ping/pong heartbeat
 func TestIntegrationWebSocketChannelPingPong(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49912,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49912,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -310,12 +310,12 @@ func TestIntegrationWebSocketChannelPingPong(t *testing.T) {
 // TestIntegrationWebSocketChannelReconnection tests client reconnection
 func TestIntegrationWebSocketChannelReconnection(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49913,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49913,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
@@ -400,12 +400,12 @@ func TestIntegrationWebSocketChannelReconnection(t *testing.T) {
 // TestIntegrationWebSocketChannelConcurrentAccess tests concurrent message handling
 func TestIntegrationWebSocketChannelConcurrentAccess(t *testing.T) {
 	cfg := &config.WebSocketChannelConfig{
-		Enabled:    true,
-		Host:       "127.0.0.1",
-		Port:       49914,
-		Path:       "/ws",
-		AuthToken:  "",
-		SyncToWeb:  false,
+		Enabled:   true,
+		Host:      "127.0.0.1",
+		Port:      49914,
+		Path:      "/ws",
+		AuthToken: "",
+		SyncToWeb: false,
 	}
 
 	testBus := bus.NewMessageBus()
