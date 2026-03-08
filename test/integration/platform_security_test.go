@@ -14,7 +14,7 @@ import (
 
 func TestPlatformSpecificSecurityConfigLoading(t *testing.T) {
 	// Load platform-specific security config directly
-	configPath := filepath.Join("../nemesisbot/config", config.GetPlatformSecurityConfigFilename())
+	configPath := filepath.Join("../../nemesisbot/config", config.GetPlatformSecurityConfigFilename())
 
 	secCfg, err := config.LoadSecurityConfig(configPath)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestAllPlatformConfigFilesAreValid(t *testing.T) {
 
 	for _, platform := range platforms {
 		t.Run(platform, func(t *testing.T) {
-			configPath := filepath.Join("../nemesisbot/config", "config.security."+platform+".json")
+			configPath := filepath.Join("../../nemesisbot/config", "config.security."+platform+".json")
 
 			cfg, err := config.LoadSecurityConfig(configPath)
 			if err != nil {
@@ -175,7 +175,7 @@ func TestPlatformConfigFileExists(t *testing.T) {
 	platform := runtime.GOOS
 	filename := "config.security." + platform + ".json"
 
-	configPath := filepath.Join("../nemesisbot/config", filename)
+	configPath := filepath.Join("../../nemesisbot/config", filename)
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Errorf("Platform config file does not exist: %s", filename)
 	}
