@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	defaultGitHubTimeout  = 30 * time.Second
-	defaultGitHubMaxSize  = 1 * 1024 * 1024 // 1 MB
+	defaultGitHubTimeout = 30 * time.Second
+	defaultGitHubMaxSize = 1 * 1024 * 1024 // 1 MB
 )
 
 // GitHubRegistry implements SkillRegistry for GitHub repositories.
@@ -128,11 +128,11 @@ func (g *GitHubRegistry) GetSkillMeta(ctx context.Context, slug string) (*SkillM
 	for _, skill := range skills {
 		if skill.Name == slug {
 			return &SkillMeta{
-				Slug:         skill.Name,
-				DisplayName:  skill.Name,
-				Summary:      skill.Description,
+				Slug:          skill.Name,
+				DisplayName:   skill.Name,
+				Summary:       skill.Description,
 				LatestVersion: "latest",
-				RegistryName: g.Name(),
+				RegistryName:  g.Name(),
 			}, nil
 		}
 	}
@@ -151,10 +151,10 @@ func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, 
 	if err != nil {
 		// If metadata fetch fails, try to install anyway
 		meta = &SkillMeta{
-			Slug:         slug,
-			DisplayName:  slug,
+			Slug:          slug,
+			DisplayName:   slug,
 			LatestVersion: version,
-			RegistryName: g.Name(),
+			RegistryName:  g.Name(),
 		}
 	}
 

@@ -208,10 +208,10 @@ func TestSkillIdentifierValidation(t *testing.T) {
 // TestDerefStr tests string pointer dereference utility function
 func TestDerefStr(t *testing.T) {
 	tests := []struct {
-		name      string
-		ptr       *string
+		name       string
+		ptr        *string
 		defaultVal string
-		expected  string
+		expected   string
 	}{
 		{"Nil pointer returns default", nil, "default", "default"},
 		{"Valid pointer returns value", strPtr("value"), "default", "value"},

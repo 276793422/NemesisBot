@@ -12,12 +12,12 @@ import (
 // SearchCache provides intelligent caching for skill search results with similarity matching.
 // Uses trigram-based similarity and Jaccard coefficient to match similar queries.
 type SearchCache struct {
-	mu       sync.RWMutex
-	cache    map[string]*CacheEntry
-	lruList  []string // least recently used list
-	maxSize  int
-	ttl      time.Duration
-	hitCount int
+	mu        sync.RWMutex
+	cache     map[string]*CacheEntry
+	lruList   []string // least recently used list
+	maxSize   int
+	ttl       time.Duration
+	hitCount  int
 	missCount int
 }
 
@@ -193,11 +193,11 @@ func (sc *SearchCache) Stats() CacheStats {
 	}
 
 	return CacheStats{
-		Size:     len(sc.cache),
-		MaxSize:  sc.maxSize,
-		HitCount: sc.hitCount,
+		Size:      len(sc.cache),
+		MaxSize:   sc.maxSize,
+		HitCount:  sc.hitCount,
 		MissCount: sc.missCount,
-		HitRate:  hitRate,
+		HitRate:   hitRate,
 	}
 }
 

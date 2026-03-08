@@ -19,16 +19,16 @@ import (
 
 // SkillOrigin represents the origin metadata of an installed skill.
 type SkillOrigin struct {
-	Version          int    `json:"version"`          // format version
-	Registry         string `json:"registry"`         // registry name (e.g., "github", "clawhub")
-	Slug             string `json:"slug"`             // skill slug/identifier
+	Version          int    `json:"version"`           // format version
+	Registry         string `json:"registry"`          // registry name (e.g., "github", "clawhub")
+	Slug             string `json:"slug"`              // skill slug/identifier
 	InstalledVersion string `json:"installed_version"` // installed version
 	InstalledAt      int64  `json:"installed_at"`      // unix timestamp
 }
 
 type SkillInstaller struct {
-	workspace        string
-	registryManager  *RegistryManager
+	workspace       string
+	registryManager *RegistryManager
 }
 
 type AvailableSkill struct {

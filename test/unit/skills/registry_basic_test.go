@@ -13,9 +13,9 @@ import (
 
 // MockRegistry is a test implementation of SkillRegistry
 type MockRegistry struct {
-	name        string
+	name          string
 	searchResults []skills.SearchResult
-	skillMeta    map[string]*skills.SkillMeta
+	skillMeta     map[string]*skills.SkillMeta
 }
 
 func (m *MockRegistry) Name() string {

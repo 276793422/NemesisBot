@@ -32,7 +32,7 @@ type SkillMeta struct {
 	Summary          string `json:"summary"`
 	LatestVersion    string `json:"latest_version"`
 	IsMalwareBlocked bool   `json:"is_malware_blocked,omitempty"` // make optional for backward compatibility
-	IsSuspicious     bool   `json:"is_suspicious,omitempty"`       // make optional for backward compatibility
+	IsSuspicious     bool   `json:"is_suspicious,omitempty"`      // make optional for backward compatibility
 	RegistryName     string `json:"registry_name"`
 }
 
@@ -90,10 +90,10 @@ type ClawHubConfig struct {
 
 // GitHubConfig configures the GitHub registry.
 type GitHubConfig struct {
-	Enabled  bool
-	BaseURL  string // defaults to github.com
-	Timeout  int    // seconds, 0 = default (30s)
-	MaxSize  int    // bytes, 0 = default (1MB)
+	Enabled bool
+	BaseURL string // defaults to github.com
+	Timeout int    // seconds, 0 = default (30s)
+	MaxSize int    // bytes, 0 = default (1MB)
 }
 
 // RegistryManager coordinates multiple skill registries.
