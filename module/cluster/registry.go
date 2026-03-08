@@ -49,6 +49,7 @@ func (r *Registry) AddOrUpdate(node *Node) {
 		// Add new node
 		node.mu.Lock()
 		node.LastSeen = time.Now()
+		node.Status = StatusOnline // New nodes are online by default
 		node.mu.Unlock()
 		r.nodes[node.ID] = node
 	}

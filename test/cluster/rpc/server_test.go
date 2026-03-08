@@ -27,6 +27,7 @@ func (m *mockCluster) GetNodeID() string                       { return m.nodeID
 func (m *mockCluster) GetAddress() string                      { return "" }
 func (m *mockCluster) GetCapabilities() []string               { return m.capabilities }
 func (m *mockCluster) GetOnlinePeers() []interface{}           { return nil }
+func (m *mockCluster) GetActionsSchema() []interface{}         { return []interface{}{} }
 func (m *mockCluster) LogRPCInfo(msg string, args ...interface{}) {}
 func (m *mockCluster) LogRPCError(msg string, args ...interface{}) {}
 func (m *mockCluster) LogRPCDebug(msg string, args ...interface{}) {}

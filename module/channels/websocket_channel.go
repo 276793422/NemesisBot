@@ -417,7 +417,7 @@ func (c *WebSocketChannel) handleConnection(conn *websocket.Conn) {
 		}
 		logger.DebugC("websocket", "Message processing complete, looping back to wait for next message")
 	}
-	logger.DebugC("websocket", "Message read loop ended")
+	// Loop exited via return in error cases - cleanup handled by defer function
 }
 
 // sendError sends an error message to the client

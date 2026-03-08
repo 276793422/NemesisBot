@@ -14,6 +14,27 @@ import (
 	"github.com/276793422/NemesisBot/module/channels"
 )
 
+// startTestDispatchLoop starts a test dispatcher that mimics ChannelManager.dispatchOutbound
+// This helper simulates the production environment's outbound message routing
+func startTestDispatchLoop(ctx context.Context, msgBus *bus.MessageBus, channelMap map[string]channels.Channel) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-msgBus.OutboundChannel():
+				if !ok {
+					return
+				}
+				// Route message to appropriate channel (mimics ChannelManager behavior)
+				if ch, exists := channelMap[msg.Channel]; exists {
+					ch.Send(ctx, msg)
+				}
+			}
+		}
+	}()
+}
+
 // TestNewRPCChannel tests creating a new RPC channel
 func TestNewRPCChannel(t *testing.T) {
 	msgBus := bus.NewMessageBus()
@@ -180,7 +201,13 @@ func TestRPCChannelResponseDelivery(t *testing.T) {
 		t.Fatalf("Failed to create RPC channel: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start test dispatch loop to simulate production environment
+	channelMap := map[string]channels.Channel{"rpc": ch}
+	startTestDispatchLoop(ctx, msgBus, channelMap)
+
 	if err := ch.Start(ctx); err != nil {
 		t.Fatalf("Failed to start: %v", err)
 	}
@@ -232,7 +259,13 @@ func TestRPCChannelResponseMatching(t *testing.T) {
 		t.Fatalf("Failed to create RPC channel: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start test dispatch loop to simulate production environment
+	channelMap := map[string]channels.Channel{"rpc": ch}
+	startTestDispatchLoop(ctx, msgBus, channelMap)
+
 	if err := ch.Start(ctx); err != nil {
 		t.Fatalf("Failed to start: %v", err)
 	}
@@ -355,7 +388,13 @@ func TestRPCChannelIgnoresOtherChannels(t *testing.T) {
 		t.Fatalf("Failed to create RPC channel: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start test dispatch loop to simulate production environment
+	channelMap := map[string]channels.Channel{"rpc": ch}
+	startTestDispatchLoop(ctx, msgBus, channelMap)
+
 	if err := ch.Start(ctx); err != nil {
 		t.Fatalf("Failed to start: %v", err)
 	}
