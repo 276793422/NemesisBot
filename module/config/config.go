@@ -525,10 +525,10 @@ type LLMLogConfig struct {
 
 // GeneralLogConfig holds general application logging configuration
 type GeneralLogConfig struct {
-	Enabled       bool   `json:"enabled" env:"NEMESISBOT_LOGGING_GENERAL_ENABLED"`                         // master switch (default: true)
+	Enabled       bool   `json:"enabled" env:"NEMESISBOT_LOGGING_GENERAL_ENABLED"`               // master switch (default: true)
 	EnableConsole bool   `json:"enable_console" env:"NEMESISBOT_LOGGING_GENERAL_ENABLE_CONSOLE"` // console switch (default: true)
-	Level         string `json:"level" env:"NEMESISBOT_LOGGING_GENERAL_LEVEL"`                           // "DEBUG", "INFO", "WARN", "ERROR"
-	File          string `json:"file" env:"NEMESISBOT_LOGGING_GENERAL_FILE"`                               // file path
+	Level         string `json:"level" env:"NEMESISBOT_LOGGING_GENERAL_LEVEL"`                   // "DEBUG", "INFO", "WARN", "ERROR"
+	File          string `json:"file" env:"NEMESISBOT_LOGGING_GENERAL_FILE"`                     // file path
 }
 
 // LoggingConfig holds logging configuration for all modules

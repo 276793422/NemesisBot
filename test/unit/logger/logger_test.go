@@ -105,38 +105,38 @@ func TestDoubleLayerControl(t *testing.T) {
 	SetLevel(INFO)
 
 	tests := []struct {
-		name             string
-		loggingEnabled   bool
-		consoleEnabled   bool
-		shouldLogToFile  bool
+		name               string
+		loggingEnabled     bool
+		consoleEnabled     bool
+		shouldLogToFile    bool
 		shouldLogToConsole bool
 	}{
 		{
-			name:             "Both enabled",
-			loggingEnabled:   true,
-			consoleEnabled:   true,
-			shouldLogToFile:  true,
+			name:               "Both enabled",
+			loggingEnabled:     true,
+			consoleEnabled:     true,
+			shouldLogToFile:    true,
 			shouldLogToConsole: true,
 		},
 		{
-			name:             "Master disabled, console enabled",
-			loggingEnabled:   false,
-			consoleEnabled:   true,
-			shouldLogToFile:  false,
+			name:               "Master disabled, console enabled",
+			loggingEnabled:     false,
+			consoleEnabled:     true,
+			shouldLogToFile:    false,
 			shouldLogToConsole: false,
 		},
 		{
-			name:             "Master enabled, console disabled",
-			loggingEnabled:   true,
-			consoleEnabled:   false,
-			shouldLogToFile:  true,
+			name:               "Master enabled, console disabled",
+			loggingEnabled:     true,
+			consoleEnabled:     false,
+			shouldLogToFile:    true,
 			shouldLogToConsole: false,
 		},
 		{
-			name:             "Both disabled",
-			loggingEnabled:   false,
-			consoleEnabled:   false,
-			shouldLogToFile:  false,
+			name:               "Both disabled",
+			loggingEnabled:     false,
+			consoleEnabled:     false,
+			shouldLogToFile:    false,
 			shouldLogToConsole: false,
 		},
 	}
