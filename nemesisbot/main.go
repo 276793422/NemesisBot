@@ -92,6 +92,9 @@ func onboard() {
 	}
 
 	// Standard onboard flow
+	fmt.Printf("📟 Detected platform: %s\n", config.GetPlatformInfo())
+	fmt.Println("🔒 Applying platform-specific security rules...")
+
 	configPath := command.GetConfigPath()
 
 	if _, err := os.Stat(configPath); err == nil {
@@ -145,7 +148,7 @@ func onboard() {
 		if err := config.SaveSecurityConfig(securityConfigPath, securityCfg); err != nil {
 			fmt.Printf("Warning: Failed to save security config: %v\n", err)
 		} else {
-			fmt.Printf("✓ Security config created at: %s\n", securityConfigPath)
+			fmt.Printf("✓ Security config created at: %s (%s)\n", securityConfigPath, config.GetPlatformDisplayName())
 		}
 	}
 
@@ -212,6 +215,8 @@ func copyEmbeddedToTarget(targetDir string) error {
 // onboardDefault initializes NemesisBot with default settings for quick start
 func onboardDefault() {
 	fmt.Println("🚀 Initializing NemesisBot with default settings...")
+	fmt.Printf("📟 Detected platform: %s\n", config.GetPlatformInfo())
+	fmt.Println("🔒 Applying platform-specific security rules...")
 	fmt.Println()
 
 	// Step 1: Load embedded default configuration
@@ -310,7 +315,7 @@ func onboardDefault() {
 	if err := config.SaveSecurityConfig(securityConfigPath, securityCfg); err != nil {
 		fmt.Printf("⚠️  Warning: Failed to save security config: %v\n", err)
 	} else {
-		fmt.Println("✓ Security config created")
+		fmt.Printf("✓ Security config created (%s rules)\n", config.GetPlatformDisplayName())
 	}
 
 	// Step 4: Create cluster config file in workspace/config/

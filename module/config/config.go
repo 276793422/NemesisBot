@@ -115,10 +115,11 @@ func SetEmbeddedDefaultsFromFS(configFS fs.FS) error {
 	}
 	embeddedDefaults.mcp = data
 
-	// Read config.security.default.json
-	data, err = fs.ReadFile(configFS, "config.security.default.json")
+	// Read platform-specific security config
+	securityFilename := GetPlatformSecurityConfigFilename()
+	data, err = fs.ReadFile(configFS, securityFilename)
 	if err != nil {
-		return fmt.Errorf("failed to read config.security.default.json: %w", err)
+		return fmt.Errorf("failed to read %s: %w", securityFilename, err)
 	}
 	embeddedDefaults.security = data
 

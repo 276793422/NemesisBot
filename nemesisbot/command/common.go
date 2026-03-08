@@ -68,10 +68,11 @@ func initializeConfigDefaults(configFS embed.FS) error {
 		return fmt.Errorf("failed to read config/config.mcp.default.json: %w", err)
 	}
 
-	// Read config/config.security.default.json
-	securityData, err := fs.ReadFile(configFS, "config/config.security.default.json")
+	// Read platform-specific security config
+	securityFilename := config.GetPlatformSecurityConfigFilename()
+	securityData, err := fs.ReadFile(configFS, "config/"+securityFilename)
 	if err != nil {
-		return fmt.Errorf("failed to read config/config.security.default.json: %w", err)
+		return fmt.Errorf("failed to read %s: %w", securityFilename, err)
 	}
 
 	// Read config/config.cluster.default.json
