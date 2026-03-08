@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +16,15 @@ import (
 
 	"github.com/276793422/NemesisBot/module/utils"
 )
+
+// SkillOrigin represents the origin metadata of an installed skill.
+type SkillOrigin struct {
+	Version          int    `json:"version"`          // format version
+	Registry         string `json:"registry"`         // registry name (e.g., "github", "clawhub")
+	Slug             string `json:"slug"`             // skill slug/identifier
+	InstalledVersion string `json:"installed_version"` // installed version
+	InstalledAt      int64  `json:"installed_at"`      // unix timestamp
+}
 
 type SkillInstaller struct {
 	workspace        string
@@ -76,7 +86,7 @@ func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) er
 	}
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, body, 0o644); err != nil {
+	if err := utils.WriteFileAtomic(skillPath, body, 0o644); err != nil {
 		return fmt.Errorf("failed to write skill file: %w", err)
 	}
 
@@ -130,6 +140,12 @@ func (si *SkillInstaller) InstallFromRegistry(ctx context.Context, registryName,
 	fmt.Printf("✓ Skill '%s' (version %s) installed successfully\n", slug, result.Version)
 	if result.Summary != "" {
 		fmt.Printf("  %s\n", result.Summary)
+	}
+
+	// Write origin tracking metadata
+	if err := si.writeOriginTracking(skillDir, registryName, slug, result.Version); err != nil {
+		slog.Warn("failed to write origin tracking", "skill", slug, "error", err)
+		// Don't fail the installation if origin tracking fails
 	}
 
 	return nil
@@ -204,4 +220,46 @@ func (si *SkillInstaller) listAvailableSkillsFromGitHub(ctx context.Context) ([]
 	}
 
 	return skills, nil
+}
+
+// writeOriginTracking writes the .skill-origin.json file with installation metadata.
+func (si *SkillInstaller) writeOriginTracking(skillDir, registryName, slug, version string) error {
+	origin := SkillOrigin{
+		Version:          1,
+		Registry:         registryName,
+		Slug:             slug,
+		InstalledVersion: version,
+		InstalledAt:      time.Now().Unix(),
+	}
+
+	data, err := json.MarshalIndent(origin, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal origin metadata: %w", err)
+	}
+
+	originPath := filepath.Join(skillDir, ".skill-origin.json")
+	if err := utils.WriteFileAtomic(originPath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write origin file: %w", err)
+	}
+
+	slog.Debug("wrote origin tracking", "skill", slug, "registry", registryName, "version", version)
+	return nil
+}
+
+// GetOriginTracking reads the .skill-origin.json file for a skill.
+func (si *SkillInstaller) GetOriginTracking(skillName string) (*SkillOrigin, error) {
+	skillDir := filepath.Join(si.workspace, "skills", skillName)
+	originPath := filepath.Join(skillDir, ".skill-origin.json")
+
+	data, err := os.ReadFile(originPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read origin file: %w", err)
+	}
+
+	var origin SkillOrigin
+	if err := json.Unmarshal(data, &origin); err != nil {
+		return nil, fmt.Errorf("failed to parse origin file: %w", err)
+	}
+
+	return &origin, nil
 }

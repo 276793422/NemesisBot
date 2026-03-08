@@ -31,8 +31,8 @@ type SkillMeta struct {
 	DisplayName      string `json:"display_name"`
 	Summary          string `json:"summary"`
 	LatestVersion    string `json:"latest_version"`
-	IsMalwareBlocked bool   `json:"is_malware_blocked"`
-	IsSuspicious     bool   `json:"is_suspicious"`
+	IsMalwareBlocked bool   `json:"is_malware_blocked,omitempty"` // make optional for backward compatibility
+	IsSuspicious     bool   `json:"is_suspicious,omitempty"`       // make optional for backward compatibility
 	RegistryName     string `json:"registry_name"`
 }
 
@@ -62,9 +62,17 @@ type SkillRegistry interface {
 
 // RegistryConfig holds configuration for all skill registries.
 type RegistryConfig struct {
+	SearchCache           SearchCacheConfig
 	ClawHub               ClawHubConfig
 	GitHub                GitHubConfig
 	MaxConcurrentSearches int
+}
+
+// SearchCacheConfig configures the search cache.
+type SearchCacheConfig struct {
+	Enabled bool          `json:"enabled"`
+	MaxSize int           `json:"max_size"` // maximum number of cache entries (default: 50)
+	TTL     time.Duration `json:"ttl"`      // time-to-live (default: 5 minutes)
 }
 
 // ClawHubConfig configures the ClawHub registry.
@@ -94,6 +102,7 @@ type RegistryManager struct {
 	registries    []SkillRegistry
 	maxConcurrent int
 	mu            sync.RWMutex
+	searchCache   *SearchCache
 }
 
 // NewRegistryManager creates an empty RegistryManager.
@@ -111,13 +120,19 @@ func NewRegistryManagerFromConfig(cfg RegistryConfig) *RegistryManager {
 	if cfg.MaxConcurrentSearches > 0 {
 		rm.maxConcurrent = cfg.MaxConcurrentSearches
 	}
+
+	// Initialize search cache if enabled
+	if cfg.SearchCache.Enabled {
+		rm.searchCache = NewSearchCache(cfg.SearchCache)
+	}
+
 	if cfg.GitHub.Enabled {
 		rm.AddRegistry(NewGitHubRegistry(cfg.GitHub))
 	}
-	// ClawHub support will be added in future versions
-	// if cfg.ClawHub.Enabled {
-	//     rm.AddRegistry(NewClawHubRegistry(cfg.ClawHub))
-	// }
+	// ClawHub support now available
+	if cfg.ClawHub.Enabled {
+		rm.AddRegistry(NewClawHubRegistry(cfg.ClawHub))
+	}
 	return rm
 }
 
@@ -143,6 +158,14 @@ func (rm *RegistryManager) GetRegistry(name string) SkillRegistry {
 // SearchAll fans out the query to all registries concurrently
 // and merges results sorted by score descending.
 func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	// 1. Check cache first if enabled
+	if rm.searchCache != nil {
+		if results, ok := rm.searchCache.Get(query, limit); ok {
+			slog.Debug("search cache hit", "query", query, "results", len(results))
+			return results, nil
+		}
+	}
+
 	rm.mu.RLock()
 	regs := make([]SkillRegistry, len(rm.registries))
 	copy(regs, rm.registries)
@@ -219,6 +242,12 @@ func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit in
 	// Clamp to limit.
 	if limit > 0 && len(merged) > limit {
 		merged = merged[:limit]
+	}
+
+	// 2. Store in cache if enabled
+	if rm.searchCache != nil && len(merged) > 0 {
+		rm.searchCache.Put(query, merged)
+		slog.Debug("search cache stored", "query", query, "results", len(merged))
 	}
 
 	return merged, nil
