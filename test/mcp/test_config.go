@@ -2,6 +2,8 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+// +build ignore
+
 package main
 
 import (

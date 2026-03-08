@@ -2,6 +2,8 @@
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
 
+// +build ignore
+
 package main
 
 import (
@@ -15,7 +17,7 @@ import (
 	"github.com/276793422/NemesisBot/module/cluster/transport"
 )
 
-// 模拟的 Cluster 接口
+// Mock Cluster interface for testing
 type mockCluster struct {
 	nodeID string
 }
@@ -34,6 +36,16 @@ func (m *mockCluster) LogRPCError(format string, args ...interface{}) {
 
 func (m *mockCluster) LogRPCDebug(format string, args ...interface{}) {
 	log.Printf("[RPC DEBUG] "+format+"\n", args...)
+}
+
+// GetActionsSchema implements the Cluster interface
+func (m *mockCluster) GetActionsSchema() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"name":        "hello",
+			"description": "A test hello action",
+		},
+	}
 }
 
 func main() {
