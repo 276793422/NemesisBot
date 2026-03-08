@@ -51,6 +51,25 @@ func (si *SkillInstaller) SetRegistryManager(rm *RegistryManager) {
 	si.registryManager = rm
 }
 
+// HasRegistryManager checks if a registry manager is configured.
+func (si *SkillInstaller) HasRegistryManager() bool {
+	return si.registryManager != nil
+}
+
+// GetRegistryManager returns the configured registry manager.
+func (si *SkillInstaller) GetRegistryManager() *RegistryManager {
+	return si.registryManager
+}
+
+// SearchAll searches all configured registries for skills matching the query.
+// This uses the search cache if enabled.
+func (si *SkillInstaller) SearchAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	if si.registryManager == nil {
+		return nil, fmt.Errorf("registry manager not configured")
+	}
+	return si.registryManager.SearchAll(ctx, query, limit)
+}
+
 func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) error {
 	skillDir := filepath.Join(si.workspace, "skills", filepath.Base(repo))
 

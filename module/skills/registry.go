@@ -155,6 +155,13 @@ func (rm *RegistryManager) GetRegistry(name string) SkillRegistry {
 	return nil
 }
 
+// GetSearchCache returns the search cache, or nil if not enabled.
+func (rm *RegistryManager) GetSearchCache() *SearchCache {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return rm.searchCache
+}
+
 // SearchAll fans out the query to all registries concurrently
 // and merges results sorted by score descending.
 func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {

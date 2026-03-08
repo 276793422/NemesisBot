@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/skills"
 )
 
@@ -61,7 +62,15 @@ func CmdSkills() {
 	case "list-builtin":
 		cmdSkillsListBuiltin()
 	case "search":
-		cmdSkillsSearch(installer)
+		cmdSkillsSearch(cfg, installer)
+	case "cache":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: nemesisbot skills cache <stats|clear>")
+			fmt.Println("  stats    Show search cache statistics")
+			fmt.Println("  clear    Clear search cache")
+			return
+		}
+		cmdSkillsCache(cfg, os.Args[3])
 	case "show":
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot skills show <skill-name>")
@@ -83,7 +92,8 @@ func SkillsHelp() {
 	fmt.Println("  install-builtin                  Install all builtin skills to workspace")
 	fmt.Println("  list-builtin                     List available builtin skills")
 	fmt.Println("  remove <name>                    Remove installed skill")
-	fmt.Println("  search                           Search available skills")
+	fmt.Println("  search [query]                   Search available skills (supports caching)")
+	fmt.Println("  cache <stats|clear>              Manage search cache")
 	fmt.Println("  show <name>                      Show skill details")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -93,6 +103,10 @@ func SkillsHelp() {
 	fmt.Println("  nemesisbot skills install-clawhub steipete github github-clawhub")
 	fmt.Println("  nemesisbot skills install-builtin")
 	fmt.Println("  nemesisbot skills list-builtin")
+	fmt.Println("  nemesisbot skills search github")
+	fmt.Println("  nemesisbot skills search weather")
+	fmt.Println("  nemesisbot skills cache stats")
+	fmt.Println("  nemesisbot skills cache clear")
 	fmt.Println("  nemesisbot skills remove weather")
 	fmt.Println()
 	fmt.Println("ClawHub (https://clawhub.ai):")
@@ -303,36 +317,86 @@ func cmdSkillsListBuiltin() {
 	}
 }
 
-func cmdSkillsSearch(installer *skills.SkillInstaller) {
-	fmt.Println("Searching for available skills...")
+func cmdSkillsSearch(cfg *config.Config, installer *skills.SkillInstaller) {
+	// Get query from arguments (optional)
+	query := ""
+	if len(os.Args) >= 4 {
+		query = os.Args[3]
+	}
+
+	// Note: Search cache functionality is available but not configured via command line
+	// The cache will be used when the AI agent uses the find_skills tool
+
+	if query == "" {
+		fmt.Println("🔍 Searching for all available skills...")
+	} else {
+		fmt.Printf("🔍 Searching for skills matching '%s'...\n", query)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	availableSkills, err := installer.ListAvailableSkills(ctx)
-	if err != nil {
-		fmt.Printf("✗ Failed to fetch skills list: %v\n", err)
-		return
-	}
-
-	if len(availableSkills) == 0 {
-		fmt.Println("No skills available.")
-		return
-	}
-
-	fmt.Printf("\nAvailable Skills (%d):\n", len(availableSkills))
-	fmt.Println("--------------------")
-	for _, skill := range availableSkills {
-		fmt.Printf("  📦 %s\n", skill.Name)
-		fmt.Printf("     %s\n", skill.Description)
-		fmt.Printf("     Repo: %s\n", skill.Repository)
-		if skill.Author != "" {
-			fmt.Printf("     Author: %s\n", skill.Author)
+	// Use the enhanced search functionality with registry manager
+	if installer.HasRegistryManager() {
+		// Use RegistryManager.SearchAll
+		limit := 20 // Show max 20 results
+		results, err := installer.SearchAll(ctx, query, limit)
+		if err != nil {
+			fmt.Printf("✗ Failed to search skills: %v\n", err)
+			return
 		}
-		if len(skill.Tags) > 0 {
-			fmt.Printf("     Tags: %v\n", skill.Tags)
+
+		if len(results) == 0 {
+			fmt.Printf("No skills found matching '%s'\n", query)
+			return
 		}
-		fmt.Println()
+
+		fmt.Printf("\n📦 Found %d skill(s):\n", len(results))
+		fmt.Println("-------------------")
+		for i, result := range results {
+			fmt.Printf("%d. **%s**", i+1, result.Slug)
+			if result.Version != "" {
+				fmt.Printf(" v%s", result.Version)
+			}
+			fmt.Printf(" (score: %.2f, registry: %s)\n", result.Score, result.RegistryName)
+
+			if result.DisplayName != "" {
+				fmt.Printf("   Name: %s\n", result.DisplayName)
+			}
+
+			if result.Summary != "" {
+				fmt.Printf("   Description: %s\n", result.Summary)
+			}
+
+			fmt.Println()
+		}
+	} else {
+		// Fallback to old ListAvailableSkills method
+		availableSkills, err := installer.ListAvailableSkills(ctx)
+		if err != nil {
+			fmt.Printf("✗ Failed to fetch skills list: %v\n", err)
+			return
+		}
+
+		if len(availableSkills) == 0 {
+			fmt.Println("No skills available.")
+			return
+		}
+
+		fmt.Printf("\n📦 Available Skills (%d):\n", len(availableSkills))
+		fmt.Println("--------------------")
+		for _, skill := range availableSkills {
+			fmt.Printf("  📦 %s\n", skill.Name)
+			fmt.Printf("     %s\n", skill.Description)
+			fmt.Printf("     Repo: %s\n", skill.Repository)
+			if skill.Author != "" {
+				fmt.Printf("     Author: %s\n", skill.Author)
+			}
+			if len(skill.Tags) > 0 {
+				fmt.Printf("     Tags: %v\n", skill.Tags)
+			}
+			fmt.Println()
+		}
 	}
 }
 
@@ -346,4 +410,62 @@ func cmdSkillsShow(loader *skills.SkillsLoader, skillName string) {
 	fmt.Printf("\n📦 Skill: %s\n", skillName)
 	fmt.Println("----------------------")
 	fmt.Println(content)
+}
+
+func cmdSkillsCache(cfg *config.Config, action string) {
+	// Create a registry manager with default cache configuration
+	// Search cache is available but configured internally, not via config file
+	cacheConfig := skills.SearchCacheConfig{
+		Enabled: true,
+		MaxSize: 50,
+		TTL:     5 * 60 * 1000000000, // 5 minutes in nanoseconds
+	}
+	regConfig := skills.RegistryConfig{
+		SearchCache: cacheConfig,
+	}
+	regMgr := skills.NewRegistryManagerFromConfig(regConfig)
+
+	// Get cache
+	cache := regMgr.GetSearchCache()
+	if cache == nil {
+		fmt.Println("⚠ Search cache is not available.")
+		return
+	}
+
+	switch action {
+	case "stats":
+		stats := cache.Stats()
+
+		fmt.Println("\n📊 Search Cache Statistics:")
+		fmt.Println("-------------------------")
+		fmt.Printf("Entries:      %d / %d\n", stats.Size, stats.MaxSize)
+		fmt.Printf("Hit Count:    %d\n", stats.HitCount)
+		fmt.Printf("Miss Count:   %d\n", stats.MissCount)
+		fmt.Printf("Hit Rate:     %.2f%%\n", stats.HitRate*100)
+		fmt.Printf("Memory Usage: ~%d bytes\n", stats.Size*100) // Approximate
+		fmt.Println()
+
+		if stats.HitRate >= 0.8 {
+			fmt.Println("✅ Cache performance: Excellent")
+		} else if stats.HitRate >= 0.5 {
+			fmt.Println("🟡 Cache performance: Good")
+		} else if stats.HitRate > 0 {
+			fmt.Println("🟠 Cache performance: Low - consider increasing TTL")
+		} else {
+			fmt.Println("🔴 Cache performance: No hits yet")
+		}
+
+	case "clear":
+		oldStats := cache.Stats()
+		cache.Clear()
+		fmt.Printf("\n🗑️  Cache cleared!\n")
+		fmt.Printf("   Removed %d entries\n", oldStats.Size)
+		fmt.Printf("   Freed ~%d bytes\n", oldStats.Size*100)
+		fmt.Println()
+		fmt.Println("💡 Tip: The cache will rebuild as you search for skills")
+
+	default:
+		fmt.Printf("Unknown cache action: %s\n", action)
+		fmt.Println("Usage: nemesisbot skills cache <stats|clear>")
+	}
 }
