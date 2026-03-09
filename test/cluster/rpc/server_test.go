@@ -16,26 +16,6 @@ import (
 	"github.com/276793422/NemesisBot/module/cluster/transport"
 )
 
-// mockCluster implements Cluster interface for testing
-type mockCluster struct {
-	nodeID       string
-	capabilities []string
-}
-
-func (m *mockCluster) GetRegistry() interface{}                    { return nil }
-func (m *mockCluster) GetNodeID() string                           { return m.nodeID }
-func (m *mockCluster) GetAddress() string                          { return "" }
-func (m *mockCluster) GetCapabilities() []string                   { return m.capabilities }
-func (m *mockCluster) GetOnlinePeers() []interface{}               { return nil }
-func (m *mockCluster) GetActionsSchema() []interface{}             { return []interface{}{} }
-func (m *mockCluster) LogRPCInfo(msg string, args ...interface{})  {}
-func (m *mockCluster) LogRPCError(msg string, args ...interface{}) {}
-func (m *mockCluster) LogRPCDebug(msg string, args ...interface{}) {}
-func (m *mockCluster) GetPeer(peerID string) (interface{}, error)  { return nil, nil }
-func (m *mockCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
-	return nil, nil
-}
-
 func TestNewServer(t *testing.T) {
 	mCluster := &mockCluster{nodeID: "test-node-1"}
 	server := rpc.NewServer(mCluster)
@@ -82,6 +62,44 @@ func TestServerStartStop(t *testing.T) {
 	err = server.Stop()
 	if err != nil {
 		t.Fatalf("Stop() failed: %v", err)
+	}
+}
+
+func TestServerStartAlreadyRunning(t *testing.T) {
+	mCluster := &mockCluster{nodeID: "test-node-1"}
+	server := rpc.NewServer(mCluster)
+
+	// Find available port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to find port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	// Start server
+	err = server.Start(port)
+	if err != nil {
+		t.Fatalf("First Start() failed: %v", err)
+	}
+
+	// Try to start again - should fail
+	err = server.Start(port)
+	if err == nil {
+		t.Error("Expected error when starting already running server")
+	}
+
+	server.Stop()
+}
+
+func TestServerStopNotRunning(t *testing.T) {
+	mCluster := &mockCluster{nodeID: "test-node-1"}
+	server := rpc.NewServer(mCluster)
+
+	// Stop server when not running - should fail
+	err := server.Stop()
+	if err == nil {
+		t.Error("Expected error when stopping not running server")
 	}
 }
 
@@ -153,6 +171,124 @@ func TestServerRPCCommunication(t *testing.T) {
 
 	if resp.Action != "echo" {
 		t.Errorf("Response action = %s, want echo", resp.Action)
+	}
+}
+
+func TestServerRPCErrorHandling(t *testing.T) {
+	mCluster := &mockCluster{nodeID: "test-server"}
+	server := rpc.NewServer(mCluster)
+
+	// Register error handler
+	server.RegisterHandler("error", func(payload map[string]interface{}) (map[string]interface{}, error) {
+		return nil, fmt.Errorf("test error")
+	})
+
+	// Start server
+	port := 21952
+	err := server.Start(port)
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	// Connect as client
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Send error request
+	req := transport.NewRequest("test-client", "test-server", "error", map[string]interface{}{})
+
+	reqData, _ := req.Bytes()
+	frameData, _ := transport.EncodeFrame(reqData)
+
+	_, err = conn.Write(frameData)
+	if err != nil {
+		t.Fatalf("Failed to send: %v", err)
+	}
+
+	// Read response
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	respData, err := transport.DecodeFrame(conn)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	var resp transport.RPCMessage
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Verify error response
+	if resp.Type != transport.RPCTypeError {
+		t.Errorf("Response type = %s, want error", resp.Type)
+	}
+
+	if resp.Error != "test error" {
+		t.Errorf("Response error = %s, want test error", resp.Error)
+	}
+}
+
+func TestServerUnknownHandler(t *testing.T) {
+	mCluster := &mockCluster{nodeID: "test-server"}
+	server := rpc.NewServer(mCluster)
+
+	// Don't register any handlers for "unknown" action
+	port := 21953
+	err := server.Start(port)
+	if err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	// Connect as client
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Send request to unknown handler
+	req := transport.NewRequest("test-client", "test-server", "unknown", map[string]interface{}{
+		"test": "value",
+	})
+
+	reqData, _ := req.Bytes()
+	frameData, _ := transport.EncodeFrame(reqData)
+
+	_, err = conn.Write(frameData)
+	if err != nil {
+		t.Fatalf("Failed to send: %v", err)
+	}
+
+	// Read response
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	respData, err := transport.DecodeFrame(conn)
+	if err != nil {
+		t.Fatalf("Failed to read response: %v", err)
+	}
+
+	var resp transport.RPCMessage
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	// Verify default response
+	if resp.Type != transport.RPCTypeResponse {
+		t.Errorf("Response type = %s, want response", resp.Type)
+	}
+
+	if resp.Action != "unknown" {
+		t.Errorf("Response action = %s, want unknown", resp.Action)
+	}
+
+	// Check for default response
+	if resp.Payload == nil {
+		t.Error("Expected default payload, got nil")
 	}
 }
 
@@ -271,4 +407,38 @@ func TestServerGetConnectionCount(t *testing.T) {
 
 	conn.Close()
 	server.Stop()
+}
+
+func TestServerGetPort(t *testing.T) {
+	mCluster := &mockCluster{nodeID: "test-server"}
+	server := rpc.NewServer(mCluster)
+
+	// Before start
+	port := server.GetPort()
+	if port != 0 {
+		t.Errorf("Expected port 0 before start, got %d", port)
+	}
+
+	// Start server
+	listener, _ := net.Listen("tcp", "127.0.0.1:0")
+	actualPort := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	err := server.Start(actualPort)
+	if err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	// Check port
+	port = server.GetPort()
+	if port != actualPort {
+		t.Errorf("Expected port %d, got %d", actualPort, port)
+	}
+
+	server.Stop()
+}
+
+func TestServerEnhancePayload(t *testing.T) {
+	// TODO: Test enhancePayload when it's exported
+	// Currently it's an unexported method
 }

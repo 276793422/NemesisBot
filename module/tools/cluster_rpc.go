@@ -59,13 +59,13 @@ func (t *ClusterRPCTool) Parameters() map[string]interface{} {
 // Execute executes the cluster RPC tool
 func (t *ClusterRPCTool) Execute(ctx context.Context, params map[string]interface{}) *ToolResult {
 	// Extract parameters
-	peerID, ok := params["peer_id"].(string)
-	if !ok || peerID == "" {
+	peerID, _ := params["peer_id"].(string)
+	if peerID == "" {
 		return ErrorResult("peer_id is required")
 	}
 
-	action, ok := params["action"].(string)
-	if !ok || action == "" {
+	action, _ := params["action"].(string)
+	if action == "" {
 		return ErrorResult("action is required")
 	}
 

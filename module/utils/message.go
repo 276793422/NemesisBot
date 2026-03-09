@@ -140,12 +140,29 @@ func findLastUnclosedCodeBlock(text string) int {
 	return -1
 }
 
-// findNextClosingCodeBlock finds the next closing ``` starting from a position
-// Returns the position after the closing ``` or -1 if not found
+// findNextClosingCodeBlock finds the next closing ``` starting from a position.
+// It tracks code block state to ensure we find a closing fence, not an opening one.
+// Returns the position after the closing ``` or -1 if not found.
 func findNextClosingCodeBlock(text string, startIdx int) int {
+	inCodeBlock := false
+
+	// First, determine the state at startIdx by scanning from the beginning
+	for i := 0; i < startIdx; i++ {
+		if i+2 < len(text) && text[i] == '`' && text[i+1] == '`' && text[i+2] == '`' {
+			inCodeBlock = !inCodeBlock
+			i += 2
+		}
+	}
+
+	// Now search from startIdx for a closing fence
 	for i := startIdx; i < len(text); i++ {
 		if i+2 < len(text) && text[i] == '`' && text[i+1] == '`' && text[i+2] == '`' {
-			return i + 3
+			inCodeBlock = !inCodeBlock
+			if !inCodeBlock {
+				// We just closed a code block
+				return i + 3
+			}
+			i += 2
 		}
 	}
 	return -1

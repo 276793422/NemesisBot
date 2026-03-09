@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ExtractZipFile extracts a ZIP file to the specified directory.
@@ -99,5 +100,5 @@ func isPathWithinDir(path, baseDir string) bool {
 	}
 
 	// Check if the relative path starts with ".." which would indicate path traversal
-	return !filepath.IsAbs(rel) && !filepath.HasPrefix(rel, "..")
+	return !filepath.IsAbs(rel) && !strings.HasPrefix(rel, "..")
 }

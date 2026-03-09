@@ -376,6 +376,15 @@ func (r *ClawHubRegistry) extractZipFile(zipPath, targetDir string) error {
 			return fmt.Errorf("failed to open file in ZIP: %w", err)
 		}
 
+		// Ensure parent directory exists
+		parentDir := filepath.Dir(targetPath)
+		if parentDir != "." {
+			if err := os.MkdirAll(parentDir, 0o755); err != nil {
+				fileReader.Close()
+				return fmt.Errorf("failed to create parent directory: %w", err)
+			}
+		}
+
 		// Create target file
 		targetFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.FileInfo().Mode())
 		if err != nil {

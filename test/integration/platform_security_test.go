@@ -1,7 +1,8 @@
 // NemesisBot - AI agent
 // License: MIT
 // Copyright (c) 2026 NemesisBot contributors
-package main
+
+package integration
 
 import (
 	"os"

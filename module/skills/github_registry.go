@@ -237,9 +237,12 @@ type githubSkill struct {
 	Tags        []string `json:"tags"`
 }
 
-// contains checks if a string contains a substring (case-insensitive).
+// contains checks if a string contains a substring (case-insensitive for search).
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && containsMiddle(s, substr))
+	// For search purposes, use case-insensitive matching
+	sLower := toLower(s)
+	substrLower := toLower(substr)
+	return len(sLower) >= len(substrLower) && (sLower == substrLower || len(sLower) > len(substrLower) && containsMiddle(sLower, substrLower))
 }
 
 func containsMiddle(s, substr string) bool {
