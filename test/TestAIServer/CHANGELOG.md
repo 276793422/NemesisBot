@@ -1,5 +1,90 @@
 # TestAIServer 更新日志
 
+## v1.3.1 - 2026-03-11 (紧急修复)
+
+### 🔴 紧急修复
+
+#### ISSUE-CRITICAL-001: 模型响应丢失
+
+**问题**: TestAI12 和 TestAI13 实现代码完全丢失，**影响**: 所有模型没有返回响应内容
+**严重程度**: 🔴 严重
+**修复时间**: 立即修复
+
+**根本原因**:
+- 文件编辑错误导致 TestAI12 和 TestAI13 代码丢失
+- `models/test_models.go` 从 150 行减少到 83 行
+- 缺少完整的回归测试
+
+**修复内容**:
+- ✅ 恢复 TestAI12 实现（30秒延迟 + "好的，我知道了"）
+- ✅ 恢复 TestAI13 实现（300秒延迟 + "好的，我知道了"）
+- ✅ 验证所有模型响应正常
+- ✅ 添加响应测试脚本 (`test_responses.bat`, `test_responses.sh`)
+
+**验证测试**:
+```bash
+=== RUN   TestTestAI11 --- PASS
+=== RUN   TestTestAI12 --- PASS  # 恢复
+=== RUN   TestTestAI13 --- PASS  # 恢复
+=== RUN   TestTestAI20 --- PASS
+```
+
+**影响范围**:
+- ✅ testai-1.1: 正常（立即返回 "好的，我知道了"）
+- ✅ testai-1.2: 恢复（延迟 30 秒后返回 "好的，我知道了"）
+- ✅ testai-1.3: 恢复（延迟 300 秒后返回 "好的，我知道了"）
+- ✅ testai-2.0: 正常（回显用户消息）
+
+**教训**:
+1. 文件编辑后必须验证完整性
+2. 需要完整的回归测试
+3. 所有模型都需要测试覆盖
+
+**相关文档**:
+- `EMERGENCY_FIX_REPORT.md` - 紧急修复报告
+- `MODEL_FIX_REPORT.md` - 模型修复详情
+- `test_responses.bat/sh` - 响应测试脚本
+
+---
+
+## v1.3.0 - 2026-03-11## v1.3.0 - 2026-03-11
+
+### 🚨 重要修复
+
+#### ISSUE-001: 流式响应兼容性修复
+
+**问题**: 许多 OpenAI 客户端（如 Cherry Studio）默认使用 `stream=true`，导致无法使用 TestAIServer。
+
+**原因**: 服务端之前直接拒绝 `stream=true` 请求，返回 400 错误。
+
+**临时方案**: 实施兼容模式：
+- ✅ 接受 `stream=true` 参数
+- ✅ 返回非流式响应（而非错误）
+- ⚠️ 记录警告日志
+- 📋 已记录在 `docs/KNOWN_ISSUES.md` (ISSUE-001)
+
+**代码变更** (`handlers/handlers.go`):
+```go
+// ⚠️ KNOWN ISSUE: 流式响应兼容性处理
+if req.Stream {
+    fmt.Printf("[WARNING] Client requested streaming (stream=true) but returning non-streaming response. Model: %s\n", req.Model)
+}
+// 继续处理，返回非流式响应
+```
+
+**新增文档**:
+- `docs/KNOWN_ISSUES.md` - 已知问题清单（**重要：使用前必读**）
+- `STREAMING_FIX.md` - 本次修复详细说明
+
+**影响**:
+- ✅ Cherry Studio 等工具现在可以正常使用
+- ⚠️ 不会有逐字输出效果（非真正流式）
+- 📋 这是临时方案，完整方案待开发
+
+**优先级**: P1 - 高（临时解决）
+
+---
+
 ## v1.2.0 - 2026-03-11
 
 ### 新增功能

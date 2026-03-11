@@ -2,6 +2,19 @@
 
 一个兼容 OpenAI API 的测试服务器，提供四个硬编码的测试模型用于测试目的。
 
+## ⚠️ 重要提示
+
+**使用前请务必阅读**:
+- 📋 [已知问题清单](docs/KNOWN_ISSUES.md) - **必读！**
+- 🔧 [流式响应修复说明](STREAMING_FIX.md) - v1.3.0 重要更新
+
+### 当前限制
+
+- ⚠️ **不支持真正的流式响应**（已实施兼容模式）
+- ⚠️ 详见 [ISSUE-001](docs/KNOWN_ISSUES.md#issue-001-不支持流式响应streaming-response)
+
+---
+
 ## 功能特性
 
 - ✅ 完全兼容 OpenAI API 接口
@@ -272,16 +285,20 @@ TestAIServer/
 ├── go.mod               # Go 模块定义
 ├── go.sum               # 依赖校验
 ├── README.md            # 本文档
-├── LOGGING.md           # 日志功能详细文档 ⭐ NEW
+├── STREAMING_FIX.md     # 流式响应修复说明 ⭐ v1.3.0
+├── LOGGING.md           # 日志功能详细文档
 ├── QUICKSTART.md        # 快速启动指南
+├── CHANGELOG.md         # 更新日志
+├── docs/
+│   └── KNOWN_ISSUES.md  # ⚠️ 已知问题清单（必读）
 ├── models/
 │   ├── types.go         # 类型定义
 │   └── test_models.go   # 测试模型实现
 ├── handlers/
 │   └── handlers.go      # HTTP 请求处理器
 ├── logger/
-│   └── logger.go        # 日志记录器 ⭐ NEW
-└── log/                 # 日志目录（运行时自动创建）⭐ NEW
+│   └── logger.go        # 日志记录器
+└── log/                 # 日志目录（运行时自动创建）
     ├── testai-1.1/
     ├── testai-1.2/
     ├── testai-1.3/

@@ -21,7 +21,7 @@ func (m *TestAI11) Delay() time.Duration {
 	return 0
 }
 
-// TestAI12 - 延迟 30 秒返回固定响应
+// TestAI12 - 延迟 30 秒后返回固定响应
 type TestAI12 struct{}
 
 func NewTestAI12() *TestAI12 {
@@ -40,7 +40,7 @@ func (m *TestAI12) Delay() time.Duration {
 	return 30 * time.Second
 }
 
-// TestAI13 - 延迟 300 秒返回固定响应
+// TestAI13 - 延迟 300 秒后返回固定响应
 type TestAI13 struct{}
 
 func NewTestAI13() *TestAI13 {

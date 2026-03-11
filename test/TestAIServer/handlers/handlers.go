@@ -99,16 +99,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 	}
 
-	// 如果请求流式响应，返回错误（暂不支持）
+	// ⚠️ KNOWN ISSUE: 流式响应兼容性处理
+	// 问题：当前不支持真正的流式响应（SSE），但许多客户端默认使用 stream=true
+	// 临时方案：当 stream=true 时，仍然返回非流式响应，但记录警告日志
+	// TODO: 未来需要实现真正的流式响应支持
+	// 相关文档：docs/KNOWN_ISSUES.md
 	if req.Stream {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": gin.H{
-				"message": "Streaming is not supported by test models",
-				"type":    "invalid_request_error",
-				"code":    "streaming_not_supported",
-			},
-		})
-		return
+		// 记录警告：客户端请求了流式响应，但我们返回非流式响应
+		fmt.Printf("[WARNING] Client requested streaming (stream=true) but returning non-streaming response. Model: %s, This is a known limitation.\n", req.Model)
 	}
 
 	// 处理延迟
