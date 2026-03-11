@@ -352,3 +352,87 @@ func testGoOS() string {
 	// For now, we'll just return a dummy value
 	return "linux"
 }
+
+// TestNormalizeWindowsPaths tests the path normalization function
+func TestNormalizeWindowsPaths(t *testing.T) {
+	tool := NewExecTool("", false)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// HTTP/HTTPS URLs - should be protected
+		{
+			name:     "HTTPS URL should be protected",
+			input:    "curl https://api.example.com/v1/data?path=/api/test",
+			expected: "curl.exe --max-time 300 https://api.example.com/v1/data?path=/api/test",
+		},
+
+		// FTP URLs - should be protected
+		{
+			name:     "FTP URL should be protected",
+			input:    "curl ftp://ftp.example.com/pub/files/readme.txt",
+			expected: "curl.exe --max-time 300 ftp://ftp.example.com/pub/files/readme.txt",
+		},
+
+		// SFTP URLs - should be protected
+		{
+			name:     "SFTP URL should be protected",
+			input:    "curl sftp://server.example.com/path/file.txt",
+			expected: "curl.exe --max-time 300 sftp://server.example.com/path/file.txt",
+		},
+
+		// WebSocket URLs - should be protected
+		{
+			name:     "WebSocket URL should be protected",
+			input:    "curl wss://socket.example.com/ws?token=abc123",
+			expected: "curl.exe --max-time 300 wss://socket.example.com/ws?token=abc123",
+		},
+
+		// Git SSH - should be protected
+		{
+			name:     "Git SSH URL should be protected",
+			input:    "git clone git@github.com:user/repository.git",
+			expected: "git clone git@github.com:user/repository.git",
+		},
+
+		// Local file paths - should be converted
+		{
+			name:     "Local path should be converted",
+			input:    "python C:/AI/test.py",
+			expected: "python C:\\AI\\test.py",
+		},
+
+		// Mixed scenarios
+		{
+			name:     "Mixed local path and URL",
+			input:    "cd C:/workspace && curl https://api.example.com/data",
+			expected: "cd C:\\workspace && curl.exe --max-time 300 https://api.example.com/data",
+		},
+
+		// Multiple URLs
+		{
+			name:     "Multiple URLs should all be protected",
+			input:    "curl https://api1.com/data && curl ftp://api2.com/file",
+			expected: "curl.exe --max-time 300 https://api1.com/data && curl.exe --max-time 300 ftp://api2.com/file",
+		},
+
+		// Complex mixed scenario
+		{
+			name:     "Complex mixed scenario",
+			input:    "cd C:/project && python script.py --url https://api.com/path --file C:/data/file.txt",
+			expected: "cd C:\\project && python script.py --url https://api.com/path --file C:\\data\\file.txt",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tool.preprocessWindowsCommand(tt.input)
+			if result != tt.expected {
+				t.Errorf("Expected:\n  %s\nGot:\n  %s", tt.expected, result)
+			}
+		})
+	}
+}
+

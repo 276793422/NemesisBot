@@ -130,6 +130,17 @@ func RunToolLoop(ctx context.Context, config ToolLoopConfig, messages []provider
 				toolResult = ErrorResult("No tools available")
 			}
 
+			// Check if context was cancelled during tool execution
+			if ctx.Err() != nil {
+				logger.ErrorCF("toolloop", "Context cancelled during tool execution",
+					map[string]any{
+						"tool":      tc.Name,
+						"iteration": iteration,
+						"error":     ctx.Err().Error(),
+					})
+				return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+
 			// Determine content for LLM
 			contentForLLM := toolResult.ForLLM
 			if contentForLLM == "" && toolResult.Err != nil {

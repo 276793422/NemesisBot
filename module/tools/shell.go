@@ -336,6 +336,7 @@ func (t *ExecTool) SetAllowPatterns(patterns []string) error {
 // preprocessWindowsCommand preprocesses commands for Windows execution
 // - Ensures curl is curl.exe (not an alias)
 // - Adds --max-time to curl commands if not present
+// - Normalizes Windows file paths (converts forward slashes to backslashes)
 // - Fixes path quoting issues for Windows commands
 func (t *ExecTool) preprocessWindowsCommand(command string) string {
 	// Replace 'curl' with 'curl.exe' to avoid alias issues
@@ -357,12 +358,86 @@ func (t *ExecTool) preprocessWindowsCommand(command string) string {
 		}
 	}
 
+	// Normalize Windows file paths (convert C:/path to C:\path)
+	command = t.normalizeWindowsPaths(command)
+
 	// Fix path quoting issues for common Windows commands
 	// Some Windows commands (like 'type', 'dir') don't handle quoted paths well
 	// when called from cmd.exe with /c
 	command = t.fixWindowsPathQuoting(command)
 
 	return command
+}
+
+// normalizeWindowsPaths converts forward slashes to backslashes in Windows file paths
+// while preserving URLs, network paths, and other path-like strings
+func (t *ExecTool) normalizeWindowsPaths(command string) string {
+	// Step 1: Extract and protect URLs and network paths from conversion
+	// Protect multiple protocol types and network paths
+	protected := command
+	placeholders := make(map[string]string)
+	placeholderIndex := 0
+
+	// Pattern 1: Standard URL protocols (http, https, ftp, ftps, sftp, ws, wss, etc.)
+	// Matches: http://..., https://..., ftp://..., etc.
+	urlPattern := regexp.MustCompile(`(?:https?|ftps?|sftp|wss?|file|git|ssh)://[^\s"'<>]+`)
+	urls := urlPattern.FindAllString(command, -1)
+	for _, url := range urls {
+		placeholder := fmt.Sprintf("___URL_PLACEHOLDER_%d___", placeholderIndex)
+		placeholders[placeholder] = url
+		protected = strings.Replace(protected, url, placeholder, 1)
+		placeholderIndex++
+	}
+
+	// Pattern 2: Git SSH URLs (git@host:path format)
+	// Matches: git@github.com:user/repo.git
+	gitSshPattern := regexp.MustCompile(`git@[^\s"'<>]+`)
+	gitUrls := gitSshPattern.FindAllString(command, -1)
+	for _, url := range gitUrls {
+		placeholder := fmt.Sprintf("___URL_PLACEHOLDER_%d___", placeholderIndex)
+		placeholders[placeholder] = url
+		protected = strings.Replace(protected, url, placeholder, 1)
+		placeholderIndex++
+	}
+
+	// Pattern 3: UNC network paths (\\server\share or //server/share)
+	// Matches: \\server\share or //server/share
+	uncPattern := regexp.MustCompile(`(?:\\\\|//)[^\s"'<>]+`)
+	uncPaths := uncPattern.FindAllString(command, -1)
+	for _, path := range uncPaths {
+		placeholder := fmt.Sprintf("___URL_PLACEHOLDER_%d___", placeholderIndex)
+		placeholders[placeholder] = path
+		protected = strings.Replace(protected, path, placeholder, 1)
+		placeholderIndex++
+	}
+
+	// Step 2: Convert Windows file paths from C:/path to C:\path
+	// Pattern matches: C:/path or D:/some/path
+	// This handles paths in quotes and without quotes
+	pathPattern := regexp.MustCompile(`([A-Za-z]):((?:/[^/\s"']*)+)`)
+
+	protected = pathPattern.ReplaceAllStringFunc(protected, func(match string) string {
+		// Extract drive letter and path
+		parts := pathPattern.FindStringSubmatch(match)
+		if len(parts) < 3 {
+			return match
+		}
+
+		drive := parts[1]
+		path := parts[2]
+
+		// Convert forward slashes to backslashes
+		normalized := strings.ReplaceAll(path, "/", "\\")
+
+		return drive + ":" + normalized
+	})
+
+	// Step 3: Restore all protected strings
+	for placeholder, original := range placeholders {
+		protected = strings.Replace(protected, placeholder, original, 1)
+	}
+
+	return protected
 }
 
 // fixWindowsPathQuoting fixes path quoting issues in Windows commands
