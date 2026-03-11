@@ -45,12 +45,12 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println("TestAIServer 正在启动...")
 	fmt.Println("========================================")
-	fmt.Println("服务地址: http://localhost:8080")
+	fmt.Println("服务地址: http://0.0.0.0:8080")
 	fmt.Println("日志目录: ./log/")
 	fmt.Println("========================================")
 
-	// 启动服务器（默认 8080 端口）
-	if err := router.Run(":8080"); err != nil {
+	// 启动服务器（监听所有网络接口）
+	if err := router.Run("0.0.0.0:8080"); err != nil {
 		fmt.Printf("服务器启动失败: %v\n", err)
 	}
 }

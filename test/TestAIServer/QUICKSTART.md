@@ -20,14 +20,18 @@ go build -o testaiserver.exe
 testaiserver.exe
 ```
 
-服务器将在 `http://localhost:8080` 启动。
+服务器将在 `http://0.0.0.0:8080` 启动。
 
 输出：
 ```
 [GIN-debug] GET    /v1/models                --> testaiserver/handlers.(*Handler).ListModels (3 handlers)
 [GIN-debug] POST   /v1/chat/completions      --> testaiserver/handlers.(*Handler).ChatCompletions (3 handlers)
-[GIN-debug] Listening and serving HTTP on :8080
+[GIN-debug] Listening and serving HTTP on 0.0.0.0:8080
 ```
+
+**访问方式**:
+- 本地访问: `http://localhost:8080`
+- 远程访问: `http://<your-ip>:8080`
 
 ### 3. 测试
 
@@ -208,7 +212,7 @@ func main() {
     // ... 其他代码 ...
 
     // 修改为其他端口
-    router.Run(":9090")
+    router.Run("0.0.0.0:9090")
 }
 ```
 
@@ -219,7 +223,7 @@ port := os.Getenv("PORT")
 if port == "" {
     port = "8080"
 }
-router.Run(":" + port)
+router.Run("0.0.0.0:" + port)
 ```
 
 然后运行：
@@ -230,6 +234,18 @@ testaiserver.exe
 
 # Linux/macOS
 PORT=9090 ./testaiserver
+```
+
+### 绑定地址
+
+默认绑定 `0.0.0.0`，允许所有网络接口访问：
+- 本地: `http://localhost:8080`
+- 局域网: `http://192.168.x.x:8080`
+- 所有接口: `http://0.0.0.0:8080`
+
+如需仅本地访问，修改为：
+```go
+router.Run("127.0.0.1:8080")
 ```
 
 ## 常见问题

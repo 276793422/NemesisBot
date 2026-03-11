@@ -53,7 +53,10 @@ go build -o testaiserver.exe
 ./testaiserver.exe
 ```
 
-服务器将在 `http://localhost:8080` 启动。
+服务器将在 `http://0.0.0.0:8080` 启动，可以从本地或其他机器访问。
+
+**本地访问**: `http://localhost:8080`
+**远程访问**: `http://<your-ip>:8080`
 
 ### 使用环境变量配置端口
 
