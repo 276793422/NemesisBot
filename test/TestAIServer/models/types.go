@@ -51,6 +51,28 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// StreamChunk 定义流式响应的数据块
+type StreamChunk struct {
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Choices []StreamChoice  `json:"choices"`
+}
+
+// StreamChoice 定义流式响应的选择项
+type StreamChoice struct {
+	Index        int    `json:"index"`
+	Delta        Delta  `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+// Delta 定义流式响应的增量内容
+type Delta struct {
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+}
+
 // ModelInfo 定义模型信息
 type ModelInfo struct {
 	ID      string `json:"id"`

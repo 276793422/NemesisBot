@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,16 +100,6 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 	}
 
-	// ⚠️ KNOWN ISSUE: 流式响应兼容性处理
-	// 问题：当前不支持真正的流式响应（SSE），但许多客户端默认使用 stream=true
-	// 临时方案：当 stream=true 时，仍然返回非流式响应，但记录警告日志
-	// TODO: 未来需要实现真正的流式响应支持
-	// 相关文档：docs/KNOWN_ISSUES.md
-	if req.Stream {
-		// 记录警告：客户端请求了流式响应，但我们返回非流式响应
-		fmt.Printf("[WARNING] Client requested streaming (stream=true) but returning non-streaming response. Model: %s, This is a known limitation.\n", req.Model)
-	}
-
 	// 处理延迟
 	if delay := model.Delay(); delay > 0 {
 		time.Sleep(delay)
@@ -117,7 +108,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 处理消息
 	responseContent := model.Process(req.Messages)
 
-	// 构建响应
+	// 如果请求流式响应，使用 SSE 格式
+	if req.Stream {
+		h.handleStreamingResponse(c, model.Name(), responseContent)
+		return
+	}
+
+	// 非流式响应（原有逻辑）
 	response := models.ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -141,6 +138,96 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// handleStreamingResponse 处理流式响应（SSE）
+func (h *Handler) handleStreamingResponse(c *gin.Context, modelName, content string) {
+	// 设置 SSE headers
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Access-Control-Allow-Origin", "*")
+
+	// 生成唯一的响应 ID
+	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	// 1. 发送角色信息（role: assistant）
+	roleChunk := models.StreamChunk{
+		ID:      chatID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelName,
+		Choices: []models.StreamChoice{
+			{
+				Index: 0,
+				Delta: models.Delta{
+					Role:    "assistant",
+					Content: "",
+				},
+				FinishReason: nil,
+			},
+		},
+	}
+	h.sendSSEChunk(c.Writer, roleChunk)
+
+	// 2. 发送内容（分字符发送以模拟流式效果）
+	for _, char := range content {
+		contentChunk := models.StreamChunk{
+			ID:      chatID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   modelName,
+			Choices: []models.StreamChoice{
+				{
+					Index: 0,
+					Delta: models.Delta{
+						Content: string(char),
+					},
+					FinishReason: nil,
+				},
+			},
+		}
+		h.sendSSEChunk(c.Writer, contentChunk)
+		// 小延迟，模拟打字效果
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// 3. 发送完成标记
+	finishChunk := models.StreamChunk{
+		ID:      chatID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelName,
+		Choices: []models.StreamChoice{
+			{
+				Index: 0,
+				Delta: models.Delta{},
+				FinishReason: func() *string {
+					s := "stop"
+					return &s
+				}(),
+			},
+		},
+	}
+	h.sendSSEChunk(c.Writer, finishChunk)
+
+	// 4. 发送 [DONE] 标记
+	c.Writer.Write([]byte("data: [DONE]\n\n"))
+	c.Writer.Flush()
+}
+
+// sendSSEChunk 发送单个 SSE 数据块
+func (h *Handler) sendSSEChunk(w gin.ResponseWriter, chunk models.StreamChunk) {
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		fmt.Printf("[ERROR] Failed to marshal SSE chunk: %v\n", err)
+		return
+	}
+	w.Write([]byte("data: "))
+	w.Write(data)
+	w.Write([]byte("\n\n"))
+	w.Flush()
 }
 
 // countTokens 简单的 token 计数（按字符数估算）
