@@ -479,8 +479,37 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 
+	// Prepare ForLLM content with actual text (not just summary)
+	// Return pure content without metadata prefix to preserve formatting (JSON, Markdown, code, etc.)
+	maxForLLM := 50 * 1024
+	var forLLM string
+
+	if len(text) > maxForLLM {
+		// Smart truncation: try to break at paragraph or sentence boundary
+		truncated := text[:maxForLLM]
+
+		// Try paragraph boundary first (best for readability)
+		if idx := strings.LastIndex(truncated, "\n\n"); idx > maxForLLM/2 {
+			truncated = truncated[:idx]
+		} else if idx := strings.LastIndex(truncated, ". "); idx > maxForLLM/2 {
+			// Try sentence boundary
+			truncated = truncated[:idx+1]
+		} else if idx := strings.LastIndex(truncated, " "); idx > maxForLLM/2 {
+			// Try word boundary
+			truncated = truncated[:idx]
+		}
+		// If none of the above, truncate at character boundary (acceptable fallback)
+
+		// Only append truncation notice at the end (not as prefix)
+		forLLM = truncated + fmt.Sprintf("\n\n[Content truncated. Total %d bytes, showing %d bytes from %s]",
+			len(text), len(truncated), urlStr)
+	} else {
+		// Return pure content without any prefix
+		forLLM = text
+	}
+
 	return &ToolResult{
-		ForLLM:  fmt.Sprintf("Fetched %d bytes from %s (extractor: %s, truncated: %v)", len(text), urlStr, extractor, truncated),
+		ForLLM:  forLLM,
 		ForUser: string(resultJSON),
 	}
 }

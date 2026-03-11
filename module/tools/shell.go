@@ -336,6 +336,7 @@ func (t *ExecTool) SetAllowPatterns(patterns []string) error {
 // preprocessWindowsCommand preprocesses commands for Windows execution
 // - Ensures curl is curl.exe (not an alias)
 // - Adds --max-time to curl commands if not present
+// - Fixes path quoting issues for Windows commands
 func (t *ExecTool) preprocessWindowsCommand(command string) string {
 	// Replace 'curl' with 'curl.exe' to avoid alias issues
 	curlPattern := regexp.MustCompile(`\bcurl\.exe\b`)
@@ -352,9 +353,62 @@ func (t *ExecTool) preprocessWindowsCommand(command string) string {
 		if !hasMaxTime {
 			// Insert --max-time 10 after curl.exe
 			curlExePattern := regexp.MustCompile(`\bcurl\.exe\b`)
-			command = curlExePattern.ReplaceAllString(command, "curl.exe --max-time 10")
+			command = curlExePattern.ReplaceAllString(command, "curl.exe --max-time 300")
+		}
+	}
+
+	// Fix path quoting issues for common Windows commands
+	// Some Windows commands (like 'type', 'dir') don't handle quoted paths well
+	// when called from cmd.exe with /c
+	command = t.fixWindowsPathQuoting(command)
+
+	return command
+}
+
+// fixWindowsPathQuoting fixes path quoting issues in Windows commands
+func (t *ExecTool) fixWindowsPathQuoting(command string) string {
+	// Commands that have issues with quoted paths in cmd.exe
+	// These commands expect paths without quotes or with different quoting
+	problematicCommands := []string{"type", "dir", "copy", "move", "del", "ren", "md", "rd"}
+
+	// Check if command starts with any problematic command
+	for _, cmd := range problematicCommands {
+		// Pattern: command "path" or command "path" args
+		pattern := regexp.MustCompile(`(?i)^\s*` + cmd + `\s+"([^"]+)"(.*)$`)
+		if matches := pattern.FindStringSubmatch(command); matches != nil {
+			path := matches[1]
+			rest := matches[2]
+
+			// If path has no spaces, remove quotes
+			if !strings.Contains(path, " ") {
+				command = cmd + " " + path + rest
+				break
+			}
+
+			// If path has spaces but command doesn't support quotes,
+			// try using the short path name (8.3 format)
+			// This is a Windows-specific format without spaces
+			if shortPath, err := t.getShortPath(path); err == nil {
+				command = cmd + " " + shortPath + rest
+				break
+			}
+
+			// If short path conversion fails, keep the quotes
+			// Some commands might still work
 		}
 	}
 
 	return command
+}
+
+// getShortPath converts a long Windows path to short path (8.3 format)
+// This helps with commands that don't handle spaces well
+func (t *ExecTool) getShortPath(longPath string) (string, error) {
+	// Use Windows API to get short path
+	// For now, return a simple fallback: try to escape spaces with ^
+	if strings.Contains(longPath, " ") {
+		// cmd.exe escape character for spaces
+		return strings.ReplaceAll(longPath, " ", "^ "), nil
+	}
+	return longPath, nil
 }

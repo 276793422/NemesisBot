@@ -215,6 +215,14 @@ func (pm *PathManager) AuditLogDir() string {
 	return pm.auditLogDir
 }
 
+// TempDir returns the temporary directory path for downloads and temporary files.
+// The temp directory is located at workspace/temp.
+func (pm *PathManager) TempDir() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return filepath.Join(pm.workspace, "temp")
+}
+
 // AgentWorkspace returns the workspace directory for a specific agent.
 // For main/default agents, returns the main workspace.
 // For other agents, returns a separate workspace directory.

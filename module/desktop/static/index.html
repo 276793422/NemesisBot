@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NemesisBot Desktop</title>
+    <link rel="stylesheet" href="/static/css/theme.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <nav class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                    <div>
+                        <h1>NemesisBot</h1>
+                        <div class="version">v0.0.1</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-nav">
+                <!-- Chat Section -->
+                <div class="nav-section">
+                    <div class="nav-item active" data-page="chat">
+                        <span class="nav-icon">
+                            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                        </span>
+                        <span class="nav-label">Chat</span>
+                    </div>
+                </div>
+
+                <!-- Monitor Section -->
+                <div class="nav-section">
+                    <div class="nav-section-title">Monitor</div>
+                    <div class="nav-item" data-page="overview">
+                        <span class="nav-icon">
+                            <svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>
+                        </span>
+                        <span class="nav-label">Overview</span>
+                    </div>
+                    <div class="nav-item" data-page="logs">
+                        <span class="nav-icon">
+                            <svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
+                        </span>
+                        <span class="nav-label">Logs</span>
+                    </div>
+                </div>
+
+                <!-- Settings Section -->
+                <div class="nav-section">
+                    <div class="nav-section-title">System</div>
+                    <div class="nav-item" data-page="settings">
+                        <span class="nav-icon">
+                            <svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></svg>
+                        </span>
+                        <span class="nav-label">Settings</span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Connection Status Bar -->
+            <div class="connection-bar">
+                <span class="status">
+                    <span class="status-dot connected" id="statusDot"></span>
+                    <span id="statusText">Connected to NemesisBot</span>
+                </span>
+            </div>
+
+            <!-- Chat Page -->
+            <div class="page" id="page-chat" style="display: flex; flex-direction: column; height: 100%;">
+                <div class="chat-container">
+                    <div class="messages" id="messages">
+                        <div class="message assistant">
+                            <div class="message-content">Hello! I'm NemesisBot, your AI assistant. How can I help you today?</div>
+                            <div class="message-time">Just now</div>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <textarea
+                            class="chat-input"
+                            id="messageInput"
+                            placeholder="Type your message... (Ctrl+Enter to send)"
+                            rows="1"
+                        ></textarea>
+                        <button class="btn btn-primary" id="sendButton">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                            Send
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Overview Page -->
+            <div class="page" id="page-overview" style="display: none;">
+                <div class="page-header">
+                    <h2>Overview</h2>
+                </div>
+                <div class="page-body">
+                    <div class="grid grid-2">
+                        <div class="card">
+                            <div class="card-title">System Status</div>
+                            <div class="card-content">
+                                <div class="flex items-center gap-2 mb-4">
+                                    <span class="status-dot connected"></span>
+                                    <span>Agent Loop Running</span>
+                                </div>
+                                <div class="text-sm text-dim">Started: Just now</div>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-title">Channels</div>
+                            <div class="card-content">
+                                <div class="badge badge-success mb-4">Web Active</div>
+                                <div class="text-sm text-dim">WebSocket connected</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Page -->
+            <div class="page" id="page-logs" style="display: none;">
+                <div class="page-header">
+                    <h2>Logs</h2>
+                </div>
+                <div class="page-body">
+                    <div class="card">
+                        <div class="card-title">System Logs</div>
+                        <div class="card-content">
+                            <pre style="font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);">[INFO] NemesisBot Desktop UI started
+[INFO] WebView initialized
+[INFO] Local server running on http://127.0.0.1:8080
+[INFO] Ready to accept connections</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Page -->
+            <div class="page" id="page-settings" style="display: none;">
+                <div class="page-header">
+                    <h2>Settings</h2>
+                </div>
+                <div class="page-body">
+                    <div class="card">
+                        <div class="card-title">Appearance</div>
+                        <div class="card-content">
+                            <div class="flex items-center gap-4 mb-4">
+                                <button class="btn btn-ghost" onclick="setTheme('light')">☀️ Light</button>
+                                <button class="btn btn-ghost" onclick="setTheme('dark')">🌙 Dark</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

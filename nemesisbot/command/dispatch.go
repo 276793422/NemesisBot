@@ -22,6 +22,8 @@ func Dispatch() {
 		CmdAgent()
 	case "gateway":
 		CmdGateway()
+	case "desktop":
+		CmdDesktop()
 	case "status":
 		CmdStatus()
 	case "migrate":
@@ -65,6 +67,7 @@ func PrintHelp() {
 	fmt.Println("  agent       Interact with the agent directly")
 	fmt.Println("  auth        Manage authentication (login, logout, status)")
 	fmt.Println("  gateway     Start nemesisbot gateway")
+	fmt.Println("  desktop     Launch NemesisBot desktop UI")
 	fmt.Println("  status      Show nemesisbot status")
 	fmt.Println("  channel     Manage communication channels (list, enable, disable, status)")
 	fmt.Println("  cluster     Manage bot cluster (status, config, enable, disable)")

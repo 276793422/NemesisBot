@@ -72,6 +72,10 @@ func NewAgentInstance(
 	workspace := resolveAgentWorkspace(agentCfg, defaults)
 	os.MkdirAll(workspace, 0755)
 
+	// Create temp directory for downloads and temporary files
+	tempDir := filepath.Join(workspace, "temp")
+	os.MkdirAll(tempDir, 0755)
+
 	model := resolveAgentModel(agentCfg, defaults)
 	fallbacks := resolveAgentFallbacks(agentCfg, defaults)
 
