@@ -15,6 +15,12 @@
 
 ---
 
+## NemesisBot 测试命令
+
+nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default
+
+---
+
 ## 功能特性
 
 - ✅ 完全兼容 OpenAI API 接口
