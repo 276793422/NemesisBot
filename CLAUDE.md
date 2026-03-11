@@ -75,6 +75,13 @@ nemesisbot.exe log config                # 配置日志详细级别
 
 ---
 
+### 测试工具
+
+1. `test\TestAIServer` AI 服务器模拟器。<br>目录中存在一个 AI 服务器的模拟工具，若需要测试AI相关功能，可以使用此工具模拟服务器。工具编译、运行后，可以使用 **`nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default`** 命令来给nemesisbot 设置大模型，然后尝试模拟或执行内部流程。
+2. `test\mcp` 测试用 MCP 服务器。
+
+---
+
 ## 架构概览
 
 NemesisBot 是一个具有安全控制的分布式 AI 代理系统。架构围绕消息总线展开，将从各种通道来的入站消息路由到 Agent 引擎，然后将出站响应通过通道路由回去。
