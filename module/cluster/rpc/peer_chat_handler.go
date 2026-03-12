@@ -127,9 +127,9 @@ func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, re
 		inbound.Channel, inbound.SenderID, inbound.SessionKey)
 
 	// Send to RPCChannel
-	// Use 29 minute timeout to match the long timeout configuration
-	// (RPC Client: 30min, PeerChatHandler: 29min, RPCChannel: 28min)
-	ctx, cancel := context.WithTimeout(context.Background(), 29*time.Minute)
+	// Use 59 minute timeout to match the long timeout configuration
+	// (RPC Client: 60min, PeerChatHandler: 59min, RPCChannel: 58min)
+	ctx, cancel := context.WithTimeout(context.Background(), 59*time.Minute)
 	defer cancel()
 
 	respCh, err := h.rpcChannel.Input(ctx, inbound)

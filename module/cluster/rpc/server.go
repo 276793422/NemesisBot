@@ -43,7 +43,7 @@ func NewServer(cluster Cluster) *Server {
 		handlers:    make(map[string]RPCHandler),
 		conns:       make(map[string]*transport.TCPConn),
 		sendTimeout: 10 * time.Second,
-		idleTimeout: 35 * time.Minute, // 35 minutes - must be longer than RPC Client timeout (30min)
+		idleTimeout: 65 * time.Minute, // 65 minutes - must be longer than RPC Client timeout (60min)
 		shutdownCh:  make(chan struct{}),
 	}
 }
