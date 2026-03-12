@@ -38,10 +38,17 @@ func main() {
 	registry.Register(models.NewTestAI13())
 	registry.Register(models.NewTestAI20())
 	registry.Register(models.NewTestAI30())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-3.0")
+	registry.Register(models.NewTestAI42())
+	registry.Register(models.NewTestAI43())
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-3.0, testai-4.2, testai-4.3")
 
 	// 创建 Gin 路由
-	router := gin.Default()
+	router := gin.New()
+
+	// 使用自定义中间件（替换 gin.Default()）
+	router.Use(ModelNameMiddleware())  // 提取模型名称
+	router.Use(CustomLogger())         // 自定义日志（包含模型名称）
+	router.Use(gin.Recovery())         // 崩溃恢复
 
 	// 创建处理器
 	handler := handlers.NewHandler(registry, log)
