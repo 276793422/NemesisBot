@@ -21,6 +21,46 @@ nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --k
 
 ---
 
+## 本地双模型交互测试
+
+1. 编译`test\TestAIServer`项目后启动
+
+2. 编译当前项目，在两台设备上部署，然后开启设置模型，
+    - A 设备上设置 
+        - `nemesisbot model add --model test/testai-3.0 --base http://127.0.0.1:8080/v1 --key test-key --default`
+    - B 设备上设置
+        - `nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default`
+
+3. 两台设备同时开启集群功能 `nemesisbot cluster enable`
+
+4. 两个服务端全部启动
+
+5. 查看对端设备 id ，在本地记录的 id
+
+6. 使用如下命令发送一条信息
+    - `<PEER_CHAT>{"peer_id":"bot-CloudServer-20260312-164732","content":"测试"}</PEER_CHAT>`
+    - 可以看到本端返回了对端发来的信息：`{"response":"好的，我知道了","status":"success"}`
+    - 逻辑是这样的
+        - 本端将信息发给本地模拟的模型 testai-3.0 
+        - testai-3.0 模型检测到内容包含 `<PEER_CHAT></PEER_CHAT>` 则取其中内容，组合 tool_call
+        - 模型返回给本地调用工具执行 peer_chat 发送信息给远端设备
+        - 远端设备收到信息之后执行正常流程调用 testai-1.1
+        - 剩下的流程就是正常返回。
+
+
+## 服务器收到的信息如下：
+```
+[GIN] 2026/03/12 - 16:51:18 | 200 |       2.062ms |       127.0.0.1 | POST     "/v1/chat/completions"
+[GIN] 2026/03/12 - 16:51:18 | 200 |      3.5631ms | 192.168.236.128 | POST     "/v1/chat/completions"
+[GIN] 2026/03/12 - 16:51:18 | 200 |      2.1887ms |       127.0.0.1 | POST     "/v1/chat/completions"
+```
+
+1. 第一行是本地第一次调用 testai-3.0 记录的内容，
+2. 第二行是远端调用 testai-1.1 的请求。
+3. 第三行是远端返回后本地再次调用 testai-3.0 的请求。
+
+---
+
 ## 功能特性
 
 - ✅ 完全兼容 OpenAI API 接口
