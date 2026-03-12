@@ -1589,9 +1589,10 @@ func registerMCPTools(mcpConfig *config.MCPConfig, agent *AgentInstance) ([]tool
 // setupClusterRPCChannel sets up the RPC channel and LLM forward handler for the cluster
 func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.MessageBus) error {
 	// Create RPC channel configuration
+	// Long timeout configuration: RPC Client (30min) > PeerChatHandler (29min) > RPCChannel (28min)
 	cfg := &channels.RPCChannelConfig{
 		MessageBus:      msgBus,
-		RequestTimeout:  60 * time.Second,
+		RequestTimeout:  28 * time.Minute,  // RPCChannel timeout
 		CleanupInterval: 30 * time.Second,
 	}
 

@@ -55,7 +55,7 @@ func DefaultPoolConfig() *PoolConfig {
 		MaxConns:        DefaultMaxConns,
 		MaxConnsPerNode: DefaultMaxConnsPerNode,
 		DialTimeout:     10 * time.Second,
-		IdleTimeout:     30 * time.Second,
+		IdleTimeout:     35 * time.Minute, // 35 minutes - must be longer than RPC Client timeout (30min)
 		SendTimeout:     10 * time.Second,
 	}
 }

@@ -34,7 +34,7 @@ type Provider struct {
 
 func NewProvider(apiKey, apiBase, proxy string) *Provider {
 	client := &http.Client{
-		Timeout: 120 * time.Second,
+		Timeout: 10 * time.Minute,
 	}
 
 	if proxy != "" {

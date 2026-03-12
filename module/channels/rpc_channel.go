@@ -205,6 +205,7 @@ func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 				"correlation_id":  correlationID,
 				"content_len":     len(actualContent),
 				"content_preview": utils.Truncate(actualContent, 100),
+				"respCh_ptr":      fmt.Sprintf("%p", req.responseCh),
 			})
 
 		select {
@@ -291,10 +292,11 @@ func (ch *RPCChannel) Input(ctx context.Context, inbound *bus.InboundMessage) (<
 	}
 	ch.mu.Unlock()
 
-	logger.DebugCF("rpc", "Registered pending request", map[string]interface{}{
+	logger.InfoCF("rpc", "Created pending request", map[string]interface{}{
 		"correlation_id": inbound.CorrelationID,
 		"chat_id":        inbound.ChatID,
 		"content_len":    len(inbound.Content),
+		"respCh_ptr":     fmt.Sprintf("%p", respCh),
 	})
 
 	// Send to MessageBus

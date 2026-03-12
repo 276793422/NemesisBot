@@ -43,7 +43,7 @@ func NewServer(cluster Cluster) *Server {
 		handlers:    make(map[string]RPCHandler),
 		conns:       make(map[string]*transport.TCPConn),
 		sendTimeout: 10 * time.Second,
-		idleTimeout: 60 * time.Second,
+		idleTimeout: 35 * time.Minute, // 35 minutes - must be longer than RPC Client timeout (30min)
 		shutdownCh:  make(chan struct{}),
 	}
 }
@@ -232,7 +232,9 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 		s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, payload=%+v",
 			req.Action, req.From, req.To, req.ID, defaultPayload)
 
-		s.sendMessage(conn, resp)
+		if err := s.sendMessage(conn, resp); err != nil {
+			s.cluster.LogRPCError("Failed to send response: %v", err)
+		}
 		return
 	}
 
@@ -247,7 +249,9 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 		s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, error=%s",
 			req.Action, req.From, req.To, req.ID, err.Error())
 
-		s.sendMessage(conn, resp)
+		if err := s.sendMessage(conn, resp); err != nil {
+			s.cluster.LogRPCError("Failed to send error response: %v", err)
+		}
 		return
 	}
 
@@ -258,7 +262,9 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 	s.cluster.LogRPCInfo("Response: action=%s, from=%s, to=%s, id=%s, payload=%+v",
 		req.Action, req.From, req.To, req.ID, result)
 
-	s.sendMessage(conn, resp)
+	if err := s.sendMessage(conn, resp); err != nil {
+		s.cluster.LogRPCError("Failed to send success response: %v", err)
+	}
 }
 
 // sendMessage sends a message through the connection

@@ -127,7 +127,9 @@ func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, re
 		inbound.Channel, inbound.SenderID, inbound.SessionKey)
 
 	// Send to RPCChannel
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use 29 minute timeout to match the long timeout configuration
+	// (RPC Client: 30min, PeerChatHandler: 29min, RPCChannel: 28min)
+	ctx, cancel := context.WithTimeout(context.Background(), 29*time.Minute)
 	defer cancel()
 
 	respCh, err := h.rpcChannel.Input(ctx, inbound)
@@ -139,6 +141,8 @@ func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, re
 	h.cluster.LogRPCInfo("[PeerChat] Request sent to MessageBus, waiting for LLM response (correlation_id=%s)", correlationID)
 
 	// Wait for response
+	deadline, hasDeadline := ctx.Deadline()
+	h.cluster.LogRPCInfo("[PeerChat] Entering select, respCh=%p, ctx_deadline=%v, has_deadline=%v", respCh, deadline, hasDeadline)
 	select {
 	case response := <-respCh:
 		h.cluster.LogRPCInfo("[PeerChat] Response received! correlation_id=%s, response=%s", correlationID, response)
