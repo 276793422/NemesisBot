@@ -14,10 +14,17 @@ type Model interface {
 	Delay() time.Duration
 }
 
+// ProcessedResponse 定义处理后的响应（可能包含工具调用）
+type ProcessedResponse struct {
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
 // Message 定义聊天消息
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // ChatCompletionRequest 定义 OpenAI 兼容的请求格式
@@ -69,8 +76,22 @@ type StreamChoice struct {
 
 // Delta 定义流式响应的增量内容
 type Delta struct {
-	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
+	Role      string     `json:"role,omitempty"`
+	Content   string     `json:"content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// ToolCall 定义工具调用
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function *FunctionCall `json:"function,omitempty"`
+}
+
+// FunctionCall 定义函数调用
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // ModelInfo 定义模型信息

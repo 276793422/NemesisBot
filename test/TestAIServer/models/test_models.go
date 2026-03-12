@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // TestAI11 - 立即返回固定响应
 type TestAI11 struct{}
@@ -79,5 +84,87 @@ func (m *TestAI20) Process(messages []Message) string {
 }
 
 func (m *TestAI20) Delay() time.Duration {
+	return 0
+}
+
+// TestAI30 - 返回工具调用以触发 peer_chat
+// 功能：
+// 1. 检测消息中的 <PEER_CHAT>{"peer_id":"xxx","content":"yyy"}</PEER_CHAT> 标记
+// 2. 如果检测到，返回 cluster_rpc 工具调用（JSON 格式）
+// 3. 否则，返回用户消息
+type TestAI30 struct{}
+
+func NewTestAI30() *TestAI30 {
+	return &TestAI30{}
+}
+
+func (m *TestAI30) Name() string {
+	return "testai-3.0"
+}
+
+func (m *TestAI30) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	lastMsg := messages[len(messages)-1].Content
+
+	// 检查是否包含 <PEER_CHAT> 标记
+	if strings.Contains(lastMsg, "<PEER_CHAT>") && strings.Contains(lastMsg, "</PEER_CHAT>") {
+		// 提取标记内的 JSON
+		start := strings.Index(lastMsg, "<PEER_CHAT>") + len("<PEER_CHAT>")
+		end := strings.Index(lastMsg, "</PEER_CHAT>")
+
+		if end > start {
+			jsonStr := strings.TrimSpace(lastMsg[start:end])
+
+			// 解析 JSON
+			var req struct {
+				PeerID  string `json:"peer_id"`
+				Content string `json:"content"`
+			}
+
+			if err := json.Unmarshal([]byte(jsonStr), &req); err == nil {
+				// 构造工具调用响应
+				toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
+
+				// 构造 cluster_rpc 的参数
+				args := map[string]interface{}{
+					"peer_id": req.PeerID,
+					"action":  "peer_chat",
+					"data": map[string]interface{}{
+						"type":    "chat",
+						"content": req.Content,
+					},
+				}
+
+				argsJSON, _ := json.Marshal(args)
+
+				// 返回工具调用 JSON
+				response := ProcessedResponse{
+					Content: "",
+					ToolCalls: []ToolCall{
+						{
+							ID:   toolCallID,
+							Type: "function",
+							Function: &FunctionCall{
+								Name:      "cluster_rpc",
+								Arguments: string(argsJSON),
+							},
+						},
+					},
+				}
+
+				responseJSON, _ := json.Marshal(response)
+				return string(responseJSON)
+			}
+		}
+	}
+
+	// 普通消息，直接返回
+	return lastMsg
+}
+
+func (m *TestAI30) Delay() time.Duration {
 	return 0
 }
