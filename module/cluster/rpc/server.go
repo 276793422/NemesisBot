@@ -7,6 +7,7 @@ package rpc
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type Server struct {
 	rpcPort     int
 	sendTimeout time.Duration
 	idleTimeout time.Duration
+	authToken   string // RPC authentication token
 
 	// Active connections
 	conns      map[string]*transport.TCPConn // remoteAddr -> conn
@@ -46,6 +48,13 @@ func NewServer(cluster Cluster) *Server {
 		idleTimeout: 65 * time.Minute, // 65 minutes - must be longer than RPC Client timeout (60min)
 		shutdownCh:  make(chan struct{}),
 	}
+}
+
+// SetAuthToken sets the authentication token for RPC connections
+func (s *Server) SetAuthToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authToken = token
 }
 
 // RegisterHandler registers an RPC handler for an action
@@ -149,6 +158,38 @@ func (s *Server) acceptLoop() {
 // handleConnection handles a TCP connection
 func (s *Server) handleConnection(netConn net.Conn) {
 	remoteAddr := netConn.RemoteAddr().String()
+
+	// Authentication phase (if token is configured)
+	s.mu.RLock()
+	authToken := s.authToken
+	s.mu.RUnlock()
+
+	if authToken != "" {
+		// Set read deadline for auth
+		netConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+
+		// Read auth token from client
+		buf := make([]byte, 1024)
+		n, err := netConn.Read(buf)
+		if err != nil || n == 0 {
+			s.cluster.LogRPCError("Failed to read auth token from %s: %v", remoteAddr, err)
+			netConn.Close()
+			return
+		}
+
+		// Reset deadline
+		netConn.SetReadDeadline(time.Time{})
+
+		// Validate token
+		token := strings.TrimSpace(string(buf[:n]))
+		if token != authToken {
+			s.cluster.LogRPCError("Unauthorized connection from %s (invalid token)", remoteAddr)
+			netConn.Close()
+			return
+		}
+
+		s.cluster.LogRPCInfo("Authenticated connection from %s", remoteAddr)
+	}
 
 	// Create TCPConn wrapper
 	config := &transport.TCPConnConfig{

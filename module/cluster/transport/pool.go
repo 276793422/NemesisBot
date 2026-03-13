@@ -38,6 +38,7 @@ type Pool struct {
 	dialTimeout time.Duration
 	idleTimeout time.Duration
 	sendTimeout time.Duration
+	authToken   string // RPC authentication token
 }
 
 // PoolConfig contains configuration for creating a new Pool
@@ -47,6 +48,7 @@ type PoolConfig struct {
 	DialTimeout     time.Duration
 	IdleTimeout     time.Duration
 	SendTimeout     time.Duration
+	AuthToken       string // RPC authentication token
 }
 
 // DefaultPoolConfig returns the default pool configuration
@@ -57,6 +59,7 @@ func DefaultPoolConfig() *PoolConfig {
 		DialTimeout:     10 * time.Second,
 		IdleTimeout:     65 * time.Minute, // 65 minutes - must be longer than RPC Client timeout (60min)
 		SendTimeout:     10 * time.Second,
+		AuthToken:       "", // No auth by default
 	}
 }
 
@@ -77,7 +80,15 @@ func NewPoolWithConfig(config *PoolConfig) *Pool {
 		dialTimeout:     config.DialTimeout,
 		idleTimeout:     config.IdleTimeout,
 		sendTimeout:     config.SendTimeout,
+		authToken:       config.AuthToken,
 	}
+}
+
+	// SetAuthToken sets the authentication token for the pool
+func (p *Pool) SetAuthToken(token string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.authToken = token
 }
 
 // Get gets or creates a connection to a node
@@ -218,6 +229,7 @@ func (p *Pool) dial(ctx context.Context, nodeID, address string) (*TCPConn, erro
 		SendTimeout:       p.sendTimeout,
 		IdleTimeout:       p.idleTimeout,
 		HeartbeatInterval: 0,
+		AuthToken:         p.authToken, // ← 添加这一行！
 	}
 
 	tcpConn := NewTCPConn(conn, config)

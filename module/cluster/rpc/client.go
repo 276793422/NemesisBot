@@ -178,6 +178,7 @@ type Client struct {
 	pool        *transport.Pool
 	rateLimiter *RateLimiter
 	timeout     time.Duration
+	authToken   string // RPC authentication token
 }
 
 // NewClient creates a new RPC client
@@ -191,7 +192,16 @@ func NewClient(cluster Cluster) *Client {
 			30,             // maxRequests: 30 requests per peer per sliding window
 			10*time.Second, // window: sliding window of 10 seconds
 		),
-		timeout: 60 * time.Minute, // RPC Client timeout: 60 minutes (outermost timeout)
+		timeout:   60 * time.Minute, // RPC Client timeout: 60 minutes (outermost timeout)
+	}
+}
+
+// SetAuthToken sets the authentication token for RPC connections
+func (c *Client) SetAuthToken(token string) {
+	c.authToken = token
+	// Also set token on the pool
+	if c.pool != nil {
+		c.pool.SetAuthToken(token)
 	}
 }
 

@@ -43,6 +43,8 @@ func CmdCluster() {
 		cmdClusterStop()
 	case "reset":
 		cmdClusterReset()
+	case "token":
+		CmdClusterToken()
 	default:
 		fmt.Printf("Unknown cluster command: %s\n", subcommand)
 		ClusterHelp()
@@ -56,6 +58,7 @@ func ClusterHelp() {
 	fmt.Println("  config                 Show or modify cluster configuration")
 	fmt.Println("  info                   Show or modify current node information")
 	fmt.Println("  peers                  Manage configured peer nodes")
+	fmt.Println("  token                  Manage RPC authentication token")
 	fmt.Println("  init                   Initialize cluster configuration")
 	fmt.Println("  reset                  Reset cluster runtime state")
 	fmt.Println("  enable                 Enable cluster module")
@@ -65,6 +68,13 @@ func ClusterHelp() {
 	fmt.Println()
 	fmt.Println("Configuration:")
 	fmt.Println("  nemesisbot cluster config [--udp-port 11949] [--rpc-port 21949]")
+	fmt.Println()
+	fmt.Println("Token management:")
+	fmt.Println("  nemesisbot cluster token generate [--length 32] [--save]")
+	fmt.Println("  nemesisbot cluster token show [--full]")
+	fmt.Println("  nemesisbot cluster token set <token>")
+	fmt.Println("  nemesisbot cluster token set --generate [--length 32]")
+	fmt.Println("  nemesisbot cluster token verify <token>")
 	fmt.Println()
 	fmt.Println("Node information:")
 	fmt.Println("  nemesisbot cluster info")

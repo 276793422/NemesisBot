@@ -27,6 +27,7 @@ type ClusterMeta struct {
 	ID            string    `toml:"id"`
 	AutoDiscovery bool      `toml:"auto_discovery"`
 	LastUpdated   time.Time `toml:"last_updated"`
+	RPCAuthToken  string    `toml:"rpc_auth_token"` // RPC authentication token
 }
 
 // NodeInfo contains information about the current node

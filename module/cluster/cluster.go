@@ -182,6 +182,16 @@ func (c *Cluster) Start() error {
 
 	// Create and start RPC server
 	c.rpcServer = rpc.NewServer(c)
+
+	// Load RPC auth token from config
+	staticConfig, err := LoadStaticConfig(c.staticConfigPath)
+	if err == nil && staticConfig.Cluster.RPCAuthToken != "" {
+		c.rpcServer.SetAuthToken(staticConfig.Cluster.RPCAuthToken)
+		c.logger.RPCInfo("RPC authentication enabled")
+	} else {
+		c.logger.RPCInfo("RPC authentication disabled (no token configured)")
+	}
+
 	if err := c.rpcServer.Start(c.rpcPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}

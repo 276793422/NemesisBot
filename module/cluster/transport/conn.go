@@ -49,6 +49,7 @@ type TCPConn struct {
 	sendTimeout       time.Duration
 	idleTimeout       time.Duration
 	heartbeatInterval time.Duration
+	authToken         string // RPC authentication token
 
 	// Synchronization
 	wg sync.WaitGroup
@@ -64,6 +65,7 @@ type TCPConnConfig struct {
 	SendTimeout       time.Duration
 	IdleTimeout       time.Duration
 	HeartbeatInterval time.Duration
+	AuthToken         string // RPC authentication token
 }
 
 // DefaultTCPConnConfig returns the default configuration
@@ -75,7 +77,8 @@ func DefaultTCPConnConfig(nodeID, address string) *TCPConnConfig {
 		SendBufferSize:    100,
 		SendTimeout:       10 * time.Second,
 		IdleTimeout:       30 * time.Second,
-		HeartbeatInterval: 0, // Disabled by default
+		HeartbeatInterval: 0,   // Disabled by default
+		AuthToken:         "", // No auth by default
 	}
 }
 
@@ -98,6 +101,7 @@ func NewTCPConn(conn net.Conn, config *TCPConnConfig) *TCPConn {
 		sendTimeout:       config.SendTimeout,
 		idleTimeout:       config.IdleTimeout,
 		heartbeatInterval: config.HeartbeatInterval,
+		authToken:         config.AuthToken, // Save auth token
 	}
 
 	tc.lastUsed.Store(time.Now())
@@ -109,6 +113,22 @@ func NewTCPConn(conn net.Conn, config *TCPConnConfig) *TCPConn {
 func (tc *TCPConn) Start() {
 	if !tc.started.CompareAndSwap(false, true) {
 		return // Already started
+	}
+
+	// Send authentication token if configured (client-side)
+	if tc.authToken != "" {
+		// Set write deadline for auth
+		tc.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+
+		// Send token with newline
+		_, err := tc.conn.Write([]byte(tc.authToken + "\n"))
+		if err != nil {
+			tc.Close()
+			return
+		}
+
+		// Reset deadline
+		tc.conn.SetWriteDeadline(time.Time{})
 	}
 
 	// Start read goroutine

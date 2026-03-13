@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,14 +20,15 @@ import (
 
 // Server represents the HTTP server for the web channel
 type Server struct {
-	host       string
-	port       int
-	wsPath     string
-	authToken  string
-	sessionMgr *SessionManager
-	httpServer *http.Server
-	running    bool
-	mu         sync.RWMutex
+	host        string
+	port        int
+	wsPath      string
+	authToken   string
+	sessionMgr  *SessionManager
+	httpServer  *http.Server
+	running     bool
+	mu          sync.RWMutex
+	corsManager *CORSManager // CORS manager
 
 	// Channel for incoming messages from WebSocket clients
 	messageChan chan IncomingMessage
@@ -36,12 +38,13 @@ type Server struct {
 
 // ServerConfig holds the server configuration
 type ServerConfig struct {
-	Host       string
-	Port       int
-	WSPath     string
-	AuthToken  string
-	SessionMgr *SessionManager
-	Bus        *bus.MessageBus
+	Host        string
+	Port        int
+	WSPath      string
+	AuthToken   string
+	SessionMgr  *SessionManager
+	Bus         *bus.MessageBus
+	Workspace   string // Workspace path for config files
 }
 
 // NewServer creates a new HTTP server
@@ -54,6 +57,23 @@ func NewServer(config ServerConfig) *Server {
 		sessionMgr: config.SessionMgr,
 		bus:        config.Bus,
 		running:    false,
+	}
+
+	// Initialize CORS manager if workspace is provided
+	if config.Workspace != "" {
+		corsConfigPath := filepath.Join(config.Workspace, "config", "cors.json")
+		corsMgr, err := NewCORSManager(corsConfigPath)
+		if err != nil {
+			logger.WarnCF("web", "Failed to initialize CORS manager, CORS checks will be disabled", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Continue without CORS manager (CORS checks will be disabled)
+		} else {
+			s.corsManager = corsMgr
+			logger.InfoCF("web", "CORS manager initialized", map[string]interface{}{
+				"config_path": corsConfigPath,
+			})
+		}
 	}
 
 	// Start outbound message dispatcher
@@ -215,6 +235,18 @@ func (s *Server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
 
 // handleWebSocket handles WebSocket upgrade requests
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// CORS check (if CORS manager is configured)
+	if s.corsManager != nil {
+		if !s.corsManager.CheckCORS(r) {
+			logger.WarnCF("web", "CORS violation blocked", map[string]interface{}{
+				"origin":      r.Header.Get("Origin"),
+				"remote_addr": r.RemoteAddr,
+			})
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Check auth token if configured
 	if s.authToken != "" {
 		token := r.URL.Query().Get("token")
@@ -243,6 +275,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	logger.InfoCF("web", "WebSocket connection established", map[string]interface{}{
 		"session_id":  session.ID,
 		"remote_addr": r.RemoteAddr,
+		"origin":      r.Header.Get("Origin"),
 	})
 
 	// Handle WebSocket connection in goroutine
