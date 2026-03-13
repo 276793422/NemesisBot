@@ -473,11 +473,11 @@ func TestBuildTrigrams(t *testing.T) {
 
 func TestJaccardSimilarity(t *testing.T) {
 	tests := []struct {
-	 name     string
- a        []uint32
- b        []uint32
- expected float64
-}{
+		name     string
+		a        []uint32
+		b        []uint32
+		expected float64
+	}{
 		{
 			name:     "both empty",
 			a:        []uint32{},

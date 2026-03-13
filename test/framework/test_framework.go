@@ -7,6 +7,7 @@ package framework
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,9 +16,9 @@ import (
 
 // TempWorkspace provides a temporary workspace directory for testing
 type TempWorkspace struct {
-	root    string
+	root      string
 	workspace string
-	t       *testing.T
+	t         *testing.T
 }
 
 // NewTempWorkspace creates a new temporary workspace for testing
@@ -158,15 +159,39 @@ func Eventually(t *testing.T, condition func() bool, timeout time.Duration, msg 
 }
 
 // WaitFor waits for a channel to have a value or timeout
-func WaitFor(t *testing.T, timeout time.Duration, msg string) chan struct{} {
+// Returns a done channel that should be closed when the operation completes
+// Also returns an error channel that will receive a timeout error message
+// The caller should select on both channels in the main goroutine:
+//
+//	done, errCh := WaitFor(t, timeout, "operation")
+//	select {
+//	case <-done:
+//	    // Operation completed successfully
+//	case err := <-errCh:
+//	    t.Fatal(err)
+//	}
+//
+// Or simply:
+//
+//	done, _ := WaitFor(t, timeout, "operation")
+//	<-done  // Will block until timeout or completion
+func WaitFor(t *testing.T, timeout time.Duration, msg string) (chan struct{}, <-chan string) {
 	t.Helper()
 	done := make(chan struct{})
+	errCh := make(chan string, 1)
+
 	go func() {
 		select {
 		case <-time.After(timeout):
-			t.Fatalf("Timeout waiting for: %s", msg)
+			// Send error message on error channel (non-blocking)
+			select {
+			case errCh <- fmt.Sprintf("Timeout waiting for: %s", msg):
+			default:
+			}
 		case <-done:
+			// Operation completed successfully
 		}
 	}()
-	return done
+
+	return done, errCh
 }

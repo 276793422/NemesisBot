@@ -17,16 +17,16 @@ import (
 
 func TestNewGitHubRegistry(t *testing.T) {
 	tests := []struct {
-		name     string
-		cfg      GitHubConfig
-		wantURL  string
+		name        string
+		cfg         GitHubConfig
+		wantURL     string
 		wantTimeout time.Duration
 		wantMaxSize int
 	}{
 		{
-			name: "default config",
-			cfg:  GitHubConfig{},
-			wantURL: "https://raw.githubusercontent.com",
+			name:        "default config",
+			cfg:         GitHubConfig{},
+			wantURL:     "https://raw.githubusercontent.com",
 			wantTimeout: 30 * time.Second,
 			wantMaxSize: 1 * 1024 * 1024,
 		},
@@ -35,7 +35,7 @@ func TestNewGitHubRegistry(t *testing.T) {
 			cfg: GitHubConfig{
 				BaseURL: "https://custom.github.com",
 			},
-			wantURL: "https://custom.github.com",
+			wantURL:     "https://custom.github.com",
 			wantTimeout: 30 * time.Second,
 			wantMaxSize: 1 * 1024 * 1024,
 		},
@@ -44,7 +44,7 @@ func TestNewGitHubRegistry(t *testing.T) {
 			cfg: GitHubConfig{
 				Timeout: 60,
 			},
-			wantURL: "https://raw.githubusercontent.com",
+			wantURL:     "https://raw.githubusercontent.com",
 			wantTimeout: 60 * time.Second,
 			wantMaxSize: 1 * 1024 * 1024,
 		},
@@ -53,7 +53,7 @@ func TestNewGitHubRegistry(t *testing.T) {
 			cfg: GitHubConfig{
 				MaxSize: 5 * 1024 * 1024,
 			},
-			wantURL: "https://raw.githubusercontent.com",
+			wantURL:     "https://raw.githubusercontent.com",
 			wantTimeout: 30 * time.Second,
 			wantMaxSize: 5 * 1024 * 1024,
 		},
@@ -64,7 +64,7 @@ func TestNewGitHubRegistry(t *testing.T) {
 				Timeout: 120,
 				MaxSize: 10 * 1024 * 1024,
 			},
-			wantURL: "https://custom.github.com",
+			wantURL:     "https://custom.github.com",
 			wantTimeout: 120 * time.Second,
 			wantMaxSize: 10 * 1024 * 1024,
 		},
@@ -106,13 +106,13 @@ func TestGitHubRegistry_Name(t *testing.T) {
 
 func TestGitHubRegistry_Search(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		setupServer func() *httptest.Server
-		query      string
-		limit      int
-		wantErr    bool
+		query       string
+		limit       int
+		wantErr     bool
 		errContains string
-		wantCount  int
+		wantCount   int
 	}{
 		{
 			name: "successful search with results",
@@ -172,9 +172,9 @@ func TestGitHubRegistry_Search(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
-			query:      "test",
-			limit:      10,
-			wantErr:    true,
+			query:   "test",
+			limit:   10,
+			wantErr: true,
 		},
 		{
 			name: "invalid JSON response",
@@ -184,9 +184,9 @@ func TestGitHubRegistry_Search(t *testing.T) {
 					w.Write([]byte("invalid json"))
 				}))
 			},
-			query:      "test",
-			limit:      10,
-			wantErr:    true,
+			query:   "test",
+			limit:   10,
+			wantErr: true,
 		},
 		{
 			name: "empty skills list",
@@ -478,9 +478,9 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 				}))
 			},
 			slug:        "../../../etc/passwd",
-			version:      "",
-			wantErr:      true,
-			errContains:  "invalid slug",
+			version:     "",
+			wantErr:     true,
+			errContains: "invalid slug",
 		},
 		{
 			name: "HTTP error - skill not found",
@@ -490,9 +490,9 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 				}))
 			},
 			slug:        "nonexistent",
-			version:      "",
-			wantErr:      true,
-			errContains:  "failed to download",
+			version:     "",
+			wantErr:     true,
+			errContains: "failed to download",
 		},
 		{
 			name: "metadata fetch fails but installation succeeds",

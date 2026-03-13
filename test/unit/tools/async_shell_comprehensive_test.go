@@ -87,11 +87,11 @@ func TestAsyncExecTool_Execute_InvalidWaitSecondsType(t *testing.T) {
 
 func TestAsyncExecTool_Execute_WorkingDirectoryHandling(t *testing.T) {
 	tests := []struct {
-		name           string
-		workingDir     string
-		argWorkingDir  string
-		expectedDir    string
-		shouldUseCWD   bool
+		name          string
+		workingDir    string
+		argWorkingDir string
+		expectedDir   string
+		shouldUseCWD  bool
 	}{
 		{"no_working_dir", "", "", "", true},
 		{"tool_has_dir", "/tmp", "", "/tmp", false},
@@ -288,8 +288,8 @@ func TestExecuteMethodErrorHandling(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		name    string
-		args    map[string]interface{}
+		name         string
+		args         map[string]interface{}
 		requireError bool
 	}{
 		{"missing_command", map[string]interface{}{}, true},

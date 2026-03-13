@@ -22,7 +22,7 @@ func (m *MockLLMProvider) Chat(ctx context.Context, messages []Message, tools []
 		return m.chatFunc(ctx, messages, tools, model, options)
 	}
 	return &LLMResponse{
-		Content: "Mock response",
+		Content:   "Mock response",
 		ToolCalls: []ToolCall{},
 	}, nil
 }
@@ -356,7 +356,6 @@ func TestToolDefinition_Structure(t *testing.T) {
 	if def.Type != "function" {
 		t.Errorf("Expected type 'function', got '%s'", def.Type)
 	}
-
 
 	if def.Function.Name != "test_func" {
 		t.Errorf("Expected function name 'test_func', got '%s'", def.Function.Name)
@@ -710,7 +709,7 @@ func TestLLMProvider_WithOptions(t *testing.T) {
 	ctx := context.Background()
 	testOptions := map[string]interface{}{
 		"temperature": 0.7,
-		"max_tokens":   1000,
+		"max_tokens":  1000,
 		"top_p":       0.9,
 	}
 
@@ -841,7 +840,7 @@ func TestFailoverError_AsError(t *testing.T) {
 
 func TestModelConfig_Immutability(t *testing.T) {
 	original := ModelConfig{
-		Primary: "primary",
+		Primary:   "primary",
 		Fallbacks: []string{"f1", "f2"},
 	}
 
@@ -1056,7 +1055,7 @@ func TestFailoverError_StatusCodes(t *testing.T) {
 
 func TestModelConfig_GetFallbacks(t *testing.T) {
 	config := ModelConfig{
-		Primary: "primary",
+		Primary:   "primary",
 		Fallbacks: []string{"f1", "f2", "f3"},
 	}
 

@@ -233,10 +233,10 @@ func TestBuildAgentPeerSessionKey(t *testing.T) {
 
 func TestParseAgentSessionKey(t *testing.T) {
 	tests := []struct {
-		name        string
-		sessionKey  string
-		expected    *ParsedSessionKey
-		expectNil   bool
+		name       string
+		sessionKey string
+		expected   *ParsedSessionKey
+		expectNil  bool
 	}{
 		{
 			name:       "valid session key",
@@ -387,18 +387,18 @@ func TestResolveLinkedPeerID(t *testing.T) {
 		expected      string
 	}{
 		{
-			name:     "no identity links",
+			name:          "no identity links",
 			identityLinks: map[string][]string{},
-			channel:  "discord",
-			peerID:   "user123",
-			expected: "",
+			channel:       "discord",
+			peerID:        "user123",
+			expected:      "",
 		},
 		{
-			name: "nil identity links",
+			name:          "nil identity links",
 			identityLinks: nil,
-			channel:  "discord",
-			peerID:   "user123",
-			expected: "",
+			channel:       "discord",
+			peerID:        "user123",
+			expected:      "",
 		},
 		{
 			name: "exact match",

@@ -138,8 +138,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 						},
 						Usage: models.Usage{
 							PromptTokens:     h.countTokens(req.Messages),
-							CompletionTokens: len(responseContent) + len(processedResp.ToolCalls) * 50,
-							TotalTokens:      h.countTokens(req.Messages) + len(responseContent) + len(processedResp.ToolCalls) * 50,
+							CompletionTokens: len(responseContent) + len(processedResp.ToolCalls)*50,
+							TotalTokens:      h.countTokens(req.Messages) + len(responseContent) + len(processedResp.ToolCalls)*50,
 						},
 					}
 					c.JSON(http.StatusOK, response)
@@ -364,8 +364,8 @@ func (h *Handler) handleStreamingResponseWithTools(c *gin.Context, modelName, co
 		Model:   modelName,
 		Choices: []models.StreamChoice{
 			{
-				Index: 0,
-				Delta: models.Delta{},
+				Index:        0,
+				Delta:        models.Delta{},
 				FinishReason: &finishReason,
 			},
 		},

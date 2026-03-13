@@ -430,7 +430,7 @@ func strPtr(s string) *string {
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(s == substr ||
-		 len(s) > len(substr) && containsIgnoreCaseHelper(s, substr))
+			len(s) > len(substr) && containsIgnoreCaseHelper(s, substr))
 }
 
 func containsIgnoreCaseHelper(s, substr string) bool {

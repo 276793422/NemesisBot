@@ -18,10 +18,10 @@ import (
 
 // integrationTestServer simulates a real node in the cluster
 type integrationTestServer struct {
-	server      *rpc.Server
-	port        int
-	nodeID      string
-	cluster     *integrationTestCluster
+	server  *rpc.Server
+	port    int
+	nodeID  string
+	cluster *integrationTestCluster
 }
 
 func TestFullRPCIntegration(t *testing.T) {
@@ -79,7 +79,7 @@ func TestFullRPCIntegration(t *testing.T) {
 
 	// Test bidirectional communication
 	testPayload := map[string]interface{}{
-		"message": "Hello from node 1 to node 2",
+		"message":   "Hello from node 1 to node 2",
 		"timestamp": time.Now().Unix(),
 	}
 
@@ -156,7 +156,7 @@ func TestRPCWithRateLimiting(t *testing.T) {
 	client := rpc.NewClient(clientNode.cluster)
 
 	// Test successful calls
-	payload := map[string]interface{}{ "msg": "test1" }
+	payload := map[string]interface{}{"msg": "test1"}
 	_, err = client.CallWithContext(context.Background(), "server-node", "echo", payload)
 	if err != nil {
 		t.Fatalf("First call failed: %v", err)
@@ -226,7 +226,7 @@ func TestRPCConnectionPoolReuse(t *testing.T) {
 		wg.Add(1)
 		go func(callID int) {
 			defer wg.Done()
-			payload := map[string]interface{}{ "id": callID }
+			payload := map[string]interface{}{"id": callID}
 			response, err := client.CallWithContext(context.Background(), "server-node", "echo", payload)
 			if err != nil {
 				errors <- err
@@ -362,7 +362,7 @@ func TestRPCErrorPropagation(t *testing.T) {
 	client := rpc.NewClient(clientNode.cluster)
 
 	// Test error propagation
-	payload := map[string]interface{}{ "error": "test" }
+	payload := map[string]interface{}{"error": "test"}
 	_, err = client.CallWithContext(context.Background(), "server-node", "error", payload)
 	if err == nil {
 		t.Error("Expected error propagation, got none")

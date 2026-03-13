@@ -81,11 +81,11 @@ func TestMessageParsing(t *testing.T) {
 			{
 				"type": "message",
 				"source": map[string]interface{}{
-					"type": "user",
+					"type":   "user",
 					"userId": "U123456",
 				},
 				"message": map[string]interface{}{
-					"id": "n123456",
+					"id":   "n123456",
 					"text": "Hello LINE",
 				},
 			},
@@ -212,7 +212,7 @@ func TestMessageFiltering(t *testing.T) {
 		allowFrom := []string{"user123", "user456"}
 
 		senders := []struct {
-			id       string
+			id      string
 			allowed bool
 		}{
 			{"user123", true},

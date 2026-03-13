@@ -26,10 +26,10 @@ func createTestConfig() *config.Config {
 				SessionTimeout: 3600,
 			},
 			External: config.ExternalConfig{
-				Enabled:  false,
-				InputEXE: "",
+				Enabled:   false,
+				InputEXE:  "",
 				OutputEXE: "",
-				ChatID:   "external-test",
+				ChatID:    "external-test",
 			},
 			WebSocket: config.WebSocketChannelConfig{
 				Enabled: false,
@@ -427,10 +427,10 @@ func TestManagerGetSyncTargets(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 
 	tests := []struct {
-		name         string
-		channelName  string
-		setupConfig  func(*config.Config)
-		expectedLen  int
+		name            string
+		channelName     string
+		setupConfig     func(*config.Config)
+		expectedLen     int
 		expectedTargets []string
 	}{
 		{
@@ -440,8 +440,8 @@ func TestManagerGetSyncTargets(t *testing.T) {
 				c.Channels.Web.Enabled = true
 				c.Channels.Web.SyncTo = []string{"telegram", "discord"}
 			},
-			expectedLen:      2,
-			expectedTargets:  []string{"telegram", "discord"},
+			expectedLen:     2,
+			expectedTargets: []string{"telegram", "discord"},
 		},
 		{
 			name:        "Web channel with no sync targets",

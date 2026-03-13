@@ -14,8 +14,8 @@ import (
 // ServiceManager manages all services in the application
 // It handles both basic services (always running) and the bot service (on-demand)
 type ServiceManager struct {
-	mu    sync.RWMutex
-	ctx   context.Context
+	mu     sync.RWMutex
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	// Bot service (on-demand)

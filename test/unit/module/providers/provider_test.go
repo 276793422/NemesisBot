@@ -17,11 +17,11 @@ import (
 
 // TestLLMProvider is a mock implementation for testing
 type TestLLMProvider struct {
-	name    string
-	model   string
-	fail    bool
-	resp    *protocoltypes.LLMResponse
-	delay   time.Duration
+	name  string
+	model string
+	fail  bool
+	resp  *protocoltypes.LLMResponse
+	delay time.Duration
 }
 
 // cooldownTrackerWithTime is a helper for testing cooldown functionality
@@ -226,7 +226,7 @@ func TestNormalizeProvider(t *testing.T) {
 func TestModelKey(t *testing.T) {
 	tests := []struct {
 		provider, model string
-		expected       string
+		expected        string
 	}{
 		{"anthropic", "claude-3-opus", "anthropic/claude-3-opus"},
 		{"Claude", "CLAUDE-3-Opus", "anthropic/claude-3-opus"},
@@ -314,10 +314,10 @@ func TestCooldownTrackerExponentialBackoff(t *testing.T) {
 		failCount int
 		expected  time.Duration
 	}{
-		{1, time.Minute},        // 1 error -> 1 min
-		{2, 5 * time.Minute},   // 2 errors -> 5 min
-		{3, 25 * time.Minute},  // 3 errors -> 25 min
-		{4, time.Hour},         // 4+ errors -> 1 hour (cap)
+		{1, time.Minute},      // 1 error -> 1 min
+		{2, 5 * time.Minute},  // 2 errors -> 5 min
+		{3, 25 * time.Minute}, // 3 errors -> 25 min
+		{4, time.Hour},        // 4+ errors -> 1 hour (cap)
 	}
 
 	for _, tt := range tests {

@@ -19,13 +19,13 @@ import (
 type MockClusterCallbacks struct {
 	mu sync.Mutex
 
-	nodeID       string
-	address      string
-	rpcPort      int
-	localIPs     []string
-	role         string
-	category     string
-	tags         []string
+	nodeID   string
+	address  string
+	rpcPort  int
+	localIPs []string
+	role     string
+	category string
+	tags     []string
 
 	discoveredNodes []DiscoveredNode
 	offlineNodes    []OfflineNode
@@ -50,8 +50,8 @@ type DiscoveredNode struct {
 }
 
 type OfflineNode struct {
-	NodeID  string
-	Reason  string
+	NodeID string
+	Reason string
 }
 
 func NewMockClusterCallbacks(nodeID string) *MockClusterCallbacks {
@@ -131,8 +131,8 @@ func (m *MockClusterCallbacks) HandleNodeOffline(nodeID, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.offlineNodes = append(m.offlineNodes, OfflineNode{
-		NodeID:  nodeID,
-		Reason:  reason,
+		NodeID: nodeID,
+		Reason: reason,
 	})
 }
 
@@ -433,8 +433,8 @@ func TestDiscoveryMessageValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid bye message",
-			msg:  NewByeMessage("node-123"),
+			name:    "valid bye message",
+			msg:     NewByeMessage("node-123"),
 			wantErr: false,
 		},
 		{

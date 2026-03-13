@@ -34,8 +34,8 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":          true,
-			"result":      true,
+			"ok":               true,
+			"result":           true,
 			"webhook_received": true,
 		})
 	})

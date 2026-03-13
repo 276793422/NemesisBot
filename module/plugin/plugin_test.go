@@ -489,11 +489,11 @@ func TestManager_Execute_Concurrent(t *testing.T) {
 		go func(iteration int) {
 			defer wg.Done()
 			invocation := &ToolInvocation{
-				ToolName:  "test-tool",
-				Method:    "Execute",
-				Args:      map[string]interface{}{"iter": iteration},
-				Context:   ctx,
-				Metadata:  make(map[string]interface{}),
+				ToolName: "test-tool",
+				Method:   "Execute",
+				Args:     map[string]interface{}{"iter": iteration},
+				Context:  ctx,
+				Metadata: make(map[string]interface{}),
 			}
 
 			allowed, err := manager.Execute(ctx, invocation)

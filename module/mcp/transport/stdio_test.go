@@ -375,8 +375,8 @@ func TestJSONRPCResponse_Unmarshal(t *testing.T) {
 		check   func(*JSONRPCResponse) bool
 	}{
 		{
-			name: "valid response with result",
-			data: `{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`,
+			name:    "valid response with result",
+			data:    `{"jsonrpc":"2.0","id":1,"result":{"status":"ok"}}`,
 			wantErr: false,
 			check: func(resp *JSONRPCResponse) bool {
 				return resp.Result != nil && resp.Error == nil

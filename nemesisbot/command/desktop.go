@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/276793422/NemesisBot/nemesisbot/desktop"
 	"github.com/276793422/NemesisBot/module/services"
+	"github.com/276793422/NemesisBot/nemesisbot/desktop"
 )
 
 // CmdDesktop starts NemesisBot with Desktop UI

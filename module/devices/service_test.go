@@ -660,46 +660,46 @@ func TestSendNotification(t *testing.T) {
 // Test parseLastChannel
 func TestParseLastChannel(t *testing.T) {
 	tests := []struct {
-		name           string
-		lastChannel    string
+		name             string
+		lastChannel      string
 		expectedPlatform string
-		expectedUserID string
+		expectedUserID   string
 	}{
 		{
-			name:           "valid channel",
-			lastChannel:    "discord:user123",
+			name:             "valid channel",
+			lastChannel:      "discord:user123",
 			expectedPlatform: "discord",
-			expectedUserID: "user123",
+			expectedUserID:   "user123",
 		},
 		{
-			name:           "empty channel",
-			lastChannel:    "",
+			name:             "empty channel",
+			lastChannel:      "",
 			expectedPlatform: "",
-			expectedUserID: "",
+			expectedUserID:   "",
 		},
 		{
-			name:           "missing separator",
-			lastChannel:    "discord",
+			name:             "missing separator",
+			lastChannel:      "discord",
 			expectedPlatform: "",
-			expectedUserID: "",
+			expectedUserID:   "",
 		},
 		{
-			name:           "empty platform",
-			lastChannel:    ":user123",
+			name:             "empty platform",
+			lastChannel:      ":user123",
 			expectedPlatform: "",
-			expectedUserID: "",
+			expectedUserID:   "",
 		},
 		{
-			name:           "empty user ID",
-			lastChannel:    "discord:",
+			name:             "empty user ID",
+			lastChannel:      "discord:",
 			expectedPlatform: "",
-			expectedUserID: "",
+			expectedUserID:   "",
 		},
 		{
-			name:           "multiple separators",
-			lastChannel:    "discord:channel:user",
+			name:             "multiple separators",
+			lastChannel:      "discord:channel:user",
 			expectedPlatform: "discord",
-			expectedUserID: "channel:user",
+			expectedUserID:   "channel:user",
 		},
 	}
 
@@ -759,18 +759,18 @@ func TestConcurrentAccess(t *testing.T) {
 // Test DeviceEvent FormatMessage
 func TestDeviceEventFormatMessage(t *testing.T) {
 	tests := []struct {
-		name   string
-		event  *events.DeviceEvent
-		check  func(string) bool
+		name  string
+		event *events.DeviceEvent
+		check func(string) bool
 	}{
 		{
 			name: "add event",
 			event: &events.DeviceEvent{
-				Action:   events.ActionAdd,
-				Kind:     events.KindUSB,
-				Vendor:   "Test Vendor",
-				Product:  "Test Product",
-				Serial:   "ABC123",
+				Action:       events.ActionAdd,
+				Kind:         events.KindUSB,
+				Vendor:       "Test Vendor",
+				Product:      "Test Product",
+				Serial:       "ABC123",
 				Capabilities: "Keyboard",
 			},
 			check: func(msg string) bool {
@@ -785,10 +785,10 @@ func TestDeviceEventFormatMessage(t *testing.T) {
 		{
 			name: "remove event",
 			event: &events.DeviceEvent{
-				Action:   events.ActionRemove,
-				Kind:     events.KindUSB,
-				Vendor:   "Test Vendor",
-				Product:  "Test Product",
+				Action:  events.ActionRemove,
+				Kind:    events.KindUSB,
+				Vendor:  "Test Vendor",
+				Product: "Test Product",
 			},
 			check: func(msg string) bool {
 				return strings.Contains(msg, "Disconnected") &&
@@ -798,11 +798,11 @@ func TestDeviceEventFormatMessage(t *testing.T) {
 		{
 			name: "event with serial",
 			event: &events.DeviceEvent{
-				Action: events.ActionAdd,
-				Kind:   events.KindUSB,
-				Vendor: "Vendor",
+				Action:  events.ActionAdd,
+				Kind:    events.KindUSB,
+				Vendor:  "Vendor",
 				Product: "Product",
-				Serial: "SERIAL123",
+				Serial:  "SERIAL123",
 			},
 			check: func(msg string) bool {
 				return strings.Contains(msg, "Serial:") &&
@@ -812,9 +812,9 @@ func TestDeviceEventFormatMessage(t *testing.T) {
 		{
 			name: "event without capabilities",
 			event: &events.DeviceEvent{
-				Action: events.ActionAdd,
-				Kind:   events.KindUSB,
-				Vendor: "Vendor",
+				Action:  events.ActionAdd,
+				Kind:    events.KindUSB,
+				Vendor:  "Vendor",
 				Product: "Product",
 			},
 			check: func(msg string) bool {
@@ -844,11 +844,11 @@ func BenchmarkParseLastChannel(b *testing.B) {
 
 func BenchmarkDeviceEventFormatMessage(b *testing.B) {
 	event := &events.DeviceEvent{
-		Action:   events.ActionAdd,
-		Kind:     events.KindUSB,
-		Vendor:   "Test Vendor",
-		Product:  "Test Product",
-		Serial:   "ABC123",
+		Action:       events.ActionAdd,
+		Kind:         events.KindUSB,
+		Vendor:       "Test Vendor",
+		Product:      "Test Product",
+		Serial:       "ABC123",
 		Capabilities: "Keyboard, Mouse",
 	}
 	b.ResetTimer()

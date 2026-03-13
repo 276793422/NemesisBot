@@ -20,9 +20,9 @@ func TestRequestLogger_NewRequestLogger(t *testing.T) {
 	tempDir := t.TempDir()
 
 	tests := []struct {
-		name     string
-		cfg      *config.LoggingConfig
-		enabled  bool
+		name    string
+		cfg     *config.LoggingConfig
+		enabled bool
 	}{
 		{
 			name: "enabled with valid config",
@@ -35,8 +35,8 @@ func TestRequestLogger_NewRequestLogger(t *testing.T) {
 			enabled: true,
 		},
 		{
-			name: "disabled when config is nil",
-			cfg:  nil,
+			name:    "disabled when config is nil",
+			cfg:     nil,
 			enabled: false,
 		},
 		{
@@ -154,14 +154,14 @@ func TestRequestLogger_LogLLMRequest(t *testing.T) {
 	rl.CreateSession()
 
 	info := LLMRequestInfo{
-		Round:         1,
-		Timestamp:     time.Now(),
-		Model:         "test-model",
-		ProviderName:  "test-provider",
-		APIKey:        "sk-test123456789",
-		APIBase:       "https://api.test.com",
-		HTTPHeaders:   map[string]string{"X-Custom": "value"},
-		FullConfig:    map[string]interface{}{"temperature": 0.7},
+		Round:        1,
+		Timestamp:    time.Now(),
+		Model:        "test-model",
+		ProviderName: "test-provider",
+		APIKey:       "sk-test123456789",
+		APIBase:      "https://api.test.com",
+		HTTPHeaders:  map[string]string{"X-Custom": "value"},
+		FullConfig:   map[string]interface{}{"temperature": 0.7},
 		Messages: []providers.Message{
 			{Role: "user", Content: "Test message"},
 		},
@@ -221,10 +221,10 @@ func TestRequestLogger_LogLLMResponse(t *testing.T) {
 	rl.CreateSession()
 
 	info := LLMResponseInfo{
-		Round:        1,
-		Timestamp:    time.Now(),
-		Duration:     2 * time.Second,
-		Content:      "Test response content",
+		Round:     1,
+		Timestamp: time.Now(),
+		Duration:  2 * time.Second,
+		Content:   "Test response content",
 		ToolCalls: []providers.ToolCall{
 			{
 				ID:   "call_123",
@@ -282,8 +282,8 @@ func TestRequestLogger_LogLocalOperations(t *testing.T) {
 		Timestamp: time.Now(),
 		Operations: []Operation{
 			{
-				Type:  "tool_call",
-				Name:  "test_tool",
+				Type: "tool_call",
+				Name: "test_tool",
 				Arguments: map[string]interface{}{
 					"param1": "value1",
 				},
@@ -292,8 +292,8 @@ func TestRequestLogger_LogLocalOperations(t *testing.T) {
 				Duration: 100 * time.Millisecond,
 			},
 			{
-				Type:  "file_write",
-				Name:  "test.txt",
+				Type:   "file_write",
+				Name:   "test.txt",
 				Status: "Failed",
 				Error:  "permission denied",
 			},
@@ -679,4 +679,3 @@ func TestRequestLogger_NextIndex(t *testing.T) {
 		t.Errorf("Expected index 03, got %s", idx3)
 	}
 }
-

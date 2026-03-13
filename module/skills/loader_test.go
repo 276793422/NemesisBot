@@ -205,11 +205,11 @@ func TestSkillsLoader_ListSkills(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		setup         func()
-		wantCount     int
-		wantSources   map[string]string
-		wantNames     []string
+		name        string
+		setup       func()
+		wantCount   int
+		wantSources map[string]string
+		wantNames   []string
 	}{
 		{
 			name: "no skills",
@@ -415,11 +415,11 @@ func TestSkillsLoader_LoadSkill(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		setup        func()
-		skillName    string
-		wantFound    bool
-		wantContent  string
+		name        string
+		setup       func()
+		skillName   string
+		wantFound   bool
+		wantContent string
 	}{
 		{
 			name:      "skill not found",
@@ -706,13 +706,13 @@ func TestSkillsLoader_GetSkillMetadata(t *testing.T) {
 	tempDir := t.TempDir()
 
 	tests := []struct {
-		name        string
-		content     string
-		wantName    string
-		wantDesc    string
+		name     string
+		content  string
+		wantName string
+		wantDesc string
 	}{
 		{
-			name:     "JSON metadata with frontmatter",
+			name: "JSON metadata with frontmatter",
 			content: `---
 {"name": "test-skill", "description": "A test skill"}
 ---
@@ -721,7 +721,7 @@ Content`,
 			wantDesc: "A test skill",
 		},
 		{
-			name:     "YAML metadata with frontmatter",
+			name: "YAML metadata with frontmatter",
 			content: `---
 name: test-skill
 description: A test skill
@@ -731,7 +731,7 @@ Content`,
 			wantDesc: "A test skill",
 		},
 		{
-			name:     "YAML with quotes",
+			name: "YAML with quotes",
 			content: `---
 name: "test-skill"
 description: "A test skill"
@@ -741,7 +741,7 @@ Content`,
 			wantDesc: "A test skill",
 		},
 		{
-			name:     "mixed quotes",
+			name: "mixed quotes",
 			content: `---
 name: 'test-skill'
 description: "A test skill"
@@ -757,7 +757,7 @@ Content`,
 			wantDesc: "",
 		},
 		{
-			name:     "YAML with comments",
+			name: "YAML with comments",
 			content: `---
 # This is a comment
 name: test-skill
@@ -801,18 +801,18 @@ Content`,
 
 func TestSkillsLoader_ExtractFrontmatter(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
+		name            string
+		content         string
 		wantFrontmatter string
 	}{
 		{
-			name:     "no frontmatter",
-			content:  `Just content`,
+			name:            "no frontmatter",
+			content:         `Just content`,
 			wantFrontmatter: "",
 		},
 		{
-			name:     "Unix line endings",
-			content:  `---
+			name: "Unix line endings",
+			content: `---
 name: test
 description: A test
 ---
@@ -820,22 +820,22 @@ Content`,
 			wantFrontmatter: "name: test\ndescription: A test",
 		},
 		{
-			name:     "Windows line endings",
-			content:  "---\r\nname: test\r\ndescription: A test\r\n---\r\nContent",
+			name:            "Windows line endings",
+			content:         "---\r\nname: test\r\ndescription: A test\r\n---\r\nContent",
 			wantFrontmatter: "name: test\r\ndescription: A test",
 		},
 		{
-			name:     "Classic Mac line endings",
-			content:  "---\rname: test\rdescription: A test\r---\rContent",
+			name:            "Classic Mac line endings",
+			content:         "---\rname: test\rdescription: A test\r---\rContent",
 			wantFrontmatter: "name: test\rdescription: A test",
 		},
 		{
-			name:     "mixed line endings",
-			content:  "---\r\nname: test\ndescription: A test\r\n---\nContent",
+			name:            "mixed line endings",
+			content:         "---\r\nname: test\ndescription: A test\r\n---\nContent",
 			wantFrontmatter: "name: test\ndescription: A test",
 		},
 		{
-			name:     "multiline frontmatter",
+			name: "multiline frontmatter",
 			content: `---
 name: test
 description: |
@@ -846,8 +846,8 @@ Content`,
 			wantFrontmatter: "name: test\ndescription: |\n  A multi-line\n  description",
 		},
 		{
-			name:     "empty frontmatter",
-			content:  `---
+			name: "empty frontmatter",
+			content: `---
 ---
 Content`,
 			wantFrontmatter: "",
@@ -892,7 +892,7 @@ func TestSkillsLoader_StripFrontmatter(t *testing.T) {
 			wantContent: "Content",
 		},
 		{
-			name:        "multiline frontmatter",
+			name: "multiline frontmatter",
 			content: `---
 name: test
 description: A test
@@ -915,57 +915,57 @@ Content here`,
 
 func TestSkillsLoader_ParseSimpleYAML(t *testing.T) {
 	tests := []struct {
-		name     string
-		content  string
-		wantKey  string
+		name      string
+		content   string
+		wantKey   string
 		wantValue string
 	}{
 		{
-			name:     "simple key-value",
-			content:  "name: test",
-			wantKey:  "name",
+			name:      "simple key-value",
+			content:   "name: test",
+			wantKey:   "name",
 			wantValue: "test",
 		},
 		{
-			name:     "with quotes",
-			content:  `name: "test skill"`,
-			wantKey:  "name",
+			name:      "with quotes",
+			content:   `name: "test skill"`,
+			wantKey:   "name",
 			wantValue: "test skill",
 		},
 		{
-			name:     "with single quotes",
-			content:  `name: 'test skill'`,
-			wantKey:  "name",
+			name:      "with single quotes",
+			content:   `name: 'test skill'`,
+			wantKey:   "name",
 			wantValue: "test skill",
 		},
 		{
-			name:     "multiple values",
-			content:  "name: test\ndescription: A test",
-			wantKey:  "description",
+			name:      "multiple values",
+			content:   "name: test\ndescription: A test",
+			wantKey:   "description",
 			wantValue: "A test",
 		},
 		{
-			name:     "with comments",
-			content:  "# Comment\nname: test",
-			wantKey:  "name",
+			name:      "with comments",
+			content:   "# Comment\nname: test",
+			wantKey:   "name",
 			wantValue: "test",
 		},
 		{
-			name:     "empty lines",
-			content:  "\nname: test\n",
-			wantKey:  "name",
+			name:      "empty lines",
+			content:   "\nname: test\n",
+			wantKey:   "name",
 			wantValue: "test",
 		},
 		{
-			name:     "Windows line endings",
-			content:  "name: test\r\ndescription: A test",
-			wantKey:  "description",
+			name:      "Windows line endings",
+			content:   "name: test\r\ndescription: A test",
+			wantKey:   "description",
 			wantValue: "A test",
 		},
 		{
-			name:     "Classic Mac line endings",
-			content:  "name: test\rdescription: A test",
-			wantKey:  "description",
+			name:      "Classic Mac line endings",
+			content:   "name: test\rdescription: A test",
+			wantKey:   "description",
 			wantValue: "A test",
 		},
 	}

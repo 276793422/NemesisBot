@@ -29,11 +29,11 @@ func (m *mockProviderForRegistry) GetDefaultModel() string {
 // TestAgentRegistry_CanSpawnSubagent tests subagent spawning permissions
 func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 	tests := []struct {
-		name         string
-		agents       []config.AgentConfig
-		parentID     string
-		targetID     string
-		expected     bool
+		name     string
+		agents   []config.AgentConfig
+		parentID string
+		targetID string
+		expected bool
 	}{
 		{
 			name: "parent not found",
@@ -57,7 +57,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "parent has nil subagent allow list",
 			agents: []config.AgentConfig{
 				{
-					ID: "agent1",
+					ID:   "agent1",
 					Name: "Agent 1",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: nil,
@@ -72,7 +72,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "parent allows wildcard",
 			agents: []config.AgentConfig{
 				{
-					ID: "agent1",
+					ID:   "agent1",
 					Name: "Agent 1",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: []string{"*"},
@@ -88,7 +88,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "parent allows specific agent",
 			agents: []config.AgentConfig{
 				{
-					ID: "agent1",
+					ID:   "agent1",
 					Name: "Agent 1",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: []string{"agent2"},
@@ -104,7 +104,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "parent does not allow specific agent",
 			agents: []config.AgentConfig{
 				{
-					ID: "agent1",
+					ID:   "agent1",
 					Name: "Agent 1",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: []string{"agent3"},
@@ -120,7 +120,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "case insensitive agent ID matching",
 			agents: []config.AgentConfig{
 				{
-					ID: "Agent-One",
+					ID:   "Agent-One",
 					Name: "Agent One",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: []string{"agent-two"},
@@ -136,7 +136,7 @@ func TestAgentRegistry_CanSpawnSubagent(t *testing.T) {
 			name: "empty allow list",
 			agents: []config.AgentConfig{
 				{
-					ID: "agent1",
+					ID:   "agent1",
 					Name: "Agent 1",
 					Subagents: &config.SubagentsConfig{
 						AllowAgents: []string{},

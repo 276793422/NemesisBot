@@ -18,9 +18,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 		checkFunc func(t *testing.T, chunks []string)
 	}{
 		{
-			name: "very long code block that needs splitting inside",
+			name:    "very long code block that needs splitting inside",
 			content: strings.Repeat("```javascript\nconsole.log('line');\n", 100) + "```\ntext after",
-			maxLen: 200,
+			maxLen:  200,
 			checkFunc: func(t *testing.T, chunks []string) {
 				// Should split the long code block
 				if len(chunks) < 2 {
@@ -41,9 +41,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "code block at exact boundary",
+			name:    "code block at exact boundary",
 			content: "text before\n```\ncode\n```\ntext after",
-			maxLen: 50,
+			maxLen:  50,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -56,9 +56,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple code blocks",
+			name:    "multiple code blocks",
 			content: "```\nblock1\n```\ntext\n```\nblock2\n```\ntext\n```\nblock3\n```",
-			maxLen: 30,
+			maxLen:  30,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -72,9 +72,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "incomplete code block at end",
+			name:    "incomplete code block at end",
 			content: "text\n```\nunclosed code\nmore code",
-			maxLen: 30,
+			maxLen:  30,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -87,9 +87,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "code block with language identifier",
+			name:    "code block with language identifier",
 			content: "```go\nfunc main() {}\n```",
-			maxLen: 20,
+			maxLen:  20,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -102,9 +102,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "small maxLen with code block",
+			name:    "small maxLen with code block",
 			content: "```\ncode\n```\ntext",
-			maxLen: 15,
+			maxLen:  15,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -118,9 +118,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "code block with very long line",
+			name:    "code block with very long line",
 			content: "```\n" + strings.Repeat("a", 300) + "\n```\ntext",
-			maxLen: 100,
+			maxLen:  100,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) < 2 {
 					t.Errorf("Expected at least 2 chunks for long line, got %d", len(chunks))
@@ -134,9 +134,9 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 			},
 		},
 		{
-			name: "mixed content with multiple splits",
+			name:    "mixed content with multiple splits",
 			content: strings.Repeat("word ", 100) + "\n```\ncode block\n```\n" + strings.Repeat("text ", 100),
-			maxLen: 150,
+			maxLen:  150,
 			checkFunc: func(t *testing.T, chunks []string) {
 				if len(chunks) < 3 {
 					t.Errorf("Expected at least 3 chunks, got %d", len(chunks))
@@ -161,15 +161,15 @@ func TestSplitMessage_CodeBlockSplitting(t *testing.T) {
 // TestSplitMessage_EdgeCases tests edge cases for message splitting
 func TestSplitMessage_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		content string
-		maxLen int
-		check  func(t *testing.T, chunks []string)
+		maxLen  int
+		check   func(t *testing.T, chunks []string)
 	}{
 		{
-			name:   "maxLen smaller than buffer minimum",
+			name:    "maxLen smaller than buffer minimum",
 			content: "a b c d e f g h i j",
-			maxLen: 8, // Very small maxLen
+			maxLen:  8, // Very small maxLen
 			check: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -182,9 +182,9 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:   "maxLen exactly at buffer boundary",
+			name:    "maxLen exactly at buffer boundary",
 			content: strings.Repeat("word ", 20),
-			maxLen: 50,
+			maxLen:  50,
 			check: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -192,9 +192,9 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:   "empty string with small maxLen",
+			name:    "empty string with small maxLen",
 			content: "",
-			maxLen: 1,
+			maxLen:  1,
 			check: func(t *testing.T, chunks []string) {
 				// Empty string produces no chunks or empty chunks
 				if len(chunks) > 1 {
@@ -203,9 +203,9 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:   "only whitespace",
+			name:    "only whitespace",
 			content: "   \n\t\n   ",
-			maxLen: 10,
+			maxLen:  10,
 			check: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -218,9 +218,9 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:   "very long single word",
+			name:    "very long single word",
 			content: strings.Repeat("a", 500),
-			maxLen: 100,
+			maxLen:  100,
 			check: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -239,9 +239,9 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:   "unicode with code block",
+			name:    "unicode with code block",
 			content: "```\n你好世界\n```\n测试文本",
-			maxLen: 30,
+			maxLen:  30,
 			check: func(t *testing.T, chunks []string) {
 				if len(chunks) == 0 {
 					t.Error("Expected at least 1 chunk")
@@ -265,29 +265,29 @@ func TestSplitMessage_EdgeCases(t *testing.T) {
 // TestSplitMessage_CodeBlockBufferTests tests the code block buffer calculation
 func TestSplitMessage_CodeBlockBufferTests(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		content string
-		maxLen int
+		maxLen  int
 	}{
 		{
-			name:   "maxLen 10 (buffer min 50, capped at 5)",
+			name:    "maxLen 10 (buffer min 50, capped at 5)",
 			content: "```\ncode\n```",
-			maxLen: 10,
+			maxLen:  10,
 		},
 		{
-			name:   "maxLen 100 (buffer 10%)",
+			name:    "maxLen 100 (buffer 10%)",
 			content: strings.Repeat("a", 100) + "\n```\ncode\n```",
-			maxLen: 100,
+			maxLen:  100,
 		},
 		{
-			name:   "maxLen 1000 (buffer 100)",
+			name:    "maxLen 1000 (buffer 100)",
 			content: strings.Repeat("a", 1000) + "\n```\ncode\n```",
-			maxLen: 1000,
+			maxLen:  1000,
 		},
 		{
-			name:   "maxLen 200 (buffer 20, capped at 100)",
+			name:    "maxLen 200 (buffer 20, capped at 100)",
 			content: "```\n" + strings.Repeat("x", 200) + "\n```",
-			maxLen: 200,
+			maxLen:  200,
 		},
 	}
 

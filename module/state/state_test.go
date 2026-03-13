@@ -502,10 +502,10 @@ func TestLoadPartialState(t *testing.T) {
 
 	// Test loading complete state (this should definitely work)
 	testCases := []struct {
-		name     string
-		content  string
+		name                string
+		content             string
 		expectedLastChannel string
-		expectedLastChatID string
+		expectedLastChatID  string
 	}{
 		{"All fields", `{"last_channel": "discord", "last_chat_id": "789012", "timestamp": "2026-03-09T12:00:00Z"}`, "discord", "789012"},
 	}
@@ -594,7 +594,7 @@ func TestStatePersistenceAcrossManagers(t *testing.T) {
 	sm1 := NewManager(tmpDir)
 	sm1.SetLastChannel("test-channel")
 	sm1.SetLastChatID("test-chat-id")
-	sm1.SetLastChannel("final-channel")  // Update timestamp
+	sm1.SetLastChannel("final-channel") // Update timestamp
 
 	// Create second manager - should load persisted state
 	sm2 := NewManager(tmpDir)

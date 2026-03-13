@@ -1057,7 +1057,7 @@ func TestAsFloat(t *testing.T) {
 		}
 		if ok && result != tc.expected {
 			// For float comparison, check if they're close enough
-			if abs(result - tc.expected) > 0.0001 {
+			if abs(result-tc.expected) > 0.0001 {
 				t.Errorf("asFloat(%v) = %f, want %f", tc.input, result, tc.expected)
 			}
 		}

@@ -1592,7 +1592,7 @@ func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.Messag
 	// Long timeout configuration: RPC Client (60min) > PeerChatHandler (59min) > RPCChannel (58min)
 	cfg := &channels.RPCChannelConfig{
 		MessageBus:      msgBus,
-		RequestTimeout:  58 * time.Minute,  // RPCChannel timeout
+		RequestTimeout:  58 * time.Minute, // RPCChannel timeout
 		CleanupInterval: 30 * time.Second,
 	}
 

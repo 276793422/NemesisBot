@@ -289,7 +289,7 @@ func TestFrameReaderErrorCases(t *testing.T) {
 				fr := NewFrameReader(bytes.NewReader([]byte{}))
 				return fr
 			},
-			wantErr:   true,
+			wantErr: true,
 		},
 		{
 			name: "read with incomplete data",
@@ -514,18 +514,18 @@ func TestRPCMessageValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid request",
-			msg:  NewRequest("node-1", "node-2", "ping", nil),
+			name:    "valid request",
+			msg:     NewRequest("node-1", "node-2", "ping", nil),
 			wantErr: false,
 		},
 		{
-			name: "valid response",
-			msg:  NewResponse(NewRequest("node-1", "node-2", "ping", nil), nil),
+			name:    "valid response",
+			msg:     NewResponse(NewRequest("node-1", "node-2", "ping", nil), nil),
 			wantErr: false,
 		},
 		{
-			name: "valid error",
-			msg:  NewError(NewRequest("node-1", "node-2", "ping", nil), "test error"),
+			name:    "valid error",
+			msg:     NewError(NewRequest("node-1", "node-2", "ping", nil), "test error"),
 			wantErr: false,
 		},
 		{
@@ -891,15 +891,15 @@ func TestTCPConnIsActive(t *testing.T) {
 func TestTCPConnGetLocalAddrNilConn(t *testing.T) {
 	// Create connection with nil underlying connection
 	conn := &TCPConn{
-		conn:       nil,
-		nodeID:     "node-1",
-		address:    "127.0.0.1:8080",
-		sendChan:   make(chan []byte, 100),
-		recvChan:   make(chan *RPCMessage, 100),
-		closeChan:  make(chan struct{}),
-		started:    atomic.Bool{},
-		closed:     atomic.Bool{},
-		lastUsed:   atomic.Value{},
+		conn:      nil,
+		nodeID:    "node-1",
+		address:   "127.0.0.1:8080",
+		sendChan:  make(chan []byte, 100),
+		recvChan:  make(chan *RPCMessage, 100),
+		closeChan: make(chan struct{}),
+		started:   atomic.Bool{},
+		closed:    atomic.Bool{},
+		lastUsed:  atomic.Value{},
 	}
 
 	addr := conn.GetLocalAddr()
@@ -911,15 +911,15 @@ func TestTCPConnGetLocalAddrNilConn(t *testing.T) {
 func TestTCPConnGetRemoteAddrNilConn(t *testing.T) {
 	// Create connection with nil underlying connection
 	conn := &TCPConn{
-		conn:       nil,
-		nodeID:     "node-1",
-		address:    "127.0.0.1:8080",
-		sendChan:   make(chan []byte, 100),
-		recvChan:   make(chan *RPCMessage, 100),
-		closeChan:  make(chan struct{}),
-		started:    atomic.Bool{},
-		closed:     atomic.Bool{},
-		lastUsed:   atomic.Value{},
+		conn:      nil,
+		nodeID:    "node-1",
+		address:   "127.0.0.1:8080",
+		sendChan:  make(chan []byte, 100),
+		recvChan:  make(chan *RPCMessage, 100),
+		closeChan: make(chan struct{}),
+		started:   atomic.Bool{},
+		closed:    atomic.Bool{},
+		lastUsed:  atomic.Value{},
 	}
 
 	addr := conn.GetRemoteAddr()
@@ -1065,8 +1065,8 @@ func TestDefaultPoolConfig(t *testing.T) {
 		t.Errorf("Expected DialTimeout 10s, got %v", config.DialTimeout)
 	}
 
-	if config.IdleTimeout != 30*time.Second {
-		t.Errorf("Expected IdleTimeout 30s, got %v", config.IdleTimeout)
+	if config.IdleTimeout != 65*time.Minute {
+		t.Errorf("Expected IdleTimeout 65m, got %v", config.IdleTimeout)
 	}
 
 	if config.SendTimeout != 10*time.Second {
@@ -1445,10 +1445,10 @@ func TestPoolStatsPerNode(t *testing.T) {
 
 func TestTCPConnSendErrorCases(t *testing.T) {
 	tests := []struct {
-		name      string
-		setup     func() *TCPConn
-		wantErr   bool
-		errType   error
+		name    string
+		setup   func() *TCPConn
+		wantErr bool
+		errType error
 	}{
 		{
 			name: "send to closed connection",

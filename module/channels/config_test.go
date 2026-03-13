@@ -117,13 +117,13 @@ func TestChannelConfigs(t *testing.T) {
 
 	t.Run("External config", func(t *testing.T) {
 		cfg := config.ExternalConfig{
-			Enabled:    true,
-			InputEXE:   "input.exe",
-			OutputEXE:  "output.exe",
-			ChatID:     "external:main",
-			AllowFrom:  config.FlexibleStringSlice{"localhost"},
-			SyncTo:     []string{"web"},
-			SyncToWeb:  true,
+			Enabled:   true,
+			InputEXE:  "input.exe",
+			OutputEXE: "output.exe",
+			ChatID:    "external:main",
+			AllowFrom: config.FlexibleStringSlice{"localhost"},
+			SyncTo:    []string{"web"},
+			SyncToWeb: true,
 		}
 
 		if !cfg.Enabled {
@@ -139,14 +139,14 @@ func TestChannelConfigs(t *testing.T) {
 
 	t.Run("WebSocket config", func(t *testing.T) {
 		cfg := config.WebSocketChannelConfig{
-			Enabled:           true,
-			Host:              "0.0.0.0",
-			Port:              18792,
-			Path:              "/ws",
-			AuthToken:         "test_token",
-			AllowFrom:         config.FlexibleStringSlice{"127.0.0.1"},
-			SyncTo:            []string{},
-			SyncToWeb:         false,
+			Enabled:   true,
+			Host:      "0.0.0.0",
+			Port:      18792,
+			Path:      "/ws",
+			AuthToken: "test_token",
+			AllowFrom: config.FlexibleStringSlice{"127.0.0.1"},
+			SyncTo:    []string{},
+			SyncToWeb: false,
 		}
 
 		if !cfg.Enabled {

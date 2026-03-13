@@ -313,17 +313,17 @@ func TestDownloadFile(t *testing.T) {
 			wantEmpty:   false,
 		},
 		{
-			name:     "server error",
-			url:      errorServer.URL,
-			filename: "error.txt",
-			opts:     DownloadOptions{},
+			name:      "server error",
+			url:       errorServer.URL,
+			filename:  "error.txt",
+			opts:      DownloadOptions{},
 			wantEmpty: true,
 		},
 		{
-			name:     "invalid URL",
-			url:      "http://invalid-url-that-does-not-exist.local",
-			filename: "invalid.txt",
-			opts:     DownloadOptions{},
+			name:      "invalid URL",
+			url:       "http://invalid-url-that-does-not-exist.local",
+			filename:  "invalid.txt",
+			opts:      DownloadOptions{},
 			wantEmpty: true,
 		},
 		{
@@ -869,8 +869,8 @@ func TestDownloadFile_ProxyHeader(t *testing.T) {
 	// Test with custom headers that might be used by proxies
 	opts := DownloadOptions{
 		ExtraHeaders: map[string]string{
-			"Via":              "1.1 proxy.example.com",
-			"X-Forwarded-For":  "192.168.1.1",
+			"Via":             "1.1 proxy.example.com",
+			"X-Forwarded-For": "192.168.1.1",
 		},
 	}
 

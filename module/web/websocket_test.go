@@ -206,8 +206,8 @@ func TestProcessMessages_ContextCancellation(t *testing.T) {
 	testBus := bus.NewMessageBus()
 
 	server := &Server{
-		sessionMgr: sm,
-		bus:        testBus,
+		sessionMgr:  sm,
+		bus:         testBus,
 		messageChan: make(chan IncomingMessage, 10),
 	}
 
@@ -230,8 +230,8 @@ func TestProcessMessages_MessagePublishing(t *testing.T) {
 	testBus := bus.NewMessageBus()
 
 	server := &Server{
-		sessionMgr: sm,
-		bus:        testBus,
+		sessionMgr:  sm,
+		bus:         testBus,
 		messageChan: make(chan IncomingMessage, 10),
 	}
 

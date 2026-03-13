@@ -301,9 +301,9 @@ func (b *MessageListBuilder) AddSystem(content string) *MessageListBuilder {
 // AddTool adds a tool result message
 func (b *MessageListBuilder) AddTool(toolID, content string) *MessageListBuilder {
 	b.messages = append(b.messages, map[string]interface{}{
-		"role":       "tool",
-		"tool_id":    toolID,
-		"content":    content,
+		"role":    "tool",
+		"tool_id": toolID,
+		"content": content,
 	})
 	return b
 }

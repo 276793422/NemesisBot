@@ -127,9 +127,9 @@ func TestMessageTool_Execute_CustomChannelAndChatID(t *testing.T) {
 
 	ctx := context.Background()
 	result := tool.Execute(ctx, map[string]interface{}{
-		"content":  "Test message",
-		"channel":  "custom_channel",
-		"chat_id":  "custom_chat",
+		"content": "Test message",
+		"channel": "custom_channel",
+		"chat_id": "custom_chat",
 	})
 
 	if result.IsError {

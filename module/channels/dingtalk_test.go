@@ -103,8 +103,8 @@ func TestDingTalkChannelStart(t *testing.T) {
 		AllowFrom:    []string{"user1"},
 	}
 	msgBus := bus.NewMessageBus()
-		var channel *DingTalkChannel
-		channel, err := NewDingTalkChannel(cfg, msgBus)
+	var channel *DingTalkChannel
+	channel, err := NewDingTalkChannel(cfg, msgBus)
 
 	if err != nil {
 		t.Fatalf("Failed to create channel: %v", err)
@@ -133,8 +133,8 @@ func TestDingTalkChannelStop(t *testing.T) {
 		AllowFrom:    []string{"user1"},
 	}
 	msgBus := bus.NewMessageBus()
-		var channel *DingTalkChannel
-		channel, err := NewDingTalkChannel(cfg, msgBus)
+	var channel *DingTalkChannel
+	channel, err := NewDingTalkChannel(cfg, msgBus)
 
 	if err != nil {
 		t.Fatalf("Failed to create channel: %v", err)
@@ -157,10 +157,10 @@ func TestDingTalkChannelStop(t *testing.T) {
 // TestDingTalkChannelSend tests the Send method
 func TestDingTalkChannelSend(t *testing.T) {
 	tests := []struct {
-		name             string
-		cfg              config.DingTalkConfig
-		setupSession     bool
-		expectedError    string
+		name          string
+		cfg           config.DingTalkConfig
+		setupSession  bool
+		expectedError string
 	}{
 		{
 			name: "Send without stored session",
@@ -170,8 +170,8 @@ func TestDingTalkChannelSend(t *testing.T) {
 				ClientSecret: "test-client-secret",
 				AllowFrom:    []string{"user1"},
 			},
-			setupSession: false,
-			expectedError: "dingtalk channel not running",  // Updated to reflect actual behavior
+			setupSession:  false,
+			expectedError: "dingtalk channel not running", // Updated to reflect actual behavior
 		},
 		{
 			name: "Send with invalid session type",
@@ -181,8 +181,8 @@ func TestDingTalkChannelSend(t *testing.T) {
 				ClientSecret: "test-client-secret",
 				AllowFrom:    []string{"user1"},
 			},
-			setupSession: true,
-			expectedError: "dingtalk channel not running",  // Updated to reflect actual behavior
+			setupSession:  true,
+			expectedError: "dingtalk channel not running", // Updated to reflect actual behavior
 		},
 		{
 			name: "Send when channel not running",
@@ -192,7 +192,7 @@ func TestDingTalkChannelSend(t *testing.T) {
 				ClientSecret: "test-client-secret",
 				AllowFrom:    []string{"user1"},
 			},
-			setupSession: true,
+			setupSession:  true,
 			expectedError: "dingtalk channel not running",
 		},
 		{
@@ -266,18 +266,18 @@ func TestDingTalkChannelSend(t *testing.T) {
 // TestDingTalkChannelIsAllowed tests the IsAllowed method
 func TestDingTalkChannelIsAllowed(t *testing.T) {
 	tests := []struct {
-		name       string
-		cfg        config.DingTalkConfig
-		senderID   string
-		allowed    bool
+		name     string
+		cfg      config.DingTalkConfig
+		senderID string
+		allowed  bool
 	}{
 		{
 			name: "Empty allowlist allows all",
 			cfg: config.DingTalkConfig{
-				Enabled:   true,
-				ClientID:  "test-id",
+				Enabled:      true,
+				ClientID:     "test-id",
 				ClientSecret: "test-secret",
-				AllowFrom: []string{},
+				AllowFrom:    []string{},
 			},
 			senderID: "any-user",
 			allowed:  true,
@@ -285,10 +285,10 @@ func TestDingTalkChannelIsAllowed(t *testing.T) {
 		{
 			name: "Exact match in allowlist",
 			cfg: config.DingTalkConfig{
-				Enabled:   true,
-				ClientID:  "test-id",
+				Enabled:      true,
+				ClientID:     "test-id",
 				ClientSecret: "test-secret",
-				AllowFrom: []string{"user1", "user2"},
+				AllowFrom:    []string{"user1", "user2"},
 			},
 			senderID: "user1",
 			allowed:  true,
@@ -296,10 +296,10 @@ func TestDingTalkChannelIsAllowed(t *testing.T) {
 		{
 			name: "Not in allowlist",
 			cfg: config.DingTalkConfig{
-				Enabled:   true,
-				ClientID:  "test-id",
+				Enabled:      true,
+				ClientID:     "test-id",
 				ClientSecret: "test-secret",
-				AllowFrom: []string{"user1", "user2"},
+				AllowFrom:    []string{"user1", "user2"},
 			},
 			senderID: "user3",
 			allowed:  false,
@@ -307,10 +307,10 @@ func TestDingTalkChannelIsAllowed(t *testing.T) {
 		{
 			name: "Compound senderID with match",
 			cfg: config.DingTalkConfig{
-				Enabled:   true,
-				ClientID:  "test-id",
+				Enabled:      true,
+				ClientID:     "test-id",
 				ClientSecret: "test-secret",
-				AllowFrom: []string{"123456", "user1"},
+				AllowFrom:    []string{"123456", "user1"},
 			},
 			senderID: "123456|username",
 			allowed:  true,
@@ -318,10 +318,10 @@ func TestDingTalkChannelIsAllowed(t *testing.T) {
 		{
 			name: "Username part matches allowlist",
 			cfg: config.DingTalkConfig{
-				Enabled:   true,
-				ClientID:  "test-id",
+				Enabled:      true,
+				ClientID:     "test-id",
 				ClientSecret: "test-secret",
-				AllowFrom: []string{"username"},
+				AllowFrom:    []string{"username"},
 			},
 			senderID: "123456|username",
 			allowed:  true,
@@ -354,8 +354,8 @@ func TestDingTalkChannelErrorHandling(t *testing.T) {
 		AllowFrom:    []string{"user1"},
 	}
 	msgBus := bus.NewMessageBus()
-		var channel *DingTalkChannel
-		channel, err := NewDingTalkChannel(cfg, msgBus)
+	var channel *DingTalkChannel
+	channel, err := NewDingTalkChannel(cfg, msgBus)
 
 	if err != nil {
 		t.Fatalf("Failed to create channel: %v", err)
@@ -401,8 +401,8 @@ func TestDingTalkChannelSessionManagement(t *testing.T) {
 		AllowFrom:    []string{"user1"},
 	}
 	msgBus := bus.NewMessageBus()
-		var channel *DingTalkChannel
-		channel, err := NewDingTalkChannel(cfg, msgBus)
+	var channel *DingTalkChannel
+	channel, err := NewDingTalkChannel(cfg, msgBus)
 
 	if err != nil {
 		t.Fatalf("Failed to create channel: %v", err)

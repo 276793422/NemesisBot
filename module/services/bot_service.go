@@ -53,8 +53,8 @@ type BotService struct {
 // NewBotService creates a new BotService instance
 func NewBotService() *BotService {
 	return &BotService{
-		state:       BotStateNotStarted,
-		configPath:  GetConfigPath(),
+		state:      BotStateNotStarted,
+		configPath: GetConfigPath(),
 	}
 }
 

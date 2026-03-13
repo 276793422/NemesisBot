@@ -48,8 +48,8 @@ func TestCamelToSnake(t *testing.T) {
 func TestConvertKeysToSnake(t *testing.T) {
 	t.Run("Convert map with camelCase keys", func(t *testing.T) {
 		input := map[string]interface{}{
-			"camelCase":   "value1",
-			"AnotherKey":  "value2",
+			"camelCase":  "value1",
+			"AnotherKey": "value2",
 			"APIResponse": map[string]interface{}{
 				"statusCode": 200,
 				"dataBody":   "content",
@@ -252,10 +252,10 @@ func TestGetFloat(t *testing.T) {
 // TestGetBool tests the getBool helper function
 func TestGetBool(t *testing.T) {
 	data := map[string]interface{}{
-		"true":     true,
-		"false":    false,
-		"invalid":  "string",
-		"missing":  nil,
+		"true":    true,
+		"false":   false,
+		"invalid": "string",
+		"missing": nil,
 	}
 
 	t.Run("Get true value", func(t *testing.T) {
@@ -458,10 +458,10 @@ func TestConvertConfig(t *testing.T) {
 		data := map[string]interface{}{
 			"agents": map[string]interface{}{
 				"defaults": map[string]interface{}{
-					"llm":           "anthropic/claude-3-opus",
-					"max_tokens":    4096.0,
-					"temperature":   0.7,
-					"workspace":     "/home/user/.openclaw/workspace",
+					"llm":         "anthropic/claude-3-opus",
+					"max_tokens":  4096.0,
+					"temperature": 0.7,
+					"workspace":   "/home/user/.openclaw/workspace",
 				},
 			},
 		}
@@ -523,9 +523,9 @@ func TestConvertConfig(t *testing.T) {
 		data := map[string]interface{}{
 			"channels": map[string]interface{}{
 				"telegram": map[string]interface{}{
-					"enabled":     true,
-					"token":       "test-token",
-					"allow_from":  []interface{}{"user1", "user2"},
+					"enabled":    true,
+					"token":      "test-token",
+					"allow_from": []interface{}{"user1", "user2"},
 				},
 				"unsupported": map[string]interface{}{
 					"enabled": true,

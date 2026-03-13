@@ -25,10 +25,10 @@ func TestNewRouteResolver(t *testing.T) {
 
 func TestRouteResolverResolveRoute(t *testing.T) {
 	tests := []struct {
-		name         string
-		bindings     []config.AgentBinding
-		agents       []config.AgentConfig
-		input        RouteInput
+		name          string
+		bindings      []config.AgentBinding
+		agents        []config.AgentConfig
+		input         RouteInput
 		expectedAgent string
 		expectedMatch string
 	}{
@@ -99,8 +99,8 @@ func TestRouteResolverResolveRoute(t *testing.T) {
 				{ID: "parent-agent"},
 			},
 			input: RouteInput{
-				Channel:     "discord",
-				AccountID:   "default",
+				Channel:   "discord",
+				AccountID: "default",
 				ParentPeer: &RoutePeer{
 					Kind: "channel",
 					ID:   "parent123",
@@ -224,7 +224,7 @@ func TestRouteResolverResolveRoute(t *testing.T) {
 			expectedMatch: "binding.channel",
 		},
 		{
-			name:   "default agent when no bindings match",
+			name:     "default agent when no bindings match",
 			bindings: []config.AgentBinding{},
 			agents: []config.AgentConfig{
 				{ID: "main", Default: true},
@@ -237,7 +237,7 @@ func TestRouteResolverResolveRoute(t *testing.T) {
 			expectedMatch: "default",
 		},
 		{
-			name: "first agent when no default specified",
+			name:     "first agent when no default specified",
 			bindings: []config.AgentBinding{},
 			agents: []config.AgentConfig{
 				{ID: "first-agent"},
@@ -385,46 +385,46 @@ func TestRouteResolverFilterBindings(t *testing.T) {
 
 func TestMatchesAccountID(t *testing.T) {
 	tests := []struct {
-		name         string
+		name           string
 		matchAccountID string
-		actual       string
-		expected     bool
+		actual         string
+		expected       bool
 	}{
 		{
-			name:         "exact match",
+			name:           "exact match",
 			matchAccountID: "account1",
-			actual:       "account1",
-			expected:     true,
+			actual:         "account1",
+			expected:       true,
 		},
 		{
-			name:         "case insensitive",
+			name:           "case insensitive",
 			matchAccountID: "Account1",
-			actual:       "account1",
-			expected:     true,
+			actual:         "account1",
+			expected:       true,
 		},
 		{
-			name:         "wildcard matches any",
+			name:           "wildcard matches any",
 			matchAccountID: "*",
-			actual:       "any-account",
-			expected:     true,
+			actual:         "any-account",
+			expected:       true,
 		},
 		{
-			name:         "empty match uses default",
+			name:           "empty match uses default",
 			matchAccountID: "",
-			actual:       "default",
-			expected:     true,
+			actual:         "default",
+			expected:       true,
 		},
 		{
-			name:         "empty match with non-default",
+			name:           "empty match with non-default",
 			matchAccountID: "",
-			actual:       "account1",
-			expected:     false,
+			actual:         "account1",
+			expected:       false,
 		},
 		{
-			name:         "no match",
+			name:           "no match",
 			matchAccountID: "account1",
-			actual:       "account2",
-			expected:     false,
+			actual:         "account2",
+			expected:       false,
 		},
 	}
 
@@ -493,33 +493,33 @@ func TestRouteResolverResolveDefaultAgentID(t *testing.T) {
 
 func TestRouteResolverPickAgentID(t *testing.T) {
 	tests := []struct {
-		name         string
-		agents       []config.AgentConfig
-		agentID      string
-		expected     string
+		name     string
+		agents   []config.AgentConfig
+		agentID  string
+		expected string
 	}{
 		{
-			name:    "existing agent",
-			agents:  []config.AgentConfig{{ID: "agent1"}},
-			agentID: "agent1",
+			name:     "existing agent",
+			agents:   []config.AgentConfig{{ID: "agent1"}},
+			agentID:  "agent1",
 			expected: "agent1",
 		},
 		{
-			name:    "nonexistent agent falls back to default",
-			agents:  []config.AgentConfig{{ID: "main", Default: true}},
-			agentID: "nonexistent",
+			name:     "nonexistent agent falls back to default",
+			agents:   []config.AgentConfig{{ID: "main", Default: true}},
+			agentID:  "nonexistent",
 			expected: "main",
 		},
 		{
-			name:    "empty agent ID uses default",
-			agents:  []config.AgentConfig{{ID: "main", Default: true}},
-			agentID: "",
+			name:     "empty agent ID uses default",
+			agents:   []config.AgentConfig{{ID: "main", Default: true}},
+			agentID:  "",
 			expected: "main",
 		},
 		{
-			name:    "no agents returns normalized input",
-			agents:  []config.AgentConfig{},
-			agentID: "test-agent",
+			name:     "no agents returns normalized input",
+			agents:   []config.AgentConfig{},
+			agentID:  "test-agent",
 			expected: "test-agent",
 		},
 	}

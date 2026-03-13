@@ -20,9 +20,9 @@ func TestInitAuditLogFile(t *testing.T) {
 		defer os.RemoveAll(tempDir)
 
 		auditor := NewSecurityAuditor(&AuditorConfig{
-			Enabled:               true,
-			AuditLogDir:           tempDir,
-			AuditLogFileEnabled:   true,
+			Enabled:             true,
+			AuditLogDir:         tempDir,
+			AuditLogFileEnabled: true,
 		})
 
 		err = auditor.initAuditLogFile()
@@ -55,7 +55,7 @@ func TestInitAuditLogFile(t *testing.T) {
 	t.Run("empty audit log dir", func(t *testing.T) {
 		auditor := NewSecurityAuditor(&AuditorConfig{
 			Enabled:             true,
-			AuditLogDir:        "",
+			AuditLogDir:         "",
 			AuditLogFileEnabled: true,
 		})
 
@@ -110,7 +110,7 @@ func TestWriteAuditLogToFile(t *testing.T) {
 
 		// Create a test audit event
 		event := AuditEvent{
-			EventID:   "test-event-123",
+			EventID: "test-event-123",
 			Request: OperationRequest{
 				Type:        OpFileRead,
 				DangerLevel: DangerLow,
@@ -118,10 +118,10 @@ func TestWriteAuditLogToFile(t *testing.T) {
 				Source:      "test-source",
 				Target:      "/home/user/test.txt",
 			},
-			Decision:  "allowed",
-			Reason:    "test reason",
+			Decision:   "allowed",
+			Reason:     "test reason",
 			PolicyRule: "test-policy",
-			Timestamp: time.Now(),
+			Timestamp:  time.Now(),
 		}
 
 		// Write the event to the log file
@@ -163,9 +163,9 @@ func TestWriteAuditLogToFile(t *testing.T) {
 		event := AuditEvent{
 			EventID: "test-event",
 			Request: OperationRequest{
-				Type:        OpFileRead,
-				User:        "test",
-				Source:      "test",
+				Type:   OpFileRead,
+				User:   "test",
+				Source: "test",
 			},
 		}
 
@@ -334,7 +334,7 @@ func TestExportAuditLog(t *testing.T) {
 
 		// Add some audit events
 		event1 := AuditEvent{
-			EventID:   "event-1",
+			EventID: "event-1",
 			Request: OperationRequest{
 				Type:        OpFileRead,
 				DangerLevel: DangerLow,
@@ -342,14 +342,14 @@ func TestExportAuditLog(t *testing.T) {
 				Source:      "source1",
 				Target:      "/tmp/file1.txt",
 			},
-			Decision:  "allowed",
-			Reason:    "read allowed",
+			Decision:   "allowed",
+			Reason:     "read allowed",
 			PolicyRule: "policy1",
-			Timestamp: time.Now(),
+			Timestamp:  time.Now(),
 		}
 
 		event2 := AuditEvent{
-			EventID:   "event-2",
+			EventID: "event-2",
 			Request: OperationRequest{
 				Type:        OpFileDelete,
 				DangerLevel: DangerHigh,
@@ -357,10 +357,10 @@ func TestExportAuditLog(t *testing.T) {
 				Source:      "source2",
 				Target:      "/tmp/file2.txt",
 			},
-			Decision:  "denied",
-			Reason:    "dangerous operation",
+			Decision:   "denied",
+			Reason:     "dangerous operation",
 			PolicyRule: "policy2",
-			Timestamp: time.Now(),
+			Timestamp:  time.Now(),
 		}
 
 		// Add some audit events directly to the audit log

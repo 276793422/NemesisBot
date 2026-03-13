@@ -584,7 +584,7 @@ func TestWebTools_EdgeCases(t *testing.T) {
 			"query-with-dashes",
 			"query_with_underscores",
 			"query@with$special#chars",
-			"查询中文", // Chinese characters
+			"查询中文",           // Chinese characters
 			"🔍 emoji search", // Emoji
 		}
 

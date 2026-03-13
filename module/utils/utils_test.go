@@ -14,10 +14,10 @@ import (
 // TestTruncate tests string truncation
 func TestTruncate(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		maxLen  int
-		expect  string
+		name   string
+		input  string
+		maxLen int
+		expect string
 	}{
 		{
 			name:   "short string",
@@ -758,11 +758,11 @@ func TestSplitMessage_NoSplittingPoints(t *testing.T) {
 // TestSplitMessage_EffectiveLimitEdgeCases tests effective limit calculations
 func TestSplitMessage_EffectiveLimitEdgeCases(t *testing.T) {
 	tests := []struct {
-		name         string
-		content      string
-		maxLen       int
-		minChunks    int
-		description  string
+		name        string
+		content     string
+		maxLen      int
+		minChunks   int
+		description string
 	}{
 		{
 			name:        "very small maxLen",

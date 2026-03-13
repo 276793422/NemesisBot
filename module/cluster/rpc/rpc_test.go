@@ -27,14 +27,14 @@ type MockNodeForTest struct {
 	rpcPort   int
 }
 
-func (m *MockNodeForTest) GetID() string                 { return m.id }
-func (m *MockNodeForTest) GetName() string               { return m.name }
-func (m *MockNodeForTest) GetAddress() string            { return m.address }
-func (m *MockNodeForTest) GetAddresses() []string        { return m.addresses }
-func (m *MockNodeForTest) GetRPCPort() int               { return m.rpcPort }
-func (m *MockNodeForTest) GetCapabilities() []string      { return []string{} }
-func (m *MockNodeForTest) GetStatus() string             { return "online" }
-func (m *MockNodeForTest) IsOnline() bool                { return true }
+func (m *MockNodeForTest) GetID() string             { return m.id }
+func (m *MockNodeForTest) GetName() string           { return m.name }
+func (m *MockNodeForTest) GetAddress() string        { return m.address }
+func (m *MockNodeForTest) GetAddresses() []string    { return m.addresses }
+func (m *MockNodeForTest) GetRPCPort() int           { return m.rpcPort }
+func (m *MockNodeForTest) GetCapabilities() []string { return []string{} }
+func (m *MockNodeForTest) GetStatus() string         { return "online" }
+func (m *MockNodeForTest) IsOnline() bool            { return true }
 
 func (m *MockClusterForTest) GetRegistry() interface{}                    { return nil }
 func (m *MockClusterForTest) GetNodeID() string                           { return m.nodeID }
@@ -45,7 +45,7 @@ func (m *MockClusterForTest) GetActionsSchema() []interface{}             { retu
 func (m *MockClusterForTest) LogRPCInfo(msg string, args ...interface{})  {}
 func (m *MockClusterForTest) LogRPCError(msg string, args ...interface{}) {}
 func (m *MockClusterForTest) LogRPCDebug(msg string, args ...interface{}) {}
-func (m *MockClusterForTest) GetPeer(peerID string) (interface{}, error)   { return nil, nil }
+func (m *MockClusterForTest) GetPeer(peerID string) (interface{}, error)  { return nil, nil }
 func (m *MockClusterForTest) GetLocalNetworkInterfaces() ([]LocalNetworkInterface, error) {
 	return []LocalNetworkInterface{{IP: "127.0.0.1", Mask: "255.0.0.0"}}, nil
 }

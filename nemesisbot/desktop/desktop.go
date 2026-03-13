@@ -655,9 +655,9 @@ func calculateOptimalWindowSize() (width, height int) {
 			// Also ensure it's not smaller than minimum
 			if width >= minWidth && height >= minHeight {
 				logger.InfoCF("desktop", "Window scaled to fit screen", map[string]interface{}{
-					"iterations": i + 1,
-					"scale":      fmt.Sprintf("%d%%", 100-(i+1)*10),
-					"final_width": width,
+					"iterations":   i + 1,
+					"scale":        fmt.Sprintf("%d%%", 100-(i+1)*10),
+					"final_width":  width,
 					"final_height": height,
 				})
 				return width, height

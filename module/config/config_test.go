@@ -124,15 +124,14 @@ func TestConfigLoadMCPConfig(t *testing.T) {
 
 // TestConfigLoadSecurityConfig removed - SecurityConfig structure doesn't match test expectations
 
-
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && s[:len(s)] != s[:len(s)-len(substr)] &&
-		   s[len(s)-len(substr):] == substr ||
-		   len(s) >= len(substr) && s[:len(s)-len(substr)] != substr &&
-		   s[len(s)-len(substr):] == substr ||
-		   len(s) >= len(substr) && s[:len(s)-len(substr)] != substr &&
-		   s[len(s)-len(substr):] == substr
+		s[len(s)-len(substr):] == substr ||
+		len(s) >= len(substr) && s[:len(s)-len(substr)] != substr &&
+			s[len(s)-len(substr):] == substr ||
+		len(s) >= len(substr) && s[:len(s)-len(substr)] != substr &&
+			s[len(s)-len(substr):] == substr
 }
 
 func TestLoadSecurityConfig(t *testing.T) {
@@ -408,10 +407,10 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestAgentModelConfigUnmarshalJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		json     string
-		want     AgentModelConfig
-		wantErr  bool
+		name    string
+		json    string
+		want    AgentModelConfig
+		wantErr bool
 	}{
 		{
 			name: "string format",
@@ -864,14 +863,14 @@ func TestFlexibleStringSliceEdgeCases(t *testing.T) {
 func TestModelConfigEdgeCases(t *testing.T) {
 	t.Run("ModelConfig with all optional fields", func(t *testing.T) {
 		cfg := ModelConfig{
-			ModelName:     "test-model",
-			Model:         "provider/model",
-			APIBase:       "https://api.example.com",
-			APIKey:        "test-key",
-			Proxy:         "http://proxy.example.com",
-			AuthMethod:    "oauth",
-			ConnectMode:   "grpc",
-			Workspace:     "/tmp/workspace",
+			ModelName:   "test-model",
+			Model:       "provider/model",
+			APIBase:     "https://api.example.com",
+			APIKey:      "test-key",
+			Proxy:       "http://proxy.example.com",
+			AuthMethod:  "oauth",
+			ConnectMode: "grpc",
+			Workspace:   "/tmp/workspace",
 		}
 
 		err := cfg.Validate()

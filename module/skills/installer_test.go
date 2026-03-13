@@ -62,7 +62,7 @@ func TestSkillInstaller_SearchAll(t *testing.T) {
 		wantCount     int
 	}{
 		{
-			name:        "no registry configured",
+			name: "no registry configured",
 			setupRegistry: func() *RegistryManager {
 				return nil
 			},
@@ -187,8 +187,8 @@ func TestSkillInstaller_InstallFromGitHub(t *testing.T) {
 				server.Close() // Close immediately to simulate network error
 				return server
 			},
-			repo:      "user/repo",
-			wantErr:   true,
+			repo:    "user/repo",
+			wantErr: true,
 		},
 	}
 
@@ -243,11 +243,11 @@ func TestSkillInstaller_InstallFromGitHub(t *testing.T) {
 
 func TestSkillInstaller_Uninstall(t *testing.T) {
 	tests := []struct {
-		name       string
-		setup      func(string) string
-		skillName  string
-		wantErr    bool
-		errContains string
+		name          string
+		setup         func(string) string
+		skillName     string
+		wantErr       bool
+		errContains   string
 		verifyRemoved bool
 	}{
 		{
@@ -263,8 +263,8 @@ func TestSkillInstaller_Uninstall(t *testing.T) {
 				}
 				return "test-skill"
 			},
-			skillName:    "test-skill",
-			wantErr:      false,
+			skillName:     "test-skill",
+			wantErr:       false,
 			verifyRemoved: true,
 		},
 		{
@@ -272,9 +272,9 @@ func TestSkillInstaller_Uninstall(t *testing.T) {
 			setup: func(base string) string {
 				return "nonexistent"
 			},
-			skillName:    "nonexistent",
-			wantErr:      true,
-			errContains:  "not found",
+			skillName:     "nonexistent",
+			wantErr:       true,
+			errContains:   "not found",
 			verifyRemoved: false,
 		},
 		{
@@ -294,8 +294,8 @@ func TestSkillInstaller_Uninstall(t *testing.T) {
 				}
 				return "test-skill"
 			},
-			skillName:    "test-skill",
-			wantErr:      false,
+			skillName:     "test-skill",
+			wantErr:       false,
 			verifyRemoved: true,
 		},
 	}
@@ -340,7 +340,7 @@ func TestSkillInstaller_InstallFromRegistry(t *testing.T) {
 		errContains   string
 	}{
 		{
-			name:        "no registry configured",
+			name: "no registry configured",
 			setupRegistry: func() *RegistryManager {
 				return nil
 			},
@@ -378,9 +378,9 @@ func TestSkillInstaller_InstallFromRegistry(t *testing.T) {
 				rm := NewRegistryManager()
 				reg := NewMockRegistry("test")
 				reg.SetSkillMeta("malware-skill", &SkillMeta{
-					Slug:            "malware-skill",
+					Slug:             "malware-skill",
 					IsMalwareBlocked: true,
-					Summary:         "Malicious skill",
+					Summary:          "Malicious skill",
 				})
 				rm.AddRegistry(reg)
 				return rm
@@ -463,13 +463,13 @@ func TestSkillInstaller_SearchRegistries(t *testing.T) {
 		errContains   string
 	}{
 		{
-			name:        "no registry configured",
+			name: "no registry configured",
 			setupRegistry: func() *RegistryManager {
 				return nil
 			},
-			query:     "test",
-			limit:     10,
-			wantErr:   true,
+			query:       "test",
+			limit:       10,
+			wantErr:     true,
 			errContains: "not configured",
 		},
 		{
@@ -522,11 +522,11 @@ func TestSkillInstaller_ListAvailableSkills(t *testing.T) {
 		wantCount     int
 	}{
 		{
-			name:        "no registry - uses GitHub fallback",
+			name: "no registry - uses GitHub fallback",
 			setupRegistry: func() *RegistryManager {
 				return nil
 			},
-			wantErr:   true, // GitHub fallback will fail with no server
+			wantErr: true, // GitHub fallback will fail with no server
 		},
 		{
 			name: "with registry",
@@ -660,7 +660,7 @@ func TestSkillInstaller_GetOriginTracking(t *testing.T) {
 		verify      func(*testing.T, *SkillOrigin)
 	}{
 		{
-			name:      "successful read",
+			name: "successful read",
 			setup: func(workspace string) {
 				skillDir := filepath.Join(workspace, "skills", "test-skill")
 				if err := os.MkdirAll(skillDir, 0o755); err != nil {

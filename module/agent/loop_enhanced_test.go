@@ -1100,4 +1100,3 @@ func TestAgentLoop_maybeSummarizeNew(t *testing.T) {
 	// We're testing the overall behavior through ProcessDirect
 	// Test completes if no panic occurs
 }
-

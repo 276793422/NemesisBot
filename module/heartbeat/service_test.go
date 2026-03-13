@@ -329,32 +329,32 @@ func TestParseLastChannel(t *testing.T) {
 	hs := NewHeartbeatService(tmpDir, 30, true)
 
 	tests := []struct {
-		name            string
-		input           string
+		name             string
+		input            string
 		expectedPlatform string
 		expectedUserID   string
 	}{
 		{
-			name:            "valid channel:chat",
-			input:           "telegram:chat123",
+			name:             "valid channel:chat",
+			input:            "telegram:chat123",
 			expectedPlatform: "telegram",
 			expectedUserID:   "chat123",
 		},
 		{
-			name:            "empty string",
-			input:           "",
+			name:             "empty string",
+			input:            "",
 			expectedPlatform: "",
 			expectedUserID:   "",
 		},
 		{
-			name:            "no colon",
-			input:           "telegram",
+			name:             "no colon",
+			input:            "telegram",
 			expectedPlatform: "",
 			expectedUserID:   "",
 		},
 		{
-			name:            "multiple colons",
-			input:           "telegram:chat:123",
+			name:             "multiple colons",
+			input:            "telegram:chat:123",
 			expectedPlatform: "telegram",
 			expectedUserID:   "chat:123",
 		},

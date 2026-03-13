@@ -12,28 +12,28 @@ import (
 // TestExtractToolCallsFromText_ValidJSON tests extracting valid tool calls
 func TestExtractToolCallsFromText_ValidJSON(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
+		name          string
+		input         string
 		expectedCount int
 	}{
 		{
-			name: "single tool call",
-			input: `Response text {"tool_calls":[{"id":"call-123","type":"function","function":{"name":"test_tool","arguments":"{\"param\":\"value\"}"}}]}`,
+			name:          "single tool call",
+			input:         `Response text {"tool_calls":[{"id":"call-123","type":"function","function":{"name":"test_tool","arguments":"{\"param\":\"value\"}"}}]}`,
 			expectedCount: 1,
 		},
 		{
-			name: "multiple tool calls",
-			input: `Text {"tool_calls":[{"id":"call-1","type":"function","function":{"name":"tool1","arguments":"{}"}},{"id":"call-2","type":"function","function":{"name":"tool2","arguments":"{}"}}]}`,
+			name:          "multiple tool calls",
+			input:         `Text {"tool_calls":[{"id":"call-1","type":"function","function":{"name":"tool1","arguments":"{}"}},{"id":"call-2","type":"function","function":{"name":"tool2","arguments":"{}"}}]}`,
 			expectedCount: 2,
 		},
 		{
-			name: "tool call at start",
-			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]} rest of text`,
+			name:          "tool call at start",
+			input:         `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]} rest of text`,
 			expectedCount: 1,
 		},
 		{
-			name: "tool call at end",
-			input: `Start of text {"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]}`,
+			name:          "tool call at end",
+			input:         `Start of text {"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{}"}}]}`,
 			expectedCount: 1,
 		},
 	}
@@ -163,27 +163,27 @@ func TestExtractToolCallsFromText_ToolCallStructure(t *testing.T) {
 // TestExtractToolCallsFromText_ArgumentsParsing tests argument parsing
 func TestExtractToolCallsFromText_ArgumentsParsing(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
+		name         string
+		input        string
 		expectedArgs map[string]interface{}
 	}{
 		{
-			name: "string argument",
-			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"text\":\"hello\"}"}}]}`,
+			name:         "string argument",
+			input:        `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"text\":\"hello\"}"}}]}`,
 			expectedArgs: map[string]interface{}{"text": "hello"},
 		},
 		{
-			name: "number argument",
-			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"count\":42}"}}]}`,
+			name:         "number argument",
+			input:        `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"count\":42}"}}]}`,
 			expectedArgs: map[string]interface{}{"count": float64(42)},
 		},
 		{
-			name: "boolean argument",
-			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"enabled\":true}"}}]}`,
+			name:         "boolean argument",
+			input:        `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"enabled\":true}"}}]}`,
 			expectedArgs: map[string]interface{}{"enabled": true},
 		},
 		{
-			name: "multiple arguments",
+			name:  "multiple arguments",
 			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"str\":\"text\",\"num\":123,\"bool\":false}"}}]}`,
 			expectedArgs: map[string]interface{}{
 				"str":  "text",
@@ -192,12 +192,12 @@ func TestExtractToolCallsFromText_ArgumentsParsing(t *testing.T) {
 			},
 		},
 		{
-			name: "nested arguments",
+			name:  "nested arguments",
 			input: `{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"test","arguments":"{\"config\":{\"depth\":2,\"enabled\":true}}"}}]}`,
 			expectedArgs: map[string]interface{}{
 				"config": map[string]interface{}{
-					"depth":    float64(2),
-					"enabled":  true,
+					"depth":   float64(2),
+					"enabled": true,
 				},
 			},
 		},

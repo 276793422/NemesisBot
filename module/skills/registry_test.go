@@ -537,9 +537,9 @@ func TestRegistryManager_SearchAll_ConcurrencyLimit(t *testing.T) {
 
 func TestSortByScoreDesc(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   []SearchResult
-		want    []float64
+		name  string
+		input []SearchResult
+		want  []float64
 	}{
 		{
 			name:  "empty slice",

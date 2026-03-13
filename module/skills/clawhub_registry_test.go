@@ -30,14 +30,14 @@ func TestNewClawHubRegistry(t *testing.T) {
 		wantDownload string
 	}{
 		{
-			name: "default config",
-			cfg:  ClawHubConfig{},
-			wantURL: "https://clawhub.ai",
-			wantTimeout: 30 * time.Second,
-			wantMaxZip: 50 * 1024 * 1024,
-			wantMaxResp: 2 * 1024 * 1024,
-			wantSearch: "/api/v1/search",
-			wantSkills: "/api/v1/skills",
+			name:         "default config",
+			cfg:          ClawHubConfig{},
+			wantURL:      "https://clawhub.ai",
+			wantTimeout:  30 * time.Second,
+			wantMaxZip:   50 * 1024 * 1024,
+			wantMaxResp:  2 * 1024 * 1024,
+			wantSearch:   "/api/v1/search",
+			wantSkills:   "/api/v1/skills",
 			wantDownload: "/api/v1/download",
 		},
 		{
@@ -45,12 +45,12 @@ func TestNewClawHubRegistry(t *testing.T) {
 			cfg: ClawHubConfig{
 				BaseURL: "https://custom.clawhub.com",
 			},
-			wantURL: "https://custom.clawhub.com",
-			wantTimeout: 30 * time.Second,
-			wantMaxZip: 50 * 1024 * 1024,
-			wantMaxResp: 2 * 1024 * 1024,
-			wantSearch: "/api/v1/search",
-			wantSkills: "/api/v1/skills",
+			wantURL:      "https://custom.clawhub.com",
+			wantTimeout:  30 * time.Second,
+			wantMaxZip:   50 * 1024 * 1024,
+			wantMaxResp:  2 * 1024 * 1024,
+			wantSearch:   "/api/v1/search",
+			wantSkills:   "/api/v1/skills",
 			wantDownload: "/api/v1/download",
 		},
 		{
@@ -58,12 +58,12 @@ func TestNewClawHubRegistry(t *testing.T) {
 			cfg: ClawHubConfig{
 				Timeout: 60,
 			},
-			wantURL: "https://clawhub.ai",
-			wantTimeout: 60 * time.Second,
-			wantMaxZip: 50 * 1024 * 1024,
-			wantMaxResp: 2 * 1024 * 1024,
-			wantSearch: "/api/v1/search",
-			wantSkills: "/api/v1/skills",
+			wantURL:      "https://clawhub.ai",
+			wantTimeout:  60 * time.Second,
+			wantMaxZip:   50 * 1024 * 1024,
+			wantMaxResp:  2 * 1024 * 1024,
+			wantSearch:   "/api/v1/search",
+			wantSkills:   "/api/v1/skills",
 			wantDownload: "/api/v1/download",
 		},
 		{
@@ -72,12 +72,12 @@ func TestNewClawHubRegistry(t *testing.T) {
 				MaxZipSize:      100 * 1024 * 1024,
 				MaxResponseSize: 5 * 1024 * 1024,
 			},
-			wantURL: "https://clawhub.ai",
-			wantTimeout: 30 * time.Second,
-			wantMaxZip: 100 * 1024 * 1024,
-			wantMaxResp: 5 * 1024 * 1024,
-			wantSearch: "/api/v1/search",
-			wantSkills: "/api/v1/skills",
+			wantURL:      "https://clawhub.ai",
+			wantTimeout:  30 * time.Second,
+			wantMaxZip:   100 * 1024 * 1024,
+			wantMaxResp:  5 * 1024 * 1024,
+			wantSearch:   "/api/v1/search",
+			wantSkills:   "/api/v1/skills",
 			wantDownload: "/api/v1/download",
 		},
 		{
@@ -87,12 +87,12 @@ func TestNewClawHubRegistry(t *testing.T) {
 				SkillsPath:   "/custom/skills",
 				DownloadPath: "/custom/download",
 			},
-			wantURL: "https://clawhub.ai",
-			wantTimeout: 30 * time.Second,
-			wantMaxZip: 50 * 1024 * 1024,
-			wantMaxResp: 2 * 1024 * 1024,
-			wantSearch: "/custom/search",
-			wantSkills: "/custom/skills",
+			wantURL:      "https://clawhub.ai",
+			wantTimeout:  30 * time.Second,
+			wantMaxZip:   50 * 1024 * 1024,
+			wantMaxResp:  2 * 1024 * 1024,
+			wantSearch:   "/custom/search",
+			wantSkills:   "/custom/skills",
 			wantDownload: "/custom/download",
 		},
 		{
@@ -106,12 +106,12 @@ func TestNewClawHubRegistry(t *testing.T) {
 				SkillsPath:      "/v2/skills",
 				DownloadPath:    "/v2/download",
 			},
-			wantURL: "https://custom.clawhub.com",
-			wantTimeout: 120 * time.Second,
-			wantMaxZip: 100 * 1024 * 1024,
-			wantMaxResp: 5 * 1024 * 1024,
-			wantSearch: "/v2/search",
-			wantSkills: "/v2/skills",
+			wantURL:      "https://custom.clawhub.com",
+			wantTimeout:  120 * time.Second,
+			wantMaxZip:   100 * 1024 * 1024,
+			wantMaxResp:  5 * 1024 * 1024,
+			wantSearch:   "/v2/search",
+			wantSkills:   "/v2/skills",
 			wantDownload: "/v2/download",
 		},
 	}
@@ -168,14 +168,14 @@ func TestClawHubRegistry_Name(t *testing.T) {
 
 func TestClawHubRegistry_Search(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		setupServer func() *httptest.Server
-		query      string
-		limit      int
-		wantErr    bool
+		query       string
+		limit       int
+		wantErr     bool
 		errContains string
-		wantCount  int
-		verify     func(*testing.T, []SearchResult)
+		wantCount   int
+		verify      func(*testing.T, []SearchResult)
 	}{
 		{
 			name: "successful search",
@@ -264,9 +264,9 @@ func TestClawHubRegistry_Search(t *testing.T) {
 					w.Write([]byte("internal error"))
 				}))
 			},
-			query:      "test",
-			limit:      10,
-			wantErr:    true,
+			query:   "test",
+			limit:   10,
+			wantErr: true,
 		},
 		{
 			name: "invalid JSON response",
@@ -288,9 +288,9 @@ func TestClawHubRegistry_Search(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				}))
 			},
-			query:      "test",
-			limit:      10,
-			wantErr:    true,
+			query:       "test",
+			limit:       10,
+			wantErr:     true,
 			errContains: "too large",
 		},
 	}
@@ -502,10 +502,10 @@ func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.Contains(r.URL.Path, "skills") {
 						meta := SkillMeta{
-							Slug:            "malware-skill",
-							DisplayName:     "Malware Skill",
-							Summary:         "Malicious skill",
-							LatestVersion:   "1.0.0",
+							Slug:             "malware-skill",
+							DisplayName:      "Malware Skill",
+							Summary:          "Malicious skill",
+							LatestVersion:    "1.0.0",
 							IsMalwareBlocked: true,
 						}
 						data, _ := json.Marshal(meta)
@@ -514,9 +514,9 @@ func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
 					}
 				}))
 			},
-			slug:        "malware-skill",
-			version:     "",
-			wantErr:     false, // Returns result with malware flag
+			slug:    "malware-skill",
+			version: "",
+			wantErr: false, // Returns result with malware flag
 			verify: func(t *testing.T, targetDir string, result *InstallResult) {
 				if !result.IsMalwareBlocked {
 					t.Errorf("expected malware blocked to be true")
@@ -532,9 +532,9 @@ func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
 				}))
 			},
 			slug:        "../../../etc/passwd",
-			version:      "",
-			wantErr:      true,
-			errContains:  "invalid skill slug",
+			version:     "",
+			wantErr:     true,
+			errContains: "invalid skill slug",
 		},
 		{
 			name: "metadata fetch fails",
@@ -544,9 +544,9 @@ func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
 				}))
 			},
 			slug:        "test-skill",
-			version:      "",
-			wantErr:      true,
-			errContains:  "failed to get skill metadata",
+			version:     "",
+			wantErr:     true,
+			errContains: "failed to get skill metadata",
 		},
 		{
 			name: "download fails",
@@ -566,9 +566,9 @@ func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
 				}))
 			},
 			slug:        "test-skill",
-			version:      "",
-			wantErr:      true,
-			errContains:  "download request failed",
+			version:     "",
+			wantErr:     true,
+			errContains: "download request failed",
 		},
 		{
 			name: "installation with specific version",
@@ -632,9 +632,9 @@ func TestClawHubRegistry_ExtractZipFile(t *testing.T) {
 			name: "successful extraction",
 			createZip: func(zipPath string) error {
 				return createTestZip(zipPath, map[string]string{
-					"SKILL.md":   "# Test Skill",
-					"README.md":  "README content",
-					"extra.txt":  "extra content",
+					"SKILL.md":  "# Test Skill",
+					"README.md": "README content",
+					"extra.txt": "extra content",
 				})
 			},
 			wantErr: false,

@@ -280,7 +280,7 @@ func TestClientCallMultipleAddresses(t *testing.T) {
 	mockPeer := &mockNode{
 		id:        "peer-1",
 		name:      "Test Peer",
-		address:   "127.0.0.1:21957", // Wrong port
+		address:   "127.0.0.1:21957",                              // Wrong port
 		addresses: []string{"127.0.0.1:21956", "127.0.0.1:21957"}, // First is correct
 		rpcPort:   21956,
 		status:    "online",

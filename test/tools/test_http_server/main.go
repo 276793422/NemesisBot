@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,11 +26,11 @@ type TestServer struct {
 }
 
 type RequestLog struct {
-	Method     string
-	Path       string
-	Headers    map[string]string
-	Body       string
-	Timestamp  time.Time
+	Method      string
+	Path        string
+	Headers     map[string]string
+	Body        string
+	Timestamp   time.Time
 	QueryParams map[string]string
 }
 
@@ -80,18 +81,18 @@ func (ts *TestServer) handleEcho(w http.ResponseWriter, r *http.Request) {
 
 	var body []byte
 	if r.Body != nil {
-		body, _ = readAll(r.Body)
+		body, _ = io.ReadAll(r.Body)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
 	response := map[string]interface{}{
-		"method": r.Method,
-		"path":   r.URL.Path,
+		"method":  r.Method,
+		"path":    r.URL.Path,
 		"headers": r.Header,
-		"body":   string(body),
-		"query":  r.URL.Query(),
+		"body":    string(body),
+		"query":   r.URL.Query(),
 	}
 
 	json.NewEncoder(w).Encode(response)
@@ -191,7 +192,7 @@ func (ts *TestServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	var body []byte
 	if r.Body != nil {
-		body, _ = readAll(r.Body)
+		body, _ = io.ReadAll(r.Body)
 	}
 
 	// Echo the webhook back
@@ -200,8 +201,8 @@ func (ts *TestServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"webhook_received": true,
-		"body":            string(body),
-		"headers":         r.Header,
+		"body":             string(body),
+		"headers":          r.Header,
 	})
 }
 
@@ -271,7 +272,7 @@ func (ts *TestServer) logRequest(r *http.Request) {
 
 	var body string
 	if r.Body != nil {
-		data, _ := readAll(r.Body)
+		data, _ := io.ReadAll(r.Body)
 		body = string(data)
 	}
 
@@ -322,10 +323,6 @@ func (ts *TestServer) RegisterCallback(state string) <-chan []byte {
 	ch := make(chan []byte, 1)
 	ts.callbacks[state] = ch
 	return ch
-}
-
-func readAll(r *http.Request) ([]byte, error) {
-	return nil, nil
 }
 
 func main() {

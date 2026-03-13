@@ -86,12 +86,12 @@ func TestAnthropicProviderChatWithMockServer(t *testing.T) {
 
 		// Return a mock response (Anthropic SDK uses x-api-key or Authorization)
 		response := map[string]interface{}{
-			"id":           "msg-123",
-			"type":         "message",
-			"role":         "assistant",
-			"content":      []interface{}{map[string]string{"type": "text", "text": "Test response"}},
-			"stop_reason":  "end_turn",
-			"model":        "claude-3-5-sonnet-20241022",
+			"id":            "msg-123",
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []interface{}{map[string]string{"type": "text", "text": "Test response"}},
+			"stop_reason":   "end_turn",
+			"model":         "claude-3-5-sonnet-20241022",
 			"stop_sequence": nil,
 			"usage": map[string]interface{}{
 				"input_tokens":  10,
@@ -144,16 +144,16 @@ func TestAnthropicProviderChatWithMockServer(t *testing.T) {
 func TestAnthropicProviderChatWithToolCalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := map[string]interface{}{
-			"id":           "msg-123",
-			"type":         "message",
-			"role":         "assistant",
+			"id":   "msg-123",
+			"type": "message",
+			"role": "assistant",
 			"content": []interface{}{
 				map[string]string{"type": "text", "text": "Let me call the tool"},
 				map[string]interface{}{
-					"type":   "tool_use",
-					"id":     "toolu-123",
-					"name":   "test_tool",
-					"input":  map[string]string{"param": "value"},
+					"type":  "tool_use",
+					"id":    "toolu-123",
+					"name":  "test_tool",
+					"input": map[string]string{"param": "value"},
 				},
 			},
 			"stop_reason": "tool_use",
@@ -326,8 +326,8 @@ func TestAnthropicProviderChatWithTemperature(t *testing.T) {
 	messages := []protocoltypes.Message{{Role: "user", Content: "Hello"}}
 
 	_, err := p.Chat(ctx, messages, nil, "claude-3-5-sonnet-20241022", map[string]interface{}{
-		"max_tokens":    4096,
-		"temperature":   0.7,
+		"max_tokens":  4096,
+		"temperature": 0.7,
 	})
 
 	if err != nil {

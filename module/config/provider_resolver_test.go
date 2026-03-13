@@ -30,13 +30,13 @@ func TestResolveModelConfig(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		modelRef       string
-		wantErr        bool
-		wantProvider   string
-		wantModel      string
-		wantAPIKey     string
-		wantAPIBase    string
+		name         string
+		modelRef     string
+		wantErr      bool
+		wantProvider string
+		wantModel    string
+		wantAPIKey   string
+		wantAPIBase  string
 	}{
 		{
 			name:         "Find by model_name",
@@ -289,9 +289,9 @@ func TestGetModelByName_RoundRobin(t *testing.T) {
 
 func TestGetEffectiveLLM(t *testing.T) {
 	tests := []struct {
-		name     string
-		config   *Config
-		wantLLM  string
+		name    string
+		config  *Config
+		wantLLM string
 	}{
 		{
 			name:    "Nil config",
@@ -321,8 +321,8 @@ func TestGetEffectiveLLM(t *testing.T) {
 			wantLLM: "zhipu/glm-4.7-flash",
 		},
 		{
-			name: "Config with zero agents",
-			config: &Config{},
+			name:    "Config with zero agents",
+			config:  &Config{},
 			wantLLM: "zhipu/glm-4.7-flash",
 		},
 	}

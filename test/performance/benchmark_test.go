@@ -93,11 +93,11 @@ func BenchmarkCronJobListing(b *testing.B) {
 func BenchmarkInboundMessageCreation(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = bus.InboundMessage{
-			Channel:      "test",
-			SenderID:     "user",
-			ChatID:       "chat",
-			Content:      "test message",
-			SessionKey:   "session",
+			Channel:       "test",
+			SenderID:      "user",
+			ChatID:        "chat",
+			Content:       "test message",
+			SessionKey:    "session",
 			CorrelationID: "",
 		}
 	}

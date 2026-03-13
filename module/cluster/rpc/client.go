@@ -191,7 +191,7 @@ func NewClient(cluster Cluster) *Client {
 			30,             // maxRequests: 30 requests per peer per sliding window
 			10*time.Second, // window: sliding window of 10 seconds
 		),
-		timeout: 60 * time.Minute,  // RPC Client timeout: 60 minutes (outermost timeout)
+		timeout: 60 * time.Minute, // RPC Client timeout: 60 minutes (outermost timeout)
 	}
 }
 

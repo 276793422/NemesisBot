@@ -12,102 +12,102 @@ import (
 // TestParseModelRef_ValidFormats tests valid model reference formats
 func TestParseModelRef_ValidFormats(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		defaultProvider string
+		name             string
+		input            string
+		defaultProvider  string
 		expectedProvider string
-		expectedModel   string
+		expectedModel    string
 	}{
 		{
-			name:            "full reference with slash",
-			input:           "anthropic/claude-3-5",
-			defaultProvider: "openai",
+			name:             "full reference with slash",
+			input:            "anthropic/claude-3-5",
+			defaultProvider:  "openai",
 			expectedProvider: "anthropic",
-			expectedModel:   "claude-3-5",
+			expectedModel:    "claude-3-5",
 		},
 		{
-			name:            "model only - uses default provider",
-			input:           "gpt-4",
-			defaultProvider: "openai",
+			name:             "model only - uses default provider",
+			input:            "gpt-4",
+			defaultProvider:  "openai",
 			expectedProvider: "openai",
-			expectedModel:   "gpt-4",
+			expectedModel:    "gpt-4",
 		},
 		{
-			name:            "with spaces",
-			input:           "  anthropic/claude-3-5  ",
-			defaultProvider: "openai",
+			name:             "with spaces",
+			input:            "  anthropic/claude-3-5  ",
+			defaultProvider:  "openai",
 			expectedProvider: "anthropic",
-			expectedModel:   "claude-3-5",
+			expectedModel:    "claude-3-5",
 		},
 		{
-			name:            "model with version",
-			input:           "google/gemini-2.0-flash",
-			defaultProvider: "openai",
+			name:             "model with version",
+			input:            "google/gemini-2.0-flash",
+			defaultProvider:  "openai",
 			expectedProvider: "gemini",
-			expectedModel:   "gemini-2.0-flash",
+			expectedModel:    "gemini-2.0-flash",
 		},
 		{
-			name:            "z.ai provider",
-			input:           "z.ai/model",
-			defaultProvider: "openai",
+			name:             "z.ai provider",
+			input:            "z.ai/model",
+			defaultProvider:  "openai",
 			expectedProvider: "zai",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "z-ai provider",
-			input:           "z-ai/model",
-			defaultProvider: "openai",
+			name:             "z-ai provider",
+			input:            "z-ai/model",
+			defaultProvider:  "openai",
 			expectedProvider: "zai",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "opencode-zen provider",
-			input:           "opencode-zen/model",
-			defaultProvider: "openai",
+			name:             "opencode-zen provider",
+			input:            "opencode-zen/model",
+			defaultProvider:  "openai",
 			expectedProvider: "opencode",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "qwen provider",
-			input:           "qwen/model",
-			defaultProvider: "openai",
+			name:             "qwen provider",
+			input:            "qwen/model",
+			defaultProvider:  "openai",
 			expectedProvider: "qwen-portal",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "kimi-code provider",
-			input:           "kimi-code/model",
-			defaultProvider: "openai",
+			name:             "kimi-code provider",
+			input:            "kimi-code/model",
+			defaultProvider:  "openai",
 			expectedProvider: "kimi-coding",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "gpt provider",
-			input:           "gpt/model",
-			defaultProvider: "openai",
+			name:             "gpt provider",
+			input:            "gpt/model",
+			defaultProvider:  "openai",
 			expectedProvider: "openai",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "claude provider",
-			input:           "claude/model",
-			defaultProvider: "openai",
+			name:             "claude provider",
+			input:            "claude/model",
+			defaultProvider:  "openai",
 			expectedProvider: "anthropic",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "glm provider",
-			input:           "glm/model",
-			defaultProvider: "openai",
+			name:             "glm provider",
+			input:            "glm/model",
+			defaultProvider:  "openai",
 			expectedProvider: "zhipu",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 		{
-			name:            "google provider",
-			input:           "google/model",
-			defaultProvider: "openai",
+			name:             "google provider",
+			input:            "google/model",
+			defaultProvider:  "openai",
 			expectedProvider: "gemini",
-			expectedModel:   "model",
+			expectedModel:    "model",
 		},
 	}
 
@@ -263,10 +263,10 @@ func TestNormalizeProvider(t *testing.T) {
 // TestModelKey tests model key generation
 func TestModelKey(t *testing.T) {
 	tests := []struct {
-		name            string
-		provider        string
-		model           string
-		expectedKey     string
+		name        string
+		provider    string
+		model       string
+		expectedKey string
 	}{
 		{
 			name:        "standard case",
@@ -389,8 +389,8 @@ func TestModelRef_Structure(t *testing.T) {
 // TestParseModelRef_PreservesModelCase tests that model name case is preserved
 func TestParseModelRef_PreservesModelCase(t *testing.T) {
 	tests := []struct {
-		input            string
-		expectedModel   string
+		input         string
+		expectedModel string
 	}{
 		{"anthropic/Claude-3.5-Sonnet", "Claude-3.5-Sonnet"},
 		{"openai/GPT-4-Turbo", "GPT-4-Turbo"},
@@ -414,24 +414,24 @@ func TestParseModelRef_PreservesModelCase(t *testing.T) {
 // TestParseModelRef_SpecialCharacters tests model names with special characters
 func TestParseModelRef_SpecialCharacters(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           string
-		expectedModel   string
+		name          string
+		input         string
+		expectedModel string
 	}{
 		{
-			name:            "dots in model name",
-			input:           "anthropic/claude-3.5.sonnet",
-			expectedModel:   "claude-3.5.sonnet",
+			name:          "dots in model name",
+			input:         "anthropic/claude-3.5.sonnet",
+			expectedModel: "claude-3.5.sonnet",
 		},
 		{
-			name:            "underscores",
-			input:           "openai/gpt_4_turbo",
-			expectedModel:   "gpt_4_turbo",
+			name:          "underscores",
+			input:         "openai/gpt_4_turbo",
+			expectedModel: "gpt_4_turbo",
 		},
 		{
-			name:            "mixed separators",
-			input:           "google/gemini-2.0.flash-exp",
-			expectedModel:   "gemini-2.0.flash-exp",
+			name:          "mixed separators",
+			input:         "google/gemini-2.0.flash-exp",
+			expectedModel: "gemini-2.0.flash-exp",
 		},
 	}
 
@@ -452,7 +452,7 @@ func TestParseModelRef_SpecialCharacters(t *testing.T) {
 // TestNormalizeProvider_AllAliases tests all provider aliases
 func TestNormalizeProvider_AllAliases(t *testing.T) {
 	aliasTests := []struct {
-		alias   string
+		alias      string
 		normalized string
 	}{
 		// z.ai aliases
@@ -574,7 +574,7 @@ func TestNormalizeProvider_UnknownProvider(t *testing.T) {
 // TestModelRef_LowercaseProvider tests that provider is normalized to lowercase
 func TestModelRef_LowercaseProvider(t *testing.T) {
 	tests := []struct {
-		input             string
+		input            string
 		expectedProvider string
 	}{
 		{"Anthropic/Model", "anthropic"},

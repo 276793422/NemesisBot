@@ -432,10 +432,10 @@ func TestIsPathWithinDir(t *testing.T) {
 // TestExtractFile tests individual file extraction
 func TestExtractFile(t *testing.T) {
 	tests := []struct {
-		name     string
-		zipFile  zipTestFile
-		wantErr  bool
-		verify   func(t *testing.T, destDir string)
+		name    string
+		zipFile zipTestFile
+		wantErr bool
+		verify  func(t *testing.T, destDir string)
 	}{
 		{
 			name: "regular file",
@@ -609,7 +609,7 @@ func createTestZipWithPerms(t *testing.T, files []zipTestFileWithPerms) string {
 
 	for _, file := range files {
 		header := &zip.FileHeader{
-			Name:  file.name,
+			Name:   file.name,
 			Method: zip.Deflate,
 		}
 		header.SetMode(os.FileMode(file.mode))
@@ -954,7 +954,7 @@ func TestIsPathWithinDir_ErrorCases(t *testing.T) {
 			baseDir:  "",
 			expected: false,
 		},
-	{
+		{
 			name:     "both empty",
 			path:     "",
 			baseDir:  "",

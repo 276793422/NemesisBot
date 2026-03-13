@@ -387,8 +387,8 @@ func TestClassifyError_MessagePatternPriority(t *testing.T) {
 // TestClassifyError_CaseInsensitive tests case-insensitive pattern matching
 func TestClassifyError_CaseInsensitive(t *testing.T) {
 	tests := []struct {
-		name string
-		err  error
+		name           string
+		err            error
 		expectedReason FailoverReason
 	}{
 		{"RATE LIMIT", errors.New("RATE LIMIT EXCEEDED"), FailoverRateLimit},
@@ -483,7 +483,7 @@ func TestIsImageSizeError(t *testing.T) {
 // TestClassifyByStatus tests status code classification
 func TestClassifyByStatus(t *testing.T) {
 	tests := []struct {
-		status int
+		status   int
 		expected FailoverReason
 	}{
 		{401, FailoverAuth},

@@ -147,10 +147,10 @@ func TestCreateProvider_InvalidConfig(t *testing.T) {
 func TestProviderTypeNames(t *testing.T) {
 	// Test that provider type constants have expected string representations
 	tests := []struct {
-		name      string
-		pt        providerType
-		minVal    int
-		maxVal    int
+		name   string
+		pt     providerType
+		minVal int
+		maxVal int
 	}{
 		{"HTTPCompat", providerTypeHTTPCompat, 0, 0},
 		{"ClaudeAuth", providerTypeClaudeAuth, 1, 1},
@@ -326,14 +326,14 @@ func TestProviderSelection_EnableWebSearch(t *testing.T) {
 func TestResolveProviderSelection_ProviderAliases(t *testing.T) {
 	// Test that various provider name aliases are handled correctly
 	providerAliases := map[string]string{
-		"claude-cli":    "claude-cli",
-		"claude-code":   "claude-cli",
-		"claudecode":    "claude-cli",
-		"claudecodec":   "claude-cli",
-		"codex-cli":     "codex-cli",
-		"codex-code":    "codex-cli",
+		"claude-cli":     "claude-cli",
+		"claude-code":    "claude-cli",
+		"claudecode":     "claude-cli",
+		"claudecodec":    "claude-cli",
+		"codex-cli":      "codex-cli",
+		"codex-code":     "codex-cli",
 		"github_copilot": "github-copilot",
-		"copilot":       "github-copilot",
+		"copilot":        "github-copilot",
 	}
 
 	for alias, expectedType := range providerAliases {

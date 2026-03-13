@@ -100,9 +100,9 @@ func TestEventSource_StartWithError(t *testing.T) {
 
 func TestAction_Constants(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		action Action
-		want  string
+		want   string
 	}{
 		{"ActionAdd", ActionAdd, "add"},
 		{"ActionRemove", ActionRemove, "remove"},
@@ -171,11 +171,11 @@ func TestDeviceEvent_FormatMessage_AddAction(t *testing.T) {
 
 func TestDeviceEvent_FormatMessage_RemoveAction(t *testing.T) {
 	event := &DeviceEvent{
-		Action:  ActionRemove,
-		Kind:    KindBluetooth,
+		Action:   ActionRemove,
+		Kind:     KindBluetooth,
 		DeviceID: "bt-adapter-1",
-		Vendor:  "BlueTech",
-		Product: "BT Adapter",
+		Vendor:   "BlueTech",
+		Product:  "BT Adapter",
 	}
 
 	msg := event.FormatMessage()
@@ -196,11 +196,11 @@ func TestDeviceEvent_FormatMessage_RemoveAction(t *testing.T) {
 
 func TestDeviceEvent_FormatMessage_ChangeAction(t *testing.T) {
 	event := &DeviceEvent{
-		Action:  ActionChange,
-		Kind:    KindPCI,
+		Action:   ActionChange,
+		Kind:     KindPCI,
 		DeviceID: "pci-0000:00:1f.0",
-		Vendor:  "Intel",
-		Product: "Audio Device",
+		Vendor:   "Intel",
+		Product:  "Audio Device",
 	}
 
 	msg := event.FormatMessage()
@@ -221,11 +221,11 @@ func TestDeviceEvent_FormatMessage_ChangeAction(t *testing.T) {
 
 func TestDeviceEvent_FormatMessage_Minimal(t *testing.T) {
 	event := &DeviceEvent{
-		Action:  ActionAdd,
-		Kind:    KindGeneric,
+		Action:   ActionAdd,
+		Kind:     KindGeneric,
 		DeviceID: "generic-1",
-		Vendor:  "GenericVendor",
-		Product: "GenericProduct",
+		Vendor:   "GenericVendor",
+		Product:  "GenericProduct",
 		// No Serial or Capabilities
 	}
 

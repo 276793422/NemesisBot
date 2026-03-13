@@ -389,10 +389,10 @@ func TestCalculateStandardCooldown(t *testing.T) {
 // TestCalculateBillingCooldown tests billing cooldown calculation
 func TestCalculateBillingCooldown(t *testing.T) {
 	tests := []struct {
-		name             string
+		name              string
 		billingErrorCount int
-		minDuration      time.Duration
-		maxDuration      time.Duration
+		minDuration       time.Duration
+		maxDuration       time.Duration
 	}{
 		{"1 billing error", 1, 5 * time.Hour, 5 * time.Hour},
 		{"2 billing errors", 2, 10 * time.Hour, 10 * time.Hour},

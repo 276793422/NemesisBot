@@ -13,18 +13,18 @@ const (
 	WebView2DownloadURL = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
 
 	// Windows API constants
-	MB_YESNO        = 0x00000004
-	MB_ICONWARNING  = 0x00000030
-	MB_DEFBUTTON2   = 0x00000100
-	IDYES           = 6
-	IDNO            = 7
-	IDCANCEL        = 2
+	MB_YESNO       = 0x00000004
+	MB_ICONWARNING = 0x00000030
+	MB_DEFBUTTON2  = 0x00000100
+	IDYES          = 6
+	IDNO           = 7
+	IDCANCEL       = 2
 )
 
 var (
-	user32           = syscall.NewLazyDLL("user32.dll")
-	procMessageBoxW  = user32.NewProc("MessageBoxW")
-	shell32          = syscall.NewLazyDLL("shell32.dll")
+	user32            = syscall.NewLazyDLL("user32.dll")
+	procMessageBoxW   = user32.NewProc("MessageBoxW")
+	shell32           = syscall.NewLazyDLL("shell32.dll")
 	procShellExecuteW = shell32.NewProc("ShellExecuteW")
 )
 
@@ -168,7 +168,7 @@ After installation, please restart NemesisBot Desktop.`
 	// Call MessageBoxW
 	// MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 (default to No)
 	ret, _, _ := procMessageBoxW.Call(
-		0,                          // hWnd (no owner window)
+		0, // hWnd (no owner window)
 		uintptr(unsafe.Pointer(messagePtr)),
 		uintptr(unsafe.Pointer(titlePtr)),
 		MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2,
@@ -194,12 +194,12 @@ func openDownloadPage() {
 
 	// Call ShellExecuteW to open URL in default browser
 	procShellExecuteW.Call(
-		0,                          // hWnd
+		0, // hWnd
 		uintptr(unsafe.Pointer(operationPtr)),
 		uintptr(unsafe.Pointer(urlPtr)),
-		0,                          // parameters
-		0,                          // directory
-		1,                          // SW_SHOWNORMAL
+		0, // parameters
+		0, // directory
+		1, // SW_SHOWNORMAL
 	)
 }
 

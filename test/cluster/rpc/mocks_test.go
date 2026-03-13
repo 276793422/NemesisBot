@@ -10,31 +10,31 @@ import (
 	"net"
 	"time"
 
-	"github.com/276793422/NemesisBot/module/cluster/rpc"
 	"github.com/276793422/NemesisBot/module/bus"
+	"github.com/276793422/NemesisBot/module/cluster/rpc"
 )
 
 // mockNode implements Node interface for testing
 type mockNode struct {
-	id         string
-	name       string
-	address    string
-	addresses  []string
-	rpcPort    int
+	id           string
+	name         string
+	address      string
+	addresses    []string
+	rpcPort      int
 	capabilities []string
-	status     string
-	online     bool
-	conn       *net.Conn
+	status       string
+	online       bool
+	conn         *net.Conn
 }
 
-func (m *mockNode) GetID() string         { return m.id }
-func (m *mockNode) GetName() string       { return m.name }
-func (m *mockNode) GetAddress() string    { return m.address }
-func (m *mockNode) GetAddresses() []string { return m.addresses }
-func (m *mockNode) GetRPCPort() int        { return m.rpcPort }
+func (m *mockNode) GetID() string             { return m.id }
+func (m *mockNode) GetName() string           { return m.name }
+func (m *mockNode) GetAddress() string        { return m.address }
+func (m *mockNode) GetAddresses() []string    { return m.addresses }
+func (m *mockNode) GetRPCPort() int           { return m.rpcPort }
 func (m *mockNode) GetCapabilities() []string { return m.capabilities }
-func (m *mockNode) GetStatus() string     { return m.status }
-func (m *mockNode) IsOnline() bool        { return m.online }
+func (m *mockNode) GetStatus() string         { return m.status }
+func (m *mockNode) IsOnline() bool            { return m.online }
 
 // mockCluster implements Cluster interface for testing
 type mockCluster struct {
@@ -44,13 +44,13 @@ type mockCluster struct {
 	peers        map[string]*mockNode
 }
 
-func (m *mockCluster) GetRegistry() interface{}                    { return nil }
-func (m *mockCluster) GetNodeID() string                           { return m.nodeID }
-func (m *mockCluster) GetAddress() string                          { return "" }
-func (m *mockCluster) GetCapabilities() []string                   { return m.capabilities }
-func (m *mockCluster) GetOnlinePeers() []interface{}               { return nil }
-func (m *mockCluster) GetActionsSchema() []interface{}             { return []interface{}{} }
-func (m *mockCluster) LogRPCInfo(msg string, args ...interface{})  {
+func (m *mockCluster) GetRegistry() interface{}        { return nil }
+func (m *mockCluster) GetNodeID() string               { return m.nodeID }
+func (m *mockCluster) GetAddress() string              { return "" }
+func (m *mockCluster) GetCapabilities() []string       { return m.capabilities }
+func (m *mockCluster) GetOnlinePeers() []interface{}   { return nil }
+func (m *mockCluster) GetActionsSchema() []interface{} { return []interface{}{} }
+func (m *mockCluster) LogRPCInfo(msg string, args ...interface{}) {
 	m.logCalls = append(m.logCalls, fmt.Sprintf("INFO: "+msg, args...))
 }
 func (m *mockCluster) LogRPCError(msg string, args ...interface{}) {
@@ -100,13 +100,13 @@ type integrationTestCluster struct {
 	peers        map[string]*mockNode
 }
 
-func (m *integrationTestCluster) GetRegistry() interface{}                    { return nil }
-func (m *integrationTestCluster) GetNodeID() string                           { return m.nodeID }
-func (m *integrationTestCluster) GetAddress() string                          { return "127.0.0.1:21949" }
-func (m *integrationTestCluster) GetCapabilities() []string                   { return m.capabilities }
-func (m *integrationTestCluster) GetOnlinePeers() []interface{}               { return nil }
-func (m *integrationTestCluster) GetActionsSchema() []interface{}             { return []interface{}{} }
-func (m *integrationTestCluster) LogRPCInfo(msg string, args ...interface{})  {
+func (m *integrationTestCluster) GetRegistry() interface{}        { return nil }
+func (m *integrationTestCluster) GetNodeID() string               { return m.nodeID }
+func (m *integrationTestCluster) GetAddress() string              { return "127.0.0.1:21949" }
+func (m *integrationTestCluster) GetCapabilities() []string       { return m.capabilities }
+func (m *integrationTestCluster) GetOnlinePeers() []interface{}   { return nil }
+func (m *integrationTestCluster) GetActionsSchema() []interface{} { return []interface{}{} }
+func (m *integrationTestCluster) LogRPCInfo(msg string, args ...interface{}) {
 	m.logCalls = append(m.logCalls, fmt.Sprintf("INFO: "+msg, args...))
 }
 func (m *integrationTestCluster) LogRPCError(msg string, args ...interface{}) {

@@ -147,7 +147,7 @@ func TestAgentLoop_forceCompression_EdgeCases(t *testing.T) {
 		expectBehavior string
 	}{
 		{
-			name: "empty history",
+			name:           "empty history",
 			initialHistory: []providers.Message{},
 			expectBehavior: "should not panic",
 		},

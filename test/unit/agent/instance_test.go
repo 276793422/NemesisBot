@@ -650,8 +650,8 @@ func TestNewAgentInstance_WithMaxIterations(t *testing.T) {
 	}
 
 	defaults := &config.AgentDefaults{
-		LLM:             "mock/model",
-		Workspace:       tempDir,
+		LLM:               "mock/model",
+		Workspace:         tempDir,
 		MaxToolIterations: 30,
 	}
 
@@ -679,8 +679,8 @@ func TestNewAgentInstance_ZeroMaxIterations(t *testing.T) {
 	}
 
 	defaults := &config.AgentDefaults{
-		LLM:             "mock/model",
-		Workspace:       tempDir,
+		LLM:               "mock/model",
+		Workspace:         tempDir,
 		MaxToolIterations: 0, // Should default to 20
 	}
 

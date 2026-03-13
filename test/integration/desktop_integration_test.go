@@ -93,7 +93,7 @@ func TestBotServiceLifecycle(t *testing.T) {
 	// Test 2: State string representation
 	t.Run("StateString", func(t *testing.T) {
 		states := []struct {
-			state        services.BotState
+			state       services.BotState
 			expectedStr string
 		}{
 			{services.BotStateNotStarted, "not_started"},
@@ -114,11 +114,11 @@ func TestBotServiceLifecycle(t *testing.T) {
 	// Test 3: State methods
 	t.Run("StateMethods", func(t *testing.T) {
 		tests := []struct {
-			name       string
-			state      services.BotState
-			isRunning  bool
-			canStart   bool
-			canStop    bool
+			name      string
+			state     services.BotState
+			isRunning bool
+			canStart  bool
+			canStop   bool
 		}{
 			{"NotStarted", services.BotStateNotStarted, false, true, false},
 			{"Starting", services.BotStateStarting, false, false, true},
@@ -181,10 +181,10 @@ func TestServiceManagerConcurrency(t *testing.T) {
 // TestBotStateTransitions tests valid state transitions
 func TestBotStateTransitions(t *testing.T) {
 	transitions := []struct {
-		from     services.BotState
-		to       services.BotState
-		valid    bool
-		reason   string
+		from   services.BotState
+		to     services.BotState
+		valid  bool
+		reason string
 	}{
 		{services.BotStateNotStarted, services.BotStateStarting, true, "Can start from not started"},
 		{services.BotStateNotStarted, services.BotStateRunning, false, "Cannot jump to running"},

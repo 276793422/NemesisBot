@@ -46,9 +46,9 @@ type ChatCompletionResponse struct {
 
 // Choice 定义响应选择项
 type Choice struct {
-	Index        int      `json:"index"`
-	Message      Message  `json:"message"`
-	FinishReason string   `json:"finish_reason"`
+	Index        int     `json:"index"`
+	Message      Message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 // Usage 定义 token 使用统计
@@ -60,17 +60,17 @@ type Usage struct {
 
 // StreamChunk 定义流式响应的数据块
 type StreamChunk struct {
-	ID      string          `json:"id"`
-	Object  string          `json:"object"`
-	Created int64           `json:"created"`
-	Model   string          `json:"model"`
-	Choices []StreamChoice  `json:"choices"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []StreamChoice `json:"choices"`
 }
 
 // StreamChoice 定义流式响应的选择项
 type StreamChoice struct {
-	Index        int    `json:"index"`
-	Delta        Delta  `json:"delta"`
+	Index        int     `json:"index"`
+	Delta        Delta   `json:"delta"`
 	FinishReason *string `json:"finish_reason"`
 }
 
@@ -83,8 +83,8 @@ type Delta struct {
 
 // ToolCall 定义工具调用
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
+	ID       string        `json:"id"`
+	Type     string        `json:"type"`
 	Function *FunctionCall `json:"function,omitempty"`
 }
 

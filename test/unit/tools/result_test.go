@@ -276,8 +276,8 @@ func TestToolResult_ErrorCases(t *testing.T) {
 
 func TestToolResult_AsyncCases(t *testing.T) {
 	tests := []struct {
-		name     string
-		result   *ToolResult
+		name      string
+		result    *ToolResult
 		wantAsync bool
 	}{
 		{
@@ -313,8 +313,8 @@ func TestToolResult_AsyncCases(t *testing.T) {
 
 func TestToolResult_SilentCases(t *testing.T) {
 	tests := []struct {
-		name      string
-		result    *ToolResult
+		name       string
+		result     *ToolResult
 		wantSilent bool
 	}{
 		{

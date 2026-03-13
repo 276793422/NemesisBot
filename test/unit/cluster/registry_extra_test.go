@@ -173,10 +173,10 @@ func TestNodeStatusTransitions(t *testing.T) {
 // TestNodeString tests node string representation
 func TestNodeString(t *testing.T) {
 	node := &cluster.Node{
-		ID:     "bot-1",
-		Name:   "Test Bot",
+		ID:      "bot-1",
+		Name:    "Test Bot",
 		Address: "192.168.1.1:49200",
-		Status: cluster.StatusOnline,
+		Status:  cluster.StatusOnline,
 	}
 
 	str := node.String()

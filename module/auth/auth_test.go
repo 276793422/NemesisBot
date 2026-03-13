@@ -97,10 +97,10 @@ func TestOpenAIOAuthConfig(t *testing.T) {
 // Test parseDeviceCodeResponse
 func TestParseDeviceCodeResponse(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      string
-		wantErr   bool
-		wantResp  deviceCodeResponse
+		name     string
+		body     string
+		wantErr  bool
+		wantResp deviceCodeResponse
 	}{
 		{
 			name: "valid response with integer interval",
@@ -842,12 +842,12 @@ func BenchmarkBase64URLDecode(b *testing.B) {
 // Test that verifies buildAuthorizeURL includes originator parameter
 func TestBuildAuthorizeURLWithOriginator(t *testing.T) {
 	tests := []struct {
-		name       string
-		cfg        OAuthProviderConfig
-		pkce       PKCECodes
-		state      string
+		name        string
+		cfg         OAuthProviderConfig
+		pkce        PKCECodes
+		state       string
 		redirectURI string
-		check      func(string) bool
+		check       func(string) bool
 	}{
 		{
 			name: "OpenAI issuer includes nemesisbot originator",
@@ -859,7 +859,7 @@ func TestBuildAuthorizeURLWithOriginator(t *testing.T) {
 			pkce: PKCECodes{
 				CodeChallenge: "test_challenge",
 			},
-			state:      "test_state",
+			state:       "test_state",
 			redirectURI: "http://localhost:8080/callback",
 			check: func(url string) bool {
 				return strings.Contains(url, "originator=nemesisbot")
@@ -876,7 +876,7 @@ func TestBuildAuthorizeURLWithOriginator(t *testing.T) {
 			pkce: PKCECodes{
 				CodeChallenge: "test_challenge",
 			},
-			state:      "test_state",
+			state:       "test_state",
 			redirectURI: "http://localhost:8080/callback",
 			check: func(url string) bool {
 				return strings.Contains(url, "originator=custom_originator") &&
@@ -894,7 +894,7 @@ func TestBuildAuthorizeURLWithOriginator(t *testing.T) {
 			pkce: PKCECodes{
 				CodeChallenge: "test_challenge",
 			},
-			state:      "test_state",
+			state:       "test_state",
 			redirectURI: "http://localhost:8080/callback",
 			check: func(url string) bool {
 				return strings.Contains(url, "originator=test_orig")

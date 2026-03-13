@@ -506,7 +506,7 @@ func TestSaveWithInvalidCharacters(t *testing.T) {
 		key     string
 		wantErr bool
 	}{
-		{"Empty key", "", true},  // Empty key returns os.ErrInvalid
+		{"Empty key", "", true}, // Empty key returns os.ErrInvalid
 		{"Just dot", ".", true},
 		{"Just double dot", "..", true},
 		{"Absolute path", "/abs/path", true},

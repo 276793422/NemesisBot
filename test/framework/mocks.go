@@ -246,14 +246,14 @@ func (m *MockMessageBus) Clear() {
 
 // MockChannel is a mock channel implementation
 type MockChannel struct {
-	mu        sync.Mutex
-	name      string
-	running   bool
-	messages  []bus.OutboundMessage
-	startErr  error
-	stopErr   error
-	sendErr   error
-	allowed   map[string]bool
+	mu          sync.Mutex
+	name        string
+	running     bool
+	messages    []bus.OutboundMessage
+	startErr    error
+	stopErr     error
+	sendErr     error
+	allowed     map[string]bool
 	syncTargets []string
 }
 
@@ -380,11 +380,11 @@ func (m *MockChannel) SetSendError(err error) {
 
 // MockSecurityAuditor is a mock security auditor
 type MockSecurityAuditor struct {
-	mu              sync.Mutex
-	allowed         bool
-	permissionType  string
-	logs            []AuditLogEntry
-	policies        map[string]bool
+	mu             sync.Mutex
+	allowed        bool
+	permissionType string
+	logs           []AuditLogEntry
+	policies       map[string]bool
 }
 
 type AuditLogEntry struct {

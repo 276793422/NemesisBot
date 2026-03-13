@@ -11,10 +11,10 @@ import (
 
 // MockClient is a mock implementation of the MCP Client interface for testing
 type MockClient struct {
-	serverInfo  *ServerInfo
-	initialized bool
-	connected   bool
-	tools       []Tool
+	serverInfo   *ServerInfo
+	initialized  bool
+	connected    bool
+	tools        []Tool
 	callToolFunc func(ctx context.Context, name string, args map[string]interface{}) (*ToolCallResult, error)
 }
 
@@ -162,9 +162,9 @@ func TestNewAdapter(t *testing.T) {
 // TestAdapterName tests the Adapter Name() method
 func TestAdapterName(t *testing.T) {
 	tests := []struct {
-		serverName    string
-		toolName      string
-		expectedName  string
+		serverName   string
+		toolName     string
+		expectedName string
 	}{
 		{"test-server", "my_tool", "mcp_test-server_my_tool"},
 		{"My Server", "test_tool", "mcp_My_Server_test_tool"},
@@ -221,7 +221,7 @@ func TestAdapterParameters(t *testing.T) {
 					"description": "First argument",
 				},
 				"arg2": map[string]interface{}{
-					"type": "integer",
+					"type":        "integer",
 					"description": "Second argument",
 				},
 			},

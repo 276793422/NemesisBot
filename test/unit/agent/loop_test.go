@@ -109,10 +109,10 @@ func TestNewAgentLoop_WithConcurrentSettings(t *testing.T) {
 	cfg := &config.Config{
 		Agents: config.AgentsConfig{
 			Defaults: config.AgentDefaults{
-				LLM:                 "mock/model",
-				Workspace:           tempDir,
+				LLM:                   "mock/model",
+				Workspace:             tempDir,
 				ConcurrentRequestMode: "queue",
-				QueueSize:           16,
+				QueueSize:             16,
 			},
 		},
 	}

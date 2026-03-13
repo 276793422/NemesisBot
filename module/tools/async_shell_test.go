@@ -640,7 +640,7 @@ func TestPatternMatching(t *testing.T) {
 	})
 
 	testCases := []struct {
-		command   string
+		command     string
 		shouldMatch bool
 	}{
 		{"rm -rf /", true},

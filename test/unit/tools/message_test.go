@@ -171,9 +171,9 @@ func TestMessageTool_Execute_OverrideChannelAndChatID(t *testing.T) {
 
 	ctx := context.Background()
 	args := map[string]interface{}{
-		"content":  "test message",
-		"channel":  "override_channel",
-		"chat_id":  "override_chat",
+		"content": "test message",
+		"channel": "override_channel",
+		"chat_id": "override_chat",
 	}
 
 	result := tool.Execute(ctx, args)

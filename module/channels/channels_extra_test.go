@@ -112,13 +112,13 @@ func TestOneBotChannelConfig(t *testing.T) {
 // Test External channel configuration
 func TestExternalChannelConfig(t *testing.T) {
 	cfg := config.ExternalConfig{
-		Enabled:    true,
-		InputEXE:   "input.exe",
-		OutputEXE:  "output.exe",
-		ChatID:     "external:main",
-		AllowFrom:  config.FlexibleStringSlice{"localhost"},
-		SyncTo:     []string{"web"},
-		SyncToWeb:  true,
+		Enabled:      true,
+		InputEXE:     "input.exe",
+		OutputEXE:    "output.exe",
+		ChatID:       "external:main",
+		AllowFrom:    config.FlexibleStringSlice{"localhost"},
+		SyncTo:       []string{"web"},
+		SyncToWeb:    true,
 		WebSessionID: "session123",
 	}
 

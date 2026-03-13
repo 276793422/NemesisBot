@@ -169,11 +169,11 @@ func TestConvertConfigWithAllProviders(t *testing.T) {
 
 	expectedModels := map[string]string{
 		"claude-sonnet-4":  "anthropic",
-		"gpt-4o":          "openai",
+		"gpt-4o":           "openai",
 		"openrouter-model": "openrouter",
-		"groq-model":      "groq",
-		"glm-4.7":         "zhipu",
-		"vllm-local":      "vllm",
+		"groq-model":       "groq",
+		"glm-4.7":          "zhipu",
+		"vllm-local":       "vllm",
 		"gemini-2.0-flash": "gemini",
 	}
 
@@ -223,12 +223,12 @@ func TestConvertConfigWithAllChannels(t *testing.T) {
 				"allow_from": []interface{}{"user3"},
 			},
 			"feishu": map[string]interface{}{
-				"enabled":           true,
-				"app_id":            "feishu-app-id",
-				"app_secret":        "feishu-secret",
-				"encrypt_key":       "feishu-encrypt",
+				"enabled":            true,
+				"app_id":             "feishu-app-id",
+				"app_secret":         "feishu-secret",
+				"encrypt_key":        "feishu-encrypt",
 				"verification_token": "feishu-verify",
-				"allow_from":        []interface{}{"user4"},
+				"allow_from":         []interface{}{"user4"},
 			},
 			"qq": map[string]interface{}{
 				"enabled":    true,
@@ -237,10 +237,10 @@ func TestConvertConfigWithAllChannels(t *testing.T) {
 				"allow_from": []interface{}{"user5"},
 			},
 			"dingtalk": map[string]interface{}{
-				"enabled":     true,
-				"client_id":   "dingtalk-client-id",
+				"enabled":       true,
+				"client_id":     "dingtalk-client-id",
 				"client_secret": "dingtalk-secret",
-				"allow_from":  []interface{}{"user6"},
+				"allow_from":    []interface{}{"user6"},
 			},
 			"maixcam": map[string]interface{}{
 				"enabled":    true,

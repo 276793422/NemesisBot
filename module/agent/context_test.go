@@ -477,7 +477,7 @@ func TestContextBuilder_LoadBootstrapFiles(t *testing.T) {
 
 	// Create bootstrap files
 	files := map[string]string{
-		"AGENT.md":   "# Agent\nAgent info",
+		"AGENT.md":    "# Agent\nAgent info",
 		"IDENTITY.md": "# Identity\nI am a bot.",
 		"SOUL.md":     "# Soul\nBe helpful.",
 		"USER.md":     "# User\nPreferences here.",

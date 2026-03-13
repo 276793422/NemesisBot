@@ -46,9 +46,9 @@ func main() {
 	router := gin.New()
 
 	// 使用自定义中间件（替换 gin.Default()）
-	router.Use(ModelNameMiddleware())  // 提取模型名称
-	router.Use(CustomLogger())         // 自定义日志（包含模型名称）
-	router.Use(gin.Recovery())         // 崩溃恢复
+	router.Use(ModelNameMiddleware()) // 提取模型名称
+	router.Use(CustomLogger())        // 自定义日志（包含模型名称）
+	router.Use(gin.Recovery())        // 崩溃恢复
 
 	// 创建处理器
 	handler := handlers.NewHandler(registry, log)

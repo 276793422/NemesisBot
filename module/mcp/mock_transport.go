@@ -13,11 +13,11 @@ import (
 
 // MockTransport is a mock implementation of transport.Transport for testing
 type MockTransport struct {
-	mu              sync.Mutex
-	responses       map[string][]byte // Pre-programmed responses for methods
-	connectCalled   bool
-	closed          bool
-	sendCount       int
+	mu               sync.Mutex
+	responses        map[string][]byte // Pre-programmed responses for methods
+	connectCalled    bool
+	closed           bool
+	sendCount        int
 	receivedRequests [][]byte
 }
 
@@ -67,7 +67,7 @@ func (m *MockTransport) Send(ctx context.Context, data []byte) ([]byte, error) {
 	defaultResp := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      req["id"],
-		"result": map[string]interface{}{},
+		"result":  map[string]interface{}{},
 	}
 
 	return json.Marshal(defaultResp)

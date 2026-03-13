@@ -194,11 +194,11 @@ func TestParseUSBEvent_UnknownProduct(t *testing.T) {
 
 func TestParseUSBEvent_ProductIDFallback(t *testing.T) {
 	props := map[string]string{
-		"SUBSYSTEM":    "usb",
-		"DEVTYPE":      "usb_device",
-		"ACTION":       "add",
-		"ID_VENDOR":    "TestVendor",
-		"ID_MODEL_ID":  "5678",
+		"SUBSYSTEM":   "usb",
+		"DEVTYPE":     "usb_device",
+		"ACTION":      "add",
+		"ID_VENDOR":   "TestVendor",
+		"ID_MODEL_ID": "5678",
 		// No ID_MODEL
 	}
 

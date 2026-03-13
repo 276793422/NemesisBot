@@ -12,9 +12,9 @@ import (
 
 // MockLogger implements Logger for testing
 type MockLogger struct {
-	infos    []string
-	errors   []string
-	debugs   []string
+	infos  []string
+	errors []string
+	debugs []string
 }
 
 func NewMockLogger() *MockLogger {
@@ -364,8 +364,8 @@ func TestGetInfoHandlerWithNonNodePeers(t *testing.T) {
 	getOnlinePeers := func() []interface{} {
 		return []interface{}{
 			NewMockNode("node-1", "Node 1"),
-			"not a node",  // This should be ignored
-			123,           // This should be ignored
+			"not a node", // This should be ignored
+			123,          // This should be ignored
 			NewMockNode("node-2", "Node 2"),
 		}
 	}

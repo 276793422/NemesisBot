@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/276793422/NemesisBot/module/providers/protocoltypes"
+	anthropic "github.com/anthropics/anthropic-sdk-go"
 )
 
 // TestNewProvider tests provider creation
@@ -171,12 +171,12 @@ func TestChat(t *testing.T) {
 			}
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Hello!"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Hello!"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
 				"usage": map[string]interface{}{
 					"input_tokens":  10,
@@ -283,14 +283,14 @@ func TestChat(t *testing.T) {
 			receivedMaxTokens = int64(body["max_tokens"].(float64))
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -321,14 +321,14 @@ func TestChat(t *testing.T) {
 			receivedTemp = body["temperature"].(float64)
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -359,14 +359,14 @@ func TestChat(t *testing.T) {
 			_, hasSystem = body["system"]
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -401,14 +401,14 @@ func TestChat(t *testing.T) {
 			}
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Final response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Final response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -439,14 +439,14 @@ func TestChat(t *testing.T) {
 			}
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -457,7 +457,7 @@ func TestChat(t *testing.T) {
 		ctx := context.Background()
 		messages := []protocoltypes.Message{
 			{
-				Role: "assistant",
+				Role:    "assistant",
 				Content: "I'll use a tool",
 				ToolCalls: []protocoltypes.ToolCall{
 					{ID: "toolu-123", Name: "search", Arguments: map[string]interface{}{"query": "test"}},
@@ -518,14 +518,14 @@ func TestChatErrorHandling(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -636,14 +636,14 @@ func TestResponseParsing(t *testing.T) {
 	t.Run("max_tokens stop reason", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "max_tokens",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "max_tokens",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -674,10 +674,10 @@ func TestResponseParsing(t *testing.T) {
 					map[string]string{"type": "text", "text": "Hello "},
 					map[string]string{"type": "text", "text": "world!"},
 				},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -701,14 +701,14 @@ func TestResponseParsing(t *testing.T) {
 	t.Run("empty content", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 0},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 0},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -740,14 +740,14 @@ func TestBuildParamsIndirect(t *testing.T) {
 			receivedMaxTokens = int64(body["max_tokens"].(float64))
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -777,14 +777,14 @@ func TestBuildParamsIndirect(t *testing.T) {
 			_, hasTools = body["tools"]
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -928,14 +928,14 @@ func TestTranslateToolsIndirect(t *testing.T) {
 			receivedTools = body["tools"].([]interface{})
 
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
@@ -973,14 +973,14 @@ func TestTranslateToolsIndirect(t *testing.T) {
 	t.Run("tool without description", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			response := map[string]interface{}{
-				"id":           "msg-123",
-				"type":         "message",
-				"role":         "assistant",
-				"content":      []interface{}{map[string]string{"type": "text", "text": "Response"}},
-				"stop_reason":  "end_turn",
-				"model":        "claude-3-5-sonnet-20241022",
+				"id":            "msg-123",
+				"type":          "message",
+				"role":          "assistant",
+				"content":       []interface{}{map[string]string{"type": "text", "text": "Response"}},
+				"stop_reason":   "end_turn",
+				"model":         "claude-3-5-sonnet-20241022",
 				"stop_sequence": nil,
-				"usage":        map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
+				"usage":         map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)

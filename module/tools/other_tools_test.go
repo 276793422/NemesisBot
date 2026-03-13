@@ -408,11 +408,11 @@ func TestNewCronTool_Configurations(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 
 	testCases := []struct {
-		name         string
-		workspace    string
-		restrict     bool
-		execTimeout  int
-		config       *config.Config
+		name        string
+		workspace   string
+		restrict    bool
+		execTimeout int
+		config      *config.Config
 	}{
 		{"Default config", "/workspace", true, 0, nil},
 		{"No restriction", "/workspace", false, 0, nil},
@@ -443,8 +443,8 @@ func TestClusterRPCTool_ParameterValidation(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		name     string
-		params   map[string]interface{}
+		name        string
+		params      map[string]interface{}
 		shouldError bool
 	}{
 		{
