@@ -542,9 +542,9 @@ func TestNormalizeDecision(t *testing.T) {
 			expected: "denied",
 		},
 		{
-			name:     "ask maps to denied (temporary)",
+			name:     "ask maps to require_approval",
 			action:   "ask",
-			expected: "denied",
+			expected: "require_approval",
 		},
 		{
 			name:     "require_approval",

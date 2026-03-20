@@ -17,12 +17,14 @@ import (
 	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
+	"github.com/276793422/NemesisBot/module/security/approval"
 )
 
 // SecurityPlugin implements the plugin interface for security checks
 type SecurityPlugin struct {
 	*plugin.BasePlugin
 	auditor     *SecurityAuditor
+	approvalMgr approval.ApprovalManager
 	enabled     bool
 	configPath  string
 	mu          sync.RWMutex
@@ -75,6 +77,14 @@ func (p *SecurityPlugin) Init(pluginConfig map[string]interface{}) error {
 		}
 
 		p.auditor = NewSecurityAuditor(auditorConfig)
+
+		// Initialize approval manager
+		if err := p.initApprovalManager(securityCfg); err != nil {
+			logger.ErrorCF("security", "Failed to initialize approval manager", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Continue without approval manager - will fall back to pending requests
+		}
 
 		// Register rules
 		p.registerRules(securityCfg)
@@ -335,6 +345,16 @@ func (p *SecurityPlugin) Cleanup() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Stop approval manager
+	if p.approvalMgr != nil {
+		if err := p.approvalMgr.Stop(); err != nil {
+			logger.ErrorCF("security", "Failed to stop approval manager", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+		p.approvalMgr = nil
+	}
+
 	// Close audit log file
 	if p.logFile != nil {
 		if err := p.logFile.Close(); err != nil {
@@ -395,5 +415,46 @@ func (p *SecurityPlugin) ReloadConfig() error {
 	}
 
 	logger.InfoC("security", "Security configuration reloaded")
+	return nil
+}
+
+// initApprovalManager initializes the approval manager for interactive approval dialogs
+func (p *SecurityPlugin) initApprovalManager(cfg *config.SecurityConfig) error {
+	if p.auditor == nil {
+		return fmt.Errorf("auditor not initialized")
+	}
+
+	// Create approval configuration
+	approvalConfig := &approval.ApprovalConfig{
+		Enabled:         true,
+		Timeout:         30 * time.Second,
+		MinRiskLevel:    "MEDIUM",
+		DialogWidth:     550,
+		DialogHeight:    480,
+		EnableSound:     true,
+		EnableAnimation: true,
+	}
+
+	// Override from config if available
+	if cfg.ApprovalTimeout > 0 {
+		approvalConfig.Timeout = time.Duration(cfg.ApprovalTimeout) * time.Second
+	}
+
+	// Create approval manager
+	p.approvalMgr = approval.NewApprovalManager(approvalConfig)
+	if p.approvalMgr == nil {
+		return fmt.Errorf("failed to create approval manager")
+	}
+
+	// Start approval manager
+	if err := p.approvalMgr.Start(); err != nil {
+		p.approvalMgr = nil
+		return fmt.Errorf("failed to start approval manager: %w", err)
+	}
+
+	// Set approval manager to auditor
+	p.auditor.SetApprovalManager(p.approvalMgr)
+
+	logger.InfoC("security", "Approval manager initialized and started")
 	return nil
 }

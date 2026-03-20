@@ -17,6 +17,7 @@ import (
 
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/security/approval"
 )
 
 // OperationType represents the category of dangerous operation
@@ -157,6 +158,7 @@ type SecurityAuditor struct {
 	enabled        bool
 	logFile        *os.File
 	logFilePath    string
+	approvalMgr    approval.ApprovalManager // Approval dialog manager
 }
 
 // AuditorConfig configures the security auditor
@@ -259,6 +261,20 @@ func (sa *SecurityAuditor) SetDefaultAction(action string) {
 	sa.defaultAction = action
 }
 
+// SetApprovalManager sets the approval manager for interactive approval dialogs
+func (sa *SecurityAuditor) SetApprovalManager(mgr approval.ApprovalManager) {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
+	sa.approvalMgr = mgr
+}
+
+// GetApprovalManager returns the current approval manager
+func (sa *SecurityAuditor) GetApprovalManager() approval.ApprovalManager {
+	sa.mu.RLock()
+	defer sa.mu.RUnlock()
+	return sa.approvalMgr
+}
+
 // RequestPermission requests permission to perform a dangerous operation
 // Returns: (allowed, error, requestID)
 func (sa *SecurityAuditor) RequestPermission(ctx context.Context, req *OperationRequest) (bool, error, string) {
@@ -300,12 +316,56 @@ func (sa *SecurityAuditor) RequestPermission(ctx context.Context, req *Operation
 	case "denied":
 		return false, fmt.Errorf("operation denied: %s", reason), req.ID
 	case "require_approval":
-		// Store as pending request
+		// Try to use interactive approval dialog if available
+		if sa.approvalMgr != nil && sa.approvalMgr.IsRunning() {
+			// Convert OperationRequest to ApprovalRequest
+			approvalReq := &approval.ApprovalRequest{
+				RequestID:      req.ID,
+				Operation:      string(req.Type),
+				Target:         req.Target,
+				RiskLevel:      req.DangerLevel.String(),
+				Reason:         reason,
+				Context:        convertContextToStringMap(req.Context),
+				TimeoutSeconds: int(sa.config.ApprovalTimeout.Seconds()),
+				Timestamp:      req.Timestamp.Unix(),
+			}
+
+			// Request user approval via dialog
+			resp, err := sa.approvalMgr.RequestApproval(ctx, approvalReq)
+			if err != nil {
+				// Dialog failed, fall back to pending request
+				sa.activeRequests[req.ID] = req
+				return false, &ApprovalRequiredError{RequestID: req.ID, Reason: reason}, req.ID
+			}
+
+			// Handle response
+			if resp.Approved {
+				// User approved the operation
+				return true, nil, req.ID
+			} else if resp.TimedOut {
+				// User didn't respond in time
+				return false, fmt.Errorf("operation timed out waiting for approval: %s", reason), req.ID
+			} else {
+				// User explicitly denied
+				return false, fmt.Errorf("operation denied by user: %s", reason), req.ID
+			}
+		}
+
+		// No approval manager available, store as pending request
 		sa.activeRequests[req.ID] = req
 		return false, &ApprovalRequiredError{RequestID: req.ID, Reason: reason}, req.ID
 	default:
 		return false, fmt.Errorf("unknown decision: %s", decision), req.ID
 	}
+}
+
+// convertContextToStringMap converts map[string]interface{} to map[string]string
+func convertContextToStringMap(ctx map[string]interface{}) map[string]string {
+	result := make(map[string]string)
+	for k, v := range ctx {
+		result[k] = fmt.Sprintf("%v", v)
+	}
+	return result
 }
 
 // ApproveRequest approves a pending operation request
@@ -450,9 +510,7 @@ func (sa *SecurityAuditor) evaluateRequest(req *OperationRequest) (decision, rea
 
 // normalizeDecision converts action values to canonical decision names
 //
-// NOTE: "ask" action is currently mapped to "denied" as a security measure.
-// This blocks operations that require user approval until the approval UI is implemented.
-// Future: When approval workflow is ready, map "ask" to "require_approval" instead.
+// "ask" action is mapped to "require_approval" to trigger the approval dialog.
 func normalizeDecision(action string) string {
 	switch action {
 	case "allow", "allowed":
@@ -460,9 +518,8 @@ func normalizeDecision(action string) string {
 	case "deny", "denied":
 		return "denied"
 	case "ask":
-		// TEMPORARY: Map ask to denied until approval UI is implemented
-		// This prevents operations that require approval from executing
-		return "denied"
+		// Map ask to require_approval to trigger approval dialog
+		return "require_approval"
 	case "require_approval":
 		return "require_approval"
 	default:
