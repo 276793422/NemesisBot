@@ -15,6 +15,7 @@ require (
 	github.com/mymmrac/telego v1.6.0
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
 	github.com/openai/openai-go/v3 v3.22.0
+	github.com/shmspace/webview2 v1.0.1
 	github.com/slack-go/slack v0.17.3
 	github.com/tencent-connect/botgo v0.2.1
 	golang.org/x/oauth2 v0.35.0
@@ -23,9 +24,6 @@ require (
 require (
 	github.com/jchv/go-winloader v0.0.0-20200815041850-dec1ee9a7fd5 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect
-	github.com/shmspace/webview2 v1.0.1 // indirect
-	github.com/webview/webview v0.0.0-20260309075125-cbbdee44afff // indirect
-	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6 // indirect
 )
 
 require (

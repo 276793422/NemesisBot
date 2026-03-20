@@ -82,13 +82,34 @@ function Print-Section {
 # ================================================
 
 function Get-GitInfo {
-    $version = & git describe --tags --abbrev=0 2>$null
-    if (-not $version) { $version = "0.0.0.1" }
+    $version = "0.0.0.1"
+    $commit = "unknown"
 
-    $commit = & git rev-parse --short HEAD 2>$null
-    if (-not $commit) { $commit = "unknown" }
+    # Try to get version from git tags (suppress errors)
+    try {
+        $version = & git describe --tags --abbrev=0 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            $version = "0.0.0.1"
+        } else {
+            $version = $version.Trim()
+        }
+    } catch {
+        $version = "0.0.0.1"
+    }
 
-    $buildTime = Get-Date -Format "yyyy/MM/dd HH:mm:ss"
+    # Try to get commit hash (suppress errors)
+    try {
+        $commit = & git rev-parse --short HEAD 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($commit)) {
+            $commit = "unknown"
+        } else {
+            $commit = $commit.Trim()
+        }
+    } catch {
+        $commit = "unknown"
+    }
+
+    $buildTime = Get-Date -Format "yyyy/MM/dd"
 
     $goVersionOutput = & go version 2>$null
     if ($goVersionOutput -match 'go version go(\d+\.\d+\.\d+)') {
@@ -117,28 +138,51 @@ function Invoke-GoBuild {
     $env:GOOS = $GoOS
     $env:GOARCH = $GoArch
 
-    $ldflags = "-X main.version=$($GitInfo.Version) " +
-               "-X main.gitCommit=$($GitInfo.Commit) " +
-               "-X main.buildTime='$($GitInfo.BuildTime)' " +
-               "-X main.goVersion=$($GitInfo.GoVersion) " +
-               "-s -w"
+    # Build ldflags as a single string (no spaces in buildTime)
+    $ldflags = "-X main.version=$($GitInfo.Version) -X main.gitCommit=$($GitInfo.Commit) -X main.buildTime=$($GitInfo.BuildTime) -X main.goVersion=$($GitInfo.GoVersion) -s -w"
 
-    $tagsStr = if ($Tags.Count -gt 0) { "-tags " + ($Tags -join ",") } else { "" }
-
-    $buildCmd = "go build $tagsStr -ldflags `"$ldflags`" -o $Output ./nemesisbot/"
+    $buildCmd = "go build"
+    if ($Tags.Count -gt 0) {
+        $buildCmd += " -tags " + ($Tags -join ",")
+    }
+    $buildCmd += " -ldflags `"$ldflags`" -o $Output ./nemesisbot/"
 
     Print-Info "Executing: $buildCmd"
 
     Invoke-Expression $buildCmd
+    $exitCode = $LASTEXITCODE
 
-    if ($LASTEXITCODE -eq 0) {
+    if ($exitCode -eq 0) {
         if (Test-Path $Output) {
-            $size = (Get-Item $Output).Length / 1MB
-            $sizeStr = [math]::Round($size, 2)
-            Write-Host "[OK] Build successful: $Output ($sizeStr MB)" -ForegroundColor Green
+            $fileInfo = Get-Item $Output
+            $sizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
+            $sizeBytes = $fileInfo.Length
+
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "  Build Successful!" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "Build Information:" -ForegroundColor Cyan
+            Write-Host "  Version:     " -NoNewline; Write-Host "$($GitInfo.Version)" -ForegroundColor Yellow
+            Write-Host "  Git Commit:  " -NoNewline; Write-Host "$($GitInfo.Commit)" -ForegroundColor Yellow
+            Write-Host "  Build Time:  " -NoNewline; Write-Host "$($GitInfo.BuildTime)" -ForegroundColor Yellow
+            Write-Host "  Go Version:  " -NoNewline; Write-Host "$($GitInfo.GoVersion)" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Build Parameters:" -ForegroundColor Cyan
+            Write-Host "  Platform:    " -NoNewline; Write-Host "$GoOS/$GoArch" -ForegroundColor Yellow
+            Write-Host "  Build Tags:  " -NoNewline; if ($Tags.Count -gt 0) { Write-Host "$($Tags -join ', ')" -ForegroundColor Yellow } else { Write-Host "None" -ForegroundColor Gray }
+            Write-Host "  Output:      " -NoNewline; Write-Host "$Output" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Output File:" -ForegroundColor Cyan
+            Write-Host "  Path:        " -NoNewline; Write-Host "$Output" -ForegroundColor Yellow
+            Write-Host "  Size:        " -NoNewline; Write-Host "$sizeMB MB ($sizeBytes bytes)" -ForegroundColor Yellow
+            Write-Host "  Created:     " -NoNewline; Write-Host "$($fileInfo.CreationTime)" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
         }
     } else {
-        Write-Host "[ERROR] Build failed" -ForegroundColor Red
+        Write-Host "[ERROR] Build failed with exit code $exitCode" -ForegroundColor Red
         exit 1
     }
 
@@ -305,18 +349,19 @@ function Build-Android {
     $env:CXX = "$toolchainBin\$clang++"
     $env:CXX = "$toolchainBin\$clang++.cmd"
 
-    $ldflags = "-X main.version=$($gitInfo.Version) " +
-               "-X main.gitCommit=$($gitInfo.Commit) " +
-               "-X main.buildTime='$($gitInfo.BuildTime)' " +
-               "-X main.goVersion=$($gitInfo.GoVersion) " +
-               "-s -w"
+    # Prepare ldflags (no spaces in buildTime)
+    $ldflags = "-X main.version=$($gitInfo.Version) -X main.gitCommit=$($gitInfo.Commit) -X main.buildTime=$($gitInfo.BuildTime) -X main.goVersion=$($gitInfo.GoVersion) -s -w"
 
-    $tagsStr = if ($Tags.Count -gt 0) { "-tags " + ($Tags -join ",") } else { "" }
-
-    $buildCmd = "go build $tagsStr -ldflags `"$ldflags`" -o $dir\$ProjectName ./nemesisbot/"
+    $buildCmd = "go build"
+    if ($Tags.Count -gt 0) {
+        $buildCmd += " -tags " + ($Tags -join ",")
+    }
+    $buildCmd += " -ldflags `"$ldflags`" -o $dir\$ProjectName ./nemesisbot/"
 
     Print-Info "Executing build..."
+
     Invoke-Expression $buildCmd
+    $exitCode = $LASTEXITCODE
 
     # Clean up environment variables
     Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
@@ -325,14 +370,39 @@ function Build-Android {
     Remove-Item Env:CC -ErrorAction SilentlyContinue
     Remove-Item Env:CXX -ErrorAction SilentlyContinue
 
-    if ($LASTEXITCODE -eq 0) {
+    if ($exitCode -eq 0) {
         if (Test-Path "$dir\$ProjectName") {
-            $size = (Get-Item "$dir\$ProjectName").Length / 1MB
-            $sizeStr = [math]::Round($size, 2)
-            Write-Host "[OK] Android $Arch build completed ($sizeStr MB)" -ForegroundColor Green
+            $fileInfo = Get-Item "$dir\$ProjectName"
+            $sizeMB = [math]::Round($fileInfo.Length / 1MB, 2)
+            $sizeBytes = $fileInfo.Length
+
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host "  Android Build Successful!" -ForegroundColor Green
+            Write-Host "========================================" -ForegroundColor Green
+            Write-Host ""
+            Write-Host "Build Information:" -ForegroundColor Cyan
+            Write-Host "  Version:     " -NoNewline; Write-Host "$($gitInfo.Version)" -ForegroundColor Yellow
+            Write-Host "  Git Commit:  " -NoNewline; Write-Host "$($gitInfo.Commit)" -ForegroundColor Yellow
+            Write-Host "  Build Time:  " -NoNewline; Write-Host "$($gitInfo.BuildTime)" -ForegroundColor Yellow
+            Write-Host "  Go Version:  " -NoNewline; Write-Host "$($gitInfo.GoVersion)" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Build Parameters:" -ForegroundColor Cyan
+            Write-Host "  Platform:    " -NoNewline; Write-Host "android/$Arch" -ForegroundColor Yellow
+            Write-Host "  NDK Path:    " -NoNewline; Write-Host "$NdkPath" -ForegroundColor Yellow
+            Write-Host "  Min API:     " -NoNewline; Write-Host "android$AndroidMinApi" -ForegroundColor Yellow
+            Write-Host "  Build Tags:  " -NoNewline; if ($Tags.Count -gt 0) { Write-Host "$($Tags -join ', ')" -ForegroundColor Yellow } else { Write-Host "None" -ForegroundColor Gray }
+            Write-Host "  Output:      " -NoNewline; Write-Host "$dir\$ProjectName" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Output File:" -ForegroundColor Cyan
+            Write-Host "  Path:        " -NoNewline; Write-Host "$dir\$ProjectName" -ForegroundColor Yellow
+            Write-Host "  Size:        " -NoNewline; Write-Host "$sizeMB MB ($sizeBytes bytes)" -ForegroundColor Yellow
+            Write-Host "  Created:     " -NoNewline; Write-Host "$($fileInfo.CreationTime)" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "========================================" -ForegroundColor Green
         }
     } else {
-        Write-Host "[ERROR] Build failed" -ForegroundColor Red
+        Write-Host "[ERROR] Build failed with exit code $exitCode" -ForegroundColor Red
         exit 1
     }
 }

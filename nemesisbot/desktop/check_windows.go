@@ -1,8 +1,9 @@
+//go:build windows
+
 package desktop
 
 import (
 	"os/exec"
-	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -28,23 +29,8 @@ var (
 	procShellExecuteW = shell32.NewProc("ShellExecuteW")
 )
 
-// WebView2VersionInfo holds WebView2 version information
-type WebView2VersionInfo struct {
-	Installed bool
-	Version   string
-	Path      string
-}
-
-// CheckSystemRequirements checks if the system meets requirements
+// CheckSystemRequirements checks if the system meets requirements (Windows)
 func CheckSystemRequirements() bool {
-	// Check if running on Windows
-	if runtime.GOOS != "windows" {
-		logger.ErrorC("desktop", "Desktop UI is only supported on Windows")
-		logger.InfoC("desktop", "TODO: Implement desktop UI for other platforms (macOS, Linux)")
-		logger.InfoC("desktop", "For now, please use the web interface or run on Windows")
-		return false
-	}
-
 	// Check WebView2 Runtime installation
 	info := checkWebView2Installation()
 
