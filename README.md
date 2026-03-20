@@ -106,8 +106,48 @@
 git clone https://github.com/276793422/NemesisBot.git
 cd NemesisBot
 
-# 编译（Windows）
+# 编译（推荐使用 Makefile）
+make build                    # Linux/macOS
+make build-windows            # Windows (在 WSL 中)
+
+# 或使用 PowerShell（Windows）
+.\build.ps1
+
+# 或使用批处理脚本（Windows）
 build.bat
+```
+
+### 构建系统说明
+
+NemesisBot 支持三种构建方式：
+
+| 构建方式 | 适用平台 | 功能完整性 | 推荐度 |
+|---------|---------|-----------|--------|
+| **Makefile** | Linux/macOS/WSL | ⭐⭐⭐⭐⭐ | 🔥推荐 |
+| **build.ps1** | Windows | ⭐⭐⭐⭐ | 🔥推荐 |
+| **build.bat** | Windows | ⭐⭐⭐ | ✅可用 |
+
+**详细文档**：
+- 📖 [构建系统说明](docs/INFO/BUILD_SYSTEM_README.md)
+- 📖 [Makefile 使用指南](docs/INFO/MAKEFILE_USAGE.md)
+- 📖 [快速参考卡片](docs/INFO/QUICK_REFERENCE.md)
+- 📖 [Makefile 安装指南](docs/INFO/MAKEFILE_INSTALLATION.md)
+
+**快速命令**：
+
+```bash
+# Makefile (Linux/macOS/WSL)
+make help                    # 查看所有命令
+make build                   # 构建当前平台
+make build-all               # 构建所有平台
+make test                    # 运行测试
+make run                     # 构建并运行
+
+# build.ps1 (Windows PowerShell)
+.\build.ps1 -Help            # 查看所有命令
+.\build.ps1                  # 构建当前平台
+.\build.ps1 -AllPlatforms    # 构建所有平台
+.\build.ps1 -Test            # 运行测试
 ```
 
 ### 初始化
@@ -583,7 +623,9 @@ MIT License - 请查看 [LICENSE](LICENSE) 文件了解详情。
 
 本项目灵感来源于：
 - [OpenClaw](https://github.com/openclaw/openclaw)
+- [nanobot](https://github.com/HKUDS/nanobot)
 - [PicoClaw](https://github.com/sipeed/picoclaw)
+- [openfang](https://github.com/RightNow-AI/openfang)
 
 感谢这些项目的贡献者！（其实不只是灵感，我的Claw也抄了他们不少代码。）
 
