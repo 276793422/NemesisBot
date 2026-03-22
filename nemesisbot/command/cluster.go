@@ -11,6 +11,7 @@ import (
 	"github.com/276793422/NemesisBot/module/cluster"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/path"
+	"github.com/276793422/NemesisBot/module/ui"
 )
 
 // CmdCluster manages cluster configuration and status
@@ -134,9 +135,7 @@ func cmdClusterStatus() {
 	}
 
 	// Show status
-	fmt.Println("╔════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                    Cluster Status                             ║")
-	fmt.Println("╚════════════════════════════════════════════════════════════╝")
+	ui.PrintBoxTitle("Cluster Status", 66)
 	fmt.Println()
 
 	if clusterCfg.Enabled {

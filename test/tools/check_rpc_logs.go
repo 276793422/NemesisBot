@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/276793422/NemesisBot/module/ui"
 )
 
 func main() {
@@ -38,9 +40,7 @@ func main() {
 		"Discovery Log": filepath.Join(logDir, "discovery.log"),
 	}
 
-	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("       RPC 日志诊断工具")
-	fmt.Println("═══════════════════════════════════════════════════")
+	ui.PrintSectionTitle("RPC 日志诊断工具", 53)
 	fmt.Printf("工作区: %s\n\n", workspace)
 
 	for name, logPath := range logFiles {
@@ -90,9 +90,7 @@ func main() {
 	}
 
 	// Search for RPC-related logs
-	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("       RPC 相关日志搜索")
-	fmt.Println("═══════════════════════════════════════════════════")
+	ui.PrintSectionTitle("RPC 相关日志搜索", 53)
 	fmt.Println("")
 
 	searchPatterns := []struct {
@@ -146,9 +144,7 @@ func main() {
 	}
 
 	// Check for recent activity
-	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("       最近活动检查")
-	fmt.Println("═══════════════════════════════════════════════════")
+	ui.PrintSectionTitle("最近活动检查", 53)
 	fmt.Println("")
 
 	for name, logPath := range logFiles {
@@ -182,9 +178,7 @@ func main() {
 	}
 
 	fmt.Println("")
-	fmt.Println("═══════════════════════════════════════════════════")
-	fmt.Println("       建议")
-	fmt.Println("═══════════════════════════════════════════════════")
+	ui.PrintSectionTitle("建议", 53)
 	fmt.Println("")
 	fmt.Println("1. 检查 rpc.log 中是否有 'Received request: action=hello'")
 	fmt.Println("   - 如果有，说明 Server 接收到了请求")
