@@ -280,3 +280,123 @@ func (m *TestAI43) Process(messages []Message) string {
 func (m *TestAI43) Delay() time.Duration {
 	return 0
 }
+
+// TestAI50 - 安全测试模型，返回文件操作工具调用
+// 功能：
+// 1. 检测消息中的 <FILE_OP>{...JSON...}</FILE_OP> 标记
+// 2. 解析文件操作参数（operation, path, content, risk_level）
+// 3. 返回对应的文件操作工具调用（OpenAI function calling 格式）
+// 支持的文件操作：
+//   - file_read: 读取文件（CRITICAL）
+//   - file_write: 写入文件（HIGH）
+//   - file_delete: 删除文件（CRITICAL）
+//   - file_append: 追加文件（MEDIUM）
+//   - dir_create: 创建目录（LOW）
+//   - dir_delete: 删除目录（HIGH）
+//
+// 使用示例：
+// <FILE_OP>{"operation":"file_delete","path":"/etc/passwd","risk_level":"CRITICAL"}</FILE_OP>
+type TestAI50 struct{}
+
+func NewTestAI50() *TestAI50 {
+	return &TestAI50{}
+}
+
+func (m *TestAI50) Name() string {
+	return "testai-5.0"
+}
+
+func (m *TestAI50) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return "请提供文件操作参数"
+	}
+
+	lastMsg := messages[len(messages)-1].Content
+
+	// 检查是否包含 <FILE_OP> 标记
+	if !strings.Contains(lastMsg, "<FILE_OP>") || !strings.Contains(lastMsg, "</FILE_OP>") {
+		return "请使用 <FILE_OP> 标签指定文件操作。格式：<FILE_OP>{\"operation\":\"file_read\",\"path\":\"/path/to/file\",\"risk_level\":\"CRITICAL\"}</FILE_OP>"
+	}
+
+	// 提取标记内的 JSON
+	start := strings.Index(lastMsg, "<FILE_OP>") + len("<FILE_OP>")
+	end := strings.Index(lastMsg, "</FILE_OP>")
+
+	if end <= start {
+		return "文件操作参数格式错误"
+	}
+
+	jsonStr := strings.TrimSpace(lastMsg[start:end])
+
+	// 解析文件操作请求
+	var req struct {
+		Operation  string `json:"operation"`
+		Path       string `json:"path"`
+		Content    string `json:"content,omitempty"`
+		RiskLevel  string `json:"risk_level,omitempty"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &req); err != nil {
+		return fmt.Sprintf("解析文件操作参数失败: %v", err)
+	}
+
+	// 验证操作类型
+	validOps := map[string]bool{
+		"file_read":   true,
+		"file_write":  true,
+		"file_delete": true,
+		"file_append": true,
+		"dir_create":  true,
+		"dir_delete":  true,
+		"dir_list":    true,
+	}
+
+	if !validOps[req.Operation] {
+		return fmt.Sprintf("不支持的操作类型: %s。支持的操作: %v", req.Operation, []string{"file_read", "file_write", "file_delete", "file_append", "dir_create", "dir_delete", "dir_list"})
+	}
+
+	// 构造工具调用
+	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
+
+	// 构造工具参数
+	args := map[string]interface{}{
+		"path": req.Path,
+	}
+
+	// 根据操作类型添加特定参数
+	if req.Operation == "file_write" && req.Content != "" {
+		args["content"] = req.Content
+	}
+	if req.Operation == "file_append" && req.Content != "" {
+		args["content"] = req.Content
+	}
+
+	// 如果有风险级别，添加到参数中
+	if req.RiskLevel != "" {
+		args["risk_level"] = req.RiskLevel
+	}
+
+	argsJSON, _ := json.Marshal(args)
+
+	// 返回工具调用响应
+	response := ProcessedResponse{
+		Content: "",
+		ToolCalls: []ToolCall{
+			{
+				ID:   toolCallID,
+				Type: "function",
+				Function: &FunctionCall{
+					Name:      req.Operation,
+					Arguments: string(argsJSON),
+				},
+			},
+		},
+	}
+
+	responseJSON, _ := json.Marshal(response)
+	return string(responseJSON)
+}
+
+func (m *TestAI50) Delay() time.Duration {
+	return 0
+}

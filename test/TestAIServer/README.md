@@ -97,6 +97,39 @@ nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --k
 - **延迟**: 0 秒
 - **用途**: 测试消息传递和验证
 
+### 5. testai-3.0
+- **功能**: Peer Chat 触发模型
+- **响应**: 返回 `cluster_rpc` 工具调用
+- **延迟**: 0 秒
+- **用途**: 测试集群间 peer_chat 通信
+
+### 6. testai-4.2
+- **功能**: Sleep 工具调用（30秒）
+- **响应**: 返回 `sleep(30秒)` 工具调用 → "工作完成"
+- **延迟**: 0 秒
+- **用途**: 测试工具调用和超时处理
+
+### 7. testai-4.3
+- **功能**: Sleep 工具调用（300秒）
+- **响应**: 返回 `sleep(300秒)` 工具调用 → "工作完成"
+- **延迟**: 0 秒
+- **用途**: 测试长时间工具调用
+
+### 8. testai-5.0 ⭐ 安全测试模型
+- **功能**: 返回文件操作工具调用
+- **响应**: 根据参数返回对应的文件操作工具调用
+- **延迟**: 0 秒
+- **用途**: 测试文件操作和安全审批功能
+- **支持的操作**:
+  - `file_read` - 读取文件
+  - `file_write` - 写入文件
+  - `file_delete` - 删除文件
+  - `file_append` - 追加文件
+  - `dir_create` - 创建目录
+  - `dir_delete` - 删除目录
+  - `dir_list` - 列出目录
+
+
 ## 快速开始
 
 ### 构建服务器
@@ -116,6 +149,37 @@ go build -o testaiserver.exe
 
 **本地访问**: `http://localhost:8080`
 **远程访问**: `http://<your-ip>:8080`
+
+### 使用帮助系统
+
+TestAIServer 提供了分层帮助系统，方便快速查看模型信息：
+
+```bash
+# 显示帮助概览（推荐新手）
+./testaiserver.exe --help
+
+# 显示分类详情
+./testaiserver.exe --help categories
+
+# 显示所有模型列表
+./testaiserver.exe models
+
+# 显示特定模型的详细帮助
+./testaiserver.exe --help testai-5.0
+
+# 显示 API 使用说明
+./testaiserver.exe --help api
+
+# 快速参考
+./testaiserver.exe --help quick
+```
+
+**帮助系统层级结构**：
+1. **概览** (`--help`) - 按分类组织，快速了解所有模型
+2. **分类详情** (`--help categories`) - 深入了解每个分类的模型
+3. **模型详情** (`--help <模型名>`) - 特定模型的详细说明和使用示例
+4. **API 文档** (`--help api`) - API 接口和 curl 示例
+5. **快速参考** (`--help quick`) - 常用命令和模型速查表
 
 ### 使用环境变量配置端口
 
@@ -252,6 +316,86 @@ curl http://localhost:8080/v1/chat/completions \
     "total_tokens": 12
   }
 }
+```
+
+### 测试安全文件操作模型（testai-5.0）⭐
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "testai-5.0",
+    "messages": [
+      {"role": "user", "content": "<FILE_OP>{\"operation\":\"file_delete\",\"path\":\"/etc/passwd\",\"risk_level\":\"CRITICAL\"}</FILE_OP>"}
+    ]
+  }'
+```
+
+响应示例（返回工具调用）：
+```json
+{
+  "id": "chatcmpl-1700000000",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "testai-5.0",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call-1234567890",
+            "type": "function",
+            "function": {
+              "name": "file_delete",
+              "arguments": "{\"path\":\"/etc/passwd\",\"risk_level\":\"CRITICAL\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ]
+}
+```
+
+**testai-5.0 支持的文件操作**：
+
+1. **file_read** - 读取文件
+```json
+<FILE_OP>{"operation":"file_read","path":"/etc/passwd","risk_level":"CRITICAL"}</FILE_OP>
+```
+
+2. **file_write** - 写入文件
+```json
+<FILE_OP>{"operation":"file_write","path":"/tmp/test.txt","content":"Hello World","risk_level":"HIGH"}</FILE_OP>
+```
+
+3. **file_delete** - 删除文件
+```json
+<FILE_OP>{"operation":"file_delete","path":"/tmp/test.txt","risk_level":"CRITICAL"}</FILE_OP>
+```
+
+4. **file_append** - 追加文件
+```json
+<FILE_OP>{"operation":"file_append","path":"/tmp/test.txt","content":"Append this","risk_level":"MEDIUM"}</FILE_OP>
+```
+
+5. **dir_create** - 创建目录
+```json
+<FILE_OP>{"operation":"dir_create","path":"/tmp/newdir","risk_level":"LOW"}</FILE_OP>
+```
+
+6. **dir_delete** - 删除目录
+```json
+<FILE_OP>{"operation":"dir_delete","path":"/tmp/olddir","risk_level":"HIGH"}</FILE_OP>
+```
+
+7. **dir_list** - 列出目录
+```json
+<FILE_OP>{"operation":"dir_list","path":"/tmp"}</FILE_OP>
 ```
 
 ## 在 NemesisBot 中使用
