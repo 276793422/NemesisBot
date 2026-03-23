@@ -3,57 +3,15 @@ package command
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
+	"github.com/276793422/NemesisBot/module/desktop"
 	"github.com/276793422/NemesisBot/module/services"
 )
 
-// GetProjectRoot returns the project root directory
-func GetProjectRoot() string {
-	// Get the executable path
-	execPath, err := os.Executable()
-	if err != nil {
-		// Fallback to current working directory
-		if cwd, err := os.Getwd(); err == nil {
-			return cwd
-		}
-		return "."
-	}
-
-	// Get the directory of the executable
-	execDir := filepath.Dir(execPath)
-
-	// If executable is in project root (not in a subdirectory), use it directly
-	// Otherwise, navigate up to find project root
-	// Check if we're in nemesisbot/ subdirectory
-	if filepath.Base(execDir) == "nemesisbot" {
-		return filepath.Dir(execDir)
-	}
-
-	// Check if we have module/ subdirectory (indicating project root)
-	if _, err := os.Stat(filepath.Join(execDir, "module")); err == nil {
-		return execDir
-	}
-
-	// Fallback: use current working directory
-	if cwd, err := os.Getwd(); err == nil {
-		// Same checks for cwd
-		if filepath.Base(cwd) == "nemesisbot" {
-			return filepath.Dir(cwd)
-		}
-		if _, err := os.Stat(filepath.Join(cwd, "module")); err == nil {
-			return cwd
-		}
-	}
-
-	// Final fallback
-	return execDir
-}
-
 // CmdDesktop starts NemesisBot with Desktop UI (Wails v2)
-// The Desktop UI starts but the bot service does NOT start automatically
+// The Desktop UI starts in the nemesisbot.exe process (not as a separate process)
+// The bot service does NOT start automatically
 // Users can start/stop the bot through the Desktop UI
 func CmdDesktop() {
 	// Load configuration first (may not exist yet)
@@ -78,89 +36,28 @@ func CmdDesktop() {
 		os.Exit(1)
 	}
 
-	// Get project root directory
-	projectRoot := GetProjectRoot()
-
-	// Path to the Desktop UI executable
-	desktopExePath := filepath.Join(projectRoot, "module", "desktop", "build", "bin", "desktop.exe")
-
-	// Check if Desktop UI executable exists
-	if _, err := os.Stat(desktopExePath); os.IsNotExist(err) {
-		fmt.Println("⚠️  Desktop UI executable not found. Building now...")
-
-		// Build Desktop UI
-		if err := buildDesktopUI(projectRoot); err != nil {
-			fmt.Printf("Error building Desktop UI: %v\n", err)
-			fmt.Println("\nPlease build manually:")
-			fmt.Println("  cd module/desktop")
-			fmt.Println("  wails build")
-			os.Exit(1)
-		}
-
-		fmt.Println("✓ Desktop UI built successfully")
-	}
-
-	// Channel to signal when Desktop UI window is closed
-	desktopClosed := make(chan struct{})
-
-	// Start Desktop UI in a separate goroutine (non-blocking)
-	fmt.Println("🖥️  Starting NemesisBot Desktop UI (Wails v2)...")
-	go func() {
-		defer close(desktopClosed)
-
-		cmd := exec.Command(desktopExePath)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Desktop UI exited with error: %v\n", err)
-		} else {
-			fmt.Println("\nDesktop UI window closed")
-		}
-	}()
-
 	// Print startup banner
 	printDesktopBanner(svcMgr)
 
-	// Wait for either:
-	// 1. Shutdown signal (Ctrl+C)
-	// 2. Desktop UI window closed
-	svcMgr.WaitForShutdownWithDesktop(desktopClosed)
+	// Create desktop config
+	desktopCfg := &desktop.Config{
+		Enabled: true,
+		Debug:   false,
+	}
+
+	// Start Wails Desktop UI in the current process (not as a separate process)
+	// This will block until the Desktop UI window is closed
+	fmt.Println("🖥️  Starting NemesisBot Desktop UI (Wails v2)...")
+	if err := desktop.RunWithServiceManager(desktopCfg, svcMgr); err != nil {
+		fmt.Printf("Error starting Desktop UI: %v\n", err)
+		svcMgr.Shutdown()
+		os.Exit(1)
+	}
 
 	// Shutdown
 	fmt.Println("\nShutting down...")
 	svcMgr.Shutdown()
 	fmt.Println("✓ NemesisBot Desktop stopped")
-}
-
-// buildDesktopUI builds the Wails Desktop UI
-func buildDesktopUI(projectRoot string) error {
-	desktopDir := filepath.Join(projectRoot, "module", "desktop")
-
-	// Check if wails is installed
-	if _, err := exec.LookPath("wails"); err != nil {
-		return fmt.Errorf("wails command not found. Please install Wails v2: https://wails.io/docs/getting-started/installation")
-	}
-
-	// Change to desktop directory
-	if err := os.Chdir(desktopDir); err != nil {
-		return fmt.Errorf("failed to change to desktop directory: %w", err)
-	}
-
-	// Run wails build
-	cmd := exec.Command("wails", "build")
-	cmd.Dir = desktopDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	fmt.Println("Building Desktop UI (this may take a few seconds)...")
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("wails build failed: %w", err)
-	}
-
-	return nil
 }
 
 // printDesktopBanner prints the desktop mode banner
@@ -184,7 +81,7 @@ func printDesktopBanner(svcMgr *services.ServiceManager) {
 
 	fmt.Println("\nControls:")
 	fmt.Println("  • Use the Desktop UI to start/stop the bot")
-	fmt.Println("  • Press Ctrl+C to stop everything")
+	fmt.Println("  • Press Ctrl+C or close the window to stop")
 
 	fmt.Println(strings.Repeat("=", 50) + "\n")
 }

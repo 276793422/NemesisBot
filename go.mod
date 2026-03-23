@@ -3,6 +3,7 @@ module github.com/276793422/NemesisBot
 go 1.25.7
 
 require (
+	github.com/276793422/NemesisBot/module/desktop v1.0.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/adhocore/gronx v1.19.6
 	github.com/anthropics/anthropic-sdk-go v1.22.1
@@ -21,9 +22,18 @@ require (
 	golang.org/x/oauth2 v0.35.0
 )
 
+replace github.com/276793422/NemesisBot/module/desktop => ./module/desktop
+
 require (
-	github.com/jchv/go-winloader v0.0.0-20200815041850-dec1ee9a7fd5 // indirect
+	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
+	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
+	github.com/leaanthony/slicer v1.6.0 // indirect
+	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect
+	github.com/pkg/errors v0.9.1 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/wailsapp/go-webview2 v1.0.22 // indirect
+	github.com/wailsapp/wails/v2 v2.11.0 // indirect
 )
 
 require (

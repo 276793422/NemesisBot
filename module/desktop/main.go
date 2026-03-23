@@ -1,4 +1,4 @@
-package main
+package desktop
 
 import (
 	"context"
@@ -16,6 +16,20 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// ==================== Service Manager Integration ====================
+
+var globalServiceManager interface{}
+
+// SetServiceManager 设置全局 ServiceManager
+func SetServiceManager(svcMgr interface{}) {
+	globalServiceManager = svcMgr
+}
+
+// GetServiceManager 获取全局 ServiceManager
+func GetServiceManager() interface{} {
+	return globalServiceManager
+}
 
 // ==================== Config ====================
 
@@ -912,6 +926,9 @@ func CheckSystemRequirements() bool {
 func RunWithServiceManager(cfg *Config, svcMgr interface{}) error {
 	log.Println("[Desktop] Starting Wails Desktop UI with ServiceManager...")
 
+	// 设置全局 ServiceManager
+	SetServiceManager(svcMgr)
+
 	// 创建应用实例
 	application := NewApp()
 
@@ -968,29 +985,3 @@ func Run() error {
 	return nil
 }
 
-// ==================== Main ====================
-
-func main() {
-	// 创建应用实例
-	application := NewApp()
-
-	// 运行应用
-	err := wails.Run(&options.App{
-		Title:  "NemesisBot",
-		Width:  1280,
-		Height: 800,
-		AssetServer: &assetserver.Options{
-			Assets: assets,
-		},
-		BackgroundColour: &options.RGBA{R: 27, G: 38, B: 54, A: 1},
-		OnStartup:        application.Startup,
-		OnShutdown:       application.Shutdown,
-		Bind: []interface{}{
-			application,
-		},
-	})
-
-	if err != nil {
-		log.Fatalf("Error: %s", err.Error())
-	}
-}
