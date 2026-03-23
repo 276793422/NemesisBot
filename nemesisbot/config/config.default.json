@@ -150,6 +150,19 @@
     "enabled": false,
     "monitor_usb": true
   },
+  "logging": {
+    "llm": {
+      "enabled": false,
+      "log_dir": "logs/request_logs",
+      "detail_level": "summary"
+    },
+    "general": {
+      "enabled": true,
+      "enable_console": true,
+      "level": "INFO",
+      "file": ""
+    }
+  },
   "security": {
     "enabled": false
   },

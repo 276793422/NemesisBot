@@ -15,8 +15,8 @@
 **当前进度**: 约 20%
 
 **主要文档**:
-- 📋 [开发路线图](./SECURITY_APPROVAL_DEVELOPMENT_ROADMAP.md) - 总体时间线和里程碑
-- 📋 [单进程方案](./SECURITY_APPROVAL_SINGLE_PROCESS_PLAN.md) - 技术实施细节
+- 📋 [开发路线图](./2026-03-20_SECURITY_APPROVAL_DEVELOPMENT_ROADMAP.md) - 总体时间线和里程碑
+- 📋 [单进程方案](./2026-03-20_SECURITY_APPROVAL_SINGLE_PROCESS_PLAN.md) - 技术实施细节
 
 **技术方案**:
 - 架构：单进程模式（webview 库）
@@ -41,30 +41,18 @@
 
 ---
 
-### 🟡 未开始
-
-#### 2. 日志配置文件支持（暂停）
-
-**状态**: 📋 计划中（暂停）
-**优先级**: 🟡 中等
-**预计工时**: 2-3 天
-
-**文档**: [日志配置开发计划](./DEV_PLAN_LOGGING_CONFIG.md)
-
-**功能描述**:
-扩展日志配置系统，支持通过配置文件设置常规日志级别。
-
-**暂停原因**:
-安全审批对话框功能优先级更高，此计划暂缓。
-
----
-
 ## 📁 归档位置
 
 **已完成的计划**已移至：
 - `docs/REPORT/` - 完成报告和改进记录
 - `docs/INFO/` - 技术评估和知识文档
 - `docs/INFO/ARCHIVE/` - 早期设计文档（已过时）
+
+**最近归档** (2026-03-23):
+- ✅ **日志配置文件支持** - 已完成并增强
+  - 完成报告: [2026-03-23_LOGGING_CONFIG_ENHANCEMENT_COMPLETE.md](../REPORT/2026-03-23_LOGGING_CONFIG_ENHANCEMENT_COMPLETE.md)
+  - 配置示例: [LOGGING_CONFIG_EXAMPLES.md](../INFO/LOGGING_CONFIG_EXAMPLES.md)
+  - 迁移指南: [LOGGING_CONFIG_MIGRATION.md](../INFO/LOGGING_CONFIG_MIGRATION.md)
 
 **查看归档**:
 - [INFO 目录](../INFO/) - 技术文档和评估报告
@@ -89,11 +77,11 @@
 ## 📊 统计信息
 
 ```
-活跃计划:    2 个
+活跃计划:    1 个
   - 正在进行:  1 个（安全审批对话框）
-  - 未开始:    1 个（日志配置）
 
-已完成计划:  8 个（已移至 REPORT/INFO）
+已完成计划:  9 个（已移至 REPORT/INFO）
+  - 最新完成:  日志配置文件支持（2026-03-23）
 ```
 
 ---
