@@ -56,6 +56,14 @@ func (m *approvalManagerImpl) RequestApproval(ctx context.Context, req *Approval
 
 	startTime := time.Now()
 
+	// 首先检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		// context 仍然有效，继续
+	}
+
 	// 检查是否有可用的审批处理器
 	if globalApprovalHandler == nil {
 		// 如果没有设置处理器（例如在 CLI 模式下），使用默认行为
