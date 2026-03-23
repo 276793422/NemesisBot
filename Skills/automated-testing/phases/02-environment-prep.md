@@ -1,5 +1,28 @@
 # 阶段 2: 环境准备
 
+> **⚠️ 推荐方式**: 使用辅助脚本（2026-03-23 更新）
+>
+> 本阶段的大部分步骤已由 `setup-env.sh/ps1` 脚本自动化。
+>
+> **强烈建议优先使用脚本**：
+> ```bash
+> # Windows PowerShell
+> .\Skills\automated-testing\scripts\setup-env.ps1
+>
+> # Linux/Git Bash
+> bash Skills/automated-testing/scripts/setup-env.sh
+> ```
+>
+> **本文档的作用**：
+> - ✅ 理解脚本做了什么
+> - ✅ 脚本失败时的备用方案
+> - ✅ 故障排查参考
+> - ✅ 学习底层逻辑
+>
+> **如果脚本执行成功，可以直接跳到阶段 3**
+>
+> ---
+
 准备测试所需的所有环境和组件。
 
 **⚠️ 重要前提**：此阶段必须在**项目根目录**下执行。

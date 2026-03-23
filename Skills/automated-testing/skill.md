@@ -100,6 +100,96 @@ test/
 
 ---
 
+## 辅助脚本
+
+本 Skill 提供了两个辅助脚本，用于简化测试流程：
+
+### 脚本位置
+
+```
+Skills/automated-testing/scripts/
+├── setup-env.sh       # 环境准备（Bash/Linux）
+├── setup-env.ps1      # 环境准备（PowerShell/Windows）
+├── cleanup-env.sh     # 环境清理（Bash/Linux）
+└── cleanup-env.ps1    # 环境清理（PowerShell/Windows）
+```
+
+### 脚本职责
+
+#### setup-env.sh / setup-env.ps1
+
+**负责**（机械性工作）:
+- ✅ 检查环境（Go、必要目录）
+- ✅ 创建 `test/autotest/` 目录
+- ✅ 并行编译三个组件
+- ✅ 启动 TestAIServer（后台）
+- ✅ 保存 TestAIServer PID
+- ✅ 健康检查
+
+**不负责**（由 AI 处理）:
+- ❌ 执行 onboard default --local
+- ❌ 配置模型（model add）
+- ❌ 启动 NemesisBot Gateway
+- ❌ 执行测试
+- ❌ 分析结果
+- ❌ 删除测试目录
+
+#### cleanup-env.sh / cleanup-env.ps1
+
+**负责**（机械性工作）:
+- ✅ 停止 nemesisbot.exe（通过进程名）
+- ✅ 停止 testaiserver.exe（通过进程名）
+- ✅ 等待文件释放
+- ✅ 验证清理结果
+
+**不负责**（由 AI 处理）:
+- ❌ 删除 `test/autotest/` 目录
+
+### 混合执行策略
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      测试流程                                │
+├─────────────────────────────────────────────────────────────┤
+│                                                               │
+│  阶段 1: 预检查 (AI)                                          │
+│    └─ 检查测试需求                                            │
+│                                                               │
+│  阶段 2: 环境准备 (脚本 ⭐)                                   │
+│    ├─ 运行 setup-env.sh/ps1                                  │
+│    └─ 编译 + 启动 TestAIServer                               │
+│                                                               │
+│  阶段 3: 本地初始化 (AI)                                      │
+│    └─ nemesisbot.exe onboard default --local                 │
+│                                                               │
+│  阶段 4: 配置 AI (AI)                                         │
+│    └─ nemesisbot.exe model add ...                           │
+│                                                               │
+│  阶段 5: 启动 Bot (AI)                                        │
+│    └─ nemesisbot.exe gateway &                               │
+│                                                               │
+│  阶段 6: 执行测试 (AI)                                        │
+│    ├─ 运行 websocket_chat_client.exe                          │
+│    └─ 分析测试结果                                            │
+│                                                               │
+│  阶段 7: 清理环境 (混合 ⭐)                                   │
+│    ├─ 运行 cleanup-env.sh/ps1 (停止服务)                      │
+│    └─ AI 删除 test/autotest/ 目录                            │
+│                                                               │
+│  阶段 8: 结果分析 (AI)                                        │
+│    └─ 生成报告，决定下一步                                    │
+│                                                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**优势**:
+- ✅ 脚本处理机械性工作（编译、启停服务）
+- ✅ AI 处理决策性工作（配置、测试、分析）
+- ✅ 减少工作目录管理问题
+- ✅ 提高执行效率和可靠性
+
+---
+
 ## 测试阶段
 
 ### 阶段 1: 预检查
@@ -132,7 +222,7 @@ test/
 
 ### 阶段 2: 环境准备
 
-**详细文档**: `phases/02-environment-prep.md`
+**详细文档**: `phases/02-environment-prep.md`（⚠️ 作为参考，优先使用脚本）
 
 **目标**:
 - 验证起始目录（必须在项目根目录）
@@ -141,7 +231,53 @@ test/
 - 启动 TestAIServer
 - **结束时工作目录在 `test/autotest/`**
 
-**关键步骤**:
+---
+
+#### ⭐ 推荐方式：使用辅助脚本（快速）
+
+**Windows PowerShell**:
+```powershell
+# 从项目根目录执行
+.\Skills\automated-testing\scripts\setup-env.ps1
+```
+
+**Linux/Git Bash**:
+```bash
+# 从项目根目录执行
+bash Skills/automated-testing/scripts/setup-env.sh
+```
+
+**脚本功能**:
+- ✅ 自动检查环境（Go、必要目录）
+- ✅ 自动创建 test/autotest/ 目录
+- ✅ 并行编译所有组件（testaiserver、nemesisbot、websocket_chat_client）
+- ✅ 自动启动 TestAIServer（后台运行）
+- ✅ 保存进程 PID 到 test/autotest/testaiserver.pid
+- ✅ 健康检查（等待 TestAIServer 就绪）
+- ✅ 输出可解析的状态信息
+
+**脚本输出**:
+```
+SETUP_START
+Creating test\autotest directory...
+Compiling test components...
+[1/3] Compiling TestAIServer...
+[2/3] Compiling NemesisBot...
+[3/3] Compiling WebSocket client...
+Compilation successful
+Starting TestAIServer...
+Waiting for TestAIServer to be ready...
+SETUP_SUCCESS
+TESTAI_PID=7256
+TESTAI_PORT=8080
+WORK_DIR=C:\AI\NemesisBot\NemesisBot\test\autotest
+
+Environment setup completed successfully!
+TestAIServer is running with PID: 7256
+TestAIServer endpoint: http://127.0.0.1:8080/v1
+```
+
+**手动方式（仅当脚本不可用时）**:
 1. 验证在项目根目录（检查 go.mod）
 2. 创建 `test/autotest/` 目录
 3. 编译 TestAIServer: `cd test/TestAIServer && go build -o ../autotest/testaiserver.exe .`
@@ -232,14 +368,65 @@ test/
 
 ### 阶段 7: 清理环境
 
-**详细文档**: `phases/07-08-cleanup-analysis.md`
+**详细文档**: `phases/07-08-cleanup-analysis.md`（⚠️ 停止服务优先使用脚本，结果分析详见文档）
 
 **目标**:
 - 停止所有进程
 - 删除 `test/autotest/` 目录
 - **返回项目根目录**
 
-**关键步骤**:
+---
+
+#### ⭐ 推荐方式：使用辅助脚本（停止进程）
+
+**步骤 1: 停止服务（脚本）**
+
+**Windows PowerShell**:
+```powershell
+# 从项目根目录执行
+.\Skills\automated-testing\scripts\cleanup-env.ps1
+```
+
+**Linux/Git Bash**:
+```bash
+# 从项目根目录执行
+bash Skills/automated-testing/scripts/cleanup-env.sh
+```
+
+**脚本功能**:
+- ✅ 通过进程名停止 nemesisbot.exe
+- ✅ 通过进程名停止 testaiserver.exe
+- ✅ 读取并使用 PID 文件（如果存在）
+- ✅ 等待文件释放
+- ✅ 验证清理结果
+
+**脚本输出**:
+```
+CLEANUP_START
+Stopping NemesisBot...
+Stopping TestAIServer...
+Stopping TestAIServer (PID: 7256)...
+Waiting for file handles to be released...
+All processes stopped successfully
+CLEANUP_SUCCESS
+
+Environment cleanup completed!
+Note: test\autotest\ directory was not removed (AI should handle this)
+```
+
+**步骤 2: 删除测试目录（AI 执行）**
+```bash
+# 返回项目根目录
+cd /c/AI/NemesisBot/NemesisBot
+
+# 删除测试目录
+rm -rf test/autotest
+
+# 验证
+ls test/autotest  # 应该提示不存在
+```
+
+**手动方式（仅当脚本不可用时）**:
 1. 从 `test/autotest/` 返回项目根目录
 2. 停止 NemesisBot: `taskkill //F //IM nemesisbot.exe` (Windows)
 3. 停止 TestAIServer: `taskkill //F //IM testaiserver.exe` (Windows)
@@ -258,7 +445,7 @@ test/
 
 ### 阶段 8: 结果分析和迭代
 
-**详细文档**: `phases/07-08-cleanup-analysis.md`
+**详细文档**: `phases/07-08-cleanup-analysis.md`（结果分析和报告生成部分）
 
 **目标**:
 - 分析测试结果

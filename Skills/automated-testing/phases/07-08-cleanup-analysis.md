@@ -1,5 +1,28 @@
 # 阶段 7-8: 清理环境和结果分析
 
+> **⚠️ 推荐方式**: 使用辅助脚本（2026-03-23 更新）
+>
+> 阶段 7（停止服务）的大部分步骤已由 `cleanup-env.sh/ps1` 脚本自动化。
+>
+> **强烈建议优先使用脚本**：
+> ```bash
+> # Windows PowerShell
+> .\Skills\automated-testing\scripts\cleanup-env.ps1
+>
+> # Linux/Git Bash
+> bash Skills/automated-testing/scripts/cleanup-env.sh
+> ```
+>
+> **本文档的作用**：
+> - ✅ 理解脚本做了什么
+> - ✅ 脚本失败时的备用方案
+> - ✅ 阶段 8（结果分析）的详细指南
+> - ✅ 故障排查参考
+>
+> **注意**：脚本只停止服务，不删除 `test/autotest/` 目录。删除目录仍需手动执行。
+>
+> ---
+
 测试完成后清理所有进程和临时文件，并分析测试结果。
 
 **⚠️ 重要前提**：
