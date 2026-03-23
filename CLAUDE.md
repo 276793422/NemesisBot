@@ -4,6 +4,19 @@
 
 ---
 
+## ⚠️ 关键警告
+
+**Windows 平台后台进程管理**：
+- ❌ **严格禁止**使用 `start /B`、`cmd /c start`、`start` 等命令
+- ❌ **严格禁止**使用任何会弹窗或创建新窗口的命令
+- ✅ 使用 PowerShell `Start-Process -WindowStyle Hidden`
+- ✅ 使用 Bash 后台符号 `&` 配合 `run_in_background: true` 参数
+- ✅ 优先使用项目辅助脚本（setup-env/cleanup-env）
+
+**原因**：`start /B` 等命令会弹窗报错，如果没有人工干预会导致流程永久卡住。
+
+---
+
 ## 构建和测试命令
 
 ### 构建项目
@@ -310,6 +323,52 @@ go test ./test/cluster/transport/...
 - 使用 `build.bat powershell` 构建以启用此功能
 - 这对 Windows 上的外部工具执行至关重要
 
+### Windows 后台进程管理
+
+**⚠️ 严格禁止的命令**：
+- ❌ `start /B` - 会弹窗报错，无人干预时永久卡住
+- ❌ `cmd /c start` - 会创建新窗口，导致流程阻塞
+- ❌ `start` - Windows 批处理命令，不适合后台运行
+
+**✅ 推荐方法**：
+
+**方法 1：使用项目辅助脚本（推荐）**
+```powershell
+# PowerShell
+.\Skills\automated-testing\scripts\setup-env.ps1
+.\Skills\automated-testing\scripts\cleanup-env.ps1
+```
+```bash
+# Bash
+bash Skills/automated-testing/scripts/setup-env.sh
+bash Skills/automated-testing/scripts/cleanup-env.sh
+```
+
+**方法 2：PowerShell Start-Process**
+```powershell
+Start-Process -FilePath "./nemesisbot.exe" -ArgumentList "gateway" -WindowStyle Hidden
+```
+
+**方法 3：Bash 后台运行**
+```bash
+# 使用 Claude Code Bash 工具的 run_in_background 参数
+./nemesisbot.exe gateway > nemesisbot.log 2>&1 &
+```
+
+**进程管理**：
+```bash
+# Windows 停止进程
+taskkill //F //IM nemesisbot.exe
+
+# 查找进程 PID
+tasklist | grep -i nemesisbot.exe | head -1 | awk '{print $2}'
+```
+
+**重要说明**：
+- 辅助脚本已封装所有后台进程管理逻辑
+- 优先使用脚本而非手动操作
+- 脚本会自动处理进程启停、PID 保存、健康检查
+
 ### 多实例部署
 
 使用 `--local` 标志运行多个独立的 bot 实例：
@@ -324,8 +383,18 @@ nemesisbot.exe --local gateway
 ### Skill 系统
 
 `Skills/` 目录中的技能定义了标准化工作流程：
+
+**开发流程**：
 - `structured-development/`：带有阶段的开发流程（plan → develop → test → review）
 - `build-project/`：带有版本注入的构建流程
+
+**测试流程**：
+- `automated-testing/`：完整的自动化测试流程
+  - 使用 TestAIServer 模拟 AI 后端
+  - 支持 WebSocket 通信测试
+  - 提供 setup-env/cleanup-env 辅助脚本
+  - 详见：`Skills/automated-testing/skill.md`
+  - 快速开始：`Skills/automated-testing/examples/quick-test.md`
 
 当加载技能时，AI 严格遵循定义的流程。
 
@@ -358,7 +427,7 @@ nemesisbot.exe --local gateway
 ### 文档操作说明
 
 - 文件目录内的所有文件格式均为 markdown 格式。
-- 文档内的文件名字均以日期开头。
+- 文档内的文件名字均以日期开头，文件名格式为：YYYY-MM-DD_[正常文件名].md。
 - `docs/BUG/` 目录只存放现有存在的 BUG 。
 - 若 BUG 修复完成，则删除 BUG 信息，并添加文件到 `docs/REPORT/` 目录，标记 BUG 修复并记录报告。
 - `docs/PLAN/` 目录只存放现在还存在的开发计划，包括进行中、暂停的。
