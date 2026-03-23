@@ -244,6 +244,21 @@ function Build-Linux {
     param([string[]]$Tags = @())
 
     Print-Section "Building Linux (amd64)"
+
+    # Wails Desktop UI cannot be cross-compiled (requires CGO + GTK)
+    # Add cross_compile tag to use stub implementation
+    $actualPlatform = $env:GOOS
+    $actualCgo = $env:CGO_ENABLED
+
+    $env:GOOS = "linux"
+    $env:CGO_ENABLED = "0"  # Disable CGO for cross-compilation
+
+    # Add cross_compile tag to use stub implementation instead of Wails
+    $crossCompileTags = @("cross_compile") + $Tags
+
+    Write-Host "[WARN] Desktop UI excluded from Linux build (cross-compilation)" -ForegroundColor Yellow
+    Write-Host "[INFO] Desktop UI requires native compilation with CGO + GTK libraries" -ForegroundColor Cyan
+
     $gitInfo = Get-GitInfo
 
     $dir = "$BuildDir\linux-amd64"
@@ -251,14 +266,37 @@ function Build-Linux {
         New-Item -ItemType Directory -Path $dir | Out-Null
     }
 
-    Invoke-GoBuild -Output "$dir\$ProjectName" -GoOS "linux" -GoArch "amd64" -Tags $Tags -GitInfo $gitInfo
+    Invoke-GoBuild -Output "$dir\$ProjectName" -GoOS "linux" -GoArch "amd64" -Tags $crossCompileTags -GitInfo $gitInfo
     Print-Success "Linux amd64 build completed"
+
+    # Restore environment
+    $env:GOOS = $actualPlatform
+    if ($actualCgo) {
+        $env:CGO_ENABLED = $actualCgo
+    } else {
+        Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
 }
 
 function Build-Darwin {
     param([string[]]$Tags = @())
 
     Print-Section "Building macOS (amd64)"
+
+    # Wails Desktop UI cannot be cross-compiled (requires platform-specific frameworks)
+    # Add cross_compile tag to use stub implementation
+    $actualPlatform = $env:GOOS
+    $actualCgo = $env:CGO_ENABLED
+
+    $env:GOOS = "darwin"
+    $env:CGO_ENABLED = "0"  # Disable CGO for cross-compilation
+
+    # Add cross_compile tag to use stub implementation instead of Wails
+    $crossCompileTags = @("cross_compile") + $Tags
+
+    Write-Host "[WARN] Desktop UI excluded from macOS build (cross-compilation)" -ForegroundColor Yellow
+    Write-Host "[INFO] Desktop UI requires native compilation on macOS" -ForegroundColor Cyan
+
     $gitInfo = Get-GitInfo
 
     $dir = "$BuildDir\darwin-amd64"
@@ -266,8 +304,16 @@ function Build-Darwin {
         New-Item -ItemType Directory -Path $dir | Out-Null
     }
 
-    Invoke-GoBuild -Output "$dir\$ProjectName" -GoOS "darwin" -GoArch "amd64" -Tags $Tags -GitInfo $gitInfo
+    Invoke-GoBuild -Output "$dir\$ProjectName" -GoOS "darwin" -GoArch "amd64" -Tags $crossCompileTags -GitInfo $gitInfo
     Print-Success "macOS amd64 build completed"
+
+    # Restore environment
+    $env:GOOS = $actualPlatform
+    if ($actualCgo) {
+        $env:CGO_ENABLED = $actualCgo
+    } else {
+        Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
+    }
 }
 
 function Build-Android {
@@ -349,12 +395,15 @@ function Build-Android {
     $env:CXX = "$toolchainBin\$clang++"
     $env:CXX = "$toolchainBin\$clang++.cmd"
 
+    # Add cross_compile tag (Android doesn't support Wails Desktop UI)
+    $crossCompileTags = @("cross_compile") + $Tags
+
     # Prepare ldflags (no spaces in buildTime)
     $ldflags = "-X main.version=$($gitInfo.Version) -X main.gitCommit=$($gitInfo.Commit) -X main.buildTime=$($gitInfo.BuildTime) -X main.goVersion=$($gitInfo.GoVersion) -s -w"
 
     $buildCmd = "go build"
-    if ($Tags.Count -gt 0) {
-        $buildCmd += " -tags " + ($Tags -join ",")
+    if ($crossCompileTags.Count -gt 0) {
+        $buildCmd += " -tags " + ($crossCompileTags -join ",")
     }
     $buildCmd += " -ldflags `"$ldflags`" -o $dir\$ProjectName ./nemesisbot/"
 
@@ -391,7 +440,7 @@ function Build-Android {
             Write-Host "  Platform:    " -NoNewline; Write-Host "android/$Arch" -ForegroundColor Yellow
             Write-Host "  NDK Path:    " -NoNewline; Write-Host "$NdkPath" -ForegroundColor Yellow
             Write-Host "  Min API:     " -NoNewline; Write-Host "android$AndroidMinApi" -ForegroundColor Yellow
-            Write-Host "  Build Tags:  " -NoNewline; if ($Tags.Count -gt 0) { Write-Host "$($Tags -join ', ')" -ForegroundColor Yellow } else { Write-Host "None" -ForegroundColor Gray }
+            Write-Host "  Build Tags:  " -NoNewline; if ($crossCompileTags.Count -gt 0) { Write-Host "$($crossCompileTags -join ', ')" -ForegroundColor Yellow } else { Write-Host "None" -ForegroundColor Gray }
             Write-Host "  Output:      " -NoNewline; Write-Host "$dir\$ProjectName" -ForegroundColor Yellow
             Write-Host ""
             Write-Host "Output File:" -ForegroundColor Cyan
@@ -408,34 +457,46 @@ function Build-Android {
 }
 
 function Build-AndroidAll {
+    param(
+        [string[]]$Tags = @()
+    )
+
     Print-Section "Building All Android Platforms"
 
-    Build-Android -Arch "arm64"
-    Build-Android -Arch "arm"
-    Build-Android -Arch "386"
-    Build-Android -Arch "amd64"
+    Build-Android -Tags $Tags -Arch "arm64"
+    Build-Android -Tags $Tags -Arch "arm"
+    Build-Android -Tags $Tags -Arch "386"
+    Build-Android -Tags $Tags -Arch "amd64"
 
     Print-Success "All Android platforms build completed"
 }
 
 function Build-AllPlatforms {
+    param(
+        [string[]]$Tags = @()
+    )
+
     Print-Section "Building All Platforms"
 
-    Build-Windows
-    Build-Linux
-    Build-Darwin
+    Build-Windows -Tags $Tags
+    Build-Linux -Tags $Tags
+    Build-Darwin -Tags $Tags
 
     Print-Success "All platforms build completed!"
     Print-Info "Check $BuildDir\ directory"
 }
 
 function Build-AllWithAndroid {
+    param(
+        [string[]]$Tags = @()
+    )
+
     Print-Section "Building All Platforms (including Android)"
 
-    Build-Windows
-    Build-Linux
-    Build-Darwin
-    Build-AndroidAll
+    Build-Windows -Tags $Tags
+    Build-Linux -Tags $Tags
+    Build-Darwin -Tags $Tags
+    Build-AndroidAll -Tags $Tags
 
     Print-Success "All platforms build completed (including Android)!"
     Print-Info "Check $BuildDir\ directory"
@@ -629,51 +690,20 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# Detect if no parameters specified (show help)
-$anyAction = $Rebuild -or $Clean -or $CleanAll -or $Test -or $TestShort -or $TestRace -or
-              $Windows -or $Linux -or $Darwin -or $Android -or $AndroidAll -or
-              $AllPlatforms -or $AllWithAndroid -or $Release -or
-              ($Module -ne "") -or ($OutputName -ne "")
+# Detect if user wants help (explicitly)
+# Note: Default behavior is to build the project
+$wantsHelp = $Help
 
-# If no action specified, show welcome message and help
-if (-not $anyAction -and -not $WithPowerShell -and -not $WithDesktop -and -not $FullFeatured) {
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "  Welcome to NemesisBot Build System!" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Quick Start:" -ForegroundColor Green
-    Write-Host "  .\build.ps1              - Build for current platform"
-    Write-Host "  .\build.ps1 -Help       - View all available commands"
-    Write-Host ""
-    Write-Host "Get Help:"
-    Write-Host "  Run " -NoNewline
-    Write-Host ".\build.ps1 -Help" -ForegroundColor Yellow
-    Write-Host " to see complete usage instructions"
-    Write-Host ""
-    Write-Host "Common Commands:" -ForegroundColor Green
-    Write-Host "  .\build.ps1 -Windows    - Build Windows"
-    Write-Host "  .\build.ps1 -Linux      - Build Linux"
-    Write-Host "  .\build.ps1 -Android    - Build Android"
-    Write-Host "  .\build.ps1 -AllPlatforms - Build all platforms"
-    Write-Host "  .\build.ps1 -Test       - Run tests"
-    Write-Host "  .\build.ps1 -Clean      - Clean build files"
-    Write-Host ""
-    Write-Host "[?] Tip: Use " -NoNewline
-    Write-Host ".\build.ps1 -Help" -ForegroundColor Yellow
-    Write-Host " to see all commands"
-    Write-Host ""
-    Show-Help
-    exit 0
-}
-
-if ($Help) {
+# Only show welcome message if explicitly requested
+if ($wantsHelp) {
     Show-Help
     exit 0
 }
 
 # Process options
-$buildTags = @()
+# IMPORTANT: Wails requires 'production' build tag
+# Default to production mode for all builds
+$buildTags = @("production")
 
 if ($WithPowerShell) { $buildTags += "powershell" }
 if ($WithDesktop) { $buildTags += "desktop" }
@@ -698,11 +728,11 @@ if ($Clean) {
 } elseif ($Android) {
     Build-Android -Tags $buildTags -Arch "arm64"
 } elseif ($AndroidAll) {
-    Build-AndroidAll
+    Build-AndroidAll -Tags $buildTags
 } elseif ($AllPlatforms) {
-    Build-AllPlatforms
+    Build-AllPlatforms -Tags $buildTags
 } elseif ($AllWithAndroid) {
-    Build-AllWithAndroid
+    Build-AllWithAndroid -Tags $buildTags
 } elseif ($Release) {
     Invoke-Release
 } else {

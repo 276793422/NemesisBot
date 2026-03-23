@@ -14,7 +14,7 @@ REM Usage: build.bat [output_filename] [powershell]
 REM   output_filename: Name of the compiled binary (default: nemesisbot.exe)
 REM   powershell: Optional flag to use PowerShell instead of cmd.exe
 
-set BUILD_TAGS=
+set BUILD_TAGS=-tags production
 set OUTPUT_NAME=nemesisbot.exe
 
 REM Parse arguments
@@ -23,7 +23,7 @@ if "%~1"=="" (
     goto done_parsing
 )
 if /i "%~1"=="powershell" (
-    set BUILD_TAGS=-tags powershell
+    set BUILD_TAGS=-tags "production,powershell"
     echo [INFO] PowerShell build enabled
     shift
     goto parse_args
@@ -39,7 +39,7 @@ if "%OUTPUT_NAME%"=="nemesisbot.exe" (
     echo [INFO] Output filename specified: %OUTPUT_NAME%
 )
 if not "%BUILD_TAGS%"=="" (
-    echo [INFO] Building with PowerShell support
+    echo [INFO] Building with Wails production mode: %BUILD_TAGS%
 ) else (
     echo [INFO] Building with cmd.exe (default, more reliable)
 )

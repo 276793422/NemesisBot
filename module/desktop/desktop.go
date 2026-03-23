@@ -1,3 +1,5 @@
+//go:build !cross_compile
+
 package desktop
 
 import (
