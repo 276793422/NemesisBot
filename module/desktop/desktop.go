@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/security/approval"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -113,6 +114,10 @@ func NewApp() *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	log.Println("[App] NemesisBot UI starting...")
+
+	// 注册为全局审批处理器
+	approval.SetApprovalHandler(a)
+	log.Println("[App] Registered as global approval handler")
 }
 
 // Shutdown 应用关闭时调用
@@ -365,6 +370,39 @@ func (a *App) StopBot() error {
 // ShowApproval 显示审批对话框（公开方法）
 func (a *App) ShowApproval(req ApprovalRequest) (*ApprovalResponse, error) {
 	return a.approvalManager.ShowApproval(req)
+}
+
+// RequestApproval 实现 approval.ApprovalHandler 接口
+//
+// 这个方法被 security/approval 包调用，用于显示审批对话框
+func (a *App) RequestApproval(req *approval.ApprovalRequest) (*approval.ApprovalResponse, error) {
+	// 转换请求类型
+	desktopReq := ApprovalRequest{
+		RequestID:      req.RequestID,
+		Operation:      req.Operation,
+		OperationName:  approval.GetOperationDisplayName(req.Operation),
+		Target:         req.Target,
+		RiskLevel:      req.RiskLevel,
+		Reason:         req.Reason,
+		TimeoutSeconds: req.TimeoutSeconds,
+		Context:        req.Context,
+		Timestamp:      req.Timestamp,
+	}
+
+	// 调用现有的审批方法
+	desktopResp, err := a.ShowApproval(desktopReq)
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换响应类型
+	return &approval.ApprovalResponse{
+		RequestID:       desktopResp.RequestID,
+		Approved:        desktopResp.Approved,
+		TimedOut:        desktopResp.TimedOut,
+		DurationSeconds: desktopResp.DurationSeconds,
+		ResponseTime:    desktopResp.ResponseTime,
+	}, nil
 }
 
 // SubmitApproval 提交审批决定（公开方法）
