@@ -17,6 +17,36 @@
 - ❌ 不适用于需要 UI 交互的功能（如安全审批对话框）
 - ❌ 不适用于不需要 LLM 的功能测试（在不需要 LLM 的功能测试中，可通过 UT/IT/ST 保证功能有效）
 
+### 测试工作目录
+
+**⚠️ 重要**：本流程使用 `test/autotest/` 作为统一的测试工作目录。
+
+**目录结构**:
+```
+test/
+├── TestAIServer/              # 源码（不变）
+│   ├── main.go
+│   └── ...
+├── websocket_chat_client.go   # 源码（不变）
+├── mcp/                       # 源码（不变）
+├── cluster/                   # 源码（不变）
+└── autotest/                  # 测试工作目录（新建）
+    ├── nemesisbot.exe         # 编译产物
+    ├── testaiserver.exe       # 编译产物
+    ├── websocket_chat_client.exe  # 编译产物
+    ├── testaiserver.pid       # 进程 ID
+    ├── nemesisbot.pid         # 进程 ID
+    ├── nemesisbot.log         # Bot 日志
+    └── .nemesisbot/           # Bot 配置（运行时生成）
+        ├── config.json
+        ├── workspace/
+        └── ...
+```
+
+**清理方式**: 删除整个 `test/autotest/` 目录
+
+**测试报告**: 保存到 `docs/REPORT/`（不在 `test/autotest/` 中）
+
 ---
 
 ## WebSocket 接口规范
@@ -26,9 +56,9 @@
 ```
 协议: ws://
 地址: 127.0.0.1
-端口: 8080
+端口: 49001  # Bot 的 WebSocket 端口
 路径: /ws
-完整 URL: ws://127.0.0.1:8080/ws
+完整 URL: ws://127.0.0.1:49001/ws
 ```
 
 ### 客户端消息格式
@@ -102,332 +132,140 @@
 
 ### 阶段 2: 环境准备
 
-```bash
-# 2.1 编译 TestAIServer
-cd test/TestAIServer
-go build -o testaiserver.exe
+**详细文档**: `phases/02-environment-prep.md`
 
-# 2.2 启动 TestAIServer (后台)
-./testaiserver.exe &
-TESTAI_PID=$!
-echo "TestAIServer PID: $TESTAI_PID"
+**目标**:
+- 验证起始目录（必须在项目根目录）
+- 创建 `test/autotest/` 工作目录
+- 编译所有测试工具到 `test/autotest/`
+- 启动 TestAIServer
+- **结束时工作目录在 `test/autotest/`**
 
-# 2.3 等待 TestAIServer 就绪
-sleep 2
-curl http://127.0.0.1:8080/v1/models
+**关键步骤**:
+1. 验证在项目根目录（检查 go.mod）
+2. 创建 `test/autotest/` 目录
+3. 编译 TestAIServer: `cd test/TestAIServer && go build -o ../autotest/testaiserver.exe .`
+4. 编译 NemesisBot: `go build -o test/autotest/nemesisbot.exe ./nemesisbot`（从根目录）
+5. 编译 WebSocket 客户端: `go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go`
+6. 启动 TestAIServer: `cd test/autotest && ./testaiserver.exe &`（使用后台运行）
+7. 保存 PID: `tasklist | grep -i testaiserver.exe | head -1 | awk '{print $2}'`
 
-# 2.4 编译 NemesisBot
-cd ../../
-go build -o nemesisbot.exe ./nemesisbot
-
-# 验证
-if [ ! -f "./testaiserver.exe" ]; then
-  echo "❌ TestAIServer 编译失败"
-  exit 1
-fi
-
-if [ ! -f "./nemesisbot.exe" ]; then
-  echo "❌ NemesisBot 编译失败"
-  exit 1
-fi
-```
+**产物**:
+- `test/autotest/testaiserver.exe`
+- `test/autotest/nemesisbot.exe`
+- `test/autotest/websocket_chat_client.exe`
+- `test/autotest/testaiserver.pid`
 
 ---
 
 ### 阶段 3: 本地环境初始化
 
-```bash
-# 3.1 创建本地配置目录
-./nemesisbot.exe onboard default --local
+**详细文档**: `phases/03-local-init.md`
 
-# 验证配置创建
-if [ ! -d "./.nemesisbot" ]; then
-  echo "❌ 本地配置目录创建失败"
-  exit 1
-fi
+**目标**:
+- 在 `test/autotest/` 中创建本地配置
+- **工作目录保持在 `test/autotest/`**
 
-# 3.2 检查配置文件
-ls -la ./.nemesisbot/
-# 预期输出:
-# config.json
-# workspace/
-# workspace/agents/
-# workspace/cluster/
-# workspace/logs/
-```
+**关键步骤**:
+1. 验证在 `test/autotest/` 目录
+2. 执行: `./nemesisbot.exe onboard default --local`
+3. 创建 `test/autotest/.nemesisbot/` 配置目录
+
+**产物**:
+- `test/autotest/.nemesisbot/config.json`
+- `test/autotest/.nemesisbot/IDENTITY.md`
+- `test/autotest/.nemesisbot/SOUL.md`
+- `test/autotest/.nemesisbot/USER.md`
+- `test/autotest/.nemesisbot/workspace/`
 
 ---
 
 ### 阶段 4: 配置测试 AI
 
-```bash
-# 4.1 添加测试 AI 模型
-./nemesisbot.exe model add \
-  --model test/testai-5.0 \
-  --base http://127.0.0.1:8080/v1 \
-  --key test-key \
-  --default
+**详细文档**: `phases/04-06-execution.md`
 
-# 4.2 验证模型配置
-./nemesisbot.exe model list
+**目标**:
+- 添加测试 AI 模型配置
+- **工作目录保持在 `test/autotest/`**
 
-# 预期输出包含:
-# test/testai-5.0
-# base: http://127.0.0.1:8080/v1
-# default: true
-```
+**关键步骤**:
+1. 执行: `./nemesisbot.exe model add --model test/testai-X.X --base http://127.0.0.1:8080/v1 --key test-key --default`
+2. 验证: `./nemesisbot.exe model list`
 
 ---
 
 ### 阶段 5: 启动 Bot
 
-```bash
-# 5.1 启动 Bot (后台)
-./nemesisbot.exe agent &
-BOT_PID=$!
-echo "Bot PID: $BOT_PID"
+**详细文档**: `phases/04-06-execution.md`
 
-# 5.2 等待 Bot 就绪
-sleep 3
+**目标**:
+- 启动 NemesisBot Gateway
+- **工作目录保持在 `test/autotest/`**
 
-# 5.3 验证 Bot 进程
-ps -p $BOT_PID > /dev/null
-if [ $? -ne 0 ]; then
-  echo "❌ Bot 进程未运行"
-  exit 1
-fi
-```
+**关键步骤**:
+1. 启动: `./nemesisbot.exe gateway > nemesisbot.log 2>&1 &`（使用后台运行）
+2. 保存 PID: `tasklist | grep -i nemesisbot.exe | head -1 | awk '{print $2}'`
+3. 等待就绪（验证端口 49001）
+
+**产物**:
+- `test/autotest/nemesisbot.pid`
+- `test/autotest/nemesisbot.log`
 
 ---
 
 ### 阶段 6: 执行测试
 
-#### 测试场景框架
+**详细文档**: `phases/04-06-execution.md`
 
-此 Skill 是通用测试框架，测试场景根据开发目标动态确定。以下是测试场景的通用结构：
+**目标**:
+- 运行测试场景
+- 验证响应
+- 记录结果
+- **工作目录保持在 `test/autotest/`**
 
-```yaml
-测试场景结构:
-  名称: 功能名称
-  目标: 明确的测试目标
-  前置条件:
-    - TestAIServer 运行中
-    - Bot 运行中
-    - 测试模型已配置
-
-  测试步骤:
-    - 步骤 1: 描述
-      输入: 消息内容
-      预期: 期望结果
-    - 步骤 2: 描述
-      输入: ...
-      预期: ...
-
-  验证标准:
-    - 功能正确性: 响应符合预期
-    - 无错误: 无异常或错误消息
-    - 性能: 响应时间合理（< 30秒）
-    - 日志: 日志记录完整
-
-  清理:
-    - 断开 WebSocket
-    - 记录测试结果
-```
-
-#### 示例测试场景：文件操作测试
-
-```yaml
-名称: 文件读取操作测试
-目标: 验证 Bot 能正确处理文件读取工具调用
-
-测试步骤:
-  - 步骤 1: 连接 WebSocket
-    动作: 建立 ws://127.0.0.1:8080/ws 连接
-    预期: 连接成功
-
-  - 步骤 2: 发送文件读取请求
-    输入: "<FILE_OP>{\"operation\":\"file_read\",\"path\":\"test.txt\"}</FILE_OP>"
-    预期: Bot 返回工具调用响应
-
-  - 步骤 3: 验证响应
-    检查:
-      - 响应类型是 "message"
-      - role 是 "assistant"
-      - content 包含工具调用结果或错误信息
-
-  - 步骤 4: 检查日志
-    检查: ./.nemesisbot/workspace/logs/ 中的日志
-    预期: 记录了文件读取操作
-
-验证标准:
-  - 功能正确性: 10 分
-  - 无错误: 5 分
-  - 性能: 3 分
-  - 日志完整: 2 分
-  总分: 20 分，通过: >= 15 分
-```
+**关键步骤**:
+1. 运行客户端: `./websocket_chat_client.exe`
+2. 验证响应格式和内容
+3. 记录测试结果
 
 ---
 
 ### 阶段 7: 清理环境
 
-```bash
-# 7.1 停止 Bot
-echo "停止 Bot (PID: $BOT_PID)..."
-kill $BOT_PID
-wait $BOT_PID 2>/dev/null
+**详细文档**: `phases/07-08-cleanup-analysis.md`
 
-# 7.2 停止 TestAIServer
-echo "停止 TestAIServer (PID: $TESTAI_PID)..."
-kill $TESTAI_PID
-wait $TESTAI_PID 2>/dev/null
+**目标**:
+- 停止所有进程
+- 删除 `test/autotest/` 目录
+- **返回项目根目录**
 
-# 7.3 清理本地配置
-echo "清理本地配置..."
-rm -rf ./.nemesisbot
+**关键步骤**:
+1. 从 `test/autotest/` 返回项目根目录
+2. 停止 NemesisBot: `taskkill //F //IM nemesisbot.exe` (Windows)
+3. 停止 TestAIServer: `taskkill //F //IM testaiserver.exe` (Windows)
+4. 等待文件释放
+5. 删除目录: `rm -rf test/autotest`
+6. 验证清理结果
 
-# 7.4 验证清理
-if [ -d "./.nemesisbot" ]; then
-  echo "⚠️  警告: .nemesisbot 目录未完全删除"
-  rm -rf ./.nemesisbot
-fi
-
-echo "✅ 环境清理完成"
-```
+**清理内容**:
+- 所有编译产物
+- 所有配置文件
+- 所有日志文件
+- 所有会话数据
+- **整个 `test/autotest/` 目录**
 
 ---
 
 ### 阶段 8: 结果分析和迭代
 
-```yaml
-结果分析:
-  测试通过:
-    动作: 记录成功结果到开发报告
-    下一步: 测试完成，可以提交代码
+**详细文档**: `phases/07-08-cleanup-analysis.md`
 
-  测试失败:
-    动作:
-      1. 分析失败原因
-      2. 定位问题代码
-      3. 修复问题
-      4. 可能需要扩展 TestAIServer 功能
-    下一步: 返回阶段 2，重新测试
+**目标**:
+- 分析测试结果
+- 生成测试报告
+- **测试报告保存到 `docs/REPORT/`**（不在 `test/autotest/` 中）
 
-  测试部分失败:
-    动作:
-      1. 评估失败影响范围
-      2. 确定是否需要修复
-      3. 更新测试用例
-    下一步: 根据评估结果决定是否重新测试
-```
-
----
-
-## 测试日志记录
-
-### 日志位置
-
-```
-docs/REPORT/
-  └── TEST_<功能名称>_<日期>.md
-```
-
-### 日志模板
-
-```markdown
-# <功能名称> 测试报告
-
-**测试日期**: YYYY-MM-DD
-**测试人员**: [姓名/系统]
-**测试版本**: [Git commit hash]
-
----
-
-## 测试目标
-
-[描述测试的具体目标]
-
----
-
-## 测试环境
-
-- **操作系统**: Windows 11
-- **TestAIServer 版本**: testai-X.X
-- **NemesisBot 版本**: [version]
-- **测试模型**: test/testai-X.X
-
----
-
-## 测试场景
-
-### 场景 1: [场景名称]
-
-**目标**: [场景目标]
-
-**步骤**:
-1. [步骤 1]
-2. [步骤 2]
-
-**输入**:
-\`\`\`json
-{
-  "type": "message",
-  "content": "[输入内容]"
-}
-\`\`\`
-
-**预期输出**:
-- [期望结果 1]
-- [期望结果 2]
-
-**实际输出**:
-\`\`\`json
-{
-  "type": "message",
-  "role": "assistant",
-  "content": "[实际响应]"
-}
-\`\`\`
-
-**结果**: ✅ 通过 / ❌ 失败
-
-**备注**: [任何观察到的信息]
-
----
-
-## 测试结果统计
-
-| 场景 | 结果 | 响应时间 | 备注 |
-|------|------|----------|------|
-| 场景 1 | ✅ | 2.3s | - |
-| 场景 2 | ❌ | 30.1s | 超时 |
-
-**通过率**: X%
-
----
-
-## 问题记录
-
-### 问题 1: [问题描述]
-
-**现象**: [具体表现]
-**原因**: [根因分析]
-**解决方案**: [如何修复]
-**状态**: 已修复 / 待修复
-
----
-
-## 改进建议
-
-1. [建议 1]
-2. [建议 2]
-
----
-
-## 结论
-
-[总体评价和下一步行动]
-```
+**报告模板**: 见阶段 8 文档
 
 ---
 
@@ -436,27 +274,47 @@ docs/REPORT/
 ### 常用命令
 
 ```bash
-# 编译
-cd test/TestAIServer && go build -o testaiserver.exe
-cd ../../ && go build -o nemesisbot.exe ./nemesisbot
+# === 从项目根目录开始 ===
 
-# 启动测试 AI
-./testaiserver.exe &
+# 阶段 2: 环境准备
+mkdir -p test/autotest
 
-# 初始化本地环境
+# 编译 TestAIServer（在其模块目录中编译）
+cd test/TestAIServer && go build -o ../autotest/testaiserver.exe .
+cd ../..
+
+# 编译 NemesisBot（从根目录编译）
+go build -o test/autotest/nemesisbot.exe ./nemesisbot
+
+# 编译 WebSocket 客户端
+go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go
+
+# 启动 TestAIServer（使用后台运行）
+cd test/autotest && ./testaiserver.exe &
+
+# 保存 PID（Windows 使用 tasklist）
+tasklist | grep -i testaiserver.exe | head -1 | awk '{print $2}' > testaiserver.pid
+
+# 阶段 3: 本地初始化
 ./nemesisbot.exe onboard default --local
 
-# 配置测试模型
-./nemesisbot.exe model add --model test/testai-5.0 --base http://127.0.0.1:8080/v1 --key test-key --default
+# 阶段 4: 配置模型
+./nemesisbot.exe model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default
 
-# 启动 Bot
-./nemesisbot.exe agent &
+# 阶段 5: 启动 Bot
+./nemesisbot.exe gateway > nemesisbot.log 2>&1 &
 
-# 停止所有进程
-kill $BOT_PID $TESTAI_PID
+# 保存 PID（Windows 使用 tasklist）
+tasklist | grep -i nemesisbot.exe | head -1 | awk '{print $2}' > nemesisbot.pid
 
-# 清理
-rm -rf ./.nemesisbot
+# 阶段 6: 执行测试
+./websocket_chat_client.exe
+
+# === 返回根目录清理 ===
+cd ../..
+taskkill //F //IM nemesisbot.exe
+taskkill //F //IM testaiserver.exe
+rm -rf test/autotest
 ```
 
 ### TestAIServer 模型快速参考
@@ -472,15 +330,308 @@ rm -rf ./.nemesisbot
 
 ---
 
-## 注意事项
+## ⚠️ 注意事项
 
-1. **进程管理**: 确保在测试结束后清理所有后台进程
-2. **环境隔离**: 使用 `--local` 标志确保不影响主配置
-3. **端口冲突**: 确保 8080 端口未被占用
-4. **日志备份**: 测试日志应保存到 docs/REPORT/ 目录
-5. **错误处理**: 每个阶段都应有错误检查和处理
-6. **超时设置**: WebSocket 消息响应超时设为 30 秒
+### 测试工作目录
+
+**重要**：所有测试操作都在 `test/autotest/` 目录中进行。
+
+**优点**:
+- ✅ 规范的测试位置
+- ✅ 简化清理（删除单个目录）
+- ✅ 不污染项目根目录
+- ✅ 源码位置不变
+
+**工作目录流转**:
+```
+项目根目录
+  ↓ (阶段 2)
+test/autotest/
+  ↓ (阶段 3-6，保持不变)
+test/autotest/
+  ↓ (阶段 7)
+项目根目录 (清理)
+```
+
+### 测试报告保存
+
+**⚠️ 重要**：测试报告必须保存到 `docs/REPORT/` 目录。
+
+**原因**:
+- `test/autotest/` 会在清理时被删除
+- 测试报告需要保留
+- 便于历史记录和追踪
+
+**示例**:
+```bash
+# 正确
+cd ../..  # 返回根目录
+cat > "docs/REPORT/TEST_$(date +%Y%m%d).md" << EOF
+...测试报告内容...
+EOF
+
+# 错误
+cat > "test_report.md" << EOF  # 会被删除
+EOF
+```
+
+### Windows 环境特殊处理
+
+**进程管理**:
+```bash
+# Windows: 使用 taskkill
+taskkill //F //IM nemesisbot.exe
+taskkill //F //IM testaiserver.exe
+
+# Unix/Linux: 使用 kill
+kill $PID
+```
+
+**后台进程启动**:
+```bash
+# Windows Git Bash: 使用 run_in_background 参数（Claude Code Bash 工具）
+cd test/autotest && ./testaiserver.exe &  # 使用 Bash 工具的 run_in_background: true
+
+# 错误方式（不要使用）:
+start /B testaiserver.exe > testaiserver.log 2>&1  # Git Bash 中重定向不生效
+echo $! > testaiserver.pid  # $! 在 Windows bash 中不可用
+```
+
+**PID 获取**:
+```bash
+# Windows: 使用 tasklist 和 awk
+tasklist | grep -i testaiserver.exe | head -1 | awk '{print $2}'
+
+# 不要使用（Windows bash 不支持）:
+echo $!  # Unix 变量，Windows 中不可用
+```
+
+---
+
+## 故障排除
+
+### 编译问题
+
+#### 问题 1: TestAIServer 编译失败
+
+**错误信息**:
+```
+main module (github.com/276793422/NemesisBot) does not contain package github.com/276793422/NemesisBot/test/TestAIServer
+```
+
+**原因**: TestAIServer 是独立的 Go 模块，不能从主模块直接编译
+
+**解决方案**:
+```bash
+# ✅ 正确：在 TestAIServer 模块目录中编译
+cd test/TestAIServer && go build -o ../autotest/testaiserver.exe .
+
+# ❌ 错误：从 autotest 目录编译
+cd test/autotest && go build -o testaiserver.exe ../TestAIServer
+```
+
+---
+
+#### 问题 2: 单文件编译失败
+
+**错误信息**:
+```
+package testaiserver/handlers is not in std
+no required module provides package github.com/gin-gonic/gin
+```
+
+**原因**: 单文件编译无法解析本地包导入
+
+**解决方案**:
+```bash
+# ✅ 正确：使用模块路径编译整个模块
+cd test/TestAIServer && go build -o ../autotest/testaiserver.exe .
+
+# ❌ 错误：只编译 main.go
+cd test/autotest && go build -o testaiserver.exe ../TestAIServer/main.go
+```
+
+---
+
+#### 问题 3: NemesisBot 编译路径错误
+
+**错误信息**:
+```
+stat C:\AI\NemesisBot\NemesisBot\test\TestAIServer\nemesisbot: directory not found
+```
+
+**原因**: 工作目录不在项目根目录，相对路径错误
+
+**解决方案**:
+```bash
+# ✅ 正确：先返回根目录，使用正确的相对路径
+cd /path/to/project/root
+go build -o test/autotest/nemesisbot.exe ./nemesisbot
+
+# ❌ 错误：从 TestAIServer 目录使用错误的相对路径
+cd test/TestAIServer && go build -o test/autotest/nemesisbot.exe ./nemesisbot
+```
+
+---
+
+### 进程管理问题
+
+#### 问题 4: 后台进程启动失败
+
+**错误信息**:
+```
+Exit code 1
+```
+
+**原因**: Git Bash 中 `start /B` 和重定向 `>` 不兼容
+
+**解决方案**:
+```bash
+# ✅ 正确：使用 Bash 工具的 run_in_background 参数
+# 在 Claude Code 中：
+# Bash tool: command="./testaiserver.exe &", run_in_background=true
+
+# ❌ 错误：使用 Windows start 命令
+start /B testaiserver.exe > testaiserver.log 2>&1
+```
+
+---
+
+#### 问题 5: PID 变量不可用
+
+**错误信息**: 变量为空或无效
+
+**原因**: `$!` 是 Unix/Linux 特有变量，Windows bash 中不可用
+
+**解决方案**:
+```bash
+# ✅ 正确（Windows）：使用 tasklist 查找 PID
+tasklist | grep -i nemesisbot.exe | head -1 | awk '{print $2}'
+
+# ✅ 正确（Unix/Linux）：
+echo $!
+
+# ❌ 错误（Windows）：使用 Unix 变量
+echo $! > nemesisbot.pid
+```
+
+---
+
+### 常见错误速查表
+
+| 错误类型 | 症状 | 解决方案 |
+|---------|------|---------|
+| **跨模块编译** | `does not contain package` | 在目标模块目录中使用 `go build .` |
+| **本地包解析失败** | `package is not in std` | 使用模块路径 `.` 编译整个模块 |
+| **相对路径错误** | `directory not found` | 确保在正确的目录，使用正确的相对路径 |
+| **后台进程失败** | `Exit code 1` | 使用 `run_in_background: true` |
+| **PID 获取失败** | 变量为空 | 使用 `tasklist \| grep \| awk` |
+| **端口占用** | `address already in use` | 检查并停止占用端口的进程 |
+| **配置未找到** | `no such file or directory` | 确保先执行 `onboard default --local` |
+
+---
+
+### 调试技巧
+
+1. **检查工作目录**: 每次操作前使用 `pwd` 确认当前位置
+2. **验证文件存在**: 使用 `ls` 或 `ls -la` 确认文件/目录存在
+3. **检查进程状态**: 使用 `tasklist \| grep` 确认进程是否运行
+4. **查看日志**: 检查 `.nemesisbot/` 和 `test/autotest/` 中的日志文件
+5. **测试端口连接**: 使用 `curl http://127.0.0.1:8080/v1/models` 测试 TestAIServer
+6. **验证 WebSocket**: 使用浏览器开发者工具或专门的 WebSocket 客户端测试连接
+
+---
+
+### 通用注意事项
+
+1. **工作目录管理**: 每次操作前使用 `pwd` 确认当前位置，特别是在编译阶段
+2. **多模块编译**: TestAIServer 是独立模块，必须在自身目录使用 `go build .` 编译
+3. **进程管理**: 确保在测试结束后清理所有后台进程
+4. **环境隔离**: 所有测试内容在 `test/autotest/` 中
+5. **端口冲突**: 确保 8080 和 49001 端口未被占用
+6. **日志备份**: 测试日志在 `test/autotest/` 中，清理前如需保留请备份
+7. **错误处理**: 每个阶段都应有错误检查和处理
+8. **超时设置**: WebSocket 消息响应超时设为 30 秒
+9. **Windows 平台**: 使用 `tasklist` + `grep` + `awk` 获取 PID，不要使用 `$!`
+
+---
+
+## 完整流程总结
+
+```
+预检查 → 环境准备 → 本地初始化 → 配置AI → 启动Bot → 执行测试 → 清理环境 → 结果分析
+   ↓         ↓          ↓          ↓        ↓       ↓        ↓         ↓         ↓
+  通过?    创建目录    配置创建   模型配置   进程运行  WebSocket  删除目录   记录报告
+           编译工具    结构完整             连接成功            验证清理   保存到
+           启动AI                                          返回根目录  docs/REPORT/
+
+关键改进:
+  - 规范测试工作目录到 test/autotest/
+  - 源码位置不变，编译产物集中管理
+  - 简化清理为删除单个目录
+  - 测试报告隔离保存
+  - 多模块编译：TestAIServer 在自身目录编译
+  - Windows 后台进程：使用 run_in_background 参数
+  - PID 获取：Windows 使用 tasklist + grep + awk
+```
+
+---
+
+### 正确的编译和启动命令序列
+
+```bash
+# === 项目根目录 ===
+
+# 1. 创建测试工作目录
+mkdir -p test/autotest
+
+# 2. 编译 TestAIServer（必须在自身模块目录）
+cd test/TestAIServer
+go build -o ../autotest/testaiserver.exe .
+cd ../..
+
+# 3. 编译 NemesisBot（从根目录）
+go build -o test/autotest/nemesisbot.exe ./nemesisbot
+
+# 4. 编译 WebSocket 客户端
+go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go
+
+# 5. 进入测试目录
+cd test/autotest
+
+# 6. 启动 TestAIServer（后台运行）
+./testaiserver.exe &  # 使用 Claude Code Bash 工具的 run_in_background: true
+
+# 7. 保存 TestAIServer PID
+tasklist | grep -i testaiserver.exe | head -1 | awk '{print $2}' > testaiserver.pid
+
+# 8. 初始化本地配置
+./nemesisbot.exe onboard default --local
+
+# 9. 配置测试模型
+./nemesisbot.exe model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default
+
+# 10. 启动 NemesisBot Gateway（后台运行）
+./nemesisbot.exe gateway > nemesisbot.log 2>&1 &  # 使用 run_in_background: true
+
+# 11. 保存 NemesisBot PID
+tasklist | grep -i nemesisbot.exe | head -1 | awk '{print $2}' > nemesisbot.pid
+
+# 12. 执行测试
+./websocket_chat_client.exe
+
+# === 清理（返回根目录）===
+cd ../..
+taskkill //F //IM nemesisbot.exe
+taskkill //F //IM testaiserver.exe
+rm -rf test/autotest
+```
 
 ---
 
 **最后更新**: 2026-03-23
+**更新内容**:
+- 修正阶段2编译命令（TestAIServer 必须在其模块目录编译）
+- 添加 Windows 后台进程启动方法（使用 run_in_background）
+- 更新 PID 获取方法（Windows 使用 tasklist）
+- 添加故障排除章节，记录常见错误和解决方案
