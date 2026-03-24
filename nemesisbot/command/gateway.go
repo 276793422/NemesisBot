@@ -8,24 +8,72 @@ import (
 	"github.com/276793422/NemesisBot/module/agent"
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/desktop/process"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/providers"
+	"github.com/276793422/NemesisBot/module/security/approval"
 	"github.com/276793422/NemesisBot/module/services"
 )
 
 // CmdGateway starts the NemesisBot gateway server
 // This command starts the bot service immediately (traditional behavior)
 func CmdGateway() {
+	// Check configuration file exists first (Gateway mode requires config)
+	configPath := GetConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		fmt.Printf("❌ Error: Configuration file not found: %s\n", configPath)
+		fmt.Println("\n💡 Gateway mode requires a configuration file.")
+		fmt.Println("   Run 'nemesisbot onboard default' to create one.")
+		fmt.Println("\n   Or specify a custom path:")
+		fmt.Println("   export NEMESISBOT_CONFIG=/path/to/config.json  (Linux/Mac)")
+		fmt.Println("   set NEMESISBOT_CONFIG=C:\\path\\to\\config.json  (Windows)")
+		os.Exit(1)
+	}
+
+	// Check home directory exists
+	homeDir, err := path.ResolveHomeDir()
+	if err != nil {
+		fmt.Printf("❌ Error: Cannot resolve home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	if _, err := os.Stat(homeDir); os.IsNotExist(err) {
+		fmt.Printf("❌ Error: Configuration directory not found: %s\n", homeDir)
+		fmt.Println("\n💡 Please initialize your configuration first.")
+		fmt.Println("   Run 'nemesisbot onboard default' to create configuration.")
+		os.Exit(1)
+	}
+
 	// Load configuration first
 	cfg, err := LoadConfig()
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
+		fmt.Printf("❌ Error loading config: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Initialize logger from config
 	args := os.Args[2:]
 	InitLoggerFromConfig(cfg, args)
+
+	// Initialize ProcessManager
+	procMgr := process.NewProcessManager()
+	if err := procMgr.Start(); err != nil {
+		fmt.Printf("⚠️  ProcessManager initialization failed: %v\n", err)
+		fmt.Println("   Multi-process window features will not be available.")
+		fmt.Println("   This is expected in cross-compile builds.")
+	} else {
+		fmt.Println("✓ ProcessManager started")
+		// Register ProcessManager to approval module (as ChildProcessFactory interface)
+		approval.SetChildProcessFactory(procMgr)
+		fmt.Println("✓ Approval handler registered")
+	}
+	defer func() {
+		// Cleanup ProcessManager
+		if err := procMgr.Stop(); err != nil {
+			fmt.Printf("⚠️  ProcessManager cleanup warning: %v\n", err)
+		}
+	}()
 
 	// Create service manager
 	svcMgr := services.NewServiceManager()

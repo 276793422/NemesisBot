@@ -18,6 +18,7 @@ import (
 
 	"github.com/276793422/NemesisBot/module/cluster"
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/desktop"
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/nemesisbot/command"
 )
@@ -40,6 +41,28 @@ var (
 
 const logo = "🤖"
 
+// isChildMode checks if the process is running in child mode
+// Child processes are started with --multiple flag by ProcessManager
+func isChildMode() bool {
+	for _, arg := range os.Args {
+		if arg == "--multiple" {
+			return true
+		}
+	}
+	return false
+}
+
+// runChildMode runs the process in child mode
+// This mode is used when the process is a child process created by ProcessManager
+// It runs a window (e.g., approval window) instead of normal commands
+func runChildMode() {
+	if err := desktop.RunChildMode(); err != nil {
+		fmt.Printf("❌ Child mode failed: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 // parseGlobalFlags parses global flags like --local and filters them from args.
 // Returns the filtered args list (without global flags).
 func parseGlobalFlags(args []string) []string {
@@ -60,6 +83,13 @@ func main() {
 	// Parse global flags first (before any command processing)
 	// This handles --local flag which affects path resolution
 	os.Args = append([]string{os.Args[0]}, parseGlobalFlags(os.Args[1:])...)
+
+	// Check if it's child process mode (must be checked before other logic)
+	// Child process is started by ProcessManager with --multiple flag
+	if isChildMode() {
+		runChildMode()
+		return
+	}
 
 	// Pass embedded files and version info to command package
 	command.SetEmbeddedFS(embeddedFiles, defaultFiles, configFiles)

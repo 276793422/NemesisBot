@@ -1,13 +1,323 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NemesisBot</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>安全审批 - NemesisBot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            width: 580px;
+            max-height: 95vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px 12px 0 0;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .header h1 { font-size: 20px; margin-bottom: 4px; }
+        .header p { font-size: 12px; opacity: 0.95; }
+        .header .timeout {
+            font-size: 13px;
+            font-weight: bold;
+            margin-top: 6px;
+            padding: 3px 10px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 20px;
+            display: inline-block;
+        }
+        .content { padding: 16px; flex: 1; overflow-y: auto; }
+        .warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        .info { margin-bottom: 10px; flex-shrink: 0; }
+        .info label {
+            font-weight: bold;
+            color: #555;
+            display: block;
+            margin-bottom: 3px;
+            font-size: 11px;
+        }
+        .info .value {
+            color: #333;
+            font-size: 13px;
+            word-break: break-all;
+            padding: 6px 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #e9ecef;
+        }
+        .risk-high { color: #dc3545; font-weight: bold; }
+        .risk-medium { color: #fd7e14; font-weight: bold; }
+        .risk-low { color: #28a745; font-weight: bold; }
+        .buttons { display: flex; gap: 12px; margin-top: 20px; flex-shrink: 0; }
+        .btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-deny { background: #dc3545; color: white; }
+        .btn-deny:hover:not(:disabled) { background: #c82333; }
+        .btn-approve { background: #28a745; color: white; }
+        .btn-approve:hover:not(:disabled) { background: #218838; }
+        #status {
+            margin-top: 16px;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 500;
+            flex-shrink: 0;
+        }
+        .status-loading { background: #cce5ff; color: #004085; }
+        .status-success { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        .loading-text { color: #999; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚠️ 安全审批请求</h1>
+            <p>AI Agent 需要您的授权才能执行此操作</p>
+            <div class="timeout" id="timeout">剩余时间: <span id="timeout-value">--</span> 秒</div>
+        </div>
+        <div class="content">
+            <div class="warning">⚡ AI Agent 正在尝试执行危险操作</div>
+            <div class="info">
+                <label>操作类型:</label>
+                <div class="value loading-text" id="operation">加载中...</div>
+            </div>
+            <div class="info">
+                <label>操作目标:</label>
+                <div class="value loading-text" id="target">加载中...</div>
+            </div>
+            <div class="info">
+                <label>风险等级:</label>
+                <div class="value loading-text" id="risk">加载中...</div>
+            </div>
+            <div class="info">
+                <label>原因:</label>
+                <div class="value loading-text" id="reason">加载中...</div>
+            </div>
+            <div class="buttons">
+                <button class="btn btn-deny" id="btn-deny">✗ 拒绝操作</button>
+                <button class="btn btn-approve" id="btn-approve">✓ 允许执行</button>
+            </div>
+            <div id="status"></div>
+        </div>
+    </div>
+
+    <script src="./wailsjs/runtime/runtime.js"></script>
+    <script>
+        console.log('=== Script started ===');
+
+        // 全局变量
+        let windowData = null;
+        let timeoutSeconds = 30;
+        let remainingTime = 30;
+        let timeoutInterval = null;
+        let responseSent = false;
+
+        // 定义所有函数
+        function updateUI(data) {
+            console.log('=== updateUI called ===');
+            console.log('Data:', data);
+
+            const opEl = document.getElementById('operation');
+            opEl.textContent = data.operation_name || data.operation || '未知操作';
+            opEl.classList.remove('loading-text');
+
+            const tgtEl = document.getElementById('target');
+            tgtEl.textContent = data.target || '未知目标';
+            tgtEl.classList.remove('loading-text');
+
+            const riskEl = document.getElementById('risk');
+            riskEl.textContent = data.risk_level || '未知';
+            riskEl.classList.remove('loading-text');
+            riskEl.className = 'value';
+            if (data.risk_level === 'HIGH' || data.risk_level === 'CRITICAL') {
+                riskEl.classList.add('risk-high');
+            } else if (data.risk_level === 'MEDIUM') {
+                riskEl.classList.add('risk-medium');
+            } else {
+                riskEl.classList.add('risk-low');
+            }
+
+            const reasonEl = document.getElementById('reason');
+            reasonEl.textContent = data.reason || '无';
+            reasonEl.classList.remove('loading-text');
+
+            if (data.timeout_seconds) {
+                timeoutSeconds = data.timeout_seconds;
+                remainingTime = timeoutSeconds;
+                console.log('Starting countdown:', remainingTime, 'seconds');
+                startCountdown();
+            }
+        }
+
+        function startCountdown() {
+            updateTimeoutDisplay();
+            timeoutInterval = setInterval(() => {
+                remainingTime--;
+                updateTimeoutDisplay();
+
+                if (remainingTime <= 0) {
+                    clearInterval(timeoutInterval);
+                    console.log('Timeout reached, auto-rejecting');
+                    if (!responseSent) {
+                        window.submitApproval(false, '超时自动拒绝');
+                    }
+                }
+            }, 1000);
+        }
+
+        function updateTimeoutDisplay() {
+            const timeoutValue = document.getElementById('timeout-value');
+            if (timeoutValue) {
+                timeoutValue.textContent = remainingTime;
+                if (remainingTime <= 10) {
+                    timeoutValue.style.color = '#dc3545';
+                } else if (remainingTime <= 20) {
+                    timeoutValue.style.color = '#fd7e14';
+                } else {
+                    timeoutValue.style.color = 'white';
+                }
+            }
+        }
+
+        window.submitApproval = function(approved, customReason) {
+            console.log('=== submitApproval called ===');
+            console.log('approved:', approved, 'reason:', customReason);
+
+            if (responseSent) {
+                console.log('Already sent, ignoring');
+                return;
+            }
+            responseSent = true;
+
+            if (timeoutInterval) {
+                clearInterval(timeoutInterval);
+            }
+
+            document.getElementById('btn-deny').disabled = true;
+            document.getElementById('btn-approve').disabled = true;
+
+            const status = document.getElementById('status');
+            status.className = 'status-loading';
+
+            const reason = customReason || (approved ? '用户批准' : '用户拒绝');
+            status.textContent = approved ? '正在批准...' : '正在拒绝...';
+
+            const result = {
+                approved: approved,
+                reason: reason,
+                request_id: (windowData && windowData.request_id) ? windowData.request_id : 'unknown',
+                timestamp: Math.floor(Date.now() / 1000)
+            };
+
+            console.log('Emitting event:', result);
+
+            // 使用 window.runtime.EventsEmit 发送事件
+            if (window.runtime && window.runtime.EventsEmit) {
+                try {
+                    window.runtime.EventsEmit('submit-approval', result);
+                    console.log('✓ Event emitted via runtime.EventsEmit');
+                } catch (e) {
+                    console.error('✗ runtime.EventsEmit error:', e);
+                }
+            } else {
+                console.error('window.runtime.EventsEmit not available');
+            }
+
+            status.className = approved ? 'status-success' : 'status-error';
+            status.textContent = approved ? '✓ 已批准，窗口即将关闭...' : '✗ 已拒绝，窗口即将关闭...';
+        };
+
+        // 立即绑定按钮事件
+        const denyBtn = document.getElementById('btn-deny');
+        const approveBtn = document.getElementById('btn-approve');
+
+        console.log('Binding button events...');
+        console.log('denyBtn:', denyBtn);
+        console.log('approveBtn:', approveBtn);
+
+        if (denyBtn) {
+            denyBtn.addEventListener('click', (e) => {
+                console.log('=== Deny button clicked ===');
+                e.preventDefault();
+                window.submitApproval(false);
+            });
+            console.log('✓ Deny button event listener attached');
+        }
+
+        if (approveBtn) {
+            approveBtn.addEventListener('click', (e) => {
+                console.log('=== Approve button clicked ===');
+                e.preventDefault();
+                window.submitApproval(true);
+            });
+            console.log('✓ Approve button event listener attached');
+        }
+
+        // 等待 runtime 并设置事件监听
+        function setupRuntime() {
+            if (window.runtime && window.runtime.EventsOn) {
+                console.log('=== Runtime ready ===');
+                console.log('window.runtime.EventsOn:', typeof window.runtime.EventsOn);
+                console.log('window.runtime.EventsEmit:', typeof window.runtime.EventsEmit);
+
+                // 设置 init-data 事件监听
+                try {
+                    window.runtime.EventsOn("init-data", (data) => {
+                        console.log('=== Received init-data event ===');
+                        console.log('Data:', data);
+                        windowData = data;
+                        updateUI(data);
+                    });
+                    console.log('✓ init-data event listener registered');
+                } catch (e) {
+                    console.error('✗ Error setting up EventsOn:', e);
+                }
+            } else {
+                console.log('Waiting for runtime...');
+                setTimeout(setupRuntime, 100);
+            }
+        }
+
+        // 启动 runtime 设置
+        setupRuntime();
+        console.log('=== Script initialization complete ===');
+    </script>
+</body>
 </html>
