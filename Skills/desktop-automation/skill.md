@@ -1,56 +1,108 @@
-# 桌面自动化 Skill
+# Window Screenshot Skill
 
-使用 window-mcp.exe 进行桌面窗口操作的自动化流程，包括窗口查找、截图、AI 图像分析和点击操作。
+**MCP 服务器**: window-mcp
 
----
+自动查找浏览器窗口并截取屏幕保存为图片。
 
-## 概述
+## 功能
 
-此 Skill 提供了桌面窗口自动化操作的能力，通过 window-mcp.exe（stdio MCP 服务器）实现窗口管理、截图和鼠标操作，结合 AI 自己的视觉分析能力实现 UI 元素识别和交互。
+1. 枚举系统中的所有可见窗口
+2. 自动识别浏览器窗口（Chrome/Edge/Firefox）
+3. 截取指定窗口区域并保存为 JPEG 图片
 
-### 适用场景
+## 使用方法
 
-- ✅ UI 自动化测试
-- ✅ 窗口交互验证
-- ✅ 截图和界面分析
-- ✅ 基于视觉的元素定位和点击
-- ✅ 基于坐标计算的精确点击
-- ❌ 不适用于需要复杂拖拽的操作（需要扩展）
-- ❌ 不适用于多窗口并发操作（需要额外同步）
+### 步骤 1: 枚举窗口查找浏览器
 
-### 核心组件
+使用 **window-mcp** 的 `enumerate_windows` 工具查找浏览器窗口：
 
-**window-mcp.exe**: MCP 服务器
-- 路径: `Skills/desktop-automation/bin/window-mcp.exe`
-- 通信方式: stdio/stdout（标准输入/输出）
-- 协议: JSON-RPC over stdio
-- 功能: 窗口查找、截图、鼠标操作
+```json
+{
+  "name": "enumerate_windows",
+  "arguments": {
+    "filter_visible": true,
+    "title_contains": "Edge"
+  }
+}
+```
 
-**AI 图像分析**: AI 自己分析
-- 通过 Read 工具读取截图文件
-- AI 视觉分析截图内容
-- 识别 UI 元素、文本、布局、位置等
-- ⚠️ 不使用任何 MCP 的图像分析功能
+- `filter_visible`: 只返回可见窗口（建议设为 true）
+- `title_contains`: 可选，按窗口标题过滤（如 "Edge"、"Chrome"、"Firefox"）
+- `class_contains`: 可选，按窗口类名过滤
 
----
+### 步骤 2: 解析窗口信息
 
-## 三大核心功能
+从返回结果中获取窗口位置信息：
 
-### 功能 1: 智能截图解析
+```json
+{
+  "windows": [
+    {
+      "hwnd": "HWND(0x2520268)",
+      "title": "网页标题 - Microsoft Edge",
+      "class_name": "Chrome_WidgetWin_1",
+      "rect": {
+        "left": 1305,
+        "top": 43,
+        "width": 1009,
+        "height": 859
+      }
+    }
+  ]
+}
+```
 
-对指定窗口进行截图并分析内容。
+浏览器类名特征：
+- Chrome/Edge: `Chrome_WidgetWin_1`
+- Firefox: `MozillaWindowClass`
 
-### 功能 2: 视觉识别点击
+### 步骤 3: 截图保存
 
-通过图像识别找到元素并点击。
+使用 **window-mcp** 的 `capture_screenshot_to_file` 保存截图：
 
-### 功能 3: 代码计算点击
+```json
+{
+  "name": "capture_screenshot_to_file",
+  "arguments": {
+    "file_path": "C:\\Code\\PPT\\screenshot.jpg",
+    "x": 1305,
+    "y": 43,
+    "width": 1009,
+    "height": 859
+  }
+}
+```
 
-基于预设坐标计算直接点击。
+参数说明：
+- `file_path`: 保存路径（必须使用 `.jpg` 或 `.jpeg` 扩展名）
+- `x`, `y`: 窗口左上角坐标
+- `width`, `height`: 窗口宽高
 
-详见 phases/ 目录中的详细文档。
+## 完整工作流程示例
 
----
+```
+用户需求: 截取浏览器窗口保存到 C:\Code\PPT\temp2.jpg
 
-**最后更新**: 2026-03-24
-**版本**: 1.1.0
+1. 调用 window-mcp::enumerate_windows 查找浏览器
+   → 获取窗口位置: x=1305, y=43, width=1009, height=859
+
+2. 调用 window-mcp::capture_screenshot_to_file 截图
+   → 保存到 C:\Code\PPT\temp2.jpg
+
+3. 验证文件生成成功
+```
+
+## MCP 服务器信息
+
+- **服务器名称**: window-mcp
+- **可执行文件**: `Skills\desktop-automation\window-mcp.exe`
+- **主要工具**:
+  - `enumerate_windows` - 枚举系统窗口
+  - `capture_screenshot_to_file` - 截图保存到文件
+
+## 注意事项
+
+1. 输出路径必须使用 `.jpg` 或 `.jpeg` 扩展名
+2. 坐标系为屏幕绝对坐标
+3. 如果找不到浏览器窗口，可使用第一个可见窗口作为备选
+4. 文件保存格式为 JPEG，文件大小取决于截图内容复杂度
