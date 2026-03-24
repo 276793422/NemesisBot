@@ -92,8 +92,8 @@ func RunApprovalWindow(windowID string, data *ApprovalWindowData, wsClient *webs
 
 	err := wails.Run(&options.App{
 		Title:  "安全审批 - NemesisBot",
-		Width:   600,
-		Height:  580,
+		Width:  750,
+		Height: 700,
 		AssetServer: &assetserver.Options{
 			Assets: os.DirFS(filepath.Dir(htmlFile)),
 		},

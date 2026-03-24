@@ -98,7 +98,8 @@ func CmdGateway() {
 	printGatewayBanner(cfg)
 
 	// Wait for shutdown signal
-	svcMgr.WaitForShutdown()
+	// Supports: Ctrl+C, system tray quit, desktop UI close, WebSocket close, etc.
+	svcMgr.WaitForShutdownWithDesktop(GetGlobalShutdownChan())
 
 	// Shutdown
 	fmt.Println("\nShutting down...")

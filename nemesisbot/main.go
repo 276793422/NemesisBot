@@ -19,6 +19,7 @@ import (
 	"github.com/276793422/NemesisBot/module/cluster"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/desktop"
+	"github.com/276793422/NemesisBot/module/desktop/systray"
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/nemesisbot/command"
 )
@@ -50,6 +51,25 @@ func isChildMode() bool {
 		}
 	}
 	return false
+}
+
+// shouldStartSystemTray checks if the process should start system tray
+// System tray is only needed for non-window processes (gateway, daemon)
+func shouldStartSystemTray() bool {
+	// Child process mode → has window, no need for tray
+	if isChildMode() {
+		return false
+	}
+
+	// Need at least 2 args
+	if len(os.Args) < 2 {
+		return false
+	}
+
+	// Check command type
+	cmd := os.Args[1]
+	// Gateway and Daemon modes need system tray (no window)
+	return cmd == "gateway" || cmd == "daemon"
 }
 
 // runChildMode runs the process in child mode
@@ -89,6 +109,33 @@ func main() {
 	if isChildMode() {
 		runChildMode()
 		return
+	}
+
+	// Start system tray for non-window processes (gateway, daemon)
+	var systemTray *systray.SystemTray
+	if shouldStartSystemTray() {
+		fmt.Println("🔔 System tray enabled")
+		systemTray = systray.NewSystemTray()
+
+		// Set quit handler to trigger global shutdown
+		systemTray.SetOnQuit(func() {
+		fmt.Println("\n🛑 Shutdown requested from system tray")
+		command.TriggerShutdown()
+		systemTray.Stop()
+	})
+
+		// Run in goroutine (non-blocking)
+		go func() {
+		if err := systemTray.Run(); err != nil {
+			fmt.Printf("⚠️  System tray error: %v\n", err)
+		}
+		}()
+		// Cleanup on exit
+		defer func() {
+			if systemTray != nil {
+				systemTray.Stop()
+			}
+		}()
 	}
 
 	// Pass embedded files and version info to command package
