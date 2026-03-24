@@ -378,6 +378,22 @@ func (m *TestAI50) Process(messages []Message) string {
 
 	argsJSON, _ := json.Marshal(args)
 
+	// 映射操作名称到实际工具名称
+	operationMapping := map[string]string{
+		"file_read":   "read_file",
+		"file_write":  "write_file",
+		"file_delete": "delete_file",
+		"file_append": "append_file", // 假设有这个工具
+		"dir_create":  "create_dir",
+		"dir_delete":  "delete_dir",
+		"dir_list":    "list_dir",
+	}
+
+	toolName, ok := operationMapping[req.Operation]
+	if !ok {
+		toolName = req.Operation // 如果没有映射，使用原始名称
+	}
+
 	// 返回工具调用响应
 	response := ProcessedResponse{
 		Content: "",
@@ -386,7 +402,7 @@ func (m *TestAI50) Process(messages []Message) string {
 				ID:   toolCallID,
 				Type: "function",
 				Function: &FunctionCall{
-					Name:      req.Operation,
+					Name:      toolName,
 					Arguments: string(argsJSON),
 				},
 			},

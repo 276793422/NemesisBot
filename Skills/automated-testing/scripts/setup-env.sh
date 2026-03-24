@@ -80,7 +80,8 @@ cd "$PROJECT_ROOT"
 
 # 编译 NemesisBot
 echo "[2/3] Compiling NemesisBot..."
-if ! go build -o test/autotest/nemesisbot.exe ./nemesisbot; then
+# IMPORTANT: 必须使用 production build tag 才能编译 Wails UI
+if ! go build -tags production -o test/autotest/nemesisbot.exe ./nemesisbot; then
     echo "ERROR: Failed to compile NemesisBot"
     echo "SETUP_FAILURE"
     exit 1

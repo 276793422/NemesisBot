@@ -78,7 +78,8 @@ Set-Location $ProjectRoot
 
 # 编译 NemesisBot
 Write-Host "[2/3] Compiling NemesisBot..."
-go build -o test\autotest\nemesisbot.exe .\nemesisbot
+# IMPORTANT: 必须使用 production build tag 才能编译 Wails UI
+go build -tags production -o test\autotest\nemesisbot.exe .\nemesisbot
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Failed to compile NemesisBot"
     Write-Host "SETUP_FAILURE"

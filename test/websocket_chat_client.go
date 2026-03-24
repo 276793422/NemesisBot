@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -28,8 +29,22 @@ type ServerMessage struct {
 }
 
 func main() {
+	// 解析命令行参数
+	var wsURL string
+	var messageContent string
+	if len(os.Args) > 1 {
+		wsURL = os.Args[1]
+	} else {
+		wsURL = "ws://127.0.0.1:49001/ws"
+	}
+
+	if len(os.Args) > 2 {
+		messageContent = os.Args[2]
+	} else {
+		messageContent = "你好，请简单介绍一下自己"
+	}
+
 	// 连接 WebSocket
-	wsURL := "ws://127.0.0.1:49001/ws"
 	fmt.Printf("连接到 %s...\n", wsURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -46,7 +61,7 @@ func main() {
 	// 发送测试消息
 	testMsg := ClientMessage{
 		Type:      "message",
-		Content:   "你好，请简单介绍一下自己",
+		Content:   messageContent,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
