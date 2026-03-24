@@ -36,12 +36,13 @@ type RPCChannel struct {
 	wg      sync.WaitGroup
 }
 
-// pendingRequest represents a pending LLM request from RPC
+// pendingRequest 表示来自 RPC 的待处理 LLM 请求
 type pendingRequest struct {
 	correlationID string
 	responseCh    chan string
 	createdAt     time.Time
 	timeout       time.Duration
+	delivered     bool // delivered 标记响应是否已成功发送给 handler
 }
 
 // RPCChannelConfig holds configuration for RPCChannel
@@ -214,6 +215,47 @@ func (ch *RPCChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 				map[string]interface{}{
 					"correlation_id": correlationID,
 				})
+
+			// 标记为已投递，防止 cleanup 关闭此 channel
+			//
+			// 重要说明："delivered" 标记和延迟删除的设计原理
+			//
+			// 背景：
+			// - 之前的问题是：Send() 成功投递响应后，不会从 pendingReqs 删除记录
+			// - 这导致 pendingReqs 无限制增长（例如：每秒 10 个请求，58 分钟内积累 34,800 条记录）
+			// - cleanupExpiredRequests() 最终会在超时后删除这些记录，但存在以下问题：
+			//   1. 在超时期间内存使用量不必要地增长
+			//   2. cleanup 每 30 秒必须遍历越来越大的 map
+			//   3. 竞态条件风险：cleanup 可能关闭 handler 仍在使用的 channel
+			//
+			// 为什么不在 Send() 成功后立即删除记录？
+			// - Channel 是带缓冲的（buffer=1），Send() 写入 buffer 后立即返回
+			// - Handler（PeerChatHandler）异步从 buffer 读取
+			// - 立即删除通常是安全的，因为数据已在 buffer 中
+			// - 但是：如果删除了，cleanupExpiredRequests 无法区分"已投递但 handler 处理慢"和"从未投递"
+			//
+			// 解决方案："delivered" 标记 + 延迟删除
+			// - Send() 成功后设置 delivered=true
+			// - cleanupExpiredRequests 检查此标记：
+			//   * 如果 !delivered && 超时：请求失败/已放弃，关闭 channel 通知 handler
+			//   * 如果 delivered && 超时：响应已成功发送，安全删除无需关闭 channel
+			// - 这样可以防止 cleanup 关闭 handler 仍在使用的 channel
+			//
+			// 如果您遇到以下相关问题：
+			// - pendingReqs 内存泄漏
+			// - channel 关闭的竞态条件
+			// - handler 收到 "closed channel" 错误
+			// 请查看此逻辑和 cleanupExpiredRequests() 的实现
+			//
+			// 相关分析：参见 docs/BUG/2026-03-11_RPC_CHANNEL_MEMORY_LEAK_ANALYSIS.md
+			ch.mu.Lock()
+			req.delivered = true
+			ch.mu.Unlock()
+
+			logger.DebugCF("rpc", "Marked request as delivered", map[string]interface{}{
+				"correlation_id": correlationID,
+			})
+
 		case <-time.After(time.Second):
 			logger.WarnCF("rpc", "Failed to deliver response (channel full or closed)",
 				map[string]interface{}{
@@ -289,6 +331,7 @@ func (ch *RPCChannel) Input(ctx context.Context, inbound *bus.InboundMessage) (<
 		responseCh:    respCh,
 		createdAt:     time.Now(),
 		timeout:       ch.getRequestTimeout(inbound.Metadata),
+		delivered:     false, // Initially not delivered
 	}
 	ch.mu.Unlock()
 
@@ -340,30 +383,55 @@ func (ch *RPCChannel) cleanupLoop() {
 	}
 }
 
-// cleanupExpiredRequests removes pending requests that have timed out
+// cleanupExpiredRequests 清理已超时的待处理请求
+// 根据响应是否已投递使用不同的清理策略：
+// - 未投递 + 超时：请求失败/已放弃，关闭 channel 通知 handler
+// - 已投递 + 超时：响应已成功发送，安全删除无需关闭 channel
 func (ch *RPCChannel) cleanupExpiredRequests() {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 
 	now := time.Now()
 	expiredCount := 0
+	deliveredCount := 0
 
 	for correlationID, req := range ch.pendingReqs {
-		if now.Sub(req.createdAt) > req.timeout {
-			// Request expired
+		age := now.Sub(req.createdAt)
+
+		if !req.delivered && age > req.timeout {
+			// 请求未投递且已超时
+			// 这表示一个失败/已放弃的请求
+			// 关闭 channel 以通知任何正在等待的 handler
 			close(req.responseCh)
 			delete(ch.pendingReqs, correlationID)
 			expiredCount++
-			logger.DebugCF("rpc", "Expired pending request", map[string]interface{}{
+			logger.DebugCF("rpc", "Expired undelivered request (closed channel)", map[string]interface{}{
 				"correlation_id": correlationID,
-				"age_seconds":    now.Sub(req.createdAt).Seconds(),
+				"age_seconds":    age.Seconds(),
+			})
+		} else if req.delivered && age > req.timeout {
+			// 响应已成功投递，但记录仍在 map 中
+			// 可以安全删除而不关闭 channel，因为：
+			// 1. 数据已经在带缓冲的 channel 中（buffer=1）
+			// 2. Handler 会从 buffer 读取
+			// 3. 不会有其他人引用此请求
+			delete(ch.pendingReqs, correlationID)
+			deliveredCount++
+			logger.DebugCF("rpc", "Cleaned delivered request (no channel close)", map[string]interface{}{
+				"correlation_id": correlationID,
+				"age_seconds":    age.Seconds(),
 			})
 		}
 	}
 
 	if expiredCount > 0 {
-		logger.DebugCF("rpc", "Cleaned expired requests", map[string]interface{}{
+		logger.DebugCF("rpc", "Cleaned expired undelivered requests", map[string]interface{}{
 			"count": expiredCount,
+		})
+	}
+	if deliveredCount > 0 {
+		logger.DebugCF("rpc", "Cleaned delivered requests", map[string]interface{}{
+			"count": deliveredCount,
 		})
 	}
 }
