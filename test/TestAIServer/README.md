@@ -1,17 +1,18 @@
 # TestAIServer
 
-一个兼容 OpenAI API 的测试服务器，提供四个硬编码的测试模型用于测试目的。
+一个兼容 OpenAI API 的测试服务器，提供八个硬编码的测试模型用于测试目的。
 
 ## ⚠️ 重要提示
 
 **使用前请务必阅读**:
-- 📋 [已知问题清单](docs/KNOWN_ISSUES.md) - **必读！**
-- 🔧 [流式响应修复说明](STREAMING_FIX.md) - v1.3.0 重要更新
+- 📋 [已知问题清单](docs/KNOWN_ISSUES.md) - 了解当前限制
+- 📖 [帮助系统](#使用帮助系统) - 快速查看模型信息
 
-### 当前限制
+### 当前功能
 
-- ⚠️ **不支持真正的流式响应**（已实施兼容模式）
-- ⚠️ 详见 [ISSUE-001](docs/KNOWN_ISSUES.md#issue-001-不支持流式响应streaming-response)
+- ✅ **完整支持流式响应**（Server-Sent Events）
+- ✅ **支持工具调用**（OpenAI function calling）
+- ✅ 自动请求日志记录
 
 ---
 
@@ -66,9 +67,12 @@ nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --k
 - ✅ 完全兼容 OpenAI API 接口
 - ✅ 支持 `/v1/chat/completions` 端点
 - ✅ 支持 `/v1/models` 端点
-- ✅ 四个预定义的测试模型
+- ✅ **八个预定义的测试模型**
+- ✅ **完整支持流式响应**（SSE - Server-Sent Events）
+- ✅ **支持工具调用**（OpenAI function calling 格式）
 - ✅ 支持延迟响应测试
-- ✅ **自动请求日志记录** ⭐ NEW
+- ✅ 自动请求日志记录
+- ✅ 分层帮助系统
 - ✅ 简单易用，零配置
 
 ## 测试模型
@@ -398,6 +402,42 @@ curl http://localhost:8080/v1/chat/completions \
 <FILE_OP>{"operation":"dir_list","path":"/tmp"}</FILE_OP>
 ```
 
+### 测试流式响应 ⭐
+
+所有模型都支持流式响应（SSE 格式）：
+
+```bash
+# 使用 curl 测试流式响应（需要 -N 参数禁用缓冲）
+curl -N http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "testai-2.0",
+    "messages": [
+      {"role": "user", "content": "你好"}
+    ],
+    "stream": true
+  }'
+```
+
+**流式响应格式**（SSE - Server-Sent Events）：
+```
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1694268190,"model":"testai-2.0","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1694268190,"model":"testai-2.0","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1694268190,"model":"testai-2.0","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1694268190,"model":"testai-2.0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+**流式响应特点**：
+- 逐字符发送，每字符间隔 10ms（模拟打字效果）
+- 支持 `Content-Type: text/event-stream`
+- 完整的 OpenAI SSE 格式兼容
+- 所有 8 个模型均支持流式输出
+
 ## 在 NemesisBot 中使用
 
 ### 添加测试模型
@@ -498,9 +538,9 @@ TestAIServer/
 ## 注意事项
 
 1. **延迟模型**: `testai-1.3` 会阻塞 300 秒，仅用于测试超时处理
-2. **流式响应**: 当前版本不支持流式响应（stream=true）
-3. **Token 计数**: 使用简单的字符计数，非真实的 tokenizer
-4. **并发限制**: 没有并发限制，所有请求都会被处理
+2. **Token 计数**: 使用简单的字符计数，非真实的 tokenizer
+3. **并发限制**: 没有并发限制，所有请求都会被处理
+4. **流式响应**: 完整支持，使用 `stream: true` 启用
 
 ## 开发说明
 
