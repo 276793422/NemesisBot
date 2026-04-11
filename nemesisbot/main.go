@@ -423,6 +423,36 @@ func onboardDefault() {
 	// Step 4.5: Initialize cluster peers.toml (static configuration)
 	initializeClusterConfig(workspace)
 
+	// Step 4.6: Create skills config file in workspace/config/
+	skillsConfigPath := filepath.Join(configDir, "config.skills.json")
+	skillsCfg, err := config.LoadSkillsConfig(skillsConfigPath)
+	if err != nil {
+		// If skills config doesn't exist, try to use embedded default
+		if len(embeddedDefaults.Skills) > 0 {
+			var sCfg config.SkillsFullConfig
+			if err := json.Unmarshal(embeddedDefaults.Skills, &sCfg); err != nil {
+				fmt.Printf("⚠️  Warning: Failed to parse embedded skills config: %v\n", err)
+			} else {
+				skillsCfg = &sCfg
+			}
+		}
+	}
+	if skillsCfg == nil {
+		// Fallback to hardcoded default
+		skillsCfg = &config.SkillsFullConfig{
+			Enabled:               true,
+			SearchCache:           config.SkillsSearchCacheConfig{Enabled: true, MaxSize: 50, TTLSeconds: 300},
+			MaxConcurrentSearches: 2,
+			GitHubSources:         []config.GitHubSourceConfig{},
+			ClawHub:               config.SkillsClawHubConfig{Enabled: false},
+		}
+	}
+	if err := config.SaveSkillsConfig(skillsConfigPath, skillsCfg); err != nil {
+		fmt.Printf("⚠️  Warning: Failed to create skills config: %v\n", err)
+	} else {
+		fmt.Println("✓ Skills config created")
+	}
+
 	// Step 5: Enable LLM logging (optional enhancement for default mode)
 	if cfg.Logging == nil {
 		cfg.Logging = &config.LoggingConfig{

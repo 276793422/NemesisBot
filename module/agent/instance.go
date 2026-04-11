@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/path"
@@ -131,24 +132,7 @@ func NewAgentInstance(
 	//toolsRegistry.Register(tools.NewSleepTool())                                                                                     // Sleep tool doesn't need security
 
 	// Skills tools (find and install skills from registries)
-	skillsRegCfg := skills.RegistryConfig{
-		GitHub:  skills.GitHubConfig{Enabled: true},
-	}
-	if cfg.Skills != nil {
-		skillsRegCfg.GitHub = skills.GitHubConfig{
-			Enabled: cfg.Skills.Registries.GitHub.Enabled,
-			BaseURL: cfg.Skills.Registries.GitHub.BaseURL,
-			Timeout: cfg.Skills.Registries.GitHub.Timeout,
-			MaxSize: cfg.Skills.Registries.GitHub.MaxSize,
-		}
-		skillsRegCfg.ClawHub = skills.ClawHubConfig{
-			Enabled:   cfg.Skills.Registries.ClawHub.Enabled,
-			BaseURL:   cfg.Skills.Registries.ClawHub.BaseURL,
-			AuthToken: cfg.Skills.Registries.ClawHub.AuthToken,
-			Timeout:   cfg.Skills.Registries.ClawHub.Timeout,
-		}
-	}
-	skillsRegMgr := skills.NewRegistryManagerFromConfig(skillsRegCfg)
+	skillsRegMgr := buildSkillsRegistryManager(workspace)
 	skillsInstaller := skills.NewSkillInstaller(workspace)
 	toolsRegistry.RegisterWithPlugin(tools.NewFindSkillsTool(skillsRegMgr, skillsRegMgr.GetSearchCache()), pluginMgr, user, source, workspace)
 	toolsRegistry.RegisterWithPlugin(tools.NewInstallSkillTool(skillsRegMgr, skillsInstaller), pluginMgr, user, source, workspace)
@@ -246,4 +230,64 @@ func resolveAgentFallbacks(agentCfg *config.AgentConfig, defaults *config.AgentD
 	}
 	// No global fallbacks anymore - configure per-agent or via ModelList
 	return nil
+}
+
+// buildSkillsRegistryManager loads the skills config from the independent
+// config.skills.json file and builds a skills.RegistryManager.
+// Falls back to a default GitHub-only config when the file is missing.
+func buildSkillsRegistryManager(workspace string) *skills.RegistryManager {
+	skillsConfigPath := path.ResolveSkillsConfigPathInWorkspace(workspace)
+	skillsFullCfg, err := config.LoadSkillsConfig(skillsConfigPath)
+
+	var rc skills.RegistryConfig
+	if err == nil {
+		rc = skillsFullConfigToRegistry(skillsFullCfg)
+	} else {
+		// Fallback: legacy default — single GitHub source
+		rc = skills.RegistryConfig{
+			GitHub: skills.GitHubConfig{Enabled: true},
+		}
+	}
+
+	return skills.NewRegistryManagerFromConfig(rc)
+}
+
+// skillsFullConfigToRegistry converts config.SkillsFullConfig to skills.RegistryConfig.
+func skillsFullConfigToRegistry(cfg *config.SkillsFullConfig) skills.RegistryConfig {
+	rc := skills.RegistryConfig{
+		MaxConcurrentSearches: cfg.MaxConcurrentSearches,
+		SearchCache: skills.SearchCacheConfig{
+			Enabled: cfg.SearchCache.Enabled,
+			MaxSize: cfg.SearchCache.MaxSize,
+		},
+	}
+
+	if cfg.SearchCache.TTLSeconds > 0 {
+		rc.SearchCache.TTL = time.Duration(cfg.SearchCache.TTLSeconds) * time.Second
+	}
+
+	// Convert GitHub sources
+	for _, src := range cfg.GitHubSources {
+		rc.GitHubSources = append(rc.GitHubSources, skills.GitHubSourceConfig{
+			Name:             src.Name,
+			Repo:             src.Repo,
+			Enabled:          src.Enabled,
+			Branch:           src.Branch,
+			IndexType:        src.IndexType,
+			IndexPath:        src.IndexPath,
+			SkillPathPattern: src.SkillPathPattern,
+			Timeout:          src.Timeout,
+			MaxSize:          src.MaxSize,
+		})
+	}
+
+	// Convert ClawHub config
+	rc.ClawHub = skills.ClawHubConfig{
+		Enabled:   cfg.ClawHub.Enabled,
+		BaseURL:   cfg.ClawHub.BaseURL,
+		AuthToken: cfg.ClawHub.AuthToken,
+		Timeout:   cfg.ClawHub.Timeout,
+	}
+
+	return rc
 }

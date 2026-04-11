@@ -23,6 +23,8 @@ type SearchResult struct {
 	Summary      string  `json:"summary"`
 	Version      string  `json:"version"`
 	RegistryName string  `json:"registry_name"`
+	SourceRepo   string  `json:"source_repo,omitempty"`   // e.g. "anthropics/skills"
+	DownloadPath string  `json:"download_path,omitempty"` // e.g. "skills/pdf/SKILL.md"
 }
 
 // SkillMeta holds metadata about a skill from a registry.
@@ -64,7 +66,8 @@ type SkillRegistry interface {
 type RegistryConfig struct {
 	SearchCache           SearchCacheConfig
 	ClawHub               ClawHubConfig
-	GitHub                GitHubConfig
+	GitHub                GitHubConfig         // Legacy single-source config (backward compat)
+	GitHubSources         []GitHubSourceConfig // New multi-source config
 	MaxConcurrentSearches int
 }
 
@@ -88,12 +91,25 @@ type ClawHubConfig struct {
 	MaxResponseSize int    // bytes, 0 = default (2MB)
 }
 
-// GitHubConfig configures the GitHub registry.
+// GitHubConfig configures the GitHub registry (legacy single-source).
 type GitHubConfig struct {
 	Enabled bool
 	BaseURL string // defaults to github.com
 	Timeout int    // seconds, 0 = default (30s)
 	MaxSize int    // bytes, 0 = default (1MB)
+}
+
+// GitHubSourceConfig configures a single GitHub source for skills.
+type GitHubSourceConfig struct {
+	Name             string
+	Repo             string // e.g. "anthropics/skills"
+	Enabled          bool
+	Branch           string // default "main"
+	IndexType        string // "skills_json" or "github_api"
+	IndexPath        string // e.g. "skills.json"
+	SkillPathPattern string // e.g. "skills/{slug}/SKILL.md"
+	Timeout          int
+	MaxSize          int
 }
 
 // RegistryManager coordinates multiple skill registries.
@@ -126,10 +142,19 @@ func NewRegistryManagerFromConfig(cfg RegistryConfig) *RegistryManager {
 		rm.searchCache = NewSearchCache(cfg.SearchCache)
 	}
 
-	if cfg.GitHub.Enabled {
+	// New: iterate GitHubSources and create per-source instances
+	for _, source := range cfg.GitHubSources {
+		if source.Enabled {
+			rm.AddRegistry(NewGitHubRegistryFromSource(source))
+		}
+	}
+
+	// Backward compat: if no GitHubSources configured, fall back to legacy GitHub config
+	if len(cfg.GitHubSources) == 0 && cfg.GitHub.Enabled {
 		rm.AddRegistry(NewGitHubRegistry(cfg.GitHub))
 	}
-	// ClawHub support now available
+
+	// ClawHub support
 	if cfg.ClawHub.Enabled {
 		rm.AddRegistry(NewClawHubRegistry(cfg.ClawHub))
 	}

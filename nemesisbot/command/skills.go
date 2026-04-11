@@ -2,16 +2,20 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/skills"
+	"github.com/276793422/NemesisBot/module/utils"
 )
 
 // CmdSkills manages skills
@@ -31,6 +35,13 @@ func CmdSkills() {
 
 	workspace := cfg.WorkspacePath()
 	installer := skills.NewSkillInstaller(workspace)
+
+	// Load skills config and set up registry manager
+	skillsConfigPath := path.ResolveSkillsConfigPathInWorkspace(workspace)
+	if skillsFullCfg, err := config.LoadSkillsConfig(skillsConfigPath); err == nil {
+		rm := buildSkillsRegistryManagerFromConfig(skillsFullCfg)
+		installer.SetRegistryManager(rm)
+	}
 	// global skills: ~/.nemesisbot/workspace/skills/
 	// builtin skills: (currently unused, reserved for future embedded skills)
 	globalDir := filepath.Dir(GetConfigPath())
@@ -71,6 +82,16 @@ func CmdSkills() {
 			return
 		}
 		cmdSkillsCache(cfg, os.Args[3])
+	case "add-source":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: nemesisbot skills add-source <github-url>")
+			fmt.Println()
+			fmt.Println("Examples:")
+			fmt.Println("  nemesisbot skills add-source https://github.com/openclaw/skills")
+			fmt.Println("  nemesisbot skills add-source anthropics/skills")
+			return
+		}
+		cmdSkillsAddSource(os.Args[3])
 	case "show":
 		if len(os.Args) < 4 {
 			fmt.Println("Usage: nemesisbot skills show <skill-name>")
@@ -94,6 +115,7 @@ func SkillsHelp() {
 	fmt.Println("  remove <name>                    Remove installed skill")
 	fmt.Println("  search [query]                   Search available skills (supports caching)")
 	fmt.Println("  cache <stats|clear>              Manage search cache")
+	fmt.Println("  add-source <github-url>          Add a GitHub repository as skills source")
 	fmt.Println("  show <name>                      Show skill details")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -108,6 +130,8 @@ func SkillsHelp() {
 	fmt.Println("  nemesisbot skills cache stats")
 	fmt.Println("  nemesisbot skills cache clear")
 	fmt.Println("  nemesisbot skills remove weather")
+	fmt.Println("  nemesisbot skills add-source https://github.com/openclaw/skills")
+	fmt.Println("  nemesisbot skills add-source anthropics/skills")
 	fmt.Println()
 	fmt.Println("ClawHub (https://clawhub.ai):")
 	fmt.Println("  5,705 community skills from OpenClaw")
@@ -134,23 +158,39 @@ func cmdSkillsList(loader *skills.SkillsLoader) {
 
 func cmdSkillsInstall(installer *skills.SkillInstaller) {
 	if len(os.Args) < 4 {
-		fmt.Println("Usage: nemesisbot skills install <github-repo>")
-		fmt.Println("Example: nemesisbot skills install 276793422/nemesisbot-skills/weather")
+		fmt.Println("Usage: nemesisbot skills install <registry>/<slug> | <github-repo-path>")
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  nemesisbot skills install anthropics/pdf          # Install from registry by slug")
+		fmt.Println("  nemesisbot skills install 276793422/nemesisbot-skills/weather  # Install from GitHub repo")
 		return
 	}
 
-	repo := os.Args[3]
-	fmt.Printf("Installing skill from %s...\n", repo)
-
+	arg := os.Args[3]
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := installer.InstallFromGitHub(ctx, repo); err != nil {
+	// Try registry-based install first: <registry>/<slug> (exactly one slash)
+	if parts := strings.SplitN(arg, "/", 2); len(parts) == 2 && installer.HasRegistryManager() {
+		registryName, slug := parts[0], parts[1]
+		if installer.HasRegistry(registryName) {
+			fmt.Printf("Installing skill '%s' from registry '%s'...\n", slug, registryName)
+			if err := installer.InstallFromRegistry(ctx, registryName, slug, ""); err != nil {
+				fmt.Printf("✗ Failed to install skill: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	// Fallback: legacy GitHub repo install
+	fmt.Printf("Installing skill from %s...\n", arg)
+	if err := installer.InstallFromGitHub(ctx, arg); err != nil {
 		fmt.Printf("✗ Failed to install skill: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✓ Skill '%s' installed successfully!\n", filepath.Base(repo))
+	fmt.Printf("✓ Skill '%s' installed successfully!\n", filepath.Base(arg))
 }
 
 func cmdSkillsInstallClawHub(workspace, author, skillName string) {
@@ -468,4 +508,453 @@ func cmdSkillsCache(cfg *config.Config, action string) {
 		fmt.Printf("Unknown cache action: %s\n", action)
 		fmt.Println("Usage: nemesisbot skills cache <stats|clear>")
 	}
+}
+
+// buildSkillsRegistryManagerFromConfig builds a skills.RegistryManager from SkillsFullConfig.
+func buildSkillsRegistryManagerFromConfig(cfg *config.SkillsFullConfig) *skills.RegistryManager {
+	rc := skills.RegistryConfig{
+		MaxConcurrentSearches: cfg.MaxConcurrentSearches,
+		SearchCache: skills.SearchCacheConfig{
+			Enabled: cfg.SearchCache.Enabled,
+			MaxSize: cfg.SearchCache.MaxSize,
+		},
+	}
+
+	if cfg.SearchCache.TTLSeconds > 0 {
+		rc.SearchCache.TTL = time.Duration(cfg.SearchCache.TTLSeconds) * time.Second
+	}
+
+	for _, src := range cfg.GitHubSources {
+		rc.GitHubSources = append(rc.GitHubSources, skills.GitHubSourceConfig{
+			Name:             src.Name,
+			Repo:             src.Repo,
+			Enabled:          src.Enabled,
+			Branch:           src.Branch,
+			IndexType:        src.IndexType,
+			IndexPath:        src.IndexPath,
+			SkillPathPattern: src.SkillPathPattern,
+			Timeout:          src.Timeout,
+			MaxSize:          src.MaxSize,
+		})
+	}
+
+	rc.ClawHub = skills.ClawHubConfig{
+		Enabled:   cfg.ClawHub.Enabled,
+		BaseURL:   cfg.ClawHub.BaseURL,
+		AuthToken: cfg.ClawHub.AuthToken,
+		Timeout:   cfg.ClawHub.Timeout,
+	}
+
+	return skills.NewRegistryManagerFromConfig(rc)
+}
+
+// parseGitHubURL extracts owner and repo from various GitHub URL formats.
+func parseGitHubURL(input string) (owner, repo string, err error) {
+	input = strings.TrimSpace(input)
+
+	// Remove trailing .git
+	input = strings.TrimSuffix(input, ".git")
+
+	// Try parsing as full URL
+	if strings.HasPrefix(input, "https://") || strings.HasPrefix(input, "http://") {
+		u, parseErr := url.Parse(input)
+		if parseErr != nil {
+			return "", "", fmt.Errorf("invalid URL: %s\nExamples:\n  https://github.com/openclaw/skills\n  openclaw/skills", input)
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			return "", "", fmt.Errorf("invalid GitHub URL: %s\nExamples:\n  https://github.com/openclaw/skills\n  openclaw/skills", input)
+		}
+		return parts[0], parts[1], nil
+	}
+
+	// Strip "github.com/" prefix if present
+	input = strings.TrimPrefix(input, "github.com/")
+	input = strings.TrimPrefix(input, "www.github.com/")
+
+	// Treat as owner/repo
+	parts := strings.Split(input, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid format: %s\nExamples:\n  https://github.com/openclaw/skills\n  openclaw/skills", input)
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// skillDetectResult holds the result of auto-detecting a repo's skill structure.
+type skillDetectResult struct {
+	IndexType string // "github_api" or "skills_json"
+	Pattern   string // e.g. "skills/{slug}/SKILL.md"
+	Branch    string // detected branch, "main" or "master"
+}
+
+// repoCheckResult holds the result of verifying a GitHub repository exists.
+type repoCheckResult struct {
+	Exists   bool
+	Private  bool
+	RateLimit bool
+	Message  string
+}
+
+// verifyRepoExists checks whether a GitHub repository is publicly accessible.
+func verifyRepoExists(ctx context.Context, client *http.Client, owner, repo string) repoCheckResult {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return repoCheckResult{Message: fmt.Sprintf("failed to create request: %v", err)}
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := utils.DoRequestWithRetry(client, req)
+	if err != nil {
+		return repoCheckResult{Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return repoCheckResult{Exists: true}
+	case http.StatusNotFound:
+		// Could be private or truly absent — distinguish via a second check
+		// on raw content. If raw.githubusercontent.com also 404s, assume non-existent.
+		rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/HEAD/README.md", owner, repo)
+		rawReq, rawErr := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
+		if rawErr == nil {
+			rawResp, rawErr := utils.DoRequestWithRetry(client, rawReq)
+			if rawErr == nil {
+				rawResp.Body.Close()
+				if rawResp.StatusCode == http.StatusOK {
+					// Repo is accessible via raw but not API — likely a transient API issue
+					return repoCheckResult{Exists: true}
+				}
+			}
+		}
+		return repoCheckResult{Message: fmt.Sprintf("repository '%s/%s' not found or is private", owner, repo)}
+	case http.StatusForbidden:
+		return repoCheckResult{RateLimit: true, Message: "GitHub API rate limit exceeded, please try again later or use a personal access token"}
+	default:
+		return repoCheckResult{Message: fmt.Sprintf("unexpected HTTP %d from GitHub API", resp.StatusCode)}
+	}
+}
+
+// detectSkillStructure verifies the repo exists and probes its skill layout.
+func detectSkillStructure(ctx context.Context, owner, repo string) (*skillDetectResult, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	// Step 0: Verify the repository exists and is accessible
+	check := verifyRepoExists(ctx, client, owner, repo)
+	if !check.Exists {
+		return nil, fmt.Errorf("%s", check.Message)
+	}
+
+	// Probe 1: Check skills/ directory via GitHub API
+	probe1URL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/skills", owner, repo)
+	dirs, probeErr := probeGitHubDir(ctx, client, probe1URL)
+	if probeErr == nil && len(dirs) > 0 {
+		// Pattern A: skills/{slug}/SKILL.md (two-level)
+		if verifySkillMDInDirs(ctx, client, owner, repo, "main", "skills", dirs, 5) {
+			return &skillDetectResult{
+				IndexType: "github_api",
+				Pattern:   "skills/{slug}/SKILL.md",
+				Branch:    "main",
+			}, nil
+		}
+		// Pattern B: skills/{author}/{slug}/SKILL.md (three-level, e.g. openclaw/skills)
+		// Probe only the first author dir via raw URL to confirm structure
+		if verifyThreeLevelSkills(ctx, client, owner, repo, "main", dirs) {
+			return &skillDetectResult{
+				IndexType: "github_api",
+				Pattern:   "skills/{author}/{slug}/SKILL.md",
+				Branch:    "main",
+			}, nil
+		}
+	}
+
+	// Probe 2: Try skills.json index on main
+	probe2URL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/skills.json", owner, repo)
+	if result, ok := probeSkillsJSON(ctx, client, probe2URL); ok {
+		result.Branch = "main"
+		return result, nil
+	}
+
+	// Probe 2b: Try skills.json on master
+	probe2bURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/master/skills.json", owner, repo)
+	if result, ok := probeSkillsJSON(ctx, client, probe2bURL); ok {
+		result.Branch = "master"
+		return result, nil
+	}
+
+	// Probe 3: Root-level directories with SKILL.md
+	probe3URL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/", owner, repo)
+	if result, err := probeRootLevelSkills(ctx, client, owner, repo, probe3URL); err == nil && result != nil {
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("repository '%s/%s' exists but contains no detectable skills\nPlease make sure the repo has a skills/ directory with SKILL.md files, or manually edit: %s", owner, repo, GetSkillsConfigPath())
+}
+
+// verifySkillMDInDirs checks if any subdirectory under basePath contains a SKILL.md file.
+// maxCheck limits how many dirs to probe (avoids exhaustion on repos with thousands of entries).
+// Uses GitHub API to list each subdirectory and look for SKILL.md in the file listing.
+func verifySkillMDInDirs(ctx context.Context, client *http.Client, owner, repo, branch, basePath string, dirs []string, maxCheck int) bool {
+	checked := 0
+	for _, dir := range dirs {
+		if checked >= maxCheck {
+			break
+		}
+		if containsSkillMD(ctx, client, fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s/%s", owner, repo, basePath, dir)) {
+			return true
+		}
+		checked++
+	}
+	return false
+}
+
+// verifyThreeLevelSkills probes the three-level pattern skills/{author}/{slug}/SKILL.md.
+// It checks up to maxCheck author dirs by listing their subdirs via GitHub API,
+// then verifies SKILL.md exists in the first found subdir.
+func verifyThreeLevelSkills(ctx context.Context, client *http.Client, owner, repo, branch string, authorDirs []string) bool {
+	maxCheck := 5
+	checked := 0
+	for _, authorDir := range authorDirs {
+		if checked >= maxCheck {
+			break
+		}
+		authorURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/skills/%s", owner, repo, authorDir)
+		skillDirs, err := probeGitHubDir(ctx, client, authorURL)
+		if err != nil || len(skillDirs) == 0 {
+			checked++
+			continue
+		}
+		// Check first subdir for SKILL.md via API
+		sd := skillDirs[0]
+		if containsSkillMD(ctx, client, fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/skills/%s/%s", owner, repo, authorDir, sd)) {
+			return true
+		}
+		checked++
+	}
+	return false
+}
+
+// containsSkillMD checks if a GitHub API contents URL lists a SKILL.md file.
+func containsSkillMD(ctx context.Context, client *http.Client, apiURL string) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := utils.DoRequestWithRetry(client, req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var entries []struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return false
+	}
+
+	for _, e := range entries {
+		if e.Name == "SKILL.md" && e.Type == "file" {
+			return true
+		}
+	}
+	return false
+}
+
+// probeGitHubDir checks if a GitHub API contents URL returns directory entries.
+func probeGitHubDir(ctx context.Context, client *http.Client, apiURL string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := utils.DoRequestWithRetry(client, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("GitHub API rate limit hit, please try again later")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var entries []struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return nil, err
+	}
+
+	var dirs []string
+	for _, e := range entries {
+		if e.Type == "dir" {
+			dirs = append(dirs, e.Name)
+		}
+	}
+	return dirs, nil
+}
+
+// probeSkillsJSON tries to download and parse a skills.json index file.
+func probeSkillsJSON(ctx context.Context, client *http.Client, rawURL string) (*skillDetectResult, bool) {
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err != nil {
+		return nil, false
+	}
+
+	resp, err := utils.DoRequestWithRetry(client, req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+
+	// Try parsing as JSON array (simple index format)
+	var arr []interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&arr); err != nil {
+		return nil, false
+	}
+
+	return &skillDetectResult{
+		IndexType: "skills_json",
+		Pattern:   "skills/{slug}/SKILL.md",
+	}, true
+}
+
+// probeRootLevelSkills detects skills at the root level of a repo.
+func probeRootLevelSkills(ctx context.Context, client *http.Client, owner, repo, apiURL string) (*skillDetectResult, error) {
+	dirs, err := probeGitHubDir(ctx, client, apiURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Filter out common non-skill directories
+	skip := map[string]bool{
+		"src": true, "pkg": true, "cmd": true, "internal": true,
+		"docs": true, ".github": true, "test": true, "tests": true,
+		"scripts": true, "examples": true, "build": true, "dist": true,
+		"vendor": true, "node_modules": true, ".git": true, ".vscode": true,
+	}
+
+	checked := 0
+	for _, dir := range dirs {
+		if skip[dir] || strings.HasPrefix(dir, ".") {
+			continue
+		}
+		if checked >= 5 {
+			break
+		}
+		// Verify SKILL.md exists in this directory via GitHub API
+		contentsURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repo, dir)
+		if containsSkillMD(ctx, client, contentsURL) {
+			return &skillDetectResult{
+				IndexType: "github_api",
+				Pattern:   "{slug}/SKILL.md",
+				Branch:    "main",
+			}, nil
+		}
+		checked++
+	}
+
+	return nil, fmt.Errorf("no root-level skills detected")
+}
+
+
+func cmdSkillsAddSource(inputURL string) {
+	// 1. Parse URL
+	owner, repo, err := parseGitHubURL(inputURL)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	repoFullName := fmt.Sprintf("%s/%s", owner, repo)
+	fmt.Printf("Validating repository %s ...\n", repoFullName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 2. Locate config file
+	skillsConfigPath := GetSkillsConfigPath()
+
+	// 3. Load existing config
+	skillsCfg, err := config.LoadSkillsConfig(skillsConfigPath)
+	if err != nil {
+		fmt.Printf("Error loading skills config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 4. Check for duplicate
+	for _, src := range skillsCfg.GitHubSources {
+		if src.Repo == repoFullName {
+			fmt.Printf("Repository '%s' already exists as source '%s'.\n", repoFullName, src.Name)
+			os.Exit(1)
+		}
+	}
+
+	// 5. Detect structure (includes repo existence verification)
+	result, err := detectSkillStructure(ctx, owner, repo)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 6. Generate unique name
+	name := owner
+	for i := 1; ; i++ {
+		conflict := false
+		for _, src := range skillsCfg.GitHubSources {
+			if src.Name == name {
+				conflict = true
+				break
+			}
+		}
+		if !conflict {
+			break
+		}
+		name = fmt.Sprintf("%s-%d", owner, i)
+	}
+
+	// 7. Append source
+	newSource := config.GitHubSourceConfig{
+		Name:             name,
+		Repo:             repoFullName,
+		Enabled:          true,
+		Branch:           result.Branch,
+		IndexType:        result.IndexType,
+		SkillPathPattern: result.Pattern,
+	}
+	skillsCfg.GitHubSources = append(skillsCfg.GitHubSources, newSource)
+
+	// 8. Save
+	if err := config.SaveSkillsConfig(skillsConfigPath, skillsCfg); err != nil {
+		fmt.Printf("Error saving skills config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 9. Print summary
+	fmt.Println()
+	fmt.Println("Skill source added successfully:")
+	fmt.Printf("  Name:     %s\n", name)
+	fmt.Printf("  Repo:     %s\n", repoFullName)
+	fmt.Printf("  Branch:   %s\n", result.Branch)
+	fmt.Printf("  Index:    %s\n", result.IndexType)
+	fmt.Printf("  Pattern:  %s\n", result.Pattern)
+	fmt.Printf("  Config:   %s\n", skillsConfigPath)
 }

@@ -54,49 +54,6 @@
 
 ---
 
-## 近期更新
-
-### 2026-03-08
-
-**配置系统增强**：
-- ✅ **全局日志配置** - 新增通用日志配置文件支持
-  - 主开关 (`enabled`) - 控制是否记录日志
-  - 控制台开关 (`enable_console`) - 控制控制台输出
-  - 日志级别配置 (`level`) - DEBUG/INFO/WARN/ERROR/FATAL
-  - 文件路径配置 (`file`) - 指定日志文件路径
-- ✅ **命令行参数支持** - 新增 `--quiet`, `--no-console`, `--debug` 参数
-- ✅ **日志管理命令** - `nemesisbot log general` 子命令系列
-  - `enable/disable` - 启用/禁用日志
-  - `status` - 查看日志状态
-  - `level` - 设置日志级别
-  - `file` - 设置日志文件路径
-  - `console` - 切换控制台输出
-- ✅ **双层开关架构** - 主开关 + 控制台开关，提供灵活的日志控制
-- ✅ **完整测试覆盖** - 10 个单元测试，确保线程安全和功能正确性
-
-### 2026-03-05
-
-**重要修复**：
-- ✅ **Outbound channel 竞争修复** - 解决 RPC channel 和 manager 的消息竞争问题
-- ✅ **RateLimiter 死循环修复** - 修复限流器的潜在死循环问题
-- ✅ **Windows PowerShell curl 兼容** - 自动将 `curl` 替换为 `curl.exe`，避免 PowerShell 别名冲突
-
-**功能增强**：
-- ✅ **Web 界面优化** - 时间显示精确到毫秒，输入框固定底部，消息独立滚动
-- ✅ **RPC 日志增强** - 完整的 RPC 调用日志记录，方便调试
-- ✅ **连接池管理** - 优化连接池资源管理，防止资源泄漏
-
-**新增技能**：
-- ✅ **build-project skill** - 标准化的项目构建流程
-- ✅ **结构化开发流程** - 完整的开发、测试、复查流程
-
-**文档完善**：
-- 新增 20+ 份技术文档和分析报告
-- 完整的并发问题分析和修复记录
-- 详细的代理配置指南
-
----
-
 ## 快速开始
 
 ### 安装
@@ -349,6 +306,29 @@ nemesisbot cluster disable
 ## Skill 系统
 
 NemesisBot 支持可扩展的技能系统，通过 Skills 定义标准化的操作流程。
+
+### 远程技能仓库
+
+支持从多个 GitHub 仓库搜索和安装技能，默认内置两个源：
+
+| 源 | 仓库 | 结构 |
+|---|---|---|
+| anthropics | `anthropics/skills` | `skills/{slug}/SKILL.md` |
+| openclaw | `openclaw/skills` | `skills/{author}/{slug}/SKILL.md` |
+
+```bash
+# 添加新的技能源（自动探测仓库结构）
+nemesisbot skills add-source <github-url>
+nemesisbot skills add-source https://github.com/openclaw/skills
+nemesisbot skills add-source anthropics/skills
+
+# 搜索技能（并发搜索所有源）
+nemesisbot skills search <query>
+nemesisbot skills search pdf
+
+# 从指定源安装
+nemesisbot skills install <registry>/<slug>
+```
 
 ### 内置 Skills
 

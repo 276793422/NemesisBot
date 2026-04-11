@@ -55,6 +55,7 @@ var embeddedDefaults struct {
 	mcp      []byte
 	security []byte
 	cluster  []byte
+	skills   []byte
 	mu       sync.RWMutex
 }
 
@@ -69,6 +70,7 @@ func GetEmbeddedDefaults() EmbeddedDefaults {
 		MCP:      embeddedDefaults.mcp,
 		Security: embeddedDefaults.security,
 		Cluster:  embeddedDefaults.cluster,
+		Skills:   embeddedDefaults.skills,
 	}
 }
 
@@ -78,11 +80,12 @@ type EmbeddedDefaults struct {
 	MCP      []byte
 	Security []byte
 	Cluster  []byte
+	Skills   []byte
 }
 
 // SetEmbeddedDefaults sets the embedded default configuration files from byte arrays.
 // This is called from command package during initialization.
-func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData []byte) error {
+func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData, skillsData []byte) error {
 	embeddedDefaults.mu.Lock()
 	defer embeddedDefaults.mu.Unlock()
 
@@ -90,6 +93,7 @@ func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData []byte) 
 	embeddedDefaults.mcp = mcpData
 	embeddedDefaults.security = securityData
 	embeddedDefaults.cluster = clusterData
+	embeddedDefaults.skills = skillsData
 
 	return nil
 }
@@ -129,6 +133,13 @@ func SetEmbeddedDefaultsFromFS(configFS fs.FS) error {
 		return fmt.Errorf("failed to read config.cluster.default.json: %w", err)
 	}
 	embeddedDefaults.cluster = data
+
+	// Read config.skills.default.json
+	data, err = fs.ReadFile(configFS, "config.skills.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config.skills.default.json: %w", err)
+	}
+	embeddedDefaults.skills = data
 
 	return nil
 }
@@ -544,23 +555,39 @@ type SecurityFlagConfig struct {
 	Enabled bool `json:"enabled" env:"NEMESISBOT_SECURITY_ENABLED"`
 }
 
-// SkillsConfig holds configuration for the skill registry system.
+// SkillsConfig holds the skills enable flag in main config.json.
+// Detailed skills configuration is in a separate config.skills.json file.
 type SkillsConfig struct {
-	Registries SkillsRegistriesConfig `json:"registries"`
+	Enabled bool `json:"enabled"`
 }
 
-// SkillsRegistriesConfig holds configuration for all skill registries.
-type SkillsRegistriesConfig struct {
-	GitHub  SkillsGitHubConfig  `json:"github"`
-	ClawHub SkillsClawHubConfig `json:"clawhub"`
+// SkillsFullConfig holds the full skills configuration loaded from config.skills.json.
+type SkillsFullConfig struct {
+	Enabled               bool                    `json:"enabled"`
+	SearchCache           SkillsSearchCacheConfig `json:"search_cache"`
+	MaxConcurrentSearches int                     `json:"max_concurrent_searches"`
+	GitHubSources         []GitHubSourceConfig    `json:"github_sources"`
+	ClawHub               SkillsClawHubConfig     `json:"clawhub"`
 }
 
-// SkillsGitHubConfig configures the GitHub skill registry.
-type SkillsGitHubConfig struct {
-	Enabled bool   `json:"enabled"`
-	BaseURL string `json:"base_url,omitempty"` // defaults to github.com
-	Timeout int    `json:"timeout,omitempty"`  // seconds, 0 = default (30s)
-	MaxSize int    `json:"max_size,omitempty"` // bytes, 0 = default (1MB)
+// SkillsSearchCacheConfig configures the skills search cache.
+type SkillsSearchCacheConfig struct {
+	Enabled    bool `json:"enabled"`
+	MaxSize    int  `json:"max_size"`
+	TTLSeconds int  `json:"ttl_seconds"`
+}
+
+// GitHubSourceConfig configures a single GitHub source for skills.
+type GitHubSourceConfig struct {
+	Name             string `json:"name"`
+	Repo             string `json:"repo"`
+	Enabled          bool   `json:"enabled"`
+	Branch           string `json:"branch,omitempty"`
+	IndexType        string `json:"index_type"`
+	IndexPath        string `json:"index_path,omitempty"`
+	SkillPathPattern string `json:"skill_path_pattern"`
+	Timeout          int    `json:"timeout,omitempty"`
+	MaxSize          int    `json:"max_size,omitempty"`
 }
 
 // SkillsClawHubConfig configures the ClawHub skill registry.
@@ -568,7 +595,7 @@ type SkillsClawHubConfig struct {
 	Enabled   bool   `json:"enabled"`
 	BaseURL   string `json:"base_url,omitempty"`
 	AuthToken string `json:"auth_token,omitempty"`
-	Timeout   int    `json:"timeout,omitempty"` // seconds, 0 = default (30s)
+	Timeout   int    `json:"timeout,omitempty"`
 }
 
 // DefaultConfig creates a new Config struct with sensible default values.
@@ -946,6 +973,58 @@ func LoadMCPConfig(path string) (*MCPConfig, error) {
 
 // SaveMCPConfig saves MCP configuration to a separate config.mcp.json file.
 func SaveMCPConfig(path string, cfg *MCPConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0600)
+}
+
+// LoadSkillsConfig loads skills configuration from a separate config.skills.json file.
+// If the file doesn't exist, it tries the embedded default, then returns a hardcoded default.
+func LoadSkillsConfig(path string) (*SkillsFullConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Try to use embedded default config
+			embeddedDefaults.mu.RLock()
+			defaultData := embeddedDefaults.skills
+			embeddedDefaults.mu.RUnlock()
+
+			if len(defaultData) > 0 {
+				var cfg SkillsFullConfig
+				if json.Unmarshal(defaultData, &cfg) == nil {
+					return &cfg, nil
+				}
+			}
+			// Fallback to hardcoded default
+			return &SkillsFullConfig{
+				Enabled:               true,
+				SearchCache:           SkillsSearchCacheConfig{Enabled: true, MaxSize: 50, TTLSeconds: 300},
+				MaxConcurrentSearches: 2,
+				GitHubSources:         []GitHubSourceConfig{},
+				ClawHub:               SkillsClawHubConfig{Enabled: false},
+			}, nil
+		}
+		return nil, err
+	}
+
+	var cfg SkillsFullConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+// SaveSkillsConfig saves skills configuration to a separate config.skills.json file.
+func SaveSkillsConfig(path string, cfg *SkillsFullConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

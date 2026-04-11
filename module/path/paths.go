@@ -59,6 +59,7 @@ const (
 	EnvConfig         = "NEMESISBOT_CONFIG"
 	EnvMCPConfig      = "NEMESISBOT_MCP_CONFIG"
 	EnvSecurityConfig = "NEMESISBOT_SECURITY_CONFIG"
+	EnvSkillsConfig   = "NEMESISBOT_SKILLS_CONFIG"
 
 	// DefaultHomeDir is the default directory name in user's home directory
 	DefaultHomeDir = ".nemesisbot"
@@ -82,6 +83,7 @@ type PathManager struct {
 	configPath         string
 	mcpConfigPath      string
 	securityConfigPath string
+	skillsConfigPath   string
 	workspace          string
 	authPath           string
 	auditLogDir        string
@@ -192,6 +194,31 @@ func (pm *PathManager) SetSecurityConfigPath(path string) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.securityConfigPath = path
+}
+
+// SkillsConfigPath returns the skills configuration file path.
+func (pm *PathManager) SkillsConfigPath() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	if pm.skillsConfigPath != "" {
+		return pm.skillsConfigPath
+	}
+
+	// Check environment variable override
+	if envPath := os.Getenv(EnvSkillsConfig); envPath != "" {
+		return envPath
+	}
+
+	// Default path
+	return filepath.Join(pm.homeDir, "config.skills.json")
+}
+
+// SetSkillsConfigPath sets a custom skills config path.
+func (pm *PathManager) SetSkillsConfigPath(path string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.skillsConfigPath = path
 }
 
 // Workspace returns the workspace directory path.
@@ -457,4 +484,35 @@ func ResolveSecurityConfigPathInWorkspace(workspace string) string {
 // Usage: For runtime components that already know the workspace path.
 func ResolveClusterConfigPathInWorkspace(workspace string) string {
 	return filepath.Join(workspace, "config", "config.cluster.json")
+}
+
+// ResolveSkillsConfigPath resolves the skills configuration file path.
+// Priority: NEMESISBOT_SKILLS_CONFIG > workspace/config/config.skills.json > Default
+func ResolveSkillsConfigPath() string {
+	if envPath := os.Getenv(EnvSkillsConfig); envPath != "" {
+		return envPath
+	}
+
+	// Try to get workspace from main config
+	homeDir, err := ResolveHomeDir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		homeDir = filepath.Join(home, DefaultHomeDir)
+	}
+
+	// Try to load main config to get workspace path
+	configPath := filepath.Join(homeDir, "config.json")
+	if cfg, err := loadConfigForWorkspace(configPath); err == nil {
+		workspace := cfg.WorkspacePath()
+		return filepath.Join(workspace, "config", "config.skills.json")
+	}
+
+	// Fallback to old location (for backward compatibility)
+	return filepath.Join(homeDir, "config.skills.json")
+}
+
+// ResolveSkillsConfigPathInWorkspace returns the skills config path for a specific workspace.
+// Usage: For runtime components that already know the workspace path.
+func ResolveSkillsConfigPathInWorkspace(workspace string) string {
+	return filepath.Join(workspace, "config", "config.skills.json")
 }

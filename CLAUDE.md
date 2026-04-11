@@ -385,7 +385,19 @@ nemesisbot.exe --local gateway
 
 ### Skill 系统
 
-`Skills/` 目录中的技能定义了标准化工作流程：
+**远程 Registry（多源技能搜索和安装）**：
+- 配置文件：`workspace/config/config.skills.json`
+- 默认内置源：`anthropics/skills`（两层结构）、`openclaw/skills`（三层结构）
+- CLI 管理命令：
+  ```bash
+  nemesisbot skills add-source <github-url>  # 自动探测仓库结构并添加为新源
+  nemesisbot skills search <query>           # 并发搜索所有源，合并结果
+  nemesisbot skills install <registry>/<slug> # 从指定源安装
+  ```
+- `add-source` 自动探测三种仓库结构：`skills/{slug}/SKILL.md`、`skills/{author}/{slug}/SKILL.md`、根目录 `{slug}/SKILL.md`
+- 搜索流程：并发查询所有 registry → 合并 → 按 score 降序排序 → 截断到 limit
+
+**本地 Skills 目录**：`Skills/` 目录中的技能定义了标准化工作流程：
 
 **开发流程**：
 - `structured-development/`：带有阶段的开发流程（plan → develop → test → review）

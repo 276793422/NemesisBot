@@ -505,7 +505,7 @@ func TestSetEmbeddedDefaults(t *testing.T) {
 	securityData := []byte(`{"test": "security"}`)
 	clusterData := []byte(`{"test": "cluster"}`)
 
-	err := SetEmbeddedDefaults(configData, mcpData, securityData, clusterData)
+	err := SetEmbeddedDefaults(configData, mcpData, securityData, clusterData, nil)
 	if err != nil {
 		t.Errorf("SetEmbeddedDefaults() returned error: %v", err)
 	}

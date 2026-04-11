@@ -62,6 +62,14 @@ func (si *SkillInstaller) HasRegistryManager() bool {
 	return si.registryManager != nil
 }
 
+// HasRegistry checks if a registry with the given name exists.
+func (si *SkillInstaller) HasRegistry(name string) bool {
+	if si.registryManager == nil {
+		return false
+	}
+	return si.registryManager.GetRegistry(name) != nil
+}
+
 // GetRegistryManager returns the configured registry manager.
 func (si *SkillInstaller) GetRegistryManager() *RegistryManager {
 	return si.registryManager

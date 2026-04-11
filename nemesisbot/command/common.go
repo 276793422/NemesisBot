@@ -81,8 +81,14 @@ func initializeConfigDefaults(configFS embed.FS) error {
 		return fmt.Errorf("failed to read config/config.cluster.default.json: %w", err)
 	}
 
+	// Read config/config.skills.default.json
+	skillsData, err := fs.ReadFile(configFS, "config/config.skills.default.json")
+	if err != nil {
+		return fmt.Errorf("failed to read config/config.skills.default.json: %w", err)
+	}
+
 	// Initialize config package
-	return config.SetEmbeddedDefaults(data, mcpData, securityData, clusterData)
+	return config.SetEmbeddedDefaults(data, mcpData, securityData, clusterData, skillsData)
 }
 
 // SetVersionInfo sets version information from main
@@ -139,6 +145,11 @@ func GetSecurityConfigPath() string {
 // GetMCPConfigPath returns the MCP config file path
 func GetMCPConfigPath() string {
 	return path.ResolveMCPConfigPath()
+}
+
+// GetSkillsConfigPath returns the skills config file path
+func GetSkillsConfigPath() string {
+	return path.ResolveSkillsConfigPath()
 }
 
 // CopyDirectory copies a directory recursively
