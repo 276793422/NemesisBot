@@ -212,10 +212,7 @@ func TestSkillInstaller_InstallFromGitHub(t *testing.T) {
 
 			// Modify URL to use test server
 			if server != nil && !strings.Contains(tt.name, "network error") {
-				// We need to intercept the HTTP call
-				// Since we can't easily mock the URL in InstallFromGitHub,
-				// we'll skip this test for now
-				t.Skip("Skipping test that requires HTTP URL mocking")
+				si.SetGitHubBaseURL(server.URL)
 			}
 
 			err := si.InstallFromGitHub(context.Background(), tt.repo)

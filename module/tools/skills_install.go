@@ -34,8 +34,8 @@ func (t *InstallSkillTool) Description() string {
 	return "Install a skill from a configured registry (GitHub, ClawHub, etc.). Use this tool after finding a skill with find_skills."
 }
 
-// ParameterSchema returns the tool's parameter schema.
-func (t *InstallSkillTool) ParameterSchema() map[string]interface{} {
+// Parameters returns the tool's parameter schema.
+func (t *InstallSkillTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{

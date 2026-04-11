@@ -3,6 +3,8 @@ package skills
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,13 +81,18 @@ func TestInstallFromGitHub_NonExistentRepo(t *testing.T) {
 	tempDir := t.TempDir()
 	installer := NewSkillInstaller(tempDir)
 
-	// Test case: Repository with spaces (should fail)
+	// Test case: Repository with spaces (invalid format, should fail with HTTP error)
+	// Use a mock server to avoid real network calls
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	installer.SetGitHubBaseURL(server.URL)
+
 	err := installer.InstallFromGitHub(ctx, "invalid repo name")
 	if err == nil {
 		t.Error("Expected error for repo with spaces, got nil")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Error("Expected 'already exists' error for invalid repo format")
 	}
 
 	// Test case: Repository starting with hyphen (edge case)
@@ -107,20 +114,33 @@ func TestListAvailableSkillsFromGitHub_JSONEdgeCases(t *testing.T) {
 		t.Errorf("Expected 1 skill in array with null, got %d", len(skills))
 	}
 
-	// Test case 2: JSON array with empty objects
+	// Test case 2: JSON array with empty objects (Go allows this - fields are optional)
 	err = json.Unmarshal([]byte("[{}, {}]"), &skills)
-	if err == nil {
-		t.Error("Expected error for empty objects, got nil")
+	if err != nil {
+		t.Errorf("Go JSON allows empty objects for structs with optional fields: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Errorf("Expected 2 skills from empty objects, got %d", len(skills))
+	}
+	// Verify fields are zero-valued
+	if skills[0].Name != "" || skills[0].Description != "" {
+		t.Error("Empty object should have zero-valued fields")
 	}
 
-	// Test case 3: JSON array with missing required fields
+	// Test case 3: JSON array with missing optional fields (Go allows this)
 	invalidSkills := `[
 		{"name": "Skill 1", "description": "First skill"},
 		{"name": "Skill 2", "tags": ["test"]}
 	]`
 	err = json.Unmarshal([]byte(invalidSkills), &skills)
-	if err == nil {
-		t.Error("Expected error for missing required fields, got nil")
+	if err != nil {
+		t.Errorf("Go JSON allows missing optional fields: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Errorf("Expected 2 skills, got %d", len(skills))
+	}
+	if skills[1].Description != "" {
+		t.Error("Missing description should be empty string")
 	}
 
 	// Test case 4: Valid JSON with all fields

@@ -29,6 +29,7 @@ type SkillOrigin struct {
 type SkillInstaller struct {
 	workspace       string
 	registryManager *RegistryManager
+	githubBaseURL   string // Base URL for GitHub raw content, defaults to https://raw.githubusercontent.com
 }
 
 type AvailableSkill struct {
@@ -49,6 +50,11 @@ func NewSkillInstaller(workspace string) *SkillInstaller {
 // SetRegistryManager sets the registry manager for advanced installation features.
 func (si *SkillInstaller) SetRegistryManager(rm *RegistryManager) {
 	si.registryManager = rm
+}
+
+// SetGitHubBaseURL sets the base URL for GitHub raw content (for testing).
+func (si *SkillInstaller) SetGitHubBaseURL(url string) {
+	si.githubBaseURL = url
 }
 
 // HasRegistryManager checks if a registry manager is configured.
@@ -77,7 +83,11 @@ func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) er
 		return fmt.Errorf("skill '%s' already exists", filepath.Base(repo))
 	}
 
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/SKILL.md", repo)
+	baseURL := si.githubBaseURL
+	if baseURL == "" {
+		baseURL = "https://raw.githubusercontent.com"
+	}
+	url := fmt.Sprintf("%s/%s/main/SKILL.md", baseURL, repo)
 
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)

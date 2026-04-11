@@ -16,6 +16,7 @@ import (
 	"github.com/276793422/NemesisBot/module/routing"
 	"github.com/276793422/NemesisBot/module/security"
 	"github.com/276793422/NemesisBot/module/session"
+	"github.com/276793422/NemesisBot/module/skills"
 	"github.com/276793422/NemesisBot/module/tools"
 )
 
@@ -128,6 +129,29 @@ func NewAgentInstance(
 	toolsRegistry.Register(tools.NewCompleteBootstrapTool(workspace))                                                                // Bootstrap tool doesn't need security
 	//	NOTE : ???????,????????
 	//toolsRegistry.Register(tools.NewSleepTool())                                                                                     // Sleep tool doesn't need security
+
+	// Skills tools (find and install skills from registries)
+	skillsRegCfg := skills.RegistryConfig{
+		GitHub:  skills.GitHubConfig{Enabled: true},
+	}
+	if cfg.Skills != nil {
+		skillsRegCfg.GitHub = skills.GitHubConfig{
+			Enabled: cfg.Skills.Registries.GitHub.Enabled,
+			BaseURL: cfg.Skills.Registries.GitHub.BaseURL,
+			Timeout: cfg.Skills.Registries.GitHub.Timeout,
+			MaxSize: cfg.Skills.Registries.GitHub.MaxSize,
+		}
+		skillsRegCfg.ClawHub = skills.ClawHubConfig{
+			Enabled:   cfg.Skills.Registries.ClawHub.Enabled,
+			BaseURL:   cfg.Skills.Registries.ClawHub.BaseURL,
+			AuthToken: cfg.Skills.Registries.ClawHub.AuthToken,
+			Timeout:   cfg.Skills.Registries.ClawHub.Timeout,
+		}
+	}
+	skillsRegMgr := skills.NewRegistryManagerFromConfig(skillsRegCfg)
+	skillsInstaller := skills.NewSkillInstaller(workspace)
+	toolsRegistry.RegisterWithPlugin(tools.NewFindSkillsTool(skillsRegMgr, skillsRegMgr.GetSearchCache()), pluginMgr, user, source, workspace)
+	toolsRegistry.RegisterWithPlugin(tools.NewInstallSkillTool(skillsRegMgr, skillsInstaller), pluginMgr, user, source, workspace)
 
 	sessionsDir := filepath.Join(workspace, "sessions")
 	sessionsManager := session.NewSessionManager(sessionsDir)

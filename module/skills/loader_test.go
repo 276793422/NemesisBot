@@ -662,7 +662,7 @@ Content`, name, desc)
 		{
 			name: "XML escaping",
 			setup: func() {
-				setupSkill("test-skill", `{"name": "test-skill", "description": "Description with <tag> & symbols"}`)
+				setupSkill("test-skill", "Description with <tag> & symbols")
 			},
 			wantInXML: []string{
 				"&lt;tag&gt;",

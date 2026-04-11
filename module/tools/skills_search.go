@@ -36,8 +36,8 @@ func (t *FindSkillsTool) Description() string {
 	return "Search for available skills from configured registries (GitHub, ClawHub, etc.). Use this tool when you need to find or discover new skills to install."
 }
 
-// ParameterSchema returns the tool's parameter schema.
-func (t *FindSkillsTool) ParameterSchema() map[string]interface{} {
+// Parameters returns the tool's parameter schema.
+func (t *FindSkillsTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
