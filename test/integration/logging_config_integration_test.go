@@ -3,7 +3,7 @@
 // Copyright (c) 2026 NemesisBot contributors
 
 // Integration tests for logging configuration
-package integration_test
+package integration
 
 import (
 	"encoding/json"

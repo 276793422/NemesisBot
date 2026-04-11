@@ -6,12 +6,10 @@ import (
 	"strings"
 
 	"github.com/276793422/NemesisBot/module/agent"
-	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/desktop/process"
 	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/276793422/NemesisBot/module/path"
-	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/security/approval"
 	"github.com/276793422/NemesisBot/module/services"
 )
@@ -109,29 +107,27 @@ func CmdGateway() {
 
 // printAgentStartupInfo prints agent startup information
 func printAgentStartupInfo(cfg *config.Config) {
-	// Create temporary components for startup info display
-	provider, err := providers.CreateProvider(cfg)
-	if err != nil {
-		fmt.Printf("Error creating provider: %v\n", err)
+	// Use lightweight AgentRegistry (no cluster, no RPC, no message bus)
+	// to get tool/skill counts without the overhead of a full AgentLoop
+	registry := agent.NewAgentRegistry(cfg, nil)
+
+	defaultAgent := registry.GetDefaultAgent()
+	if defaultAgent == nil {
 		return
 	}
 
-	msgBus := bus.NewMessageBus()
-	agentLoop := agent.NewAgentLoop(cfg, msgBus, provider)
-
-	startupInfo := agentLoop.GetStartupInfo()
-	toolsInfo := startupInfo["tools"].(map[string]interface{})
-	skillsInfo := startupInfo["skills"].(map[string]interface{})
+	toolsList := defaultAgent.Tools.List()
+	skillsInfo := defaultAgent.ContextBuilder.GetSkillsInfo()
 
 	fmt.Println("\n📦 Agent Status:")
-	fmt.Printf("  • Tools: %d loaded\n", toolsInfo["count"])
+	fmt.Printf("  • Tools: %d loaded\n", len(toolsList))
 	fmt.Printf("  • Skills: %d/%d available\n",
 		skillsInfo["available"],
 		skillsInfo["total"])
 
 	logger.InfoCF("agent", "Agent initialized",
 		map[string]interface{}{
-			"tools_count":      toolsInfo["count"],
+			"tools_count":      len(toolsList),
 			"skills_total":     skillsInfo["total"],
 			"skills_available": skillsInfo["available"],
 		})

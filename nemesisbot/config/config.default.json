@@ -166,6 +166,16 @@
   "security": {
     "enabled": false
   },
+  "skills": {
+    "registries": {
+      "github": {
+        "enabled": true
+      },
+      "clawhub": {
+        "enabled": false
+      }
+    }
+  },
   "mcp": {
     "enabled": false
   }

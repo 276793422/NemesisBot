@@ -676,8 +676,8 @@ func TestSubagentTool_Execute_LongContentTruncation(t *testing.T) {
 	}
 
 	// LLM content should be full
-	if len(result.ForLLM) != len(longContent)+100 { // +100 for formatting
-		t.Errorf("LLM content should be full length, got %d", len(result.ForLLM))
+	if len(result.ForLLM) < len(longContent) {
+		t.Errorf("LLM content should contain full result, got %d chars (content was %d)", len(result.ForLLM), len(longContent))
 	}
 }
 

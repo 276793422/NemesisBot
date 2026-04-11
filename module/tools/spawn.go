@@ -88,11 +88,19 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) *T
 	}
 
 	// Pass callback to manager for async completion notification
-	result, err := t.manager.Spawn(ctx, task, label, agentID, t.originChannel, t.originChatID, t.callback)
+	taskID, err := t.manager.Spawn(ctx, task, label, agentID, t.originChannel, t.originChatID, t.callback)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to spawn subagent: %v", err))
 	}
 
+	// Format descriptive message for user
+	var msg string
+	if label != "" {
+		msg = fmt.Sprintf("Spawned subagent '%s' (id: %s) for task: %s", label, taskID, task)
+	} else {
+		msg = fmt.Sprintf("Spawned subagent (id: %s) for task: %s", taskID, task)
+	}
+
 	// Return AsyncResult since the task runs in background
-	return AsyncResult(result)
+	return AsyncResult(msg)
 }

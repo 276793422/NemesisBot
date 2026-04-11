@@ -1,2 +1,25 @@
 /docs
 /module/desktop/frontend/node_modules
+
+# Compiled binaries
+*.exe
+!Skills/desktop-automation/window-mcp.exe
+
+# Backup files
+*.bak
+*.orig
+*.tmp
+
+# Log files
+*.log
+
+# Runtime workspace
+.nemesisbot/
+
+# Automated test output
+test/autotest/
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store

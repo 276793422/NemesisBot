@@ -6,7 +6,27 @@ import (
 	"time"
 )
 
-// TestApprovalHandlerIntegration 测试 ApprovalHandler 集成
+// mockChildProcessFactory 模拟子进程工厂（用于测试）
+type mockChildProcessFactory struct {
+	approve bool
+	delay   time.Duration
+}
+
+func (m *mockChildProcessFactory) SpawnChild(windowType string, data interface{}) (string, <-chan interface{}, error) {
+	resultCh := make(chan interface{}, 1)
+	go func() {
+		if m.delay > 0 {
+			time.Sleep(m.delay)
+		}
+		resultCh <- map[string]interface{}{
+			"approved": m.approve,
+			"reason":   "test",
+		}
+	}()
+	return "test-child-1", resultCh, nil
+}
+
+// TestApprovalHandlerIntegration 测试审批处理器集成
 func TestApprovalHandlerIntegration(t *testing.T) {
 	// 创建审批管理器
 	mgr := NewApprovalManager(nil)
@@ -15,13 +35,12 @@ func TestApprovalHandlerIntegration(t *testing.T) {
 	}
 	defer mgr.Stop()
 
-	// 设置模拟的审批处理器
-	mockHandler := &mockApprovalHandler{
+	// 设置模拟的子进程工厂
+	SetChildProcessFactory(&mockChildProcessFactory{
 		approve: true,
 		delay:   100 * time.Millisecond,
-	}
-	SetApprovalHandler(mockHandler)
-	defer SetApprovalHandler(nil)
+	})
+	defer SetChildProcessFactory(nil)
 
 	// 创建测试请求
 	req := &ApprovalRequest{
@@ -60,7 +79,7 @@ func TestApprovalHandlerIntegration(t *testing.T) {
 		t.Error("Expected timedOut=false, got true")
 	}
 
-	t.Logf("✅ Approval handler integration test passed: approved=%v, duration=%f", resp.Approved, resp.DurationSeconds)
+	t.Logf("Approval handler integration test passed: approved=%v, duration=%f", resp.Approved, resp.DurationSeconds)
 }
 
 // TestApprovalHandlerTimeout 测试超时场景
@@ -72,13 +91,12 @@ func TestApprovalHandlerTimeout(t *testing.T) {
 	}
 	defer mgr.Stop()
 
-	// 设置超时的模拟处理器
-	mockHandler := &mockApprovalHandler{
+	// 设置超时的模拟工厂
+	SetChildProcessFactory(&mockChildProcessFactory{
 		approve: false,
 		delay:   5 * time.Second, // 超过请求超时
-	}
-	SetApprovalHandler(mockHandler)
-	defer SetApprovalHandler(nil)
+	})
+	defer SetChildProcessFactory(nil)
 
 	// 创建短超时的请求
 	req := &ApprovalRequest{
@@ -109,7 +127,7 @@ func TestApprovalHandlerTimeout(t *testing.T) {
 		t.Error("Expected approved=false for timeout, got true")
 	}
 
-	t.Logf("✅ Approval handler timeout test passed: timedOut=%v", resp.TimedOut)
+	t.Logf("Approval handler timeout test passed: timedOut=%v", resp.TimedOut)
 }
 
 // TestApprovalHandlerNil 测试没有处理器的情况
@@ -121,8 +139,8 @@ func TestApprovalHandlerNil(t *testing.T) {
 	}
 	defer mgr.Stop()
 
-	// 确保没有设置处理器
-	SetApprovalHandler(nil)
+	// 确保没有设置工厂
+	SetChildProcessFactory(nil)
 
 	// 创建安全操作请求
 	req := &ApprovalRequest{
@@ -147,24 +165,5 @@ func TestApprovalHandlerNil(t *testing.T) {
 		t.Error("Expected auto-approval for safe operation")
 	}
 
-	t.Logf("✅ Approval handler nil test passed: approved=%v", resp.Approved)
-}
-
-// mockApprovalHandler 模拟审批处理器（用于测试）
-type mockApprovalHandler struct {
-	approve bool
-	delay   time.Duration
-}
-
-func (m *mockApprovalHandler) RequestApproval(req *ApprovalRequest) (*ApprovalResponse, error) {
-	// 模拟处理延迟
-	time.Sleep(m.delay)
-
-	return &ApprovalResponse{
-		RequestID:       req.RequestID,
-		Approved:        m.approve,
-		TimedOut:        false,
-		DurationSeconds: m.delay.Seconds(),
-		ResponseTime:    time.Now().Unix(),
-	}, nil
+	t.Logf("Approval handler nil test passed: approved=%v", resp.Approved)
 }

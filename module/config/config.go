@@ -176,6 +176,7 @@ type Config struct {
 	Devices   DevicesConfig       `json:"devices"`
 	Logging   *LoggingConfig      `json:"logging,omitempty"`
 	Security  *SecurityFlagConfig `json:"security,omitempty"`
+	Skills    *SkillsConfig       `json:"skills,omitempty"`
 	mu        sync.RWMutex
 }
 
@@ -541,6 +542,33 @@ type LoggingConfig struct {
 // SecurityFlagConfig is a simple flag in main config to enable/disable security
 type SecurityFlagConfig struct {
 	Enabled bool `json:"enabled" env:"NEMESISBOT_SECURITY_ENABLED"`
+}
+
+// SkillsConfig holds configuration for the skill registry system.
+type SkillsConfig struct {
+	Registries SkillsRegistriesConfig `json:"registries"`
+}
+
+// SkillsRegistriesConfig holds configuration for all skill registries.
+type SkillsRegistriesConfig struct {
+	GitHub  SkillsGitHubConfig  `json:"github"`
+	ClawHub SkillsClawHubConfig `json:"clawhub"`
+}
+
+// SkillsGitHubConfig configures the GitHub skill registry.
+type SkillsGitHubConfig struct {
+	Enabled bool   `json:"enabled"`
+	BaseURL string `json:"base_url,omitempty"` // defaults to github.com
+	Timeout int    `json:"timeout,omitempty"`  // seconds, 0 = default (30s)
+	MaxSize int    `json:"max_size,omitempty"` // bytes, 0 = default (1MB)
+}
+
+// SkillsClawHubConfig configures the ClawHub skill registry.
+type SkillsClawHubConfig struct {
+	Enabled   bool   `json:"enabled"`
+	BaseURL   string `json:"base_url,omitempty"`
+	AuthToken string `json:"auth_token,omitempty"`
+	Timeout   int    `json:"timeout,omitempty"` // seconds, 0 = default (30s)
 }
 
 // DefaultConfig creates a new Config struct with sensible default values.

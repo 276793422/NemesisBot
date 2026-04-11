@@ -49,7 +49,7 @@ func (d *ApprovalWindowData) GetTimeout() int {
 
 // ApprovalWindow 审批窗口
 type ApprovalWindow struct {
-	WindowBase
+	*WindowBase
 	ctx context.Context
 }
 
@@ -58,7 +58,7 @@ func NewApprovalWindow(windowID string, data *ApprovalWindowData, wsClient *webs
 	base := NewWindowBase(windowID, "approval", data, wsClient)
 
 	return &ApprovalWindow{
-		WindowBase: *base,
+		WindowBase: base,
 	}
 }
 

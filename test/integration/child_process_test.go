@@ -1,6 +1,6 @@
 //go:build !cross_compile
 
-package desktop_test
+package integration
 
 import (
 	"context"

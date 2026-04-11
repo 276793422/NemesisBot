@@ -87,15 +87,11 @@ func (sm *SubagentManager) Spawn(ctx context.Context, task, label, agentID, orig
 	// Start task in background with context cancellation support
 	go sm.runTask(ctx, subagentTask, callback)
 
-	if label != "" {
-		return fmt.Sprintf("Spawned subagent '%s' for task: %s", label, task), nil
-	}
-	return fmt.Sprintf("Spawned subagent for task: %s", task), nil
+	return taskID, nil
 }
 
 func (sm *SubagentManager) runTask(ctx context.Context, task *SubagentTask, callback AsyncCallback) {
 	task.Status = "running"
-	task.Created = time.Now().UnixMilli()
 
 	// Build system prompt for subagent
 	systemPrompt := `You are a subagent. Complete the given task independently and report the result.

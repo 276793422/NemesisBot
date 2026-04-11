@@ -159,13 +159,13 @@ bus.PublishOutbound()
 - `cluster.go`：主集群编排
 - `rpc/client.go`：调用远程节点的 RPC 客户端
   - `CallWithContext()`：发送请求，等待响应
-  - 超时：30 秒（line 194）- 对长时间运行的任务至关重要
+  - 超时：60 分钟（line 195）- 最外层超时保护
 - `rpc/server.go`：处理传入请求的 RPC 服务器
   - `handleRequest()`：路由到已注册的处理器
   - `sendMessage()`：发送 TCP 响应
 - `rpc/peer_chat_handler.go`：处理 peer_chat action
   - 通过 RPCChannel.Input() 等待 LLM 响应
-  - 超时：60 秒（line 117）
+  - 超时：59 分钟（line 132）
 - `transport/`：TCP 连接池和帧处理
   - `conn.go`：带有读写协程的 TCPConn
   - `frame.go`：长度前缀的二进制帧
@@ -179,19 +179,22 @@ bus.PublishOutbound()
 
 ### 关键配置位置
 
-**超时配置**（module/agent/loop.go:1588-1598）：
-- 目前配置为如下
+**超时配置**（module/agent/loop.go:1595-1596）：
+- 目前配置为长超时层级（由外到内）：
 ```go
+// RPC Client (client.go:195)        - 60 分钟（最外层）
+// PeerChat Handler (peer_chat_handler.go:132) - 59 分钟
+// RPCChannel (loop.go:1595)         - 58 分钟（最内层）
 cfg := &channels.RPCChannelConfig{
     MessageBus:      msgBus,
-    RequestTimeout:  60 * time.Second,    // Line 1593
-    CleanupInterval: 30 * time.Second,    // Line 1594
+    RequestTimeout:  58 * time.Minute,  // Line 1595
+    CleanupInterval: 30 * time.Second,  // Line 1596
 }
 ```
 
-**重要**：长超时配置（28/29/30 分钟）会导致 peer_chat 阻塞。目前使用默认配置（30/60/60 秒）。
+**重要**：超时层级为 RPC Client (60min) > PeerChat (59min) > RPCChannel (58min)，确保内层先超时，外层能正确处理。
 
-**通道启动**（module/agent/loop.go:1603-1605）：
+**通道启动**（module/agent/loop.go:1606）：
 - RPC 通道绝不能在 `setupClusterRPCChannel()` 中启动
 - ChannelManager.StartAll() 是唯一的启动点
 - 防止 "RPC channel already running" 错误
@@ -218,7 +221,7 @@ content := fmt.Sprintf("[rpc:%s] 实际响应内容", correlationID)
 // 如果缺少前缀，响应会丢失
 ```
 
-**关键**：AgentLoop.Run（line 323-333）在 LLM 直接返回文本时为 RPC 通道添加前缀：
+**关键**：AgentLoop.Run（line 315-326）在 LLM 直接返回文本时为 RPC 通道添加前缀：
 ```go
 if msg.Channel == "rpc" && msg.CorrelationID != "" {
     finalContent = fmt.Sprintf("[rpc:%s] %s", msg.CorrelationID, response)
@@ -395,6 +398,13 @@ nemesisbot.exe --local gateway
   - 提供 setup-env/cleanup-env 辅助脚本
   - 详见：`Skills/automated-testing/skill.md`
   - 快速开始：`Skills/automated-testing/examples/quick-test.md`
+
+**桌面自动化**：
+- `desktop-automation/`：Windows 桌面窗口操作（基于 window-mcp）
+
+**运维工具**：
+- `wsl-operations/`：WSL 环境操作和管理
+- `dump-analyze/`：Dump 文件分析和调试
 
 当加载技能时，AI 严格遵循定义的流程。
 
