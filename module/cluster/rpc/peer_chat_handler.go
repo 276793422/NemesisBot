@@ -41,7 +41,7 @@ func NewPeerChatHandler(cluster Cluster, rpcChannel *channels.RPCChannel) *PeerC
 	}
 }
 
-// Handle handles a peer chat request
+// Handle handles a peer chat request — 立即返回 ACK，异步处理 LLM
 func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]interface{}, error) {
 	h.cluster.LogRPCInfo("[PeerChat] Received request, type=%s", payload["type"])
 
@@ -63,23 +63,38 @@ func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]int
 		req.Type = "request" // Default to request type
 	}
 
-	// 4. Route based on type (all types currently go through LLM)
-	return h.handleLLMRequest(payload, &req)
+	// 4. 提取 task_id（由 A 端注入）
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" {
+		taskID = fmt.Sprintf("auto-%d", time.Now().UnixNano())
+	}
+
+	// 5. 提取 source 信息（用于回调）
+	sourceInfo, _ := payload["_source"].(map[string]interface{})
+
+	// 6. 启动异步处理
+	go h.processAsync(payload, &req, taskID, sourceInfo)
+
+	// 7. 立即返回 ACK
+	h.cluster.LogRPCInfo("[PeerChat] Task %s accepted, processing asynchronously", taskID)
+	return map[string]interface{}{
+		"status":  "accepted",
+		"task_id": taskID,
+	}, nil
 }
 
-// handleLLMRequest processes LLM-based chat requests
-func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, req *PeerChatPayload) (map[string]interface{}, error) {
-	h.cluster.LogRPCInfo("[PeerChat] Processing %s request", req.Type)
-	h.cluster.LogRPCInfo("[PeerChat] Request content: %s", req.Content)
+// processAsync 异步处理 LLM 请求
+func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *PeerChatPayload, taskID string, sourceInfo map[string]interface{}) {
+	h.cluster.LogRPCInfo("[PeerChat] Async processing started for task %s", taskID)
 
-	// Check if rpcChannel is available
+	// 1. Check if rpcChannel is available
 	if h.rpcChannel == nil {
 		h.cluster.LogRPCError("[PeerChat] RPC channel is not available", nil)
-		return h.errorResponse("error", "rpc channel not available"), nil
+		h.sendCallback(sourceInfo, taskID, "error", "", "rpc channel not available")
+		return
 	}
-	h.cluster.LogRPCInfo("[PeerChat] RPC channel is available", nil)
 
-	// Extract chat_id and session_key from context
+	// 2. Extract chat_id and session_key from context
 	chatID := "default"
 	if req.Context != nil {
 		if v, ok := req.Context["chat_id"].(string); ok {
@@ -87,7 +102,7 @@ func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, re
 		}
 	}
 
-	// Determine sender ID with fallback priority:
+	// 3. Determine sender ID with fallback priority:
 	// 1. _rpc.from (injected by server)
 	// 2. context.sender_id (legacy)
 	// 3. "remote-peer" (default)
@@ -103,55 +118,77 @@ func (h *PeerChatHandler) handleLLMRequest(rawPayload map[string]interface{}, re
 		}
 	}
 
-	// Construct session key as "cluster_rpc:{sender_id}"
+	// 4. Construct session key as "cluster_rpc:{sender_id}"
 	sessionKey := fmt.Sprintf("cluster_rpc:%s", senderID)
-
-	// Log session key for verification
 	h.cluster.LogRPCInfo("[PeerChat] Using session_key=%s for sender=%s", sessionKey, senderID)
 
-	// Construct InboundMessage
+	// 5. Construct InboundMessage
+	correlationID := fmt.Sprintf("peer-chat-%d", time.Now().UnixNano())
 	inbound := &bus.InboundMessage{
-		Channel:    "rpc",
-		ChatID:     chatID,
-		Content:    req.Content,
-		SenderID:   senderID,
-		SessionKey: sessionKey,
+		Channel:       "rpc",
+		ChatID:        chatID,
+		Content:       req.Content,
+		SenderID:      senderID,
+		SessionKey:    sessionKey,
+		CorrelationID: correlationID,
 	}
 
-	// Set correlation ID for tracking
-	correlationID := fmt.Sprintf("peer-chat-%d", time.Now().UnixNano())
-	inbound.CorrelationID = correlationID
-
 	h.cluster.LogRPCInfo("[PeerChat] Created inbound message: chat_id=%s, correlation_id=%s", chatID, correlationID)
-	h.cluster.LogRPCDebug("[PeerChat] Inbound message details: channel=%s, sender=%s, session=%s",
-		inbound.Channel, inbound.SenderID, inbound.SessionKey)
 
-	// Send to RPCChannel
-	// Use 59 minute timeout to match the long timeout configuration
-	// (RPC Client: 60min, PeerChatHandler: 59min, RPCChannel: 58min)
-	ctx, cancel := context.WithTimeout(context.Background(), 59*time.Minute)
-	defer cancel()
-
+	// 6. Send to RPCChannel (no timeout — wait for LLM to complete)
+	ctx := context.Background()
 	respCh, err := h.rpcChannel.Input(ctx, inbound)
 	if err != nil {
 		h.cluster.LogRPCError("[PeerChat] Failed to send to RPC channel: %v", err)
-		return h.errorResponse("error", "failed to process: "+err.Error()), nil
+		h.sendCallback(sourceInfo, taskID, "error", "", "failed to process: "+err.Error())
+		return
 	}
 
 	h.cluster.LogRPCInfo("[PeerChat] Request sent to MessageBus, waiting for LLM response (correlation_id=%s)", correlationID)
 
-	// Wait for response
-	deadline, hasDeadline := ctx.Deadline()
-	h.cluster.LogRPCInfo("[PeerChat] Entering select, respCh=%p, ctx_deadline=%v, has_deadline=%v", respCh, deadline, hasDeadline)
-	select {
-	case response := <-respCh:
-		h.cluster.LogRPCInfo("[PeerChat] Response received! correlation_id=%s, response=%s", correlationID, response)
-		return h.successResponse(response, nil), nil
-
-	case <-ctx.Done():
-		h.cluster.LogRPCError("[PeerChat] Timeout waiting for response (correlation_id=%s)", correlationID)
-		return h.errorResponse("error", "timeout"), nil
+	// 7. Wait for response (no timeout — LLM can take as long as needed)
+	response, ok := <-respCh
+	if ok {
+		h.cluster.LogRPCInfo("[PeerChat] LLM response received for task %s, correlation_id=%s", taskID, correlationID)
+		h.sendCallback(sourceInfo, taskID, "success", response, "")
+	} else {
+		h.cluster.LogRPCError("[PeerChat] Response channel closed for task %s (channel stopped)", taskID)
+		h.sendCallback(sourceInfo, taskID, "error", "", "response channel closed")
 	}
+}
+
+// sendCallback 回调源节点
+func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID, status, response, errMsg string) {
+	// 提取 source 节点信息
+	sourceNodeID, _ := sourceInfo["node_id"].(string)
+	if sourceNodeID == "" {
+		h.cluster.LogRPCError("[PeerChat] No source node_id in task %s, cannot callback", taskID)
+		return
+	}
+
+	h.cluster.LogRPCInfo("[PeerChat] Calling back to source node %s for task %s", sourceNodeID, taskID)
+
+	// 构造回调 payload
+	payload := map[string]interface{}{
+		"task_id":  taskID,
+		"status":   status,
+		"response": response,
+	}
+	if errMsg != "" {
+		payload["error"] = errMsg
+	}
+
+	// 通过 RPC client 发送回调（短连接，毫秒级）
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	_, err := h.cluster.CallWithContext(ctx, sourceNodeID, "peer_chat_callback", payload)
+	if err != nil {
+		h.cluster.LogRPCError("[PeerChat] Callback failed for task %s to node %s: %v", taskID, sourceNodeID, err)
+		return
+	}
+
+	h.cluster.LogRPCInfo("[PeerChat] Callback sent successfully for task %s to node %s", taskID, sourceNodeID)
 }
 
 // parsePayload parses the incoming payload into PeerChatPayload
@@ -172,18 +209,6 @@ func (h *PeerChatHandler) parsePayload(payload map[string]interface{}, req *Peer
 	}
 
 	return nil
-}
-
-// successResponse creates a successful response
-func (h *PeerChatHandler) successResponse(content string, result map[string]interface{}) map[string]interface{} {
-	response := map[string]interface{}{
-		"status":   "success",
-		"response": content,
-	}
-	if result != nil {
-		response["result"] = result
-	}
-	return response
 }
 
 // errorResponse creates an error response

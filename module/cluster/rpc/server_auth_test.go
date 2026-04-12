@@ -5,6 +5,7 @@
 package rpc
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -60,6 +61,10 @@ func (m *mockCluster) LogRPCError(format string, args ...interface{}) {
 
 func (m *mockCluster) LogRPCDebug(format string, args ...interface{}) {
 	m.logs = append(m.logs, fmt.Sprintf("[DEBUG] "+format, args...))
+}
+
+func (m *mockCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return []byte(`{"status":"ok"}`), nil
 }
 
 // TestRPCServer_Authentication tests RPC server authentication

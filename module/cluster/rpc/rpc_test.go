@@ -49,6 +49,9 @@ func (m *MockClusterForTest) GetPeer(peerID string) (interface{}, error)  { retu
 func (m *MockClusterForTest) GetLocalNetworkInterfaces() ([]LocalNetworkInterface, error) {
 	return []LocalNetworkInterface{{IP: "127.0.0.1", Mask: "255.0.0.0"}}, nil
 }
+func (m *MockClusterForTest) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return []byte(`{"status":"ok"}`), nil
+}
 
 // MockRPCChannelForTest is a mock RPC channel for testing
 type MockRPCChannelForTest struct {
@@ -439,8 +442,9 @@ func TestPeerChatHandler_Handle_NoRPCChannel(t *testing.T) {
 		t.Errorf("Handle() should not return error: %v", err)
 	}
 
-	if result["status"] != "error" {
-		t.Errorf("Expected error status when no RPC channel, got %v", result["status"])
+	// 异步模式：Handle 立即返回 ACK，rpcChannel 为 nil 的错误在 goroutine 中处理
+	if result["status"] != "accepted" {
+		t.Errorf("Expected status 'accepted' (async ACK), got %v", result["status"])
 	}
 }
 
@@ -662,58 +666,9 @@ func TestClient_CallWithContext_DeadlineExceeded(t *testing.T) {
 }
 
 // ============================================================================
-// PeerChatHandler Success Response Test
+// PeerChatHandler Success Response Tests removed — successResponse method
+// no longer exists after async callback refactoring
 // ============================================================================
-
-func TestPeerChatHandler_SuccessResponse(t *testing.T) {
-	cluster := &MockClusterForTest{nodeID: "test-node"}
-	handler := NewPeerChatHandler(cluster, nil)
-
-	resultData := map[string]interface{}{
-		"key": "value",
-	}
-	response := handler.successResponse("Test response content", resultData)
-
-	if response == nil {
-		t.Fatal("Expected non-nil response")
-	}
-
-	status, ok := response["status"].(string)
-	if !ok || status != "success" {
-		t.Errorf("Expected status 'success', got %v", response["status"])
-	}
-
-	responseContent, ok := response["response"].(string)
-	if !ok || responseContent != "Test response content" {
-		t.Errorf("Expected response content 'Test response content', got %v", response["response"])
-	}
-
-	// Check that result data is wrapped in "result" key
-	resultField, ok := response["result"].(map[string]interface{})
-	if !ok {
-		t.Fatal("Expected result field to be a map")
-	}
-
-	if resultField["key"] != "value" {
-		t.Errorf("Expected result data to be included, got %v", resultField["key"])
-	}
-}
-
-func TestPeerChatHandler_SuccessResponse_NilResult(t *testing.T) {
-	cluster := &MockClusterForTest{nodeID: "test-node"}
-	handler := NewPeerChatHandler(cluster, nil)
-
-	response := handler.successResponse("Test response", nil)
-
-	if response == nil {
-		t.Fatal("Expected non-nil response")
-	}
-
-	// Should not have "result" field when result is nil
-	if _, ok := response["result"]; ok {
-		t.Error("Expected no result field when result is nil")
-	}
-}
 
 // ============================================================================
 // Additional Utility Tests

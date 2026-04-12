@@ -503,6 +503,9 @@ func (m *mockClusterForTest) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetw
 		{IP: "127.0.0.1", Mask: "255.255.255.0"},
 	}, nil
 }
+func (m *mockClusterForTest) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return []byte(`{"status":"ok"}`), nil
+}
 
 // testPeerChatHandler handles peer chat requests in tests
 type testPeerChatHandler struct {

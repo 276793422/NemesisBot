@@ -204,6 +204,39 @@ func (c *Cluster) GetActionsSchema() []interface{} {
 			},
 		},
 		{
+			Name:        "peer_chat_callback",
+			Description: "异步任务完成后的回调通知。当 peer_chat 任务处理完成后，目标节点使用此 action 将结果回传给请求节点。",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"task_id": map[string]interface{}{
+						"type":        "string",
+						"description": "原始任务 ID",
+					},
+					"status": map[string]interface{}{
+						"type":        "string",
+						"description": "任务执行状态",
+						"enum":        []string{"success", "error"},
+					},
+					"response": map[string]interface{}{
+						"type":        "string",
+						"description": "LLM 处理结果",
+					},
+					"error": map[string]interface{}{
+						"type":        "string",
+						"description": "错误信息（如果失败）",
+					},
+				},
+				"required": []string{"task_id", "status"},
+			},
+			Returns: map[string]interface{}{
+				"properties": map[string]interface{}{
+					"status":  map[string]interface{}{"type": "string"},
+					"task_id": map[string]interface{}{"type": "string"},
+				},
+			},
+		},
+		{
 			Name:        "list_actions",
 			Description: "获取当前节点所有可用的 actions 及其详细说明。此功能用于服务发现，让外部设备了解当前节点的功能。",
 			Parameters:  nil,

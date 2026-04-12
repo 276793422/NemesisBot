@@ -1594,10 +1594,11 @@ func registerMCPTools(mcpConfig *config.MCPConfig, agent *AgentInstance) ([]tool
 // setupClusterRPCChannel sets up the RPC channel and LLM forward handler for the cluster
 func setupClusterRPCChannel(clusterInstance *cluster.Cluster, msgBus *bus.MessageBus) error {
 	// Create RPC channel configuration
-	// Long timeout configuration: RPC Client (60min) > PeerChatHandler (59min) > RPCChannel (58min)
+	// Async callback model: B 端 RPCChannel 等待 LLM 完成，不设超时
+	// A 端不再通过 TCP 连接等待，而是通过本地 channel 等待回调
 	cfg := &channels.RPCChannelConfig{
 		MessageBus:      msgBus,
-		RequestTimeout:  58 * time.Minute, // RPCChannel timeout
+		RequestTimeout:  24 * time.Hour,     // B端: 极长超时（安全网），LLM 需要多久就等多久
 		CleanupInterval: 30 * time.Second,
 	}
 

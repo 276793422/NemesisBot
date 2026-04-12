@@ -6,6 +6,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -47,12 +48,13 @@ type Cluster struct {
 	logDir           string
 
 	// Components
-	registry   *Registry
-	logger     *ClusterLogger
-	discovery  *discovery.Discovery
-	rpcClient  *rpc.Client
-	rpcServer  *rpc.Server          // RPC server instance
-	rpcChannel *channels.RPCChannel // RPC channel for LLM communication
+	registry    *Registry
+	logger      *ClusterLogger
+	discovery   *discovery.Discovery
+	rpcClient   *rpc.Client
+	rpcServer   *rpc.Server          // RPC server instance
+	rpcChannel  *channels.RPCChannel // RPC channel for LLM communication
+	taskManager *TaskManager         // 异步任务管理器
 
 	// Configuration
 	udpPort           int
@@ -175,6 +177,10 @@ func (c *Cluster) Start() error {
 	// Initialize RPC client
 	c.rpcClient = rpc.NewClient(c)
 
+	// Initialize TaskManager for async RPC tasks
+	c.taskManager = NewTaskManager(30 * time.Second)
+	c.taskManager.Start()
+
 	// Start discovery
 	if err := c.discovery.Start(); err != nil {
 		return fmt.Errorf("failed to start discovery: %w", err)
@@ -218,6 +224,11 @@ func (c *Cluster) Stop() error {
 	close(c.stopCh)
 
 	c.mu.Unlock()
+
+	// Stop TaskManager
+	if c.taskManager != nil {
+		c.taskManager.Stop()
+	}
 
 	// Stop discovery
 	if c.discovery != nil {
@@ -476,6 +487,70 @@ func (c *Cluster) CallWithContext(ctx context.Context, peerID, action string, pa
 	return c.rpcClient.CallWithContext(ctx, peerID, action, payload)
 }
 
+// SubmitTask 提交异步 RPC 任务
+// 发送请求到目标节点（短同步调用获取 ACK），返回 taskID 用于后续等待
+func (c *Cluster) SubmitTask(ctx context.Context, peerID, action string, payload map[string]interface{}) (string, error) {
+	if c.taskManager == nil {
+		return "", fmt.Errorf("task manager not initialized")
+	}
+
+	taskID := generateTaskID()
+	task := &Task{
+		ID:        taskID,
+		Action:    action,
+		PeerID:    peerID,
+		Payload:   payload,
+		Status:    TaskPending,
+		CreatedAt: time.Now(),
+	}
+	if err := c.taskManager.Submit(task); err != nil {
+		return "", fmt.Errorf("failed to submit task: %w", err)
+	}
+
+	// 短同步调用（B 会立即 ACK）
+	response, err := c.CallWithContext(ctx, peerID, action, payload)
+	if err != nil {
+		// 提交失败，标记任务为失败
+		c.taskManager.CompleteTask(taskID, &TaskResult{
+			TaskID: taskID,
+			Status: "error",
+			Error:  err.Error(),
+		})
+		return "", fmt.Errorf("RPC call failed: %w", err)
+	}
+
+	// 验证 ACK
+	var ack map[string]interface{}
+	if err := json.Unmarshal(response, &ack); err != nil {
+		c.taskManager.CompleteTask(taskID, &TaskResult{
+			TaskID: taskID,
+			Status: "error",
+			Error:  "invalid ACK response",
+		})
+		return "", fmt.Errorf("invalid ACK response: %s", string(response))
+	}
+	if status, _ := ack["status"].(string); status != "accepted" {
+		errMsg := fmt.Sprintf("task not accepted: %v", ack)
+		c.taskManager.CompleteTask(taskID, &TaskResult{
+			TaskID: taskID,
+			Status: "error",
+			Error:  errMsg,
+		})
+		return "", fmt.Errorf("%s", errMsg)
+	}
+
+	c.logger.RPCInfo("Task %s submitted to %s, ACK received", taskID, peerID)
+	return taskID, nil
+}
+
+// WaitForTask 阻塞等待异步任务完成
+func (c *Cluster) WaitForTask(ctx context.Context, taskID string) (*TaskResult, error) {
+	if c.taskManager == nil {
+		return nil, fmt.Errorf("task manager not initialized")
+	}
+	return c.taskManager.WaitForTask(ctx, taskID)
+}
+
 // GetLogger returns the cluster logger
 func (c *Cluster) GetLogger() *ClusterLogger {
 	return c.logger
@@ -701,6 +776,9 @@ func (c *Cluster) registerPeerChatHandlers() {
 
 	// Register peer chat handlers using the handlers package
 	handlers.RegisterPeerChatHandlers(c.logger, c.rpcChannel, handlerFactory, registrar)
+
+	// Register callback handler for async task results
+	handlers.RegisterCallbackHandler(c.logger, c.taskManager, registrar)
 
 	// Register custom handlers (hello, etc.)
 	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)

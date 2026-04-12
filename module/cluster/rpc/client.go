@@ -48,6 +48,7 @@ type Cluster interface {
 	LogRPCDebug(msg string, args ...interface{})
 	GetPeer(peerID string) (interface{}, error)                  // Get peer directly
 	GetLocalNetworkInterfaces() ([]LocalNetworkInterface, error) // Get local network interfaces
+	CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) // RPC call
 }
 
 // LocalNetworkInterface represents a local network interface (for RPC interface)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/cluster"
 )
@@ -77,14 +78,64 @@ func (t *ClusterRPCTool) Execute(ctx context.Context, params map[string]interfac
 		payload = make(map[string]interface{})
 	}
 
-	// Make RPC call with context support
+	// peer_chat 走异步路径
+	if action == "peer_chat" {
+		return t.executeAsyncPeerChat(ctx, peerID, payload)
+	}
+
+	// 同步路径（ping, get_capabilities 等）
 	response, err := t.cluster.CallWithContext(ctx, peerID, action, payload)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("RPC call failed: %v", err))
 	}
 
-	// Return response as string
 	return SilentResult(string(response))
+}
+
+// executeAsyncPeerChat 异步 peer_chat 路径
+// 对 LLM 来说仍然是阻塞的（等待本地 channel），但底层不占 TCP 连接
+func (t *ClusterRPCTool) executeAsyncPeerChat(ctx context.Context, peerID string, payload map[string]interface{}) *ToolResult {
+	// 1. 注入 source 信息（本节点 ID、地址、RPC 端口）
+	payload["_source"] = map[string]interface{}{
+		"node_id":   t.cluster.GetNodeID(),
+		"addresses": t.cluster.GetAllLocalIPs(),
+		"rpc_port":  t.cluster.GetRPCPort(),
+	}
+
+	// 2. 生成 task_id 并注入到 payload
+	taskID := fmt.Sprintf("task-%d", generateTaskTimestamp())
+	payload["task_id"] = taskID
+
+	// 3. 提交异步任务（短同步调用获取 ACK）
+	submittedID, err := t.cluster.SubmitTask(ctx, peerID, "peer_chat", payload)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("Failed to submit task: %v", err))
+	}
+
+	// 4. 阻塞等待结果（本地 channel，不占 TCP 连接）
+	result, err := t.cluster.WaitForTask(ctx, submittedID)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("Task failed: %v", err))
+	}
+
+	// 5. 返回结果
+	if result.Status == "error" || result.Status == string(cluster.TaskFailed) {
+		errMsg := result.Error
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return ErrorResult(fmt.Sprintf("Peer chat failed: %s", errMsg))
+	}
+
+	// 返回 response 内容
+	response := result.Response
+	if response == "" {
+		// 如果没有 response 字段，序列化整个结果
+		resultJSON, _ := json.Marshal(result)
+		response = string(resultJSON)
+	}
+
+	return SilentResult(response)
 }
 
 // GetAvailablePeers returns information about available peers
@@ -133,4 +184,9 @@ func (t *ClusterRPCTool) GetCapabilities(ctx context.Context) (string, error) {
 	}
 
 	return string(jsonData), nil
+}
+
+// generateTaskTimestamp returns a nanosecond timestamp for task ID generation
+func generateTaskTimestamp() int64 {
+	return time.Now().UnixNano()
 }
