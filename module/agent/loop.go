@@ -268,7 +268,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				continue
 			}
 
-			response, err := al.processMessage(ctx, msg)
+			usedAgentID, response, err := al.processMessage(ctx, msg)
 			if err != nil {
 				response = fmt.Sprintf("Error processing message: %v", err)
 				logger.DebugCF("agent", "Error captured, creating error response",
@@ -289,27 +289,30 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 				// Check if the message tool already sent a response during this round.
 				// If so, skip publishing to avoid duplicate messages to the user.
-				// Use default agent's tools to check (message tool is shared).
+				// Use the agent that actually processed the request.
 				alreadySent := false
-				defaultAgent := al.registry.GetDefaultAgent()
-				if defaultAgent != nil {
-					if tool, ok := defaultAgent.Tools.Get("message"); ok {
+				usedAgent, agentOK := al.registry.GetAgent(usedAgentID)
+				if !agentOK {
+					usedAgent = al.registry.GetDefaultAgent()
+				}
+				if usedAgent != nil {
+					if tool, ok := usedAgent.Tools.Get("message"); ok {
 						if mt, ok := tool.(*tools.MessageTool); ok {
 							alreadySent = mt.HasSentInRound()
 							logger.DebugCF("agent", "MessageTool alreadySent check",
 								map[string]interface{}{
 									"alreadySent": alreadySent,
-									"agent_id":    defaultAgent.ID,
+									"agent_id":    usedAgent.ID,
 								})
 						} else {
 							logger.DebugCF("agent", "MessageTool not a MessageTool instance",
 								map[string]interface{}{"tool_type": fmt.Sprintf("%T", tool)})
 						}
 					} else {
-						logger.DebugCF("agent", "MessageTool not found in default agent", nil)
+						logger.DebugCF("agent", "MessageTool not found in agent", nil)
 					}
 				} else {
-					logger.DebugCF("agent", "Default agent not found", nil)
+					logger.DebugCF("agent", "Agent not found for alreadySent check", nil)
 				}
 
 				if !alreadySent {
@@ -484,7 +487,8 @@ func (al *AgentLoop) ProcessDirectWithChannel(ctx context.Context, content, sess
 		SessionKey: sessionKey,
 	}
 
-	return al.processMessage(ctx, msg)
+	_, response, err := al.processMessage(ctx, msg)
+	return response, err
 }
 
 // ProcessHeartbeat processes a heartbeat request without session history.
@@ -503,7 +507,7 @@ func (al *AgentLoop) ProcessHeartbeat(ctx context.Context, content, channel, cha
 	})
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, string, error) {
 	// Add message preview to log (show full content for error messages)
 	var logContent string
 	if strings.Contains(msg.Content, "Error:") || strings.Contains(msg.Content, "error") {
@@ -521,12 +525,13 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
-		return al.processSystemMessage(ctx, msg)
+		resp, err := al.processSystemMessage(ctx, msg)
+		return "", resp, err
 	}
 
 	// Check for commands
 	if response, handled := al.handleCommand(ctx, msg); handled {
-		return response, nil
+		return "", response, nil
 	}
 
 	// Route to determine agent and session key
@@ -564,7 +569,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 				"session_key":     sessionKey,
 				"concurrent_mode": al.concurrentMode,
 			})
-		return busyMessage, nil
+		return agent.ID, busyMessage, nil
 	}
 
 	// Ensure session is released when done
@@ -588,7 +593,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		SendResponse:    false,
 	})
 
-	return result, err
+	return agent.ID, result, err
 }
 
 func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {

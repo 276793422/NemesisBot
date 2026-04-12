@@ -61,13 +61,13 @@ func (s *WebSocketServer) Start() error {
 	log.Printf("[WebSocketServer] Listening on port %d", s.port)
 
 	// 启动监听循环
-	go s.acceptLoop()
+	go s.acceptLoop(listener)
 
 	return nil
 }
 
 // acceptLoop 接受连接循环
-func (s *WebSocketServer) acceptLoop() {
+func (s *WebSocketServer) acceptLoop(ln net.Listener) {
 	// 创建 HTTP mux
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWebSocket)
@@ -78,7 +78,7 @@ func (s *WebSocketServer) acceptLoop() {
 
 	log.Printf("[WebSocketServer] Starting HTTP server on port %d", s.port)
 
-	if err := server.Serve(s.listener); err != nil && err != http.ErrServerClosed {
+	if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Printf("[WebSocketServer] Server error: %v", err)
 	}
 }
@@ -190,7 +190,9 @@ func (s *WebSocketServer) Stop() error {
 	log.Printf("[WebSocketServer] Stopping...")
 	s.cancel()
 	if s.listener != nil {
-		return s.listener.Close()
+		err := s.listener.Close()
+		s.listener = nil
+		return err
 	}
 	return nil
 }

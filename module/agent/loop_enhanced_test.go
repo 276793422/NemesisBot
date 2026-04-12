@@ -888,7 +888,7 @@ func TestAgentLoop_ProcessMessage_WithError(t *testing.T) {
 	ctx := context.Background()
 
 	// Should handle errors gracefully
-	result, err := loop.processMessage(ctx, msg)
+	_, result, err := loop.processMessage(ctx, msg)
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
