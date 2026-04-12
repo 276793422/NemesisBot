@@ -1,6 +1,6 @@
 # Window Screenshot Skill
 
-**MCP 服务器**: window-mcp
+**MCP 服务器**: window-mcp 
 
 自动查找浏览器窗口并截取屏幕保存为图片。
 
