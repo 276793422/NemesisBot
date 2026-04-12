@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/cron"
 	"github.com/276793422/NemesisBot/module/devices"
 	"github.com/276793422/NemesisBot/module/health"
 	"github.com/276793422/NemesisBot/module/heartbeat"
@@ -36,7 +38,7 @@ type BotService struct {
 	msgBus       *bus.MessageBus
 	agentLoop    *agent.AgentLoop
 	channelMgr   *channels.Manager
-	cronSvc      interface{} // Using interface{} to avoid type issues
+	cronSvc      *cron.CronService
 	heartbeatSvc *heartbeat.HeartbeatService
 	deviceSvc    *devices.Service
 	healthSrv    *health.Server
@@ -310,6 +312,18 @@ func (s *BotService) initComponents() error {
 	// Inject channel manager into agent loop
 	s.agentLoop.SetChannelManager(s.channelMgr)
 
+	// Setup cron tool
+	cronStorePath := filepath.Join(s.workspace, "cron", "jobs.json")
+	s.cronSvc = cron.NewCronService(cronStorePath, nil)
+	cronTool := tools.NewCronTool(s.cronSvc, s.agentLoop, s.msgBus, s.workspace,
+		cfg.Agents.Defaults.RestrictToWorkspace,
+		time.Duration(cfg.Tools.Cron.ExecTimeoutMinutes)*time.Minute, cfg)
+	s.agentLoop.RegisterTool(cronTool)
+	s.cronSvc.SetOnJob(func(job *cron.CronJob) (string, error) {
+		result := cronTool.ExecuteJob(context.Background(), job)
+		return result, nil
+	})
+
 	// Create heartbeat service
 	s.heartbeatSvc = heartbeat.NewHeartbeatService(
 		s.workspace,
@@ -381,6 +395,17 @@ func (s *BotService) startServices() error {
 	go s.agentLoop.Run(s.ctx)
 	logger.InfoC("bot_service", "Agent loop started")
 
+	// Start cron service
+	if s.cronSvc != nil {
+		if err := s.cronSvc.Start(); err != nil {
+			logger.WarnCF("bot_service", "Cron service start failed", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			logger.InfoC("bot_service", "Cron service started")
+		}
+	}
+
 	return nil
 }
 
@@ -388,6 +413,9 @@ func (s *BotService) stopAll() {
 	// Stop in reverse order
 	if s.healthSrv != nil {
 		s.healthSrv.Stop(s.ctx)
+	}
+	if s.cronSvc != nil {
+		s.cronSvc.Stop()
 	}
 	if s.deviceSvc != nil {
 		s.deviceSvc.Stop()
