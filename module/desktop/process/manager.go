@@ -4,6 +4,7 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -213,7 +214,16 @@ WaitForConnection:
 	// 等待结果消息
 	select {
 	case data := <-conn.ReceiveCh:
-		resultCh <- data
+		// 解析 JSON 字节数据
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			resultCh <- map[string]interface{}{
+				"success": false,
+				"error":   fmt.Sprintf("failed to parse result: %v", err),
+			}
+		} else {
+			resultCh <- parsed
+		}
 	case <-time.After(5 * time.Minute):
 		resultCh <- map[string]interface{}{
 			"success": false,

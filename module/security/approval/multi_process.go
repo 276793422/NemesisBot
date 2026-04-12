@@ -124,8 +124,18 @@ func (m *approvalManagerImpl) RequestApproval(ctx context.Context, req *Approval
 			return nil, fmt.Errorf("invalid result type from child process")
 		}
 
-		approved, _ := resultMap["approved"].(bool)
-		reason, _ := resultMap["reason"].(string)
+		// 结果可能在顶层，也可能嵌套在 "data" 字段中
+		var approved bool
+		var reason string
+		if dataRaw, hasData := resultMap["data"]; hasData {
+			if dataMap, ok := dataRaw.(map[string]interface{}); ok {
+				approved, _ = dataMap["approved"].(bool)
+				reason, _ = dataMap["reason"].(string)
+			}
+		} else {
+			approved, _ = resultMap["approved"].(bool)
+			reason, _ = resultMap["reason"].(string)
+		}
 
 		resp := &ApprovalResponse{
 			RequestID:       req.RequestID,

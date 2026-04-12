@@ -67,6 +67,12 @@ func RunChildMode() error {
 		return fmt.Errorf("window-type not specified")
 	}
 
+	// Allow forcing headless mode via environment variable (for testing)
+	if os.Getenv("NEMESISBOT_FORCE_HEADLESS") == "1" && windowType == "approval" {
+		windowType = "headless"
+		childLog("Forced headless mode via NEMESISBOT_FORCE_HEADLESS=1")
+	}
+
 	childLog("Child ID: %s, Window Type: %s", childID, windowType)
 
 	// 2. 创建标准输入输出包装器
@@ -167,6 +173,36 @@ func runWailsWindow(childID, windowType string, windowData interface{}, wsClient
 		// 运行审批窗口（使用真正的 Wails 窗口）
 		childLog("Starting Wails GUI window")
 		return windows.RunApprovalWindow(childID, data, wsClient)
+
+	case "headless":
+		// 转换数据为 ApprovalWindowData（与 approval 相同的数据格式）
+		dataMap, ok := windowData.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid window data type")
+		}
+
+		data := &windows.ApprovalWindowData{
+			RequestID:      dataMap["request_id"].(string),
+			Operation:      dataMap["operation"].(string),
+			OperationName:  dataMap["operation_name"].(string),
+			Target:         dataMap["target"].(string),
+			RiskLevel:      dataMap["risk_level"].(string),
+			Reason:         dataMap["reason"].(string),
+			TimeoutSeconds: int(dataMap["timeout_seconds"].(float64)),
+			Context:        make(map[string]string),
+			Timestamp:      int64(dataMap["timestamp"].(float64)),
+		}
+
+		if ctxMap, ok := dataMap["context"].(map[string]interface{}); ok {
+			for k, v := range ctxMap {
+				if str, ok := v.(string); ok {
+					data.Context[k] = str
+				}
+			}
+		}
+
+		childLog("Starting headless window (auto-approve)")
+		return windows.RunHeadlessWindow(childID, data, wsClient)
 
 	default:
 		return fmt.Errorf("unknown window type: %s", windowType)
