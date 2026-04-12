@@ -308,69 +308,14 @@ func TestSecurityAuditorGetAuditLog(t *testing.T) {
 	}
 	auditor.RequestPermission(context.Background(), req)
 
-	t.Run("get all audit logs", func(t *testing.T) {
+	t.Run("returns empty slice (events persisted to file)", func(t *testing.T) {
 		filter := AuditFilter{}
 		logs := auditor.GetAuditLog(filter)
-		if len(logs) == 0 {
-			t.Error("GetAuditLog() should return at least one event")
+		if logs == nil {
+			t.Error("GetAuditLog() should return non-nil slice")
 		}
-	})
-
-	t.Run("filter by operation type", func(t *testing.T) {
-		filter := AuditFilter{
-			OperationType: OpFileRead,
-		}
-		logs := auditor.GetAuditLog(filter)
-		if len(logs) == 0 {
-			t.Error("GetAuditLog() should return events for file_read")
-		}
-		for _, event := range logs {
-			if event.Request.Type != OpFileRead {
-				t.Errorf("event type = %q, want %q", event.Request.Type, OpFileRead)
-			}
-		}
-	})
-
-	t.Run("filter by user", func(t *testing.T) {
-		filter := AuditFilter{
-			User: "test",
-		}
-		logs := auditor.GetAuditLog(filter)
-		if len(logs) == 0 {
-			t.Error("GetAuditLog() should return events for user 'test'")
-		}
-		for _, event := range logs {
-			if event.Request.User != "test" {
-				t.Errorf("event user = %q, want 'test'", event.Request.User)
-			}
-		}
-	})
-
-	t.Run("filter by decision", func(t *testing.T) {
-		filter := AuditFilter{
-			Decision: "allowed",
-		}
-		logs := auditor.GetAuditLog(filter)
-		for _, event := range logs {
-			if event.Decision != "allowed" {
-				t.Errorf("event decision = %q, want 'allowed'", event.Decision)
-			}
-		}
-	})
-
-	t.Run("filter by time range", func(t *testing.T) {
-		now := time.Now()
-		past := now.Add(-1 * time.Hour)
-		filter := AuditFilter{
-			StartTime: &past,
-			EndTime:   &now,
-		}
-		logs := auditor.GetAuditLog(filter)
-		// All events should be within the time range
-		for _, event := range logs {
-			if event.Timestamp.Before(past) || event.Timestamp.After(now) {
-				t.Error("event timestamp is outside the filtered range")
-			}
+		if len(logs) != 0 {
+			t.Errorf("GetAuditLog() should return empty slice, got %d events", len(logs))
 		}
 	})
 }
@@ -446,7 +391,7 @@ func TestSecurityAuditorGetStatistics(t *testing.T) {
 	auditor.RequestPermission(context.Background(), req)
 
 	stats := auditor.GetStatistics()
-	if stats["total_events"].(int) == 0 {
+	if stats["total_events"].(int64) == 0 {
 		t.Error("GetStatistics() should show events")
 	}
 	if stats["enabled"].(bool) != true {
@@ -480,38 +425,10 @@ func TestSecurityAuditorCleanupOldAuditLogs(t *testing.T) {
 		AuditLogRetentionDays: 30,
 	})
 
-	// Add old event
-	oldEvent := AuditEvent{
-		EventID: "old-event",
-		Request: OperationRequest{
-			Type: OpFileRead,
-		},
-		Decision:  "allowed",
-		Timestamp: time.Now().Add(-60 * 24 * time.Hour), // 60 days ago
-	}
-	auditor.auditLog = append(auditor.auditLog, oldEvent)
-
-	// Add recent event
-	recentEvent := AuditEvent{
-		EventID: "recent-event",
-		Request: OperationRequest{
-			Type: OpFileRead,
-		},
-		Decision:  "allowed",
-		Timestamp: time.Now().Add(-1 * time.Hour),
-	}
-	auditor.auditLog = append(auditor.auditLog, recentEvent)
-
+	// CleanupOldAuditLogs is now a no-op (events are persisted to file, not stored in memory)
 	err := auditor.CleanupOldAuditLogs()
 	if err != nil {
 		t.Errorf("CleanupOldAuditLogs() returned error: %v", err)
-	}
-
-	if len(auditor.auditLog) != 1 {
-		t.Errorf("audit log count = %d, want 1", len(auditor.auditLog))
-	}
-	if auditor.auditLog[0].EventID != "recent-event" {
-		t.Error("recent event should remain")
 	}
 }
 

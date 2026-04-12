@@ -7,6 +7,7 @@ package security
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -152,13 +153,18 @@ type SecurityAuditor struct {
 	rules          map[OperationType][]config.SecurityRule
 	defaultAction  string
 	activeRequests map[string]*OperationRequest // Pending approval requests
-	auditLog       []AuditEvent
 	mu             sync.RWMutex
 	config         *AuditorConfig
 	enabled        bool
 	logFile        *os.File
 	logFilePath    string
 	approvalMgr    approval.ApprovalManager // Approval dialog manager
+	// Counters for statistics (no in-memory event storage; all events persisted to file)
+	totalEvents   int64
+	allowedCount  int64
+	deniedCount   int64
+	approvedCount int64
+	pendingCount  int64
 }
 
 // AuditorConfig configures the security auditor
@@ -228,7 +234,6 @@ func NewSecurityAuditor(auditorConfig *AuditorConfig) *SecurityAuditor {
 		rules:          make(map[OperationType][]config.SecurityRule),
 		defaultAction:  auditorConfig.DefaultAction,
 		activeRequests: make(map[string]*OperationRequest),
-		auditLog:       make([]AuditEvent, 0),
 		config:         auditorConfig,
 		enabled:        auditorConfig.Enabled,
 	}
@@ -305,8 +310,16 @@ func (sa *SecurityAuditor) RequestPermission(ctx context.Context, req *Operation
 		PolicyRule: policy,
 	}
 
-	// Log the event
-	sa.auditLog = append(sa.auditLog, event)
+	// Log the event (persisted to file, no in-memory storage)
+	sa.totalEvents++
+	switch decision {
+	case "allowed":
+		sa.allowedCount++
+	case "denied":
+		sa.deniedCount++
+	case "require_approval":
+		sa.pendingCount++
+	}
 	sa.logAuditEvent(event)
 
 	// Handle decision
@@ -381,14 +394,20 @@ func (sa *SecurityAuditor) ApproveRequest(requestID, approver string) error {
 	req.Approver = approver
 	req.ApprovedAt = time.Now()
 
-	// Update audit log
-	for i, event := range sa.auditLog {
-		if event.Request.ID == requestID {
-			sa.auditLog[i].Decision = "approved"
-			sa.auditLog[i].Reason = fmt.Sprintf("Approved by %s", approver)
-			break
-		}
+	reason := fmt.Sprintf("Approved by %s", approver)
+
+	// Write resolution event to file
+	resolutionEvent := AuditEvent{
+		EventID:   generateEventID(),
+		Request:   *req,
+		Decision:  "approved",
+		Reason:    reason,
+		Timestamp: time.Now(),
 	}
+	sa.logAuditEvent(resolutionEvent)
+
+	sa.pendingCount--
+	sa.approvedCount++
 
 	delete(sa.activeRequests, requestID)
 
@@ -414,14 +433,20 @@ func (sa *SecurityAuditor) DenyRequest(requestID, approver, reason string) error
 
 	req.DeniedReason = reason
 
-	// Update audit log
-	for i, event := range sa.auditLog {
-		if event.Request.ID == requestID {
-			sa.auditLog[i].Decision = "denied"
-			sa.auditLog[i].Reason = fmt.Sprintf("Denied by %s: %s", approver, reason)
-			break
-		}
+	denyReason := fmt.Sprintf("Denied by %s: %s", approver, reason)
+
+	// Write resolution event to file
+	resolutionEvent := AuditEvent{
+		EventID:   generateEventID(),
+		Request:   *req,
+		Decision:  "denied",
+		Reason:    denyReason,
+		Timestamp: time.Now(),
 	}
+	sa.logAuditEvent(resolutionEvent)
+
+	sa.pendingCount--
+	sa.deniedCount++
 
 	delete(sa.activeRequests, requestID)
 
@@ -435,22 +460,11 @@ func (sa *SecurityAuditor) DenyRequest(requestID, approver, reason string) error
 	return nil
 }
 
-// GetAuditLog returns the audit log
+// GetAuditLog returns the audit log.
+// Events are persisted to the audit log file; this method returns an empty slice.
+// Use ExportAuditLog to export data from the file.
 func (sa *SecurityAuditor) GetAuditLog(filter AuditFilter) []AuditEvent {
-	sa.mu.RLock()
-	defer sa.mu.RUnlock()
-
-	if filter.IsEmpty() {
-		return sa.auditLog
-	}
-
-	var result []AuditEvent
-	for _, event := range sa.auditLog {
-		if filter.Matches(event) {
-			result = append(result, event)
-		}
-	}
-	return result
+	return []AuditEvent{}
 }
 
 // GetPendingRequests returns all pending approval requests
@@ -543,11 +557,15 @@ func (e *ApprovalRequiredError) IsApprovalRequired() bool {
 
 // Utility functions
 func generateRequestID() string {
-	return fmt.Sprintf("req-%d", time.Now().UnixNano())
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("req-%x-%d", b, time.Now().UnixNano())
 }
 
 func generateEventID() string {
-	return fmt.Sprintf("evt-%d", time.Now().UnixNano())
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("evt-%x-%d", b, time.Now().UnixNano())
 }
 
 // AuditFilter filters audit logs
@@ -673,34 +691,10 @@ func IsSafeCommand(command string) (bool, string) {
 	return true, ""
 }
 
-// CleanupOldAuditLogs removes audit logs older than retention period
+// CleanupOldAuditLogs is a no-op.
+// Events are no longer stored in memory; all data is persisted to the audit log file.
+// File-based retention can be handled externally by rotating the log file.
 func (sa *SecurityAuditor) CleanupOldAuditLogs() error {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
-
-	if sa.config.AuditLogRetentionDays <= 0 {
-		return nil
-	}
-
-	cutoff := time.Now().AddDate(0, 0, -sa.config.AuditLogRetentionDays)
-	var newLog []AuditEvent
-
-	for _, event := range sa.auditLog {
-		if event.Timestamp.After(cutoff) {
-			newLog = append(newLog, event)
-		}
-	}
-
-	removed := len(sa.auditLog) - len(newLog)
-	sa.auditLog = newLog
-
-	if removed > 0 {
-		logger.InfoCF("security", "Cleaned up old audit logs", map[string]interface{}{
-			"removed":   removed,
-			"remaining": len(sa.auditLog),
-		})
-	}
-
 	return nil
 }
 
@@ -710,22 +704,22 @@ func (sa *SecurityAuditor) GetStatistics() map[string]interface{} {
 	defer sa.mu.RUnlock()
 
 	stats := map[string]interface{}{
-		"total_events":     len(sa.auditLog),
-		"pending_requests": len(sa.activeRequests),
+		"total_events":     sa.totalEvents,
+		"allowed":          sa.allowedCount,
+		"denied":           sa.deniedCount,
+		"approved":         sa.approvedCount,
+		"pending":          sa.pendingCount,
+		"active_requests":  len(sa.activeRequests),
 		"enabled":          sa.enabled,
 		"rule_types":       len(sa.rules),
 	}
 
-	decisionCounts := make(map[string]int)
-	for _, event := range sa.auditLog {
-		decisionCounts[event.Decision]++
-	}
-	stats["decision_counts"] = decisionCounts
-
 	return stats
 }
 
-// ExportAuditLog exports audit log to a file
+// ExportAuditLog exports audit log to a file.
+// Copies the persistent audit log file to the specified path.
+// If no log file is available, creates an empty file with header.
 func (sa *SecurityAuditor) ExportAuditLog(filePath string) error {
 	sa.mu.RLock()
 	defer sa.mu.RUnlock()
@@ -734,36 +728,23 @@ func (sa *SecurityAuditor) ExportAuditLog(filePath string) error {
 		return err
 	}
 
-	// Simple CSV export
+	// If we have a log file, copy it
+	if sa.logFilePath != "" {
+		content, err := os.ReadFile(sa.logFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read audit log file: %w", err)
+		}
+		return os.WriteFile(filePath, content, 0640)
+	}
+
+	// No log file, create empty export
 	f, err := os.Create(filePath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	// Write header
-	f.WriteString("event_id,timestamp,decision,operation,user,source,target,danger,reason\n")
-
-	// Write events
-	for _, event := range sa.auditLog {
-		line := fmt.Sprintf("%s,%s,%s,%s,%s,%s,%s,%s,%s\n",
-			event.EventID,
-			event.Timestamp.Format(time.RFC3339),
-			event.Decision,
-			event.Request.Type,
-			event.Request.User,
-			event.Request.Source,
-			sanitizeCSV(event.Request.Target),
-			event.Request.DangerLevel.String(),
-			sanitizeCSV(event.Reason),
-		)
-		f.WriteString(line)
-	}
-
-	logger.InfoCF("security", "Audit log exported", map[string]interface{}{
-		"path":    filePath,
-		"entries": len(sa.auditLog),
-	})
+	f.WriteString("# NemesisBot Security Audit Log (empty)\n")
 
 	return nil
 }

@@ -485,8 +485,9 @@ func TestSecurityMiddlewareGetAuditLog(t *testing.T) {
 		OperationType: OpFileRead,
 	}
 	logs := middleware.GetAuditLog(filter)
-	if len(logs) == 0 {
-		t.Error("GetAuditLog() should return at least one event")
+	// Events are persisted to file; GetAuditLog returns empty slice
+	if len(logs) != 0 {
+		t.Errorf("GetAuditLog() should return empty slice (events on disk), got %d", len(logs))
 	}
 }
 

@@ -363,9 +363,9 @@ func TestExportAuditLog(t *testing.T) {
 			Timestamp:  time.Now(),
 		}
 
-		// Add some audit events directly to the audit log
-		auditor.auditLog = append(auditor.auditLog, event1)
-		auditor.auditLog = append(auditor.auditLog, event2)
+		// Write audit events to the file via logAuditEvent
+		auditor.logAuditEvent(event1)
+		auditor.logAuditEvent(event2)
 
 		// Create a temporary CSV file for export
 		csvFile := filepath.Join(tempDir, "export.csv")
@@ -381,24 +381,24 @@ func TestExportAuditLog(t *testing.T) {
 			t.Error("export CSV file should exist")
 		}
 
-		// Read and verify CSV content
+		// Read and verify content
 		content, err := os.ReadFile(csvFile)
 		if err != nil {
-			t.Fatalf("failed to read exported CSV: %v", err)
+			t.Fatalf("failed to read exported file: %v", err)
 		}
 
 		csvContent := string(content)
 		if !strings.Contains(csvContent, "event-1") {
-			t.Error("CSV should contain event-1")
+			t.Error("export should contain event-1")
 		}
 		if !strings.Contains(csvContent, "event-2") {
-			t.Error("CSV should contain event-2")
+			t.Error("export should contain event-2")
 		}
 		if !strings.Contains(csvContent, "allowed") {
-			t.Error("CSV should contain 'allowed' decision")
+			t.Error("export should contain 'allowed' decision")
 		}
 		if !strings.Contains(csvContent, "denied") {
-			t.Error("CSV should contain 'denied' decision")
+			t.Error("export should contain 'denied' decision")
 		}
 	})
 

@@ -440,32 +440,11 @@ data: [DONE]
 
 ## 在 NemesisBot 中使用
 
-### 添加测试模型
+### 在 NemesisBot 中使用
 
 ```bash
-# 添加 testai-1.1
-nemesisbot model add \
-  --model testai-1.1 \
-  --base-url http://localhost:8080/v1 \
-  --key test-key
-
-# 添加 testai-1.2
-nemesisbot model add \
-  --model testai-1.2 \
-  --base-url http://localhost:8080/v1 \
-  --key test-key
-
-# 添加 testai-1.3
-nemesisbot model add \
-  --model testai-1.3 \
-  --base-url http://localhost:8080/v1 \
-  --key test-key
-
-# 添加 testai-2.0
-nemesisbot model add \
-  --model testai-2.0 \
-  --base-url http://localhost:8080/v1 \
-  --key test-key
+# 添加测试模型（使用 --base 参数）
+nemesisbot model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default
 ```
 
 ## 测试场景
@@ -512,27 +491,29 @@ test_logging.bat
 ```
 TestAIServer/
 ├── main.go              # 主程序入口
+├── main_test.go         # 单元测试和集成测试
+├── help_system.go       # 分层帮助系统
+├── middleware.go         # HTTP 中间件
 ├── go.mod               # Go 模块定义
 ├── go.sum               # 依赖校验
 ├── README.md            # 本文档
-├── STREAMING_FIX.md     # 流式响应修复说明 ⭐ v1.3.0
-├── LOGGING.md           # 日志功能详细文档
-├── QUICKSTART.md        # 快速启动指南
-├── CHANGELOG.md         # 更新日志
+├── test_security.bat    # 安全测试脚本
 ├── docs/
-│   └── KNOWN_ISSUES.md  # ⚠️ 已知问题清单（必读）
+│   ├── KNOWN_ISSUES.md  # 已知问题清单
+│   ├── PROJECT_SUMMARY.md
+│   ├── DOCUMENTATION_INDEX.md
+│   ├── QUICKSTART.md
+│   ├── QUICK_REFERENCE.md
+│   ├── CHANGELOG.md
+│   ├── LOGGING.md
+│   └── ...              # 其他文档
 ├── models/
 │   ├── types.go         # 类型定义
-│   └── test_models.go   # 测试模型实现
+│   └── test_models.go   # 八个测试模型实现
 ├── handlers/
-│   └── handlers.go      # HTTP 请求处理器
-├── logger/
-│   └── logger.go        # 日志记录器
-└── log/                 # 日志目录（运行时自动创建）
-    ├── testai-1.1/
-    ├── testai-1.2/
-    ├── testai-1.3/
-    └── testai-2.0/
+│   └── handlers.go      # HTTP 请求处理器（含流式响应）
+└── logger/
+    └── logger.go        # 日志记录器
 ```
 
 ## 注意事项

@@ -1,7 +1,7 @@
 # TestAIServer 文档索引
 
-**版本**: v1.3.0
-**最后更新**: 2026-03-11
+**版本**: v2.0+
+**最后更新**: 2026-04-12
 
 ---
 
@@ -17,11 +17,6 @@
 ### 2. 快速参考卡
 **文件**: [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md)
 **用途**: 快速查找问题、命令和文档
-**重要性**: ⭐⭐⭐⭐⭐
-
-### 3. 流式响应修复说明
-**文件**: [`STREAMING_FIX.md`](STREAMING_FIX.md)
-**用途**: v1.3.0 重要修复说明
 **重要性**: ⭐⭐⭐⭐⭐
 
 ---
@@ -50,7 +45,7 @@
 ### 已知问题清单
 **文件**: [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md)
 **内容**:
-- ISSUE-001: 不支持流式响应（🔴 高优先级）
+- ISSUE-001: 不支持流式响应 → ✅ 已解决（v2.0+）
 - ISSUE-002: Token 计数不准确（🟡 中优先级）
 - ISSUE-003: 日志文件无自动清理（🟡 中优先级）
 
@@ -158,12 +153,23 @@
 - NETWORK_UPDATE.md
 - NETWORK_UPDATE_FINAL.md
 
-#### v1.3.0 (2026-03-11)
-- docs/KNOWN_ISSUES.md ⭐
+### v1.3.0 (2026-03-11)
 - STREAMING_FIX.md
 - FIX_REPORT.md
 - QUICK_REFERENCE.md
 - CHANGELOG.md (更新)
+
+#### v1.4.0+ (2026-03-11 ~ 2026-03-21)
+- STREAMING_COMPLETE_FINAL.md
+- STREAMING_IMPLEMENTATION_COMPLETE.md
+- MODEL_FIX_REPORT.md
+- EMERGENCY_FIX_REPORT.md
+- FINAL_FIX_SUMMARY.md
+- TESTAI_5.0_GUIDE.md
+
+#### v2.0+ (2026-04-08)
+- KNOWN_ISSUES.md (更新 - ISSUE-001 已解决)
+- README.md (更新 - 8 个模型、流式响应、项目结构)
 
 ---
 
@@ -202,11 +208,12 @@
 
 ## 📊 文档统计
 
-- **总文档数**: 14 个
-- **必读文档**: 3 个
+- **总文档数**: 20 个
+- **必读文档**: 2 个
 - **功能文档**: 2 个
 - **更新记录**: 4 个
-- **总结报告**: 2 个
+- **总结报告**: 6 个
+- **模型文档**: 1 个
 
 ---
 
@@ -229,4 +236,4 @@ cat STREAMING_FIX.md
 
 **维护者**: Claude Code
 **创建日期**: 2026-03-11
-**版本**: v1.3.0
+**版本**: v2.0+
