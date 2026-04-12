@@ -289,7 +289,7 @@ func (m *ProcessManager) cleanupStaleChildren() {
 		}
 
 		// 检查进程是否还在运行
-		if child.Cmd.Process.Signal(os.Signal(nil)) != nil {
+		if !m.executor.IsProcessAlive(child) {
 			log.Printf("[ProcessManager] Child %s is dead, cleaning up", id)
 			m.executor.Cleanup(child)
 			delete(m.children, id)

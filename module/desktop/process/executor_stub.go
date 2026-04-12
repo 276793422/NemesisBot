@@ -41,3 +41,8 @@ func (e *CrossCompileExecutor) CreatePipes(child *ChildProcess) error {
 func (e *CrossCompileExecutor) Cleanup(child *ChildProcess) error {
 	return nil
 }
+
+// IsProcessAlive 检查子进程是否仍在运行（跨平台编译存根）
+func (e *CrossCompileExecutor) IsProcessAlive(child *ChildProcess) bool {
+	return false
+}

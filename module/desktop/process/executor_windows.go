@@ -12,8 +12,8 @@ import (
 
 // WindowsSpecific Windows 平台特定数据
 type WindowsSpecific struct {
-	Handle    syscall.Handle
 	JobObject syscall.Handle
+	Done      chan struct{} // 进程退出后关闭，用于 IsProcessAlive 检测
 }
 
 // WindowsExecutor Windows 平台执行器
@@ -72,8 +72,12 @@ func (e *WindowsExecutor) SpawnChild(exePath string, args []string) (*ChildProce
 		return nil, err
 	}
 
-	// 获取进程句柄
-	handle := syscall.Handle(cmd.Process.Pid)
+	// 启动 goroutine 等待进程退出，关闭 Done channel 通知
+	done := make(chan struct{})
+	go func() {
+		cmd.Process.Wait()
+		close(done)
+	}()
 
 	return &ChildProcess{
 		Cmd:       cmd,
@@ -81,7 +85,7 @@ func (e *WindowsExecutor) SpawnChild(exePath string, args []string) (*ChildProce
 		Stdin:     &WriteCloser{Encoder: json.NewEncoder(stdin), writer: stdin.(*os.File)},
 		Stdout:    &ReadCloser{Decoder: json.NewDecoder(stdout), reader: stdout.(*os.File)},
 		Stderr:    &ReadCloser{Decoder: json.NewDecoder(stderr), reader: stderr.(*os.File)},
-		Platform:  &WindowsSpecific{Handle: handle, JobObject: 0},
+		Platform:  &WindowsSpecific{JobObject: 0, Done: done},
 		CreatedAt: time.Now(),
 	}, nil
 }
@@ -98,14 +102,14 @@ func (e *WindowsExecutor) TerminateChild(child *ChildProcess) error {
 		return child.Cmd.Process.Kill()
 	}
 
-	// 等待进程退出
-	done := make(chan error, 1)
-	go func() {
-		done <- child.Cmd.Wait()
-	}()
+	// 等待进程退出（通过 SpawnChild 启动的 Wait goroutine）
+	spec, ok := child.Platform.(*WindowsSpecific)
+	if !ok || spec.Done == nil {
+		return nil
+	}
 
 	select {
-	case <-done:
+	case <-spec.Done:
 		return nil
 	case <-time.After(5 * time.Second):
 		// 超时后强制终止
@@ -140,6 +144,20 @@ func (e *WindowsExecutor) Cleanup(child *ChildProcess) error {
 	}
 
 	return nil
+}
+
+// IsProcessAlive 检查子进程是否仍在运行
+func (e *WindowsExecutor) IsProcessAlive(child *ChildProcess) bool {
+	spec, ok := child.Platform.(*WindowsSpecific)
+	if !ok || spec.Done == nil {
+		return false
+	}
+	select {
+	case <-spec.Done:
+		return false
+	default:
+		return true
+	}
 }
 
 // Windows API 常量

@@ -15,6 +15,9 @@ type PlatformExecutor interface {
 
 	// Cleanup 清理资源
 	Cleanup(child *ChildProcess) error
+
+	// IsProcessAlive 检查子进程是否仍在运行
+	IsProcessAlive(child *ChildProcess) bool
 }
 
 // ExecutorConfig 执行器配置
