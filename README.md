@@ -84,12 +84,6 @@ NemesisBot 支持三种构建方式：
 | **build.ps1** | Windows | ⭐⭐⭐⭐ | 🔥推荐 |
 | **build.bat** | Windows | ⭐⭐⭐ | ✅可用 |
 
-**详细文档**：
-- 📖 [构建系统说明](docs/INFO/BUILD_SYSTEM_README.md)
-- 📖 [Makefile 使用指南](docs/INFO/MAKEFILE_USAGE.md)
-- 📖 [快速参考卡片](docs/INFO/QUICK_REFERENCE.md)
-- 📖 [Makefile 安装指南](docs/INFO/MAKEFILE_INSTALLATION.md)
-
 **快速命令**：
 
 ```bash
@@ -117,7 +111,7 @@ nemesisbot.exe onboard default
 这会创建：
 - 主配置文件：`~/.nemesisbot/config.json`
 - 工作空间：`~/.nemesisbot/workspace/`
-- 其他配置文件：`config/*.json`
+- 安全策略配置：`~/.nemesisbot/workspace/config/config.security.json`
 - 身份文件：`IDENTITY.md`, `SOUL.md`, `USER.md`
 - 集群配置：`cluster/peers.toml`
 
@@ -343,6 +337,19 @@ nemesisbot skills install <registry>/<slug>
    - 编译构建（带完整版本信息注入）
    - 结果验证和报告
 
+3. **automated-testing** - 自动化测试流程
+   - 使用 TestAIServer 模拟 AI 后端
+   - 完整的环境搭建、测试执行和报告生成
+
+4. **desktop-automation** - 桌面自动化
+   - Windows 桌面窗口操作（基于 window-mcp）
+
+5. **wsl-operations** - WSL 环境操作
+   - WSL 环境操作和管理
+
+6. **dump-analyze** - Dump 文件分析
+   - Windows Dump 文件分析和调试
+
 ### Skill 使用
 
 当加载特定 skill 后，AI 会严格按照定义的流程执行相关操作，确保操作的一致性和可追溯性。
@@ -556,20 +563,25 @@ NemesisBot/
 │   └── ...
 ├── Skills/               # 📚 技能系统
 │   ├── structured-development/  # 结构化开发流程
-│   └── build-project/             # 项目构建流程
+│   ├── build-project/           # 项目构建流程
+│   ├── automated-testing/       # 自动化测试流程
+│   ├── desktop-automation/      # 桌面自动化
+│   ├── wsl-operations/          # WSL 环境操作
+│   └── dump-analyze/            # Dump 文件分析
 ├── nemesisbot/           # 🚀 主程序入口
-├── default/              # 📦 默认配置和身份
+├── nemesisbot/default/   # 📦 默认身份模板
 │   ├── IDENTITY.md       # AI 身份
 │   ├── SOUL.md           # AI 灵魂
 │   └── USER.md           # 用户信息
-├── config/               # 📋 配置模板
+├── nemesisbot/config/    # 📋 配置模板
 │   ├── config.default.json
-│   ├── config.security.json
-│   ├── config.mcp.json
-│   └── config.cluster.json
+│   ├── config.security.windows.json
+│   ├── config.security.linux.json
+│   ├── config.mcp.default.json
+│   ├── config.cluster.default.json
+│   └── config.skills.default.json
 ├── docs/                 # 📖 文档目录
-│   ├── CHANGELOG.md
-│   └── ...              # 各种分析报告和文档
+│   └── ...              # BUG、INFO、PLAN、REPORT 等分类文档
 └── test/                 # 🧪 测试目录
     ├── unit/             # 单元测试
     └── integration/      # 集成测试
