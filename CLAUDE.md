@@ -408,7 +408,7 @@ nemesisbot.exe --local gateway
   - 使用 TestAIServer 模拟 AI 后端
   - 支持 WebSocket 通信测试
   - 提供 setup-env/cleanup-env 辅助脚本
-  - 详见：`Skills/automated-testing/skill.md`
+  - 详见：`Skills/automated-testing/SKILL.md`
   - 快速开始：`Skills/automated-testing/examples/quick-test.md`
 
 **桌面自动化**：

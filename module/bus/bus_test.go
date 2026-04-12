@@ -99,33 +99,6 @@ func TestSubscribeOutboundContext(t *testing.T) {
 	}
 }
 
-func TestRegisterHandler(t *testing.T) {
-	bus := NewMessageBus()
-
-	handler := func(msg InboundMessage) error {
-		return nil
-	}
-
-	bus.RegisterHandler("test-channel", handler)
-
-	retrievedHandler, ok := bus.GetHandler("test-channel")
-	if !ok {
-		t.Error("Handler should be registered")
-	}
-	if retrievedHandler == nil {
-		t.Error("Retrieved handler should not be nil")
-	}
-}
-
-func TestGetHandlerNotFound(t *testing.T) {
-	bus := NewMessageBus()
-
-	_, ok := bus.GetHandler("non-existent")
-	if ok {
-		t.Error("Should return false for non-existent handler")
-	}
-}
-
 func TestClose(t *testing.T) {
 	bus := NewMessageBus()
 

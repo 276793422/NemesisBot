@@ -225,8 +225,3 @@ func (d *Discovery) IsRunning() bool {
 func jitter(maxJitter time.Duration) time.Duration {
 	return time.Duration(rand.Int63n(int64(maxJitter)*2) - int64(maxJitter))
 }
-
-func init() {
-	// Seed random number generator
-	rand.Seed(time.Now().UnixNano())
-}
