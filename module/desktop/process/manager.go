@@ -79,8 +79,16 @@ func (m *ProcessManager) Stop() error {
 	return m.wsServer.Stop()
 }
 
+// ErrPopupNotSupported 弹窗不支持时返回的哨兵错误
+var ErrPopupNotSupported = fmt.Errorf("popup not supported: build without production tag")
+
 // SpawnChild 创建子进程
 func (m *ProcessManager) SpawnChild(windowType string, data interface{}) (string, <-chan interface{}, error) {
+	if !PopupSupported {
+		log.Printf("[ProcessManager] Popup not supported in this build configuration")
+		return "", nil, ErrPopupNotSupported
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -62,9 +62,13 @@ func CmdGateway() {
 		fmt.Println("   This is expected in cross-compile builds.")
 	} else {
 		fmt.Println("✓ ProcessManager started")
-		// Register ProcessManager to approval module (as ChildProcessFactory interface)
-		approval.SetChildProcessFactory(procMgr)
-		fmt.Println("✓ Approval handler registered")
+		if process.PopupSupported {
+			approval.SetChildProcessFactory(procMgr)
+			fmt.Println("✓ Approval handler registered")
+		} else {
+			fmt.Println("⚠️  Popup not supported in this build")
+			fmt.Println("   All approval requests will be auto-rejected.")
+		}
 	}
 	defer func() {
 		// Cleanup ProcessManager

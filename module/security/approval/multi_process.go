@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -101,6 +102,17 @@ func (m *approvalManagerImpl) RequestApproval(ctx context.Context, req *Approval
 	// 创建子进程
 	childID, resultChan, err := globalChildProcessFactory.SpawnChild("approval", windowData)
 	if err != nil {
+		// 弹窗不支持时，直接拒绝审批请求
+		if strings.Contains(err.Error(), "popup not supported") {
+			log.Printf("[approval] Popup not supported, rejecting request: %s", req.RequestID)
+			return &ApprovalResponse{
+				RequestID:       req.RequestID,
+				Approved:        false,
+				TimedOut:        false,
+				DurationSeconds: 0.01,
+				ResponseTime:    time.Now().Unix(),
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to create approval window: %w", err)
 	}
 
