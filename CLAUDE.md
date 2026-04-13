@@ -157,14 +157,24 @@ bus.PublishOutbound()
 
 **集群/RPC**（module/cluster/）：
 - `cluster.go`：主集群编排
+- `continuation_store.go`：续行快照持久化存储（Phase 2）
+  - 快照存储在 `{workspace}/cluster/rpc_cache/{taskID}.json`
+  - 包含 LLM 消息上下文（json.RawMessage）、toolCallID、channel、chatID
+  - 支持内存+磁盘双写，启动时可从磁盘恢复
+- `task_manager.go`：异步任务状态管理
+  - `onTaskComplete` 回调：任务完成时通知 Cluster
+  - Phase 2 移除了阻塞的 `WaitForTask`，改为回调驱动
+- `task.go`：任务模型
+  - `OriginalChannel`/`OriginalChatID`：发起方通道信息（用于续行通知路由）
 - `rpc/client.go`：调用远程节点的 RPC 客户端
   - `CallWithContext()`：发送请求，等待响应
   - 超时：60 分钟（line 195）- 最外层超时保护
 - `rpc/server.go`：处理传入请求的 RPC 服务器
   - `handleRequest()`：路由到已注册的处理器
   - `sendMessage()`：发送 TCP 响应
-- `rpc/peer_chat_handler.go`：处理 peer_chat action
-  - 通过 RPCChannel.Input() 等待 LLM 响应
+- `rpc/peer_chat_handler.go`：处理 peer_chat action（B 端）
+  - 立即返回 ACK，异步处理 LLM
+  - LLM 完成后回调 A 端的 `peer_chat_callback`
   - 超时：59 分钟（line 132）
 - `transport/`：TCP 连接池和帧处理
   - `conn.go`：带有读写协程的 TCPConn
@@ -236,6 +246,39 @@ if msg.Channel == "rpc" && msg.CorrelationID != "" {
 3. 添加前缀：`[rpc:correlation_id] content`
 4. 设置 `sentInRound = true` 标志
 5. AgentLoop 在发布前检查 `alreadySent` 以避免重复
+
+### 续行快照模式（Phase 2）
+
+当 LLM 调用 `cluster_rpc` 工具时的非阻塞流程：
+
+```
+A 端发起（非阻塞）:
+1. LLM 调用 cluster_rpc → 工具返回 AsyncResult(taskID)
+2. AgentLoop 保存续行快照:
+   - 内存: continuations[taskID] = {messages, toolCallID, channel, chatID}
+   - 磁盘: {workspace}/cluster/rpc_cache/{taskID}.json
+3. LLM 生成 "已发送请求" → 发送给用户 → 当前轮次结束
+
+B 端处理:
+4. B 立即返回 ACK → A 解除 TCP 连接
+5. B 异步处理 LLM → 完成后回调 A 的 peer_chat_callback
+
+A 端接收回调（续行）:
+6. CallbackHandler → TaskManager.CompleteCallback → onTaskComplete(taskID)
+7. Cluster.handleTaskComplete → bus.PublishInbound("system", "cluster_continuation:{taskID}")
+8. AgentLoop.processMessage 拦截 cluster_continuation 前缀
+9. handleClusterContinuation(taskID):
+   - 加载续行快照（先查内存，再查磁盘）
+   - 追加真实工具结果到 messages
+   - 续行 LLM 调用（支持多步骤工具链继续执行）
+   - 发送最终响应给用户
+```
+
+**关键注意事项**：
+- `cluster_rpc` 工具实现 `ContextualTool` 接口，通过 `SetContext(channel, chatID)` 注入上下文
+- 快照保存时机：在追加 tool_result 之前（此时 messages 包含 assistant 的 tool_call 但不包含 tool_result）
+- 嵌套异步：续行中再次触发 cluster_rpc 时，自动保存新快照
+- `Cluster.SetMessageBus()` 必须在 `setupClusterRPCChannel` 中、`SetRPCChannel` 之前调用
 
 ### 工作空间和配置
 
@@ -432,6 +475,10 @@ nemesisbot.exe --local gateway
 - `module/agent/loop.go` - 主执行循环（**理解 agent 流程的起点**）
 - `module/bus/` - 消息总线
 - `module/channels/manager.go` - 通道生命周期和路由
+- `module/cluster/` - 集群编排和续行快照
+  - `cluster.go` - 主编排、bus 注入、handleTaskComplete
+  - `continuation_store.go` - 续行快照持久化存储
+  - `task_manager.go` - 异步任务状态 + onTaskComplete 回调
 - `module/cluster/rpc/` - 集群通信的 RPC 客户端/服务器
 - `module/security/` - 安全中间件和 ABAC
 
