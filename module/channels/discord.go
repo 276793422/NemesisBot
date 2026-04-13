@@ -23,9 +23,20 @@ const (
 	sendTimeout          = 10 * time.Second
 )
 
+// discordAPI encapsulates discordgo.Session methods for testability.
+// *discordgo.Session satisfies this interface implicitly.
+type discordAPI interface {
+	ChannelMessageSend(channelID, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	ChannelTyping(channelID string, options ...discordgo.RequestOption) error
+	Open() error
+	Close() error
+	User(userID string, options ...discordgo.RequestOption) (*discordgo.User, error)
+	AddHandler(handler interface{}) func()
+}
+
 type DiscordChannel struct {
 	*BaseChannel
-	session     *discordgo.Session
+	session     discordAPI
 	config      config.DiscordConfig
 	transcriber *voice.GroqTranscriber
 	ctx         context.Context
@@ -49,6 +60,19 @@ func NewDiscordChannel(cfg config.DiscordConfig, bus *bus.MessageBus) (*DiscordC
 		ctx:         context.Background(),
 		typingStop:  make(map[string]chan struct{}),
 	}, nil
+}
+
+// NewDiscordChannelWithClient creates a DiscordChannel with a pre-configured API client (for testing).
+func NewDiscordChannelWithClient(cfg config.DiscordConfig, bus *bus.MessageBus, api discordAPI) *DiscordChannel {
+	base := NewBaseChannel("discord", cfg, bus, cfg.AllowFrom)
+	return &DiscordChannel{
+		BaseChannel: base,
+		session:     api,
+		config:      cfg,
+		transcriber: nil,
+		ctx:         context.Background(),
+		typingStop:  make(map[string]chan struct{}),
+	}
 }
 
 func (c *DiscordChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {

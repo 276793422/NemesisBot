@@ -28,9 +28,21 @@ import (
 	"github.com/276793422/NemesisBot/module/voice"
 )
 
+// telegramAPI encapsulates telego.Bot methods for testability.
+// *telego.Bot satisfies this interface implicitly.
+type telegramAPI interface {
+	SendMessage(ctx context.Context, params *telego.SendMessageParams) (*telego.Message, error)
+	EditMessageText(ctx context.Context, params *telego.EditMessageTextParams) (*telego.Message, error)
+	SendChatAction(ctx context.Context, params *telego.SendChatActionParams) error
+	GetFile(ctx context.Context, params *telego.GetFileParams) (*telego.File, error)
+	FileDownloadURL(filepath string) string
+	Username() string
+}
+
 type TelegramChannel struct {
 	*BaseChannel
 	bot          *telego.Bot
+	api          telegramAPI // wraps bot for testable methods; bot is used directly for Start()
 	commands     TelegramCommander
 	config       *config.Config
 	chatIDs      map[string]int64
@@ -76,12 +88,30 @@ func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChann
 		BaseChannel:  base,
 		commands:     NewTelegramCommands(bot, cfg),
 		bot:          bot,
+		api:          bot,
 		config:       cfg,
 		chatIDs:      make(map[string]int64),
 		transcriber:  nil,
 		placeholders: sync.Map{},
 		stopThinking: sync.Map{},
 	}, nil
+}
+
+// NewTelegramChannelWithClient creates a TelegramChannel with a pre-configured API client (for testing).
+func NewTelegramChannelWithClient(cfg *config.Config, bus *bus.MessageBus, api telegramAPI) *TelegramChannel {
+	telegramCfg := cfg.Channels.Telegram
+	base := NewBaseChannel("telegram", telegramCfg, bus, telegramCfg.AllowFrom)
+	return &TelegramChannel{
+		BaseChannel:  base,
+		bot:          nil,
+		api:          api,
+		commands:     nil,
+		config:       cfg,
+		chatIDs:      make(map[string]int64),
+		transcriber:  nil,
+		placeholders: sync.Map{},
+		stopThinking: sync.Map{},
+	}
 }
 
 func (c *TelegramChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {
@@ -169,7 +199,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
 		editMsg.ParseMode = telego.ModeHTML
 
-		if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
+		if _, err = c.api.EditMessageText(ctx, editMsg); err == nil {
 			return nil
 		}
 		// Fallback to new message if edit fails
@@ -178,12 +208,12 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
 
-	if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
+	if _, err = c.api.SendMessage(ctx, tgMsg); err != nil {
 		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
 			"error": err.Error(),
 		})
 		tgMsg.ParseMode = ""
-		_, err = c.bot.SendMessage(ctx, tgMsg)
+		_, err = c.api.SendMessage(ctx, tgMsg)
 		return err
 	}
 
@@ -326,7 +356,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	})
 
 	// Thinking indicator
-	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
+	err := c.api.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to send chat action", map[string]interface{}{
 			"error": err.Error(),
@@ -345,7 +375,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
 	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
 
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking... 💭"))
+	pMsg, err := c.api.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking... 💭"))
 	if err == nil {
 		pID := pMsg.MessageID
 		c.placeholders.Store(chatIDStr, pID)
@@ -373,7 +403,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 }
 
 func (c *TelegramChannel) downloadPhoto(ctx context.Context, fileID string) string {
-	file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
+	file, err := c.api.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to get photo file", map[string]interface{}{
 			"error": err.Error(),
@@ -389,7 +419,7 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 		return ""
 	}
 
-	url := c.bot.FileDownloadURL(file.FilePath)
+	url := c.api.FileDownloadURL(file.FilePath)
 	logger.DebugCF("telegram", "File URL", map[string]interface{}{"url": url})
 
 	// Use FilePath as filename for better identification
@@ -400,7 +430,7 @@ func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) st
 }
 
 func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) string {
-	file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
+	file, err := c.api.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to get file", map[string]interface{}{
 			"error": err.Error(),
