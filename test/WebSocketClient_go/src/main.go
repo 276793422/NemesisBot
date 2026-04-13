@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -28,51 +29,44 @@ type CLIState struct {
 }
 
 func main() {
-	// Load configuration
 	cfg := config.LoadOrCreateDefault()
 
 	printBanner()
 	printConfig(cfg)
 
-	// Create client
 	wsClient := client.New(cfg)
-	cliChannel := wsClient.GetCLIMessageChannel()
 
-	// Start client in goroutine
-	clientDone := make(chan error, 1)
-	go func() {
-		clientDone <- wsClient.Start()
-	}()
+	if err := wsClient.Start(); err != nil {
+		fmt.Printf("Connect failed: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Wait a bit for connection
-	time.Sleep(500 * time.Millisecond)
-
-	fmt.Println("✅ Ready! Type your messages below.")
+	fmt.Println("Connected! Type your messages below.")
 	printHelp()
 
-	// Start CLI input in separate goroutine
 	state := &CLIState{}
 	state.Running.Store(true)
 
-	go runCLILoop(state, cfg, cliChannel, wsClient)
+	// Background goroutine: receive messages and print them
+	go func() {
+		for state.Running.Load() {
+			data := wsClient.Recv(500) // poll every 500ms
+			if data == nil {
+				continue
+			}
+			var msg client.ServerMessage
+			if json.Unmarshal(data, &msg) != nil {
+				continue
+			}
+			printServerMessage(&msg)
+		}
+	}()
 
-	// Wait for client to finish
-	if err := <-clientDone; err != nil {
-		fmt.Printf("❌ Client error: %v\n", err)
-	}
-
-	fmt.Println("\n🔌 Connection closed")
-}
-
-func runCLILoop(state *CLIState, cfg *config.Config, cliChannel chan<- string, wsClient *client.WebSocketClient) {
+	// Main goroutine: read user input and send
 	scanner := bufio.NewScanner(os.Stdin)
-	quitCommand := false
-
-	for state.Running.Load() && !quitCommand {
-		printPrompt(cfg)
-
+	for state.Running.Load() {
+		fmt.Print("> ")
 		if !scanner.Scan() {
-			// Input closed (EOF), but keep running to receive responses
 			break
 		}
 
@@ -81,97 +75,55 @@ func runCLILoop(state *CLIState, cfg *config.Config, cliChannel chan<- string, w
 			continue
 		}
 
-		if handleCommand(state, cfg, input, cliChannel, wsClient) {
-			// Quit command
-			quitCommand = true
+		switch input {
+		case CmdQuit, CmdExit, CmdQ:
 			state.Running.Store(false)
-			wsClient.Stop()
-			break
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Printf("⚠️  Input error: %v\n", err)
-	}
-
-	// Always signal that CLI input is done
-	close(cliChannel)
-	fmt.Println("📤 CLI loop ended")
-}
-
-func handleCommand(state *CLIState, cfg *config.Config, input string, cliChannel chan<- string, wsClient *client.WebSocketClient) bool {
-	switch input {
-	case CmdQuit, CmdExit, CmdQ:
-		return true
-	case CmdHelp, CmdH:
-		printHelp()
-	case CmdClear, CmdC:
-		clearScreen()
-	case CmdStats:
-		fmt.Println("📊 Statistics will be shown on exit")
-	default:
-		// Send to WebSocket server
-		select {
-		case cliChannel <- input:
+		case CmdHelp, CmdH:
+			printHelp()
+		case CmdClear, CmdC:
+			fmt.Print("\033[H\033[2J")
+		case CmdStats:
+			fmt.Printf("Connected: %v\n", wsClient.IsConnected())
 		default:
-			fmt.Println("⚠️  Channel full, message dropped")
+			if err := wsClient.Send(input); err != nil {
+				fmt.Printf("Send failed: %v\n", err)
+			}
 		}
 	}
-	return false
+
+	wsClient.Destroy()
+	fmt.Println("Connection closed")
 }
 
 func printBanner() {
 	fmt.Println()
-	border := "╔════════════════════════════════════════════════════════╗"
-	title := "║  🤖 NemesisBot WebSocket Client v0.1.0 (Go)              "
-	fmt.Println(border)
-	fmt.Println("║")
-	fmt.Println(title)
-	fmt.Println("║")
-	fmt.Println(border)
+	fmt.Println("  NemesisBot WebSocket Client v0.2.0 (Go)")
 	fmt.Println()
 }
 
 func printConfig(cfg *config.Config) {
-	fmt.Println("📁 Configuration:")
-	fmt.Printf("   Server URL: %s\n", cfg.Server.URL)
-	reconnectStatus := "❌"
-	if cfg.Reconnect.Enabled {
-		reconnectStatus = "✅"
-	}
-	fmt.Printf("   Auto-reconnect: %s\n", reconnectStatus)
-	heartbeatStatus := "❌"
-	if cfg.Heartbeat.Enabled {
-		heartbeatStatus = "✅"
-	}
-	fmt.Printf("   Heartbeat: %s\n", heartbeatStatus)
-	loggingStatus := "❌"
-	if cfg.Logging.Enabled {
-		loggingStatus = "✅"
-	}
-	fmt.Printf("   Logging: %s\n", loggingStatus)
+	fmt.Printf("  Server: %s\n", cfg.Server.URL)
+	fmt.Printf("  Reconnect: %v\n", cfg.Reconnect.Enabled)
+	fmt.Printf("  Heartbeat: %v\n", cfg.Heartbeat.Enabled)
 	fmt.Println()
 }
 
 func printHelp() {
 	fmt.Println()
-	fmt.Println("📖 Available Commands:")
-	fmt.Printf("  %s - Show this help message\n", CmdHelp)
-	fmt.Printf("  %s, %s - Exit the client\n", CmdQuit, CmdExit)
-	fmt.Printf("  %s - Show connection statistics\n", CmdStats)
-	fmt.Printf("  %s - Clear the screen\n", CmdClear)
-	fmt.Println("  ... - Any other text will be sent as a message to the server")
+	fmt.Printf("  %s - Show this help\n", CmdHelp)
+	fmt.Printf("  %s, %s - Exit\n", CmdQuit, CmdExit)
+	fmt.Printf("  %s - Show connection status\n", CmdStats)
+	fmt.Printf("  %s - Clear screen\n", CmdClear)
+	fmt.Println("  Any other text is sent as a message")
 	fmt.Println()
 }
 
-func printPrompt(cfg *config.Config) {
-	promptStr := "➤ "
-	if cfg.UI.PromptStyle == "detailed" {
-		promptStr = "➤ [Connected] "
+func printServerMessage(msg *client.ServerMessage) {
+	timestamp := time.Now().Format("15:04:05")
+	switch msg.Type {
+	case "message":
+		fmt.Printf("\n[%s] %s: %s\n> ", timestamp, msg.Role, msg.Content)
+	case "error":
+		fmt.Printf("\n[%s] ERROR: %s\n> ", timestamp, msg.Error)
 	}
-	fmt.Print(promptStr)
-}
-
-func clearScreen() {
-	print("\033[H\033[2J")
 }

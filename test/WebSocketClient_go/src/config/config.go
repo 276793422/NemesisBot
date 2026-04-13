@@ -7,13 +7,11 @@ import (
 	"time"
 )
 
+// Config holds the minimal configuration for the DLL WebSocket client.
 type Config struct {
-	Server     ServerConfig     `json:"server"`
-	Reconnect  ReconnectConfig  `json:"reconnect"`
-	Heartbeat  HeartbeatConfig  `json:"heartbeat"`
-	Logging    LoggingConfig    `json:"logging"`
-	Statistics StatisticsConfig `json:"statistics"`
-	UI         UIConfig         `json:"ui"`
+	Server    ServerConfig    `json:"server"`
+	Reconnect ReconnectConfig `json:"reconnect"`
+	Heartbeat HeartbeatConfig `json:"heartbeat"`
 }
 
 type ServerConfig struct {
@@ -34,46 +32,12 @@ type HeartbeatConfig struct {
 	IntervalSec int  `json:"interval_sec"`
 }
 
-type LoggingConfig struct {
-	Enabled bool   `json:"enabled"`
-	File    string `json:"file"`
-	Level   string `json:"level"`
-}
-
-type StatisticsConfig struct {
-	Enabled bool `json:"enabled"`
-}
-
-type UIConfig struct {
-	Color         bool   `json:"color"`
-	ShowTimestamp bool   `json:"show_timestamp"`
-	PromptStyle   string `json:"prompt_style"`
-}
-
-func LoadOrCreateDefault() *Config {
-	cfg := GetDefaultConfig()
-
-	// Try to load from file
-	data, err := os.ReadFile("config.json")
-	if err == nil {
-		if err := json.Unmarshal(data, cfg); err != nil {
-			fmt.Printf("Warning: failed to parse config file, using defaults: %v\n", err)
-		}
-	} else {
-		// Create default config file
-		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
-			_ = os.WriteFile("config.json", data, 0644)
-		}
-	}
-
-	return cfg
-}
-
-func GetDefaultConfig() *Config {
+// NewConfig creates a Config from the given URL and token with sensible defaults.
+func NewConfig(url, token string) *Config {
 	return &Config{
 		Server: ServerConfig{
-			URL:   "ws://127.0.0.1:49001/ws",
-			Token: "",
+			URL:   url,
+			Token: token,
 		},
 		Reconnect: ReconnectConfig{
 			Enabled:         true,
@@ -86,39 +50,47 @@ func GetDefaultConfig() *Config {
 			Enabled:     true,
 			IntervalSec: 30,
 		},
-		Logging: LoggingConfig{
-			Enabled: true,
-			File:    "websocket_client.log",
-			Level:   "info",
-		},
-		Statistics: StatisticsConfig{
-			Enabled: true,
-		},
-		UI: UIConfig{
-			Color:         true,
-			ShowTimestamp: true,
-			PromptStyle:   "simple",
-		},
 	}
 }
 
+// LoadOrCreateDefault loads config from config.json in the current directory,
+// or creates one with default values if the file doesn't exist.
+func LoadOrCreateDefault() *Config {
+	cfg := NewConfig("ws://127.0.0.1:49001/ws", "")
+
+	data, err := os.ReadFile("config.json")
+	if err == nil {
+		if err := json.Unmarshal(data, cfg); err != nil {
+			fmt.Printf("Warning: failed to parse config file, using defaults: %v\n", err)
+		}
+	} else {
+		if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+			_ = os.WriteFile("config.json", data, 0644)
+		}
+	}
+
+	return cfg
+}
+
+// GetURL returns the WebSocket URL with optional token query parameter.
 func (c *Config) GetURL() string {
 	if c.Server.Token == "" {
 		return c.Server.URL
 	}
-	return fmt.Sprintf("%s?token=%s", c.Server.URL, c.Server.Token)
+	return c.Server.URL + "?token=" + c.Server.Token
 }
 
-func LogToFile(cfg *Config, message string) {
-	if !cfg.Logging.Enabled || cfg.Logging.File == "" {
-		return
-	}
+// InitialDelay returns the initial reconnect delay as a Duration.
+func (c *Config) InitialDelay() time.Duration {
+	return time.Duration(c.Reconnect.InitialDelaySec) * time.Second
+}
 
-	f, err := os.OpenFile(cfg.Logging.File, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
+// MaxDelay returns the max reconnect delay as a Duration.
+func (c *Config) MaxDelay() time.Duration {
+	return time.Duration(c.Reconnect.MaxDelaySec) * time.Second
+}
 
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format(time.RFC3339), message)
+// HeartbeatInterval returns the heartbeat interval as a Duration.
+func (c *Config) HeartbeatInterval() time.Duration {
+	return time.Duration(c.Heartbeat.IntervalSec) * time.Second
 }

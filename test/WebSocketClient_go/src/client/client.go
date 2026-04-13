@@ -14,12 +14,14 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// ClientMessage is the JSON structure sent to the NemesisBot WebSocket server.
 type ClientMessage struct {
 	Type      string `json:"type"`
 	Content   string `json:"content"`
 	Timestamp string `json:"timestamp,omitempty"`
 }
 
+// ServerMessage is the JSON structure received from the NemesisBot WebSocket server.
 type ServerMessage struct {
 	Type      string `json:"type"`
 	Role      string `json:"role,omitempty"`
@@ -28,297 +30,229 @@ type ServerMessage struct {
 	Error     string `json:"error,omitempty"`
 }
 
-type Statistics struct {
-	MessagesSent     atomic.Uint64
-	MessagesReceived atomic.Uint64
-	BytesSent        atomic.Uint64
-	BytesReceived    atomic.Uint64
-	ReconnectCount   atomic.Uint64
-	ConnectedAt      atomic.Int64
-}
-
+// WebSocketClient manages a WebSocket connection to NemesisBot.
 type WebSocketClient struct {
-	config     *config.Config
-	stats      *Statistics
-	running    atomic.Bool
-	cliChannel chan string
+	config    *config.Config
+	recvQueue *MessageQueue
+	running   atomic.Bool
+	connected atomic.Bool
+
+	connMu sync.Mutex   // protects conn write operations
+	conn   *websocket.Conn
+
+	wg sync.WaitGroup // waits for background goroutines on destroy
 }
 
+// New creates a new WebSocketClient with the given configuration.
 func New(cfg *config.Config) *WebSocketClient {
 	return &WebSocketClient{
-		config:     cfg,
-		stats:      &Statistics{},
-		cliChannel: make(chan string, 100),
+		config:    cfg,
+		recvQueue: NewMessageQueue(),
 	}
 }
 
-func (c *WebSocketClient) GetCLIMessageChannel() chan<- string {
-	return c.cliChannel
-}
-
-func (c *WebSocketClient) Stop() {
-	c.running.Store(false)
-}
-
+// Start connects to the WebSocket server and starts the message receive loop.
+// It blocks until the connection is established or fails (without reconnection).
+// Reconnection runs in a background goroutine.
 func (c *WebSocketClient) Start() error {
 	c.running.Store(true)
 
-	reconnectAttempts := 0
-	reconnectDelay := time.Duration(c.config.Reconnect.InitialDelaySec) * time.Second
+	// First connection attempt (blocking, caller gets immediate feedback)
+	if err := c.connect(); err != nil {
+		c.running.Store(false)
+		return err
+	}
 
-	for c.running.Load() {
-		if c.config.Reconnect.MaxAttempts > 0 && reconnectAttempts >= c.config.Reconnect.MaxAttempts {
-			return fmt.Errorf("max reconnect attempts reached")
-		}
+	// Start reconnection loop in background
+	c.wg.Add(1)
+	go c.reconnectLoop()
 
-		if err := c.connectAndRun(); err != nil {
-			log.Printf("⚠️  Connection error: %v", err)
-			if !c.config.Reconnect.Enabled || !c.running.Load() {
-				return err
-			}
+	return nil
+}
 
-			reconnectAttempts++
-			c.stats.ReconnectCount.Add(1)
-			log.Printf("🔄 Reconnecting in %v seconds... (attempt %d)", reconnectDelay.Seconds(), reconnectAttempts)
-			time.Sleep(reconnectDelay)
+// Send sends a text message to the server.
+func (c *WebSocketClient) Send(content string) error {
+	if !c.running.Load() || !c.connected.Load() {
+		return fmt.Errorf("not connected")
+	}
 
-			reconnectDelay = time.Duration(float64(reconnectDelay) * c.config.Reconnect.DelayMultiplier)
-			maxDelay := time.Duration(c.config.Reconnect.MaxDelaySec) * time.Second
-			if reconnectDelay > maxDelay {
-				reconnectDelay = maxDelay
-			}
-		} else {
-			break
-		}
+	clientMsg := ClientMessage{
+		Type:      "message",
+		Content:   content,
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	jsonData, err := json.Marshal(clientMsg)
+	if err != nil {
+		return fmt.Errorf("marshal error: %w", err)
+	}
+
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("connection lost")
+	}
+
+	if err := c.conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+		return fmt.Errorf("write error: %w", err)
 	}
 
 	return nil
 }
 
-func (c *WebSocketClient) connectAndRun() error {
-	fmt.Println("🔄 Connecting...")
+// Recv retrieves the next received message as a JSON string.
+// timeoutMs: <= 0 non-blocking, > 0 wait up to N milliseconds.
+// Returns the JSON-encoded ServerMessage, or empty string on timeout/error.
+func (c *WebSocketClient) Recv(timeoutMs int) []byte {
+	data, ok := c.recvQueue.Dequeue(timeoutMs)
+	if !ok {
+		return nil
+	}
+	return data
+}
 
+// IsConnected returns whether the client is currently connected.
+func (c *WebSocketClient) IsConnected() bool {
+	return c.connected.Load()
+}
+
+// Destroy disconnects and releases all resources.
+func (c *WebSocketClient) Destroy() {
+	c.running.Store(false)
+	c.closeConn()
+	c.recvQueue.Close()
+	c.wg.Wait()
+}
+
+// connect establishes a new WebSocket connection.
+func (c *WebSocketClient) connect() error {
 	u, err := url.Parse(c.config.GetURL())
 	if err != nil {
-		return fmt.Errorf("failed to parse URL: %w", err)
+		return fmt.Errorf("invalid URL: %w", err)
 	}
 
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	defer conn.Close()
-
-	fmt.Println("✅ Connected!")
-
-	c.stats.ConnectedAt.Store(time.Now().Unix())
-
-	// Single event loop using channels
-	fmt.Println("📤 SINGLE EVENT LOOP - Never send + receive simultaneously")
-
-	// Channel for received messages
-	receiveChannel := make(chan []byte, 100)
-	errorChannel := make(chan error, 1)
-
-	// Use WaitGroup to wait for receiver goroutine
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	// Start receiver goroutine
-	go func() {
-		defer wg.Done()
-		for {
-			messageType, data, err := conn.ReadMessage()
-			if err != nil {
-				errorChannel <- err
-				return
-			}
-
-			if messageType == websocket.CloseMessage {
-				errorChannel <- fmt.Errorf("server closed connection")
-				return
-			}
-
-			fmt.Println("Recv message")
-			if messageType == websocket.TextMessage {
-				receiveChannel <- data
-			}
-		}
-	}()
-
-	cliClosed := false
-	idleTimeout := 30 * time.Second
-	cliClosedTime := time.Time{}
-	cliChannel := c.cliChannel // Local variable so we can nil it
-
-	for c.running.Load() {
-		select {
-		case <-time.After(100 * time.Millisecond):
-			// Check idle timeout - only after CLI is closed and running is false
-			if cliClosed && !c.running.Load() && !cliClosedTime.IsZero() && time.Since(cliClosedTime) > idleTimeout {
-				fmt.Println("⏱️  Idle timeout after CLI closed, exiting")
-				conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return nil
-			}
-
-		case msg, ok := <-cliChannel:
-			if !ok {
-				// CLI channel closed - set to nil to prevent this case from being selected again
-				if !cliClosed {
-					fmt.Println("📤 CLI closed, waiting for responses...")
-					cliClosed = true
-					cliClosedTime = time.Now()
-					cliChannel = nil // Prevent this case from being selected again
-				}
-				continue
-			}
-
-			// Send message to server
-			fmt.Printf("📤 [TX] %s\n", msg)
-
-			clientMsg := ClientMessage{
-				Type:      "message",
-				Content:   msg,
-				Timestamp: time.Now().Format(time.RFC3339),
-			}
-
-			jsonData, err := json.Marshal(clientMsg)
-			if err != nil {
-				log.Printf("❌ Failed to marshal message: %v", err)
-				continue
-			}
-
-			c.stats.BytesSent.Add(uint64(len(jsonData)))
-
-			if err := conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
-				log.Printf("❌ Failed to send message: %v", err)
-				// Connection error, but try to receive any pending responses first
-				break
-			}
-
-			c.stats.MessagesSent.Add(1)
-			fmt.Println("✅ Sent")
-			config.LogToFile(c.config, msg)
-
-		case data, ok := <-receiveChannel:
-			if !ok {
-				fmt.Println("Recv Error")
-				return nil
-			}
-
-			fmt.Printf("📥 [RX] %d bytes\n", len(data))
-			c.stats.BytesReceived.Add(uint64(len(data)))
-
-			var serverMsg ServerMessage
-			if err := json.Unmarshal(data, &serverMsg); err != nil {
-				log.Printf("⚠️  Failed to parse message: %v", err)
-				continue
-			}
-
-			switch serverMsg.Type {
-			case "message":
-				c.stats.MessagesReceived.Add(1)
-				c.printReceivedMessage(&serverMsg)
-				config.LogToFile(c.config, fmt.Sprintf("[%s]: %s", serverMsg.Role, serverMsg.Content))
-			case "pong":
-				config.LogToFile(c.config, "PONG")
-			case "error":
-				fmt.Printf("❌ Error: %s\n", serverMsg.Error)
-			}
-
-		case err := <-errorChannel:
-			log.Printf("⚠️  WebSocket error: %v", err)
-			// Don't exit immediately - try to process any remaining messages first
-			// Break the select loop to drain receiveChannel
-			goto drainMessages
-		}
+		return fmt.Errorf("connect failed: %w", err)
 	}
 
-drainMessages:
-	// Process any remaining messages in the receiveChannel before exiting
-	fmt.Println("📥 Processing remaining messages...")
-	drainCount := 0
-	maxDrainTime := 2 * time.Second // Only wait up to 2 seconds for remaining messages
-	drainStart := time.Now()
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
 
-	for time.Since(drainStart) < maxDrainTime {
-		select {
-		case data, ok := <-receiveChannel:
-			if !ok {
-				fmt.Println("📥 Receive channel closed")
-				return nil
-			}
+	c.connected.Store(true)
 
-			drainCount++
-			fmt.Printf("📥 [RX] %d bytes (draining)\n", len(data))
-			c.stats.BytesReceived.Add(uint64(len(data)))
-
-			var serverMsg ServerMessage
-			if err := json.Unmarshal(data, &serverMsg); err != nil {
-				log.Printf("⚠️  Failed to parse message: %v", err)
-				continue
-			}
-
-			switch serverMsg.Type {
-			case "message":
-				c.stats.MessagesReceived.Add(1)
-				c.printReceivedMessage(&serverMsg)
-				config.LogToFile(c.config, fmt.Sprintf("[%s]: %s", serverMsg.Role, serverMsg.Content))
-			case "pong":
-				config.LogToFile(c.config, "PONG")
-			case "error":
-				fmt.Printf("❌ Error: %s\n", serverMsg.Error)
-			}
-
-		case <-time.After(100 * time.Millisecond):
-			// No message for 100ms, check if we should continue waiting
-			if drainCount == 0 {
-				// Still haven't drained anything, keep waiting
-				continue
-			}
-			// We've drained some messages, wait a bit more to be safe
-			if time.Since(drainStart) < maxDrainTime {
-				continue
-			}
-			// Timeout reached
-			fmt.Printf("📥 Drained %d messages, timeout reached\n", drainCount)
-			goto done
-		}
-	}
-
-done:
-
-	// Wait for receiver goroutine to finish
-	wg.Wait()
+	// Start the receiver goroutine
+	c.wg.Add(1)
+	go c.receiveLoop()
 
 	return nil
 }
 
-func (c *WebSocketClient) printReceivedMessage(msg *ServerMessage) {
-	timestamp := ""
-	if c.config.UI.ShowTimestamp {
-		timestamp = fmt.Sprintf("[%s] ", time.Now().Format("15:04:05"))
-	}
+// receiveLoop reads messages from the WebSocket connection.
+// Each goroutine works with the conn that was active when it started.
+func (c *WebSocketClient) receiveLoop() {
+	defer c.wg.Done()
+	defer c.connected.Store(false)
 
-	var roleStr string
-	switch msg.Role {
-	case "assistant":
-		roleStr = "🤖 Assistant"
-	case "user":
-		roleStr = "👤 User"
-	case "system":
-		roleStr = "⚙️  System"
-	default:
-		roleStr = "📨 Unknown"
-	}
+	// Capture the conn this goroutine owns
+	c.connMu.Lock()
+	conn := c.conn
+	c.connMu.Unlock()
 
-	fmt.Printf("%s%s: %s\n", timestamp, roleStr, msg.Content)
+	for c.running.Load() {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			if c.running.Load() {
+				log.Printf("read error: %v", err)
+			}
+			return
+		}
+
+		// Validate it's a valid server message
+		var msg ServerMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			continue
+		}
+
+		// Re-serialize to ensure clean JSON for the caller
+		clean, err := json.Marshal(&msg)
+		if err != nil {
+			continue
+		}
+
+		c.recvQueue.Enqueue(clean)
+	}
 }
 
-func (c *WebSocketClient) GetStats() *Statistics {
-	return c.stats
+// reconnectLoop handles automatic reconnection.
+func (c *WebSocketClient) reconnectLoop() {
+	defer c.wg.Done()
+
+	delay := c.config.InitialDelay()
+
+	for c.running.Load() {
+		// Wait until we notice disconnection
+		for c.connected.Load() && c.running.Load() {
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		if !c.running.Load() {
+			return
+		}
+
+		if !c.config.Reconnect.Enabled {
+			return
+		}
+
+		attempts := 0
+		for c.running.Load() {
+			if c.config.Reconnect.MaxAttempts > 0 && attempts >= c.config.Reconnect.MaxAttempts {
+				log.Printf("max reconnect attempts (%d) reached", c.config.Reconnect.MaxAttempts)
+				c.running.Store(false)
+				c.recvQueue.Close()
+				return
+			}
+
+			log.Printf("reconnecting in %v (attempt %d)...", delay, attempts+1)
+			time.Sleep(delay)
+
+			if !c.running.Load() {
+				return
+			}
+
+			c.closeConn()
+			// Brief pause to let old receiveLoop goroutine exit
+			time.Sleep(200 * time.Millisecond)
+			if err := c.connect(); err != nil {
+				log.Printf("reconnect failed: %v", err)
+				attempts++
+				delay = time.Duration(float64(delay) * c.config.Reconnect.DelayMultiplier)
+				if delay > c.config.MaxDelay() {
+					delay = c.config.MaxDelay()
+				}
+				continue
+			}
+
+			log.Printf("reconnected successfully")
+			delay = c.config.InitialDelay() // reset delay on success
+			break
+		}
+	}
 }
 
-func (c *WebSocketClient) IsConnected() bool {
-	return c.running.Load()
+// closeConn safely closes the current WebSocket connection.
+func (c *WebSocketClient) closeConn() {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+
+	if c.conn != nil {
+		// Send close frame
+		c.conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		c.conn.Close()
+		c.conn = nil
+	}
+	c.connected.Store(false)
 }
