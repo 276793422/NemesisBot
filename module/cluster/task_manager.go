@@ -5,7 +5,6 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -106,9 +105,8 @@ type TaskManager struct {
 	store           TaskStore
 	cleanupInterval time.Duration // 清理间隔
 
-	// Phase 1: 本地等待通道
-	waitChs map[string]chan struct{} // taskID → done channel
-	waitMu  sync.RWMutex
+	// Phase 2: 任务完成回调
+	onTaskComplete func(taskID string) // 任务完成时触发
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -122,7 +120,6 @@ func NewTaskManager(cleanupInterval time.Duration) *TaskManager {
 	return &TaskManager{
 		store:           NewInMemoryTaskStore(),
 		cleanupInterval: cleanupInterval,
-		waitChs:         make(map[string]chan struct{}),
 		stopCh:          make(chan struct{}),
 	}
 }
@@ -137,67 +134,16 @@ func (tm *TaskManager) Start() {
 func (tm *TaskManager) Stop() {
 	close(tm.stopCh)
 	tm.wg.Wait()
-
-	// 关闭所有等待 channel，通知可能阻塞的调用者
-	tm.waitMu.Lock()
-	for taskID, ch := range tm.waitChs {
-		close(ch)
-		delete(tm.waitChs, taskID)
-	}
-	tm.waitMu.Unlock()
 }
 
-// Submit 提交任务并创建本地等待 channel
+// Submit 提交任务
 func (tm *TaskManager) Submit(task *Task) error {
-	if err := tm.store.Create(task); err != nil {
-		return err
-	}
-
-	// 创建 done channel
-	doneCh := make(chan struct{})
-	tm.waitMu.Lock()
-	tm.waitChs[task.ID] = doneCh
-	tm.waitMu.Unlock()
-
-	return nil
+	return tm.store.Create(task)
 }
 
-// WaitForTask 阻塞等待任务完成（Phase 1: 本地 channel）
-func (tm *TaskManager) WaitForTask(ctx context.Context, taskID string) (*TaskResult, error) {
-	// 获取 done channel
-	tm.waitMu.RLock()
-	doneCh, exists := tm.waitChs[taskID]
-	tm.waitMu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("task not found: %s", taskID)
-	}
-
-	// 等待完成或上下文取消
-	select {
-	case <-doneCh:
-		// 任务完成，从 store 获取结果
-		task, err := tm.store.Get(taskID)
-		if err != nil {
-			return nil, err
-		}
-		result := &TaskResult{
-			TaskID:   taskID,
-			Status:   string(task.Status),
-			Response: task.Response,
-		}
-		if task.Result != nil {
-			result.Result = task.Result
-		}
-		if task.Error != "" {
-			result.Error = task.Error
-		}
-		return result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-tm.stopCh:
-		return nil, fmt.Errorf("task manager stopped")
-	}
+// SetOnComplete 设置任务完成回调（Phase 2）
+func (tm *TaskManager) SetOnComplete(fn func(taskID string)) {
+	tm.onTaskComplete = fn
 }
 
 // CompleteTask 标记任务完成（由 CallbackHandler 调用）
@@ -207,14 +153,10 @@ func (tm *TaskManager) CompleteTask(taskID string, result *TaskResult) error {
 		return err
 	}
 
-	// 关闭对应的 doneCh channel，通知 WaitForTask
-	tm.waitMu.Lock()
-	doneCh, exists := tm.waitChs[taskID]
-	if exists {
-		close(doneCh)
-		delete(tm.waitChs, taskID)
+	// Phase 2: 触发回调
+	if tm.onTaskComplete != nil {
+		tm.onTaskComplete(taskID)
 	}
-	tm.waitMu.Unlock()
 
 	return nil
 }

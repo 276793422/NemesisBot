@@ -5,9 +5,9 @@
 package cluster_test
 
 import (
-	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,8 +33,8 @@ func TestNewTaskManager_DefaultInterval(t *testing.T) {
 	tm.Stop()
 }
 
-// TestTaskManager_SubmitAndWait tests submitting a task and waiting for completion
-func TestTaskManager_SubmitAndWait(t *testing.T) {
+// TestTaskManager_Submit tests submitting a task
+func TestTaskManager_Submit(t *testing.T) {
 	tm := cluster.NewTaskManager(10 * time.Second)
 	tm.Start()
 	defer tm.Stop()
@@ -48,65 +48,17 @@ func TestTaskManager_SubmitAndWait(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Submit task
 	if err := tm.Submit(task); err != nil {
 		t.Fatalf("Submit failed: %v", err)
 	}
 
-	// Complete task in background
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		tm.CompleteTask("test-task-1", &cluster.TaskResult{
-			TaskID:   "test-task-1",
-			Status:   "success",
-			Response: "Hello back!",
-		})
-	}()
-
-	// Wait for task
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := tm.WaitForTask(ctx, "test-task-1")
+	// Verify task exists
+	gotTask, err := tm.GetTask("test-task-1")
 	if err != nil {
-		t.Fatalf("WaitForTask failed: %v", err)
+		t.Fatalf("GetTask failed: %v", err)
 	}
-
-	if result.Status != string(cluster.TaskCompleted) {
-		t.Errorf("Expected status 'completed', got '%s'", result.Status)
-	}
-	if result.TaskID != "test-task-1" {
-		t.Errorf("Expected task_id 'test-task-1', got '%s'", result.TaskID)
-	}
-}
-
-// TestTaskManager_WaitForTask_ContextCancelled tests that WaitForTask respects context cancellation
-func TestTaskManager_WaitForTask_ContextCancelled(t *testing.T) {
-	tm := cluster.NewTaskManager(10 * time.Second)
-	tm.Start()
-	defer tm.Stop()
-
-	task := &cluster.Task{
-		ID:        "test-task-cancel",
-		Action:    "peer_chat",
-		PeerID:    "node-B",
-		Status:    cluster.TaskPending,
-		CreatedAt: time.Now(),
-	}
-
-	if err := tm.Submit(task); err != nil {
-		t.Fatalf("Submit failed: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := tm.WaitForTask(ctx, "test-task-cancel")
-	if err == nil {
-		t.Fatal("Expected error due to context cancellation")
-	}
-	if ctx.Err() != context.DeadlineExceeded {
-		t.Errorf("Expected DeadlineExceeded, got: %v", ctx.Err())
+	if gotTask.Status != cluster.TaskPending {
+		t.Errorf("Expected status 'pending', got '%s'", gotTask.Status)
 	}
 }
 
@@ -161,17 +113,6 @@ func TestTaskManager_CompleteTask_NotFound(t *testing.T) {
 	}
 }
 
-// TestTaskManager_WaitForTask_NotFound tests waiting for a non-existent task
-func TestTaskManager_WaitForTask_NotFound(t *testing.T) {
-	tm := cluster.NewTaskManager(10 * time.Second)
-
-	ctx := context.Background()
-	_, err := tm.WaitForTask(ctx, "nonexistent")
-	if err == nil {
-		t.Fatal("Expected error for non-existent task")
-	}
-}
-
 // TestTaskManager_Submit_Duplicate tests submitting a duplicate task
 func TestTaskManager_Submit_Duplicate(t *testing.T) {
 	tm := cluster.NewTaskManager(10 * time.Second)
@@ -201,7 +142,6 @@ func TestTaskManager_MultipleTasks(t *testing.T) {
 	tm.Start()
 	defer tm.Stop()
 
-	var wg sync.WaitGroup
 	taskCount := 5
 
 	// Submit tasks
@@ -218,34 +158,28 @@ func TestTaskManager_MultipleTasks(t *testing.T) {
 		}
 	}
 
-	// Complete tasks in background
+	// Complete tasks
 	for i := 0; i < taskCount; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			time.Sleep(time.Duration(50+idx*20) * time.Millisecond)
-			tm.CompleteTask(fmt.Sprintf("multi-task-%d", idx), &cluster.TaskResult{
-				TaskID:   fmt.Sprintf("multi-task-%d", idx),
-				Status:   "success",
-				Response: fmt.Sprintf("Response %d", idx),
-			})
-		}(i)
-	}
-
-	// Wait for all tasks
-	for i := 0; i < taskCount; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		result, err := tm.WaitForTask(ctx, fmt.Sprintf("multi-task-%d", i))
-		cancel()
+		err := tm.CompleteTask(fmt.Sprintf("multi-task-%d", i), &cluster.TaskResult{
+			TaskID:   fmt.Sprintf("multi-task-%d", i),
+			Status:   "success",
+			Response: fmt.Sprintf("Response %d", i),
+		})
 		if err != nil {
-			t.Errorf("WaitForTask failed for task %d: %v", i, err)
-		}
-		if result.Status != string(cluster.TaskCompleted) {
-			t.Errorf("Task %d: expected status 'completed', got '%s'", i, result.Status)
+			t.Errorf("CompleteTask failed for task %d: %v", i, err)
 		}
 	}
 
-	wg.Wait()
+	// Verify all completed
+	for i := 0; i < taskCount; i++ {
+		task, err := tm.GetTask(fmt.Sprintf("multi-task-%d", i))
+		if err != nil {
+			t.Errorf("GetTask failed for task %d: %v", i, err)
+		}
+		if task.Status != cluster.TaskCompleted {
+			t.Errorf("Task %d: expected status 'completed', got '%s'", i, task.Status)
+		}
+	}
 }
 
 // TestTaskManager_FailedTask tests task that ends with error
@@ -267,28 +201,24 @@ func TestTaskManager_FailedTask(t *testing.T) {
 	}
 
 	// Complete with error
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		tm.CompleteTask("failed-task", &cluster.TaskResult{
-			TaskID: "failed-task",
-			Status: "error",
-			Error:  "something went wrong",
-		})
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := tm.WaitForTask(ctx, "failed-task")
+	err := tm.CompleteTask("failed-task", &cluster.TaskResult{
+		TaskID: "failed-task",
+		Status: "error",
+		Error:  "something went wrong",
+	})
 	if err != nil {
-		t.Fatalf("WaitForTask failed: %v", err)
+		t.Fatalf("CompleteTask failed: %v", err)
 	}
 
-	if result.Status != string(cluster.TaskFailed) {
-		t.Errorf("Expected status 'failed', got '%s'", result.Status)
+	gotTask, err := tm.GetTask("failed-task")
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
 	}
-	if result.Error != "something went wrong" {
-		t.Errorf("Expected error 'something went wrong', got '%s'", result.Error)
+	if gotTask.Status != cluster.TaskFailed {
+		t.Errorf("Expected status 'failed', got '%s'", gotTask.Status)
+	}
+	if gotTask.Error != "something went wrong" {
+		t.Errorf("Expected error 'something went wrong', got '%s'", gotTask.Error)
 	}
 }
 
@@ -326,6 +256,87 @@ func TestTaskManager_CompleteCallback(t *testing.T) {
 	}
 }
 
+// TestTaskManager_OnComplete tests the onTaskComplete callback (Phase 2)
+func TestTaskManager_OnComplete(t *testing.T) {
+	tm := cluster.NewTaskManager(10 * time.Second)
+	tm.Start()
+	defer tm.Stop()
+
+	var callbackCalled atomic.Int32
+	var callbackTaskID string
+	var mu sync.Mutex
+
+	tm.SetOnComplete(func(taskID string) {
+		mu.Lock()
+		callbackTaskID = taskID
+		mu.Unlock()
+		callbackCalled.Add(1)
+	})
+
+	task := &cluster.Task{
+		ID:        "callback-test-task",
+		Action:    "peer_chat",
+		PeerID:    "node-B",
+		Status:    cluster.TaskPending,
+		CreatedAt: time.Now(),
+	}
+
+	if err := tm.Submit(task); err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+
+	// Complete the task - should trigger callback
+	err := tm.CompleteTask("callback-test-task", &cluster.TaskResult{
+		TaskID:   "callback-test-task",
+		Status:   "success",
+		Response: "callback response",
+	})
+	if err != nil {
+		t.Fatalf("CompleteTask failed: %v", err)
+	}
+
+	// Verify callback was called
+	if callbackCalled.Load() != 1 {
+		t.Errorf("Expected callback to be called 1 time, got %d", callbackCalled.Load())
+	}
+	mu.Lock()
+	if callbackTaskID != "callback-test-task" {
+		t.Errorf("Expected callback taskID 'callback-test-task', got '%s'", callbackTaskID)
+	}
+	mu.Unlock()
+}
+
+// TestTaskManager_OnComplete_Nil tests that nil callback doesn't panic
+func TestTaskManager_OnComplete_Nil(t *testing.T) {
+	tm := cluster.NewTaskManager(10 * time.Second)
+	tm.Start()
+	defer tm.Stop()
+
+	// Don't set callback (nil by default)
+
+	task := &cluster.Task{
+		ID:        "nil-callback-task",
+		Action:    "peer_chat",
+		PeerID:    "node-B",
+		Status:    cluster.TaskPending,
+		CreatedAt: time.Now(),
+	}
+
+	if err := tm.Submit(task); err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+
+	// Should not panic
+	err := tm.CompleteTask("nil-callback-task", &cluster.TaskResult{
+		TaskID:   "nil-callback-task",
+		Status:   "success",
+		Response: "ok",
+	})
+	if err != nil {
+		t.Fatalf("CompleteTask failed: %v", err)
+	}
+}
+
 // TestTaskManager_Stop tests stopping the TaskManager
 func TestTaskManager_Stop(t *testing.T) {
 	tm := cluster.NewTaskManager(10 * time.Second)
@@ -341,17 +352,14 @@ func TestTaskManager_Stop(t *testing.T) {
 	}
 	tm.Submit(task)
 
-	// Stop should close all wait channels
+	// Stop should complete without hanging
 	tm.Stop()
 
-	// Verify that WaitForTask returns error after stop
-	// (doneCh has been closed by Stop())
-	ctx := context.Background()
-	_, err := tm.WaitForTask(ctx, "pending-task")
-	// After stop, doneCh is closed, so WaitForTask will try to read from store
-	// The store should still have the task (status pending)
+	// Task should still exist in store
+	gotTask, err := tm.GetTask("pending-task")
 	if err != nil {
-		// It's OK if there's an error - the task is still pending
-		t.Logf("WaitForTask after stop returned: %v (expected)", err)
+		t.Logf("GetTask after stop: %v (task was cleaned up)", err)
+	} else if gotTask.Status != cluster.TaskPending {
+		t.Logf("Task status after stop: %s", gotTask.Status)
 	}
 }

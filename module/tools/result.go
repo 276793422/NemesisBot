@@ -33,6 +33,10 @@ type ToolResult struct {
 	// Err is the underlying error (not JSON serialized).
 	// Used for internal error handling and logging.
 	Err error `json:"-"`
+
+	// TaskID is the async task ID for correlation with continuation snapshots.
+	// When Async=true, this ID links the tool result to its continuation data.
+	TaskID string `json:"task_id,omitempty"`
 }
 
 // NewToolResult creates a basic ToolResult with content for the LLM.

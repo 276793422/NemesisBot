@@ -30,6 +30,10 @@ type Task struct {
 	Response string                 `json:"response,omitempty"` // LLM 回复内容
 	Result   map[string]interface{} `json:"result,omitempty"`   // 回调结果
 	Error    string                 `json:"error,omitempty"`    // 错误信息
+
+	// Phase 2: 原始通道信息（用于续行通知路由）
+	OriginalChannel string `json:"original_channel,omitempty"` // 发起方的通道（如 "web"）
+	OriginalChatID  string `json:"original_chat_id,omitempty"`  // 发起方的会话 ID
 }
 
 // TaskResult 任务回调结果

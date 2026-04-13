@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
 	"github.com/276793422/NemesisBot/module/cluster/discovery"
 	"github.com/276793422/NemesisBot/module/cluster/handlers"
@@ -55,6 +56,8 @@ type Cluster struct {
 	rpcServer   *rpc.Server          // RPC server instance
 	rpcChannel  *channels.RPCChannel // RPC channel for LLM communication
 	taskManager *TaskManager         // 异步任务管理器
+	contStore   *ContinuationStore  // Phase 2: 续行快照存储
+	bus         *bus.MessageBus     // Phase 2: 消息总线（用于续行通知）
 
 	// Configuration
 	udpPort           int
@@ -179,7 +182,11 @@ func (c *Cluster) Start() error {
 
 	// Initialize TaskManager for async RPC tasks
 	c.taskManager = NewTaskManager(30 * time.Second)
+	c.taskManager.SetOnComplete(c.handleTaskComplete)
 	c.taskManager.Start()
+
+	// Initialize ContinuationStore for Phase 2
+	c.contStore, _ = NewContinuationStore(c.workspace)
 
 	// Start discovery
 	if err := c.discovery.Start(); err != nil {
@@ -488,20 +495,23 @@ func (c *Cluster) CallWithContext(ctx context.Context, peerID, action string, pa
 }
 
 // SubmitTask 提交异步 RPC 任务
-// 发送请求到目标节点（短同步调用获取 ACK），返回 taskID 用于后续等待
-func (c *Cluster) SubmitTask(ctx context.Context, peerID, action string, payload map[string]interface{}) (string, error) {
+// 发送请求到目标节点（短同步调用获取 ACK），返回 taskID
+// channel 和 chatID 记录发起方的通道信息，用于续行通知路由
+func (c *Cluster) SubmitTask(ctx context.Context, peerID, action string, payload map[string]interface{}, channel, chatID string) (string, error) {
 	if c.taskManager == nil {
 		return "", fmt.Errorf("task manager not initialized")
 	}
 
 	taskID := generateTaskID()
 	task := &Task{
-		ID:        taskID,
-		Action:    action,
-		PeerID:    peerID,
-		Payload:   payload,
-		Status:    TaskPending,
-		CreatedAt: time.Now(),
+		ID:              taskID,
+		Action:          action,
+		PeerID:          peerID,
+		Payload:         payload,
+		Status:          TaskPending,
+		CreatedAt:       time.Now(),
+		OriginalChannel: channel,
+		OriginalChatID:  chatID,
 	}
 	if err := c.taskManager.Submit(task); err != nil {
 		return "", fmt.Errorf("failed to submit task: %w", err)
@@ -543,17 +553,62 @@ func (c *Cluster) SubmitTask(ctx context.Context, peerID, action string, payload
 	return taskID, nil
 }
 
-// WaitForTask 阻塞等待异步任务完成
-func (c *Cluster) WaitForTask(ctx context.Context, taskID string) (*TaskResult, error) {
+// GetTask 获取任务信息（暴露给 AgentLoop 用于续行）
+func (c *Cluster) GetTask(taskID string) (*Task, error) {
 	if c.taskManager == nil {
 		return nil, fmt.Errorf("task manager not initialized")
 	}
-	return c.taskManager.WaitForTask(ctx, taskID)
+	return c.taskManager.GetTask(taskID)
+}
+
+// GetContinuationStore 暴露续行快照存储给 AgentLoop
+func (c *Cluster) GetContinuationStore() *ContinuationStore {
+	return c.contStore
+}
+
+// SetMessageBus 设置消息总线（Phase 2: 由 AgentLoop 在 setupClusterRPCChannel 中调用）
+func (c *Cluster) SetMessageBus(bus *bus.MessageBus) {
+	c.bus = bus
+}
+
+// handleTaskComplete 任务完成回调（Phase 2: 通过 bus 通知 AgentLoop 续行）
+func (c *Cluster) handleTaskComplete(taskID string) {
+	task, err := c.taskManager.GetTask(taskID)
+	if err != nil || task.OriginalChannel == "" {
+		return
+	}
+	if c.bus == nil {
+		c.logger.RPCInfo("Task %s completed but bus not set, skipping continuation", taskID)
+		return
+	}
+	// 通过 system channel 通知 AgentLoop 续行
+	c.bus.PublishInbound(bus.InboundMessage{
+		Channel:  "system",
+		SenderID: fmt.Sprintf("cluster_continuation:%s", taskID),
+		ChatID:   fmt.Sprintf("%s:%s", task.OriginalChannel, task.OriginalChatID),
+		Content:  "", // 续行数据通过 taskID 从 AgentLoop 本地 map 获取
+	})
+	c.logger.RPCInfo("Task %s completion notified to agent loop", taskID)
 }
 
 // GetLogger returns the cluster logger
 func (c *Cluster) GetLogger() *ClusterLogger {
 	return c.logger
+}
+
+// GetWorkspace returns the workspace path
+func (c *Cluster) GetWorkspace() string {
+	return c.workspace
+}
+
+// HandleTaskCompleteForTest 暴露 handleTaskComplete 给测试代码
+func (c *Cluster) HandleTaskCompleteForTest(taskID string) {
+	c.handleTaskComplete(taskID)
+}
+
+// SetTaskManagerForTest 设置 TaskManager（测试专用，允许注入自定义 TaskManager）
+func (c *Cluster) SetTaskManagerForTest(tm *TaskManager) {
+	c.taskManager = tm
 }
 
 // GetAddress returns the RPC address of this node

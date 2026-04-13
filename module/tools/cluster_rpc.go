@@ -15,7 +15,9 @@ import (
 
 // ClusterRPCTool enables agents to make RPC calls to other bots in the cluster
 type ClusterRPCTool struct {
-	cluster *cluster.Cluster
+	cluster       *cluster.Cluster
+	originChannel string // Phase 2: 当前消息的通道
+	originChatID  string // Phase 2: 当前消息的会话 ID
 }
 
 // NewClusterRPCTool creates a new cluster RPC tool
@@ -23,6 +25,12 @@ func NewClusterRPCTool(cluster *cluster.Cluster) *ClusterRPCTool {
 	return &ClusterRPCTool{
 		cluster: cluster,
 	}
+}
+
+// SetContext 实现 ContextualTool 接口（Phase 2）
+func (t *ClusterRPCTool) SetContext(channel, chatID string) {
+	t.originChannel = channel
+	t.originChatID = chatID
 }
 
 // Name returns the tool name
@@ -92,8 +100,8 @@ func (t *ClusterRPCTool) Execute(ctx context.Context, params map[string]interfac
 	return SilentResult(string(response))
 }
 
-// executeAsyncPeerChat 异步 peer_chat 路径
-// 对 LLM 来说仍然是阻塞的（等待本地 channel），但底层不占 TCP 连接
+// executeAsyncPeerChat 异步 peer_chat 路径（Phase 2: 非阻塞）
+// 提交任务到 B 端，返回 AsyncResult（含 TaskID），由 AgentLoop 保存续行快照
 func (t *ClusterRPCTool) executeAsyncPeerChat(ctx context.Context, peerID string, payload map[string]interface{}) *ToolResult {
 	// 1. 注入 source 信息（本节点 ID、地址、RPC 端口）
 	payload["_source"] = map[string]interface{}{
@@ -106,36 +114,17 @@ func (t *ClusterRPCTool) executeAsyncPeerChat(ctx context.Context, peerID string
 	taskID := fmt.Sprintf("task-%d", generateTaskTimestamp())
 	payload["task_id"] = taskID
 
-	// 3. 提交异步任务（短同步调用获取 ACK）
-	submittedID, err := t.cluster.SubmitTask(ctx, peerID, "peer_chat", payload)
+	// 3. 提交异步任务（传入 channel/chatID 供续行通知使用）
+	submittedID, err := t.cluster.SubmitTask(ctx, peerID, "peer_chat", payload, t.originChannel, t.originChatID)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("Failed to submit task: %v", err))
 	}
 
-	// 4. 阻塞等待结果（本地 channel，不占 TCP 连接）
-	result, err := t.cluster.WaitForTask(ctx, submittedID)
-	if err != nil {
-		return ErrorResult(fmt.Sprintf("Task failed: %v", err))
-	}
-
-	// 5. 返回结果
-	if result.Status == "error" || result.Status == string(cluster.TaskFailed) {
-		errMsg := result.Error
-		if errMsg == "" {
-			errMsg = "unknown error"
-		}
-		return ErrorResult(fmt.Sprintf("Peer chat failed: %s", errMsg))
-	}
-
-	// 返回 response 内容
-	response := result.Response
-	if response == "" {
-		// 如果没有 response 字段，序列化整个结果
-		resultJSON, _ := json.Marshal(result)
-		response = string(resultJSON)
-	}
-
-	return SilentResult(response)
+	// 4. 返回 AsyncResult（包含 taskID 供 AgentLoop 关联续行快照）
+	result := AsyncResult(fmt.Sprintf("peer_chat 任务已提交到 %s (task_id: %s)，等待回调...",
+		peerID, submittedID))
+	result.TaskID = submittedID
+	return result
 }
 
 // GetAvailablePeers returns information about available peers

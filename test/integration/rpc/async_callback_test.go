@@ -31,9 +31,9 @@ var testNodeRegistry = &struct {
 // TestTwoNodeAsyncRPCCallback 测试完整的异步回调流程：
 // 1. A 提交 peer_chat → B 立即返回 ACK
 // 2. B 异步处理 LLM → 回调 A 的 peer_chat_callback
-// 3. A 匹配 taskID → 返回结果
+// 3. A 匹配 taskID → onTaskComplete 回调触发
 func TestTwoNodeAsyncRPCCallback(t *testing.T) {
-	t.Log("=== Two-Node Async RPC Callback Integration Test ===")
+	t.Log("=== Two-Node Async RPC Callback Integration Test (Phase 2) ===")
 
 	// ---- 创建节点 A（请求方） ----
 	nodeA := createAsyncTestNode("Node-A", 0)
@@ -84,12 +84,14 @@ func TestTwoNodeAsyncRPCCallback(t *testing.T) {
 
 	// A 提交任务到 TaskManager
 	task := &cluster.Task{
-		ID:        taskID,
-		Action:    "peer_chat",
-		PeerID:    "Node-B",
-		Payload:   payload,
-		Status:    cluster.TaskPending,
-		CreatedAt: time.Now(),
+		ID:              taskID,
+		Action:          "peer_chat",
+		PeerID:          "Node-B",
+		Payload:         payload,
+		Status:          cluster.TaskPending,
+		CreatedAt:       time.Now(),
+		OriginalChannel: "web",
+		OriginalChatID:  "test-chat",
 	}
 	if err := nodeA.taskManager.Submit(task); err != nil {
 		t.Fatalf("Failed to submit task: %v", err)
@@ -115,19 +117,33 @@ func TestTwoNodeAsyncRPCCallback(t *testing.T) {
 	t.Logf("  ACK verified: status=accepted, task_id=%v", ack["task_id"])
 
 	// ---- 步骤 3: 等待 B 异步处理 + 回调 A ----
+	// Phase 2: 轮询等待任务完成（因为不再有阻塞的 WaitForTask）
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	result, err := nodeA.taskManager.WaitForTask(ctx, taskID)
-	if err != nil {
-		t.Fatalf("WaitForTask failed: %v", err)
+	var result *cluster.Task
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("Timeout waiting for task completion")
+		default:
+		}
+		gotTask, err := nodeA.taskManager.GetTask(taskID)
+		if err != nil {
+			t.Fatalf("GetTask failed: %v", err)
+		}
+		if gotTask.Status == cluster.TaskCompleted || gotTask.Status == cluster.TaskFailed {
+			result = gotTask
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	t.Logf("Step 3: Callback received!")
 	t.Logf("  status=%s", result.Status)
 	t.Logf("  response=%s", result.Response)
 
-	if result.Status != string(cluster.TaskCompleted) {
+	if result.Status != cluster.TaskCompleted {
 		t.Errorf("Expected task status 'completed', got '%s'", result.Status)
 	}
 	if result.Response == "" {
@@ -170,6 +186,57 @@ func TestTwoNodeAsyncRPC_MissingContent(t *testing.T) {
 	}
 
 	t.Log("=== Missing Content Test PASSED ===")
+}
+
+// TestTaskManagerOnComplete 测试 onTaskComplete 回调（Phase 2 核心功能）
+func TestTaskManagerOnComplete(t *testing.T) {
+	t.Log("=== TaskManager onTaskComplete Callback Test ===")
+
+	nodeA := createAsyncTestNode("Node-A-CB", 0)
+	if err := nodeA.Start(); err != nil {
+		t.Fatalf("Failed to start Node A: %v", err)
+	}
+	defer nodeA.Stop()
+
+	var callbackTaskID string
+	var cbMu sync.Mutex
+	nodeA.taskManager.SetOnComplete(func(tid string) {
+		cbMu.Lock()
+		callbackTaskID = tid
+		cbMu.Unlock()
+	})
+
+	taskID := fmt.Sprintf("cb-task-%d", time.Now().UnixNano())
+	task := &cluster.Task{
+		ID:              taskID,
+		Action:          "peer_chat",
+		PeerID:          "Node-B",
+		Status:          cluster.TaskPending,
+		CreatedAt:       time.Now(),
+		OriginalChannel: "web",
+		OriginalChatID:  "test-chat",
+	}
+
+	if err := nodeA.taskManager.Submit(task); err != nil {
+		t.Fatalf("Submit failed: %v", err)
+	}
+
+	// 通过 CompleteCallback 模拟回调完成
+	if err := nodeA.taskManager.CompleteCallback(taskID, "success", "Hello response", ""); err != nil {
+		t.Fatalf("CompleteCallback failed: %v", err)
+	}
+
+	// 等待回调触发
+	time.Sleep(100 * time.Millisecond)
+
+	cbMu.Lock()
+	if callbackTaskID != taskID {
+		t.Errorf("Expected callback taskID '%s', got '%s'", taskID, callbackTaskID)
+	}
+	cbMu.Unlock()
+
+	t.Logf("Callback correctly triggered for task: %s", taskID)
+	t.Log("=== onTaskComplete Callback Test PASSED ===")
 }
 
 // asyncTestNode 异步测试节点
