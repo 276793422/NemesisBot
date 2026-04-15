@@ -1454,3 +1454,43 @@ func TestPathManager_AllPaths(t *testing.T) {
 
 	_ = homeDir // Use variable
 }
+
+func TestEnvScannerConfig(t *testing.T) {
+	if EnvScannerConfig != "NEMESISBOT_SCANNER_CONFIG" {
+		t.Errorf("EnvScannerConfig = %q, want %q", EnvScannerConfig, "NEMESISBOT_SCANNER_CONFIG")
+	}
+}
+
+func TestResolveScannerConfigPath_EnvVar(t *testing.T) {
+	envVal := "/tmp/test_scanner.json"
+	os.Setenv(EnvScannerConfig, envVal)
+	defer os.Unsetenv(EnvScannerConfig)
+
+	result := ResolveScannerConfigPath()
+	if result != envVal {
+		t.Errorf("ResolveScannerConfigPath() = %q, want %q", result, envVal)
+	}
+}
+
+func TestResolveScannerConfigPath_Default(t *testing.T) {
+	os.Unsetenv(EnvScannerConfig)
+	os.Unsetenv(EnvHome)
+	LocalMode = false
+
+	result := ResolveScannerConfigPath()
+	if result == "" {
+		t.Error("ResolveScannerConfigPath() should not return empty string")
+	}
+	// Should end with config.scanner.json
+	if !strings.HasSuffix(result, "config.scanner.json") {
+		t.Errorf("Expected path ending with config.scanner.json, got %q", result)
+	}
+}
+
+func TestResolveScannerConfigPathInWorkspace(t *testing.T) {
+	result := ResolveScannerConfigPathInWorkspace("/workspace")
+	expected := filepath.Join("/workspace", "config", "config.scanner.json")
+	if result != expected {
+		t.Errorf("ResolveScannerConfigPathInWorkspace() = %q, want %q", result, expected)
+	}
+}

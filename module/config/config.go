@@ -56,6 +56,7 @@ var embeddedDefaults struct {
 	security []byte
 	cluster  []byte
 	skills   []byte
+	scanner  []byte
 	mu       sync.RWMutex
 }
 
@@ -71,6 +72,7 @@ func GetEmbeddedDefaults() EmbeddedDefaults {
 		Security: embeddedDefaults.security,
 		Cluster:  embeddedDefaults.cluster,
 		Skills:   embeddedDefaults.skills,
+		Scanner:  embeddedDefaults.scanner,
 	}
 }
 
@@ -81,11 +83,12 @@ type EmbeddedDefaults struct {
 	Security []byte
 	Cluster  []byte
 	Skills   []byte
+	Scanner  []byte
 }
 
 // SetEmbeddedDefaults sets the embedded default configuration files from byte arrays.
 // This is called from command package during initialization.
-func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData, skillsData []byte) error {
+func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData, skillsData, scannerData []byte) error {
 	embeddedDefaults.mu.Lock()
 	defer embeddedDefaults.mu.Unlock()
 
@@ -94,6 +97,7 @@ func SetEmbeddedDefaults(configData, mcpData, securityData, clusterData, skillsD
 	embeddedDefaults.security = securityData
 	embeddedDefaults.cluster = clusterData
 	embeddedDefaults.skills = skillsData
+	embeddedDefaults.scanner = scannerData
 
 	return nil
 }
@@ -140,6 +144,12 @@ func SetEmbeddedDefaultsFromFS(configFS fs.FS) error {
 		return fmt.Errorf("failed to read config.skills.default.json: %w", err)
 	}
 	embeddedDefaults.skills = data
+
+	// Read config.scanner.default.json (optional — don't fail if missing)
+	scannerData, scannerErr := fs.ReadFile(configFS, "config.scanner.default.json")
+	if scannerErr == nil {
+		embeddedDefaults.scanner = scannerData
+	}
 
 	return nil
 }
@@ -1208,6 +1218,87 @@ func LoadSecurityConfig(path string) (*SecurityConfig, error) {
 
 // SaveSecurityConfig saves security configuration to a separate config.security.json file.
 func SaveSecurityConfig(path string, cfg *SecurityConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, data, 0600)
+}
+
+// ScannerFullConfig holds the complete scanner configuration.
+// Engines is a map of engine name → raw JSON (parsed lazily by each engine).
+type ScannerFullConfig struct {
+	Enabled []string               `json:"enabled"`
+	Engines map[string]json.RawMessage `json:"engines"`
+}
+
+// EngineState tracks installation and database status for a scanner engine.
+type EngineState struct {
+	InstallStatus       string `json:"install_status,omitempty"`       // pending, installed, failed
+	InstallError        string `json:"install_error,omitempty"`
+	LastInstallAttempt  string `json:"last_install_attempt,omitempty"` // RFC3339
+	DBStatus            string `json:"db_status,omitempty"`            // missing, ready, stale
+	LastDBUpdate        string `json:"last_db_update,omitempty"`       // RFC3339
+}
+
+// ClamAVEngineConfig holds ClamAV-specific scanner configuration.
+type ClamAVEngineConfig struct {
+	URL            string       `json:"url"`
+	ClamAVPath     string       `json:"clamav_path"`
+	Address        string       `json:"address"`
+	ScanOnWrite    bool         `json:"scan_on_write"`
+	ScanOnDownload bool         `json:"scan_on_download"`
+	ScanOnExec     bool         `json:"scan_on_exec"`
+	ScanExtensions []string     `json:"scan_extensions"`
+	SkipExtensions []string     `json:"skip_extensions"`
+	MaxFileSize    int64        `json:"max_file_size"`
+	UpdateInterval string       `json:"update_interval"`
+	DataDir        string       `json:"data_dir,omitempty"`
+	State          EngineState  `json:"state,omitempty"`
+}
+
+// LoadScannerConfig loads scanner configuration from config.scanner.json.
+// Three-tier fallback: file → embedded default → hardcoded default.
+func LoadScannerConfig(path string) (*ScannerFullConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Try embedded default
+			embeddedDefaults.mu.RLock()
+			defaultData := embeddedDefaults.scanner
+			embeddedDefaults.mu.RUnlock()
+
+			if len(defaultData) > 0 {
+				var cfg ScannerFullConfig
+				if json.Unmarshal(defaultData, &cfg) == nil {
+					return &cfg, nil
+				}
+			}
+			// Hardcoded default
+			return &ScannerFullConfig{
+				Enabled: []string{},
+				Engines: map[string]json.RawMessage{},
+			}, nil
+		}
+		return nil, err
+	}
+
+	var cfg ScannerFullConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+// SaveScannerConfig saves scanner configuration to config.scanner.json.
+func SaveScannerConfig(path string, cfg *ScannerFullConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

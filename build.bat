@@ -87,7 +87,7 @@ REM Step 2: Build with dynamic ldflags
 echo [Step 2/3] Building %OUTPUT_NAME%...
 echo.
 
-go build %BUILD_TAGS% -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o %OUTPUT_NAME% .\nemesisbot\
+go build -a %BUILD_TAGS% -ldflags "-X main.version=%VERSION% -X main.gitCommit=%GIT_COMMIT% -X main.buildTime=%BUILD_TIME% -X main.goVersion=%GO_VERSION% -s -w" -o %OUTPUT_NAME% .\nemesisbot\
 
 if errorlevel 1 (
     echo.

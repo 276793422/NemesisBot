@@ -60,6 +60,7 @@ const (
 	EnvMCPConfig      = "NEMESISBOT_MCP_CONFIG"
 	EnvSecurityConfig = "NEMESISBOT_SECURITY_CONFIG"
 	EnvSkillsConfig   = "NEMESISBOT_SKILLS_CONFIG"
+	EnvScannerConfig  = "NEMESISBOT_SCANNER_CONFIG"
 
 	// DefaultHomeDir is the default directory name in user's home directory
 	DefaultHomeDir = ".nemesisbot"
@@ -515,4 +516,35 @@ func ResolveSkillsConfigPath() string {
 // Usage: For runtime components that already know the workspace path.
 func ResolveSkillsConfigPathInWorkspace(workspace string) string {
 	return filepath.Join(workspace, "config", "config.skills.json")
+}
+
+// ResolveScannerConfigPath resolves the scanner configuration file path.
+// Priority: NEMESISBOT_SCANNER_CONFIG > workspace/config/config.scanner.json > Default
+func ResolveScannerConfigPath() string {
+	if envPath := os.Getenv(EnvScannerConfig); envPath != "" {
+		return envPath
+	}
+
+	// Try to get workspace from main config
+	homeDir, err := ResolveHomeDir()
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		homeDir = filepath.Join(home, DefaultHomeDir)
+	}
+
+	// Try to load main config to get workspace path
+	configPath := filepath.Join(homeDir, "config.json")
+	if cfg, err := loadConfigForWorkspace(configPath); err == nil {
+		workspace := cfg.WorkspacePath()
+		return filepath.Join(workspace, "config", "config.scanner.json")
+	}
+
+	// Fallback to old location (for backward compatibility)
+	return filepath.Join(homeDir, "config.scanner.json")
+}
+
+// ResolveScannerConfigPathInWorkspace returns the scanner config path for a specific workspace.
+// Usage: For runtime components that already know the workspace path.
+func ResolveScannerConfigPathInWorkspace(workspace string) string {
+	return filepath.Join(workspace, "config", "config.scanner.json")
 }

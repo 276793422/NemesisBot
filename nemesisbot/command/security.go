@@ -53,6 +53,8 @@ func CmdSecurity() {
 		cmdSecurityPending()
 	case "rules":
 		cmdSecurityRules()
+	case "scanner":
+		cmdScanner()
 	default:
 		fmt.Printf("Unknown security command: %s\n", subcommand)
 		SecurityHelp()
@@ -69,6 +71,7 @@ func SecurityHelp() {
 	fmt.Println("  edit                Edit security configuration file")
 	fmt.Println("  audit               View and manage audit logs")
 	fmt.Println("  rules               Manage security rules")
+	fmt.Println("  scanner             Manage virus scanner engines")
 	fmt.Println("  approve <id>        Approve a pending operation request")
 	fmt.Println("  deny <id> [reason]  Deny a pending operation request")
 	fmt.Println("  pending             List pending approval requests")

@@ -18,13 +18,21 @@ import (
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
 	"github.com/276793422/NemesisBot/module/security/approval"
+	"github.com/276793422/NemesisBot/module/security/scanner"
 )
+
+// globalScannerChain is the shared scanner chain instance.
+// Since multiple agents may be created during startup, we ensure only one
+// scanner chain is initialized to avoid port conflicts (e.g., clamd on 3310).
+var globalScannerChain *scanner.ScanChain
+var globalScannerOnce sync.Once
 
 // SecurityPlugin implements the plugin interface for security checks
 type SecurityPlugin struct {
 	*plugin.BasePlugin
 	auditor     *SecurityAuditor
 	approvalMgr approval.ApprovalManager
+	scanChain   *scanner.ScanChain
 	enabled     bool
 	configPath  string
 	mu          sync.RWMutex
@@ -98,6 +106,9 @@ func (p *SecurityPlugin) Init(pluginConfig map[string]interface{}) error {
 
 		logger.InfoC("security", "Security plugin initialized")
 	}
+
+	// Initialize scanner chain (independent of security enabled flag)
+	p.initScannerChain()
 
 	return nil
 }
@@ -227,6 +238,17 @@ func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInv
 			return false, err, false
 		}
 		return false, fmt.Errorf("operation denied by security policy"), false
+	}
+
+	// After ABAC passes, run scanner chain for file-related operations
+	if p.scanChain != nil {
+		clean, scanErr := p.scanChain.ScanToolInvocation(ctx, invocation.ToolName, invocation.Args)
+		if !clean {
+			if scanErr != nil {
+				return false, scanErr, false
+			}
+			return false, fmt.Errorf("operation blocked by virus scanner"), false
+		}
 	}
 
 	return true, nil, false
@@ -370,6 +392,12 @@ func (p *SecurityPlugin) Cleanup() error {
 		}
 	}
 
+	// Stop scanner chain
+	if p.scanChain != nil {
+		p.scanChain.Stop()
+		p.scanChain = nil
+	}
+
 	return nil
 }
 
@@ -416,6 +444,56 @@ func (p *SecurityPlugin) ReloadConfig() error {
 
 	logger.InfoC("security", "Security configuration reloaded")
 	return nil
+}
+
+// initScannerChain loads scanner configuration and starts the scan chain.
+// Uses a singleton pattern to avoid starting multiple scanner instances
+// (e.g., multiple agents during Bot startup all trying to bind port 3310).
+func (p *SecurityPlugin) initScannerChain() {
+	// If a global scanner chain already exists, reuse it
+	if globalScannerChain != nil {
+		p.scanChain = globalScannerChain
+		return
+	}
+
+	scannerConfigPath := path.ResolveScannerConfigPath()
+	scannerCfg, err := config.LoadScannerConfig(scannerConfigPath)
+	if err != nil {
+		logger.WarnCF("security", "Failed to load scanner config", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	if len(scannerCfg.Enabled) == 0 {
+		return
+	}
+
+	chain := scanner.NewScanChain()
+	if err := chain.LoadFromConfig(scannerCfg); err != nil {
+		logger.WarnCF("security", "Failed to load scan chain", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	globalScannerOnce.Do(func() {
+		if err := chain.Start(ctx); err != nil {
+			logger.WarnCF("security", "Failed to start scan chain", map[string]interface{}{
+				"error": err.Error(),
+			})
+			return
+		}
+		globalScannerChain = chain
+		logger.InfoCF("security", "Scanner chain initialized", map[string]interface{}{
+			"engines": scannerCfg.Enabled,
+		})
+	})
+
+	p.scanChain = globalScannerChain
 }
 
 // initApprovalManager initializes the approval manager for interactive approval dialogs
