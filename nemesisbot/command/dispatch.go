@@ -94,5 +94,11 @@ func PrintHelp() {
 	fmt.Println("  nemesisbot model add --model zhipu/glm-4.7 --key YOUR_KEY --default")
 	fmt.Println("  nemesisbot gateway                  # 启动服务")
 	fmt.Println()
+	fmt.Println("Scanner Setup (病毒扫描):")
+	fmt.Println("  nemesisbot security scanner enable clamav    # 启用 ClamAV 引擎")
+	fmt.Println("  nemesisbot security scanner check            # 检查安装状态")
+	fmt.Println("  nemesisbot security scanner install          # 下载安装 + 病毒库")
+	fmt.Println("  nemesisbot gateway                           # 启动后自动加载扫描引擎")
+	fmt.Println()
 	fmt.Println("Docs: https://github.com/276793422/NemesisBot")
 }

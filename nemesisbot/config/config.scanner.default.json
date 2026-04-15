@@ -2,7 +2,7 @@
   "enabled": [],
   "engines": {
     "clamav": {
-      "url": "",
+      "url": "https://www.clamav.net/downloads/production/clamav-1.5.2.win.x64.zip",
       "clamav_path": "",
       "address": "127.0.0.1:3310",
       "scan_on_write": true,

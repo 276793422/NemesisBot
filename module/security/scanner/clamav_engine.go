@@ -93,18 +93,62 @@ func (e *ClamAVEngine) Download(ctx context.Context, dir string) error {
 		return fmt.Errorf("download failed with status: %s", resp.Status)
 	}
 
-	// Save to temp file
+	// Save to temp file with progress display
 	tmpFile, err := os.CreateTemp(dir, "clamav-*.zip")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("download write failed: %w", err)
+	total := resp.ContentLength
+	var written int64
+	buf := make([]byte, 32*1024)
+	lastLog := time.Now()
+
+	for {
+		nr, readErr := resp.Body.Read(buf)
+		if nr > 0 {
+			nw, writeErr := tmpFile.Write(buf[:nr])
+			if writeErr != nil {
+				tmpFile.Close()
+				os.Remove(tmpPath)
+				return fmt.Errorf("download write failed: %w", writeErr)
+			}
+			written += int64(nw)
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				tmpFile.Close()
+				os.Remove(tmpPath)
+				return fmt.Errorf("download read failed: %w", readErr)
+			}
+			break
+		}
+		// Log progress every 2 seconds
+		if time.Since(lastLog) >= 2*time.Second {
+			if total > 0 {
+				pct := float64(written) * 100 / float64(total)
+				logger.InfoCF("scanner", "Downloading", map[string]interface{}{
+					"progress":    fmt.Sprintf("%.1f%%", pct),
+					"downloaded":  formatBytes(written),
+					"total":       formatBytes(total),
+				})
+			} else {
+				logger.InfoCF("scanner", "Downloading", map[string]interface{}{
+					"downloaded": formatBytes(written),
+				})
+			}
+			lastLog = time.Now()
+		}
 	}
+
+	// Final progress
+	if total > 0 {
+		logger.InfoCF("scanner", "Download complete", map[string]interface{}{
+			"size": formatBytes(written),
+		})
+	}
+
 	tmpFile.Close()
 
 	// Extract zip
@@ -196,6 +240,15 @@ func (e *ClamAVEngine) Start(ctx context.Context) error {
 
 	logger.InfoC("scanner", "ClamAV engine started")
 	return nil
+}
+
+// formatBytes formats bytes into a human-readable string (e.g., "42.5 MB").
+func formatBytes(b int64) string {
+	const mb = 1024 * 1024
+	if b < mb {
+		return fmt.Sprintf("%d KB", b/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(b)/float64(mb))
 }
 
 // Stop shuts down the ClamAV engine.
