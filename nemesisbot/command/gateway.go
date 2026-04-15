@@ -99,6 +99,10 @@ func CmdGateway() {
 	// Print startup banner
 	printGatewayBanner(cfg)
 
+	// Wire system tray callbacks to service manager
+	webURL := fmt.Sprintf("http://%s:%d", cfg.Channels.Web.Host, cfg.Channels.Web.Port)
+	ConfigureSystemTray(webURL, svcMgr.StartBot, svcMgr.StopBot)
+
 	// Wait for shutdown signal
 	// Supports: Ctrl+C, system tray quit, desktop UI close, WebSocket close, etc.
 	svcMgr.WaitForShutdownWithDesktop(GetGlobalShutdownChan())

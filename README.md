@@ -27,6 +27,7 @@
 - **安全中间件** - 对文件、进程、网络、硬件操作进行实时监控
 - **分级危险等级** - LOW / MEDIUM / HIGH / CRITICAL 四级风险控制
 - **工作目录隔离** - 默认启用沙箱模式，保护系统安全
+- **病毒扫描集成** - 内置 ClamAV 引擎，文件写入/下载/执行时自动扫描
 
 **安全 ≠ 功能限制**
 - ✅ 在安全保障的前提下，提供完整的工具能力
@@ -128,13 +129,38 @@ nemesisbot model add --model zhipu/glm-4.7 --key YOUR_API_KEY --default
 ### 启动服务
 
 ```bash
-# 启动网关
+# 启动网关（Windows 下自动启用系统托盘图标）
 nemesisbot gateway
 
 # 访问 Web 界面
 # 浏览器打开：http://127.0.0.1:49000
 # 默认访问密钥：276793422
 ```
+
+**系统托盘**（Windows）：启动 gateway 后自动在系统托盘显示图标，右键菜单支持：
+- 启动/停止服务
+- 打开 Web UI
+- 退出程序
+
+### 病毒扫描（可选）
+
+NemesisBot 内置 ClamAV 病毒扫描引擎，可在文件操作时自动扫描。
+
+```bash
+# 启用 ClamAV 引擎
+nemesisbot security scanner enable clamav
+
+# 检查安装状态
+nemesisbot security scanner check
+
+# 自动下载安装 ClamAV + 病毒库
+nemesisbot security scanner install
+
+# 查看扫描引擎状态
+nemesisbot security scanner list
+```
+
+启用后，gateway 启动时自动加载扫描引擎，文件写入、下载、执行时自动扫描。
 
 ---
 
@@ -553,6 +579,7 @@ nemesisbot log config --detail-level full --log-dir logs/llm_requests
 NemesisBot/
 ├── module/               # 核心模块
 │   ├── security/         # 🔐 安全审计系统（核心特色）
+│   │   └── scanner/      #   🛡️ 病毒扫描引擎（ClamAV）
 │   ├── cluster/          # 🌐 分布式集群（核心特色）
 │   ├── agent/            # 🤖 Agent 核心引擎
 │   ├── channels/         # 📱 通讯渠道
@@ -561,11 +588,15 @@ NemesisBot/
 │   ├── config/           # ⚙️ 配置管理
 │   ├── bus/              # 📨 消息总线
 │   ├── routing/          # 🔀 路由分发
+│   ├── desktop/          # 🖥️ 桌面功能（系统托盘）
+│   │   └── systray/      #   系统托盘实现
+│   ├── services/         # 📋 服务管理器
 │   └── ...
 ├── Skills/               # 📚 技能系统
 │   ├── structured-development/  # 结构化开发流程
 │   ├── build-project/           # 项目构建流程
 │   ├── automated-testing/       # 自动化测试流程
+│   ├── scanner-e2e-test/        # Scanner E2E 测试流程
 │   ├── desktop-automation/      # 桌面自动化
 │   ├── wsl-operations/          # WSL 环境操作
 │   └── dump-analyze/            # Dump 文件分析
@@ -580,7 +611,8 @@ NemesisBot/
 │   ├── config.security.linux.json
 │   ├── config.mcp.default.json
 │   ├── config.cluster.default.json
-│   └── config.skills.default.json
+│   ├── config.skills.default.json
+│   └── config.scanner.default.json
 ├── docs/                 # 📖 文档目录
 │   └── ...              # BUG、INFO、PLAN、REPORT 等分类文档
 └── test/                 # 🧪 测试目录
@@ -595,7 +627,9 @@ NemesisBot/
 - **50,000+ 行代码** - 尽量保证较高的代码质量（持续更新中）
 - **24 个核心模块** - 清晰的架构设计
 - **ABAC 安全引擎** - 企业级权限控制
+- **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **分布式集群** - 支持多节点协同（已稳定可用）
+- **系统托盘** - Windows 下后台运行，托盘图标控制服务
 - **身份系统** - 拟真使用体验
 - **持久化记忆** - AI 持续学习和进化
 - **Skill 系统** - 可扩展的技能系统

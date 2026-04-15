@@ -19,12 +19,6 @@ func (s *SystemTray) Run() error {
 // Stop 停止系统托盘（stub）
 func (s *SystemTray) Stop() {}
 
-// SetOnShow 设置显示回调（stub）
-func (s *SystemTray) SetOnShow(fn func()) {}
-
-// SetOnHide 设置隐藏回调（stub）
-func (s *SystemTray) SetOnHide(fn func()) {}
-
 // SetOnStart 设置启动服务回调（stub）
 func (s *SystemTray) SetOnStart(fn func()) {}
 
@@ -36,6 +30,9 @@ func (s *SystemTray) SetOnOpenWebUI(fn func()) {}
 
 // SetOnQuit 设置退出回调（stub）
 func (s *SystemTray) SetOnQuit(fn func()) {}
+
+// SetWebUIURL 设置 Web UI 地址（stub）
+func (s *SystemTray) SetWebUIURL(url string) {}
 
 // Notify 显示通知（stub）
 func (s *SystemTray) Notify(title, message string) {}

@@ -210,9 +210,12 @@ func PrintMainHelp() {
 	fmt.Println("   ./testaiserver.exe help <模型名>  - 显示特定模型帮助")
 	fmt.Println("   ./testaiserver.exe api           - 显示 API 使用说明")
 	fmt.Println()
-	fmt.Println("📖 示例:")
+	fmt.Println("📖 示例1:")
 	fmt.Println("   ./testaiserver.exe help testai-5.0    # 查看安全模型帮助")
 	fmt.Println("   ./testaiserver.exe help categories     # 查看分类详情")
+	fmt.Println()
+	fmt.Println("📖 示例2:")
+	fmt.Println("   nemesisbot model add --model testai/testai-1.1 --key YOUR_API_KEY --base http://localhost:8080/v1 --default    # 模型测试用，回显内容")
 	fmt.Println()
 }
 

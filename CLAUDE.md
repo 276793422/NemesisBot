@@ -186,6 +186,26 @@ bus.PublishOutbound()
 - `auditor.go`：ABAC 策略引擎（基于属性的访问控制）
 - 四个风险级别：LOW / MEDIUM / HIGH / CRITICAL
 - 可通过配置禁用（`security.enabled = false`）
+- `plugin.go`：SecurityPlugin 集成入口，管理 scanner chain
+
+**病毒扫描**（module/security/scanner/）：
+- `engine.go`：`VirusScanner` 接口 + `InstallableEngine` 接口 + 状态常量
+- `chain.go`：`ScanChain` 多引擎扫描链，按配置加载引擎，install_status 门控
+- `clamav_engine.go`：ClamAV 引擎实现（Download/Start/Stop/ScanFile/ScanContent/ScanDirectory）
+- `clamav/`：ClamAV 子包（Manager、Scanner、Client、Updater）
+- **两层开关**：主配置 `security.enabled` → `config.scanner.json` 的 `enabled[]` 数组
+- **引擎状态管理**：`EngineState`（install_status: pending/installed/failed, db_status: missing/ready/stale）
+- **动态检测**：每个引擎通过 `TargetExecutables()` 定义要查找的可执行文件名（跨平台）
+- **SecurityPlugin 集成**：`initScannerChain()` 使用 `globalScannerChain + sync.Once` 单例，避免端口冲突
+- **配置文件**：`workspace/config/config.scanner.json`
+
+**系统托盘**（module/desktop/systray/）：
+- `systray.go`：SystemTray 实现（基于 `getlantern/systray`）
+- `icons.go`：图标管理（PNG embed → Windows ICO 自动转换）
+- 菜单：启动服务 / 停止服务 / 打开 Web UI / 版本信息 / 退出
+- **回调连接**：`main.go` 创建托盘 → `SetSystemTray()` 传递到命令包 → `CmdGateway()` 通过 `ConfigureSystemTray()` 连接 ServiceManager
+- **关闭协调**：托盘退出 → `TriggerShutdown()` → `globalShutdownChan` → `ServiceManager.WaitForShutdownWithDesktop()`
+- **build tag**：`!cross_compile` 编译真实实现，`cross_compile` 编译 stub
 
 ### 关键配置位置
 
@@ -469,7 +489,7 @@ nemesisbot.exe --local gateway
 
 **入口点**：`nemesisbot/main.go` - 命令路由
 **CLI 命令**：`nemesisbot/command/` - 命令实现
-**配置模板**：`nemesisbot/config/*.json` - 默认配置
+**配置模板**：`nemesisbot/config/*.json` - 默认配置（含 `config.scanner.default.json`）
 
 **核心模块**：
 - `module/agent/loop.go` - 主执行循环（**理解 agent 流程的起点**）
@@ -481,6 +501,9 @@ nemesisbot.exe --local gateway
   - `task_manager.go` - 异步任务状态 + onTaskComplete 回调
 - `module/cluster/rpc/` - 集群通信的 RPC 客户端/服务器
 - `module/security/` - 安全中间件和 ABAC
+- `module/security/scanner/` - 病毒扫描引擎（ScanChain、ClamAV）
+- `module/desktop/systray/` - 系统托盘（gateway 模式自动启用）
+- `module/services/` - 服务管理器（BotService 生命周期）
 
 **测试结构**：
 - `test/unit/` - 单元测试

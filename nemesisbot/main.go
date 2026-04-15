@@ -120,17 +120,21 @@ func main() {
 
 		// Set quit handler to trigger global shutdown
 		systemTray.SetOnQuit(func() {
-		fmt.Println("\n🛑 Shutdown requested from system tray")
-		command.TriggerShutdown()
-		systemTray.Stop()
-	})
+			fmt.Println("\n🛑 Shutdown requested from system tray")
+			command.TriggerShutdown()
+			systemTray.Stop()
+		})
+
+		// Pass system tray to command package for callback wiring
+		command.SetSystemTray(systemTray)
 
 		// Run in goroutine (non-blocking)
 		go func() {
-		if err := systemTray.Run(); err != nil {
-			fmt.Printf("⚠️  System tray error: %v\n", err)
-		}
+			if err := systemTray.Run(); err != nil {
+				fmt.Printf("⚠️  System tray error: %v\n", err)
+			}
 		}()
+
 		// Cleanup on exit
 		defer func() {
 			if systemTray != nil {

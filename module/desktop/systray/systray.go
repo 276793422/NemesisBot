@@ -18,10 +18,9 @@ type SystemTray struct {
 	running    bool
 	quitCh     chan struct{}
 	menuItems  map[string]*systray.MenuItem
+	webUIURL   string
 
 	// 回调函数
-	onShowFunc      func()
-	onHideFunc      func()
 	onStartFunc     func()
 	onStopFunc      func()
 	onOpenWebUIFunc func()
@@ -93,11 +92,6 @@ func (s *SystemTray) onExit() {
 
 // setupMenu 设置右键菜单
 func (s *SystemTray) setupMenu() {
-	// 显示/隐藏
-	mShow := systray.AddMenuItem("显示", "显示窗口")
-	mHide := systray.AddMenuItem("隐藏", "隐藏窗口")
-	systray.AddSeparator()
-
 	// 服务控制
 	mStart := systray.AddMenuItem("启动服务", "启动 Bot 服务")
 	mStop := systray.AddMenuItem("停止服务", "停止 Bot 服务")
@@ -116,103 +110,68 @@ func (s *SystemTray) setupMenu() {
 	mQuit := systray.AddMenuItem("退出", "退出程序")
 
 	// 保存菜单项引用
-	s.menuItems["show"] = mShow
-	s.menuItems["hide"] = mHide
 	s.menuItems["start"] = mStart
 	s.menuItems["stop"] = mStop
 	s.menuItems["webui"] = mWebUI
 	s.menuItems["quit"] = mQuit
 
 	// 启动事件监听
-	go s.handleMenuEvents(mShow, mHide, mStart, mStop, mWebUI, mQuit)
+	go s.handleMenuEvents(mStart, mStop, mWebUI, mQuit)
 }
 
 // handleMenuEvents 处理菜单点击事件
 func (s *SystemTray) handleMenuEvents(
-	mShow, mHide, mStart, mStop, mWebUI, mQuit *systray.MenuItem,
+	mStart, mStop, mWebUI, mQuit *systray.MenuItem,
 ) {
 	for {
 		select {
-		case <-mShow.ClickedCh:
-			log.Printf("[SysTray] Menu: Show clicked")
-			go func() {
-				if s.onShowFunc != nil {
-					s.onShowFunc()
-				}
-			}()
-
-		case <-mHide.ClickedCh:
-			log.Printf("[SysTray] Menu: Hide clicked")
-			go func() {
-				if s.onHideFunc != nil {
-					s.onHideFunc()
-				}
-			}()
-
 		case <-mStart.ClickedCh:
 			log.Printf("[SysTray] Menu: Start clicked")
-			go func() {
-				if s.onStartFunc != nil {
-					s.onStartFunc()
-				}
-			}()
+			s.mu.RLock()
+			fn := s.onStartFunc
+			s.mu.RUnlock()
+			if fn != nil {
+				go fn()
+			}
 
 		case <-mStop.ClickedCh:
 			log.Printf("[SysTray] Menu: Stop clicked")
-			go func() {
-				if s.onStopFunc != nil {
-					s.onStopFunc()
-				}
-			}()
+			s.mu.RLock()
+			fn := s.onStopFunc
+			s.mu.RUnlock()
+			if fn != nil {
+				go fn()
+			}
 
 		case <-mWebUI.ClickedCh:
 			log.Printf("[SysTray] Menu: Web UI clicked")
-			go func() {
-				s.mu.RLock()
-				fn := s.onOpenWebUIFunc
-				s.mu.RUnlock()
-
-				if fn != nil {
-					fn()
-				} else {
-					s.openBrowser("http://127.0.0.1:49000")
+			s.mu.RLock()
+			fn := s.onOpenWebUIFunc
+			url := s.webUIURL
+			s.mu.RUnlock()
+			if fn != nil {
+				go fn()
+			} else {
+				if url == "" {
+					url = "http://127.0.0.1:49000"
 				}
-			}()
+				go s.openBrowser(url)
+			}
 
 		case <-mQuit.ClickedCh:
 			log.Printf("[SysTray] Menu: Quit clicked")
-			go func() {
-				s.mu.RLock()
-				fn := s.onQuitFunc
-				s.mu.RUnlock()
-
-				if fn != nil {
-					fn()
-				}
-				// Note: os.Exit(0) is NOT called here
-				// The quit handler should trigger global shutdown
-				// which will gracefully stop all services
-			}()
+			s.mu.RLock()
+			fn := s.onQuitFunc
+			s.mu.RUnlock()
+			if fn != nil {
+				go fn()
+			}
 
 		case <-s.quitCh:
 			log.Printf("[SysTray] Menu handler exiting")
 			return
 		}
 	}
-}
-
-// SetOnShow 设置显示回调
-func (s *SystemTray) SetOnShow(fn func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.onShowFunc = fn
-}
-
-// SetOnHide 设置隐藏回调
-func (s *SystemTray) SetOnHide(fn func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.onHideFunc = fn
 }
 
 // SetOnStart 设置启动服务回调
@@ -241,6 +200,13 @@ func (s *SystemTray) SetOnQuit(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onQuitFunc = fn
+}
+
+// SetWebUIURL 设置 Web UI 地址
+func (s *SystemTray) SetWebUIURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webUIURL = url
 }
 
 // openBrowser 打开浏览器
