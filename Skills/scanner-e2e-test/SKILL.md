@@ -16,10 +16,11 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 ## 强制要求
 
 1. **所有路径必须使用正斜杠** `C:/path/to/file`，禁止反斜杠。WebSocket 消息中的路径、命令行参数中的路径均如此。
-2. **工作目录流转**: Phase 1-2 在项目根目录，Phase 3-5 在 `test/autotest/`，Phase 6 返回项目根目录。每个阶段开始时执行 `pwd` 验证。
-3. **使用项目自带的 WebSocket 客户端**: `test/websocket_chat_client.go`，不使用 Python 脚本。
-4. **编译 Bot 使用 `go build -a`**: 确保 `-a` 强制重编译，`-tags "production,powershell"` 启用 PowerShell 兼容。
-5. **EICAR 测试必须使用 Go 脚本发送**: EICAR 字符串含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。用 `go run send_eicar.go` 替代 `websocket_chat_client.exe`。
+2. **禁止在命令中使用项目绝对路径**: 所有 `cd`、编译输出路径等均使用相对路径。唯一允许的绝对路径是测试文件目标 `C:/Zoo/Temp/test`（与项目无关的外部路径）和 WebSocket 消息中的文件路径。
+3. **工作目录流转**: Phase 1-2 在项目根目录，Phase 3-5 在 `test/autotest/`，Phase 5 末尾返回项目根目录。**每个阶段开始时执行 `pwd` 验证当前目录**。
+4. **使用项目自带的 WebSocket 客户端**: `test/websocket_chat_client.go`，不使用 Python 脚本。
+5. **编译 Bot 使用 `go build -a`**: 确保 `-a` 强制重编译，`-tags "production,powershell"` 启用 PowerShell 兼容。
+6. **EICAR 测试必须使用 Go 脚本发送**: EICAR 字符串含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。用 `go run send_eicar.go` 替代 `websocket_chat_client.exe`。
 
 ---
 
@@ -37,20 +38,22 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 
 ## Phase 1: 环境准备
 
+**每个 Step 开始前验证**: `pwd` 应在项目根目录（`NemesisBot/NemesisBot`）。
+
 ### Step 1: 编译测试 AI 服务
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot
+pwd
 mkdir -p test/autotest
 cd test/TestAIServer && go build -o ../../test/autotest/testaiserver.exe .
 ```
 
-**验证**: `test/autotest/testaiserver.exe` 存在。
+**验证**: `ls test/autotest/testaiserver.exe` 存在。
 
 ### Step 2: 编译无弹窗 Bot
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot
+pwd
 go build -a -tags "production,powershell" -ldflags "-s -w" -o test/autotest/nemesisbot.exe ./nemesisbot/
 ```
 
@@ -59,14 +62,15 @@ go build -a -tags "production,powershell" -ldflags "-s -w" -o test/autotest/neme
 ### Step 3: 编译 WebSocket 测试客户端
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot
+pwd
 go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go
 ```
 
 ### Step 4: 启动测试 AI 服务
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+cd test/autotest
+pwd
 ./testaiserver.exe > testai.log 2>&1 &
 ```
 
@@ -75,7 +79,8 @@ cd /c/AI/NemesisBot/NemesisBot/test/autotest
 ### Step 5: 配置本地 Bot
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+cd test/autotest
+pwd
 ./nemesisbot.exe --local onboard default
 ./nemesisbot.exe --local model add --model test/testai-5.0 --base http://127.0.0.1:8080/v1 --key test-key --default
 ```
@@ -86,11 +91,12 @@ cd /c/AI/NemesisBot/NemesisBot/test/autotest
 
 ## Phase 2: Scanner 配置与安装
 
-所有命令在 `test/autotest/` 目录下执行。
+**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
 
 ### Step 6: 启用 clamav 引擎
 
 ```bash
+pwd
 ./nemesisbot.exe --local security scanner enable clamav
 ```
 
@@ -115,16 +121,15 @@ cd /c/AI/NemesisBot/NemesisBot/test/autotest
 if [ $? -ne 0 ] || ! ./nemesisbot.exe --local security scanner check 2>&1 | grep -q "install=installed"; then
     echo "官方下载失败，启用本地回退"
     mkdir -p http-srv
-    cp "Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip" http-srv/
-    cd http-srv && python -m http.server 9999 &
-    cd /c/AI/NemesisBot/NemesisBot/test/autotest
+    cp ../../Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip http-srv/
+    python -m http.server 9999 --directory http-srv &
     ./nemesisbot.exe --local security scanner add clamav --url http://127.0.0.1:9999/clamav-1.5.2.win.x64.zip
     ./nemesisbot.exe --local security scanner install
 fi
 ```
 
 **说明**:
-- 本地安装包位于 `Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip`，与 SKILL 同目录
+- 本地安装包路径使用相对路径 `../../Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip`（从 `test/autotest` 出发）
 - 本地回退使用 Python HTTP 服务（端口 9999），Phase 5 清理时需停止
 - `scanner install` 会自动完成：下载 zip → 解压 → 递归检测 `clamd.exe` → freshclam 下载病毒库 → 验证
 
@@ -140,6 +145,8 @@ fi
 
 ## Phase 3: Bot 启动与验证
 
+**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
+
 ### Step 10: 端口和进程预检查
 
 ```bash
@@ -150,7 +157,7 @@ netstat -ano | grep ":3310 " | grep LISTEN
 ### Step 11: 启动 Bot
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+pwd
 ./nemesisbot.exe --local gateway > nemesisbot.log 2>&1 &
 ```
 
@@ -175,10 +182,12 @@ grep "Scanner chain initialized" nemesisbot.log
 
 ## Phase 4: 扫描功能验证
 
+**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
+
 ### 前置: 创建测试目录
 
 ```bash
-mkdir -p /c/Zoo/Temp/test
+mkdir -p C:/Zoo/Temp/test
 ```
 
 ### Step 13: 干净文件放行
@@ -186,13 +195,13 @@ mkdir -p /c/Zoo/Temp/test
 从 `nemesisbot.log` 中获取 Auth Token（`🔑 Auth Token: XXXXXXXXX`）。
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+pwd
 ./websocket_chat_client.exe ws://127.0.0.1:49001/ws '<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/clean.txt","content":"hello world"}</FILE_OP>'
 ```
 
 **验证**:
 ```bash
-cat /c/Zoo/Temp/test/clean.txt
+cat C:/Zoo/Temp/test/clean.txt
 # 预期: hello world
 
 grep "virus detected" nemesisbot.log
@@ -228,13 +237,13 @@ func main() {
 ```
 
 ```bash
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+pwd
 go run send_eicar.go
 ```
 
 **验证**:
 ```bash
-ls /c/Zoo/Temp/test/eicar.exe 2>/dev/null || echo "PASS: file not created"
+ls C:/Zoo/Temp/test/eicar.exe 2>/dev/null || echo "PASS: file not created"
 
 grep "virus detected" nemesisbot.log
 # 预期: 包含 Eicar-Test-Signature
@@ -261,10 +270,11 @@ taskkill //F //IM testaiserver.exe
 # 若 Step 8 启用了本地 HTTP 回退，停止 Python 进程
 taskkill //F //IM python.exe 2>/dev/null
 
-# 先切出测试目录，再用 cmd rd 强制删除（rm -rf 在 Windows 上受文件锁限制）
-cd /c/AI/NemesisBot/NemesisBot
-cmd //c "rd /s /q test\\autotest"
-rm -rf /c/Zoo/Temp/test
+# 先切出测试目录再删除（工作目录在 test/autotest 内时 Windows 会锁住目录）
+cd ../..
+pwd
+rm -rf test/autotest
+rm -rf C:/Zoo/Temp/test
 ```
 
 **验证**: `ls test/autotest 2>/dev/null && echo "FAIL: 目录残留" || echo "PASS: 已清理"`
