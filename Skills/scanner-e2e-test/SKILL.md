@@ -261,8 +261,9 @@ taskkill //F //IM testaiserver.exe
 # 若 Step 8 启用了本地 HTTP 回退，停止 Python 进程
 taskkill //F //IM python.exe 2>/dev/null
 
-# 删除整个测试目录（含所有编译产物、日志、workspace、.nemesisbot）
-rm -rf test/autotest
+# 先切出测试目录，再用 cmd rd 强制删除（rm -rf 在 Windows 上受文件锁限制）
+cd /c/AI/NemesisBot/NemesisBot
+cmd //c "rd /s /q test\\autotest"
 rm -rf /c/Zoo/Temp/test
 ```
 
