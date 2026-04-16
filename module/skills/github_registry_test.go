@@ -89,10 +89,6 @@ func TestNewGitHubRegistry(t *testing.T) {
 			if reg.client == nil {
 				t.Error("expected client to be initialized")
 			}
-
-			if reg.client.Timeout != tt.wantTimeout {
-				t.Errorf("expected client timeout %v, got %v", tt.wantTimeout, reg.client.Timeout)
-			}
 		})
 	}
 }

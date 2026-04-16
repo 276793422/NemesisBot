@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ func CmdSkills() {
 	case "install-clawhub":
 		if len(os.Args) < 5 {
 			fmt.Println("Usage: nemesisbot skills install-clawhub <author> <skill-name> [output-name]")
+			fmt.Println("Note:  This is the legacy command. Recommended: nemesisbot skills install clawhub/<skill-name>")
 			fmt.Println("Example: nemesisbot skills install-clawhub steipete weather")
 			fmt.Println("         nemesisbot skills install-clawhub steipete weather weather-clawhub")
 			return
@@ -108,34 +110,37 @@ func CmdSkills() {
 func SkillsHelp() {
 	fmt.Println("\nSkills commands:")
 	fmt.Println("  list                             List installed skills")
-	fmt.Println("  install <repo>                   Install skill from GitHub")
-	fmt.Println("  install-clawhub <author> <name>  Install skill from ClawHub")
+	fmt.Println("  install <registry>/<slug>        Install skill from a registry")
+	fmt.Println("  install <github-repo-path>       Install skill from GitHub repo")
+	fmt.Println("  install-clawhub <author> <name>  Install skill from ClawHub (legacy)")
 	fmt.Println("  install-builtin                  Install all builtin skills to workspace")
 	fmt.Println("  list-builtin                     List available builtin skills")
 	fmt.Println("  remove <name>                    Remove installed skill")
-	fmt.Println("  search [query]                   Search available skills (supports caching)")
+	fmt.Println("  search [query] [--limit N]       Search available skills across all registries")
 	fmt.Println("  cache <stats|clear>              Manage search cache")
 	fmt.Println("  add-source <github-url>          Add a GitHub repository as skills source")
 	fmt.Println("  show <name>                      Show skill details")
 	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  nemesisbot skills list")
-	fmt.Println("  nemesisbot skills install 276793422/nemesisbot-skills/weather")
-	fmt.Println("  nemesisbot skills install-clawhub steipete weather")
-	fmt.Println("  nemesisbot skills install-clawhub steipete github github-clawhub")
-	fmt.Println("  nemesisbot skills install-builtin")
-	fmt.Println("  nemesisbot skills list-builtin")
-	fmt.Println("  nemesisbot skills search github")
-	fmt.Println("  nemesisbot skills search weather")
-	fmt.Println("  nemesisbot skills cache stats")
-	fmt.Println("  nemesisbot skills cache clear")
-	fmt.Println("  nemesisbot skills remove weather")
-	fmt.Println("  nemesisbot skills add-source https://github.com/openclaw/skills")
-	fmt.Println("  nemesisbot skills add-source anthropics/skills")
+	fmt.Println("Search & Install:")
+	fmt.Println("  nemesisbot skills search pdf              # Search across ClawHub + GitHub")
+	fmt.Println("  nemesisbot skills search pdf --limit 20  # Limit results to 20")
+	fmt.Println("  nemesisbot skills install clawhub/stock-portfolio       # From ClawHub")
+	fmt.Println("  nemesisbot skills install anthropics/pdf              # From GitHub (2-layer)")
+	fmt.Println("  nemesisbot skills install openclaw/clawcv/pdf-export   # From GitHub (3-layer)")
+	fmt.Println("  nemesisbot skills install 276793422/nemesisbot-skills/weather  # Direct GitHub repo")
 	fmt.Println()
-	fmt.Println("ClawHub (https://clawhub.ai):")
-	fmt.Println("  5,705 community skills from OpenClaw")
-	fmt.Println("  Browse: https://github.com/VoltAgent/awesome-openclaw-skills")
+	fmt.Println("Registries:")
+	fmt.Println("  clawhub    ClawHub (clawhub.ai) — 55,000+ community skills with vector search")
+	fmt.Println("  anthropics anthropics/skills   — Official Anthropic skills")
+	fmt.Println("  openclaw   openclaw/skills     — OpenClaw community skills (65,000+)")
+	fmt.Println()
+	fmt.Println("Other:")
+	fmt.Println("  nemesisbot skills list                       # List installed skills")
+	fmt.Println("  nemesisbot skills install-builtin            # Install builtin skills")
+	fmt.Println("  nemesisbot skills remove weather             # Remove a skill")
+	fmt.Println("  nemesisbot skills cache stats                # View search cache stats")
+	fmt.Println("  nemesisbot skills cache clear                # Clear search cache")
+	fmt.Println("  nemesisbot skills add-source <github-url>    # Add custom GitHub source")
 }
 
 func cmdSkillsList(loader *skills.SkillsLoader) {
@@ -167,7 +172,7 @@ func cmdSkillsInstall(installer *skills.SkillInstaller) {
 	}
 
 	arg := os.Args[3]
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Try registry-based install first: <registry>/<slug> (exactly one slash)
@@ -360,8 +365,16 @@ func cmdSkillsListBuiltin() {
 func cmdSkillsSearch(cfg *config.Config, installer *skills.SkillInstaller) {
 	// Get query from arguments (optional)
 	query := ""
-	if len(os.Args) >= 4 {
-		query = os.Args[3]
+	limit := 50
+	for i := 3; i < len(os.Args); i++ {
+		if os.Args[i] == "--limit" && i+1 < len(os.Args) {
+			i++
+			if n, err := strconv.Atoi(os.Args[i]); err == nil && n > 0 {
+				limit = n
+			}
+		} else if query == "" {
+			query = os.Args[i]
+		}
 	}
 
 	// Note: Search cache functionality is available but not configured via command line
@@ -373,13 +386,13 @@ func cmdSkillsSearch(cfg *config.Config, installer *skills.SkillInstaller) {
 		fmt.Printf("🔍 Searching for skills matching '%s'...\n", query)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Use longer timeout for search — openclaw/skills Trees API is ~20MB
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	// Use the enhanced search functionality with registry manager
 	if installer.HasRegistryManager() {
 		// Use RegistryManager.SearchAll
-		limit := 20 // Show max 20 results
 		results, err := installer.SearchAll(ctx, query, limit)
 		if err != nil {
 			fmt.Printf("✗ Failed to search skills: %v\n", err)
@@ -400,13 +413,24 @@ func cmdSkillsSearch(cfg *config.Config, installer *skills.SkillInstaller) {
 			}
 			fmt.Printf(" (score: %.2f, registry: %s)\n", result.Score, result.RegistryName)
 
-			if result.DisplayName != "" {
+			if result.DisplayName != "" && result.DisplayName != result.Slug {
 				fmt.Printf("   Name: %s\n", result.DisplayName)
+			}
+
+			if result.Author != "" {
+				fmt.Printf("   Author: %s\n", result.Author)
+			}
+
+			if result.Downloads > 0 {
+				fmt.Printf("   Downloads: %d\n", result.Downloads)
 			}
 
 			if result.Summary != "" {
 				fmt.Printf("   Description: %s\n", result.Summary)
 			}
+
+			// Show install command
+			fmt.Printf("   Install: nemesisbot skills install %s/%s\n", result.RegistryName, result.Slug)
 
 			fmt.Println()
 		}
@@ -541,7 +565,7 @@ func buildSkillsRegistryManagerFromConfig(cfg *config.SkillsFullConfig) *skills.
 	rc.ClawHub = skills.ClawHubConfig{
 		Enabled:   cfg.ClawHub.Enabled,
 		BaseURL:   cfg.ClawHub.BaseURL,
-		AuthToken: cfg.ClawHub.AuthToken,
+		ConvexURL: cfg.ClawHub.ConvexURL,
 		Timeout:   cfg.ClawHub.Timeout,
 	}
 

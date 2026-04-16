@@ -4,7 +4,6 @@
 package skills
 
 import (
-	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -18,17 +17,22 @@ import (
 	"time"
 )
 
+const (
+	defaultClawHubBaseURL = "https://clawhub.ai"
+	defaultConvexURL      = "https://wry-manatee-359.convex.cloud"
+)
+
 // ClawHubRegistry implements the SkillRegistry interface for ClawHub.ai.
+//
+// API endpoints used:
+//   - Search: GET {baseURL}/api/search?q={query}&limit={limit}
+//   - List:   Convex POST /api/query  {"path":"skills:list","args":{"limit":N},"format":"json"}
+//   - Meta:   Convex POST /api/query  {"path":"skills:getBySlug","args":{"slug":"..."},"format":"json"}
 type ClawHubRegistry struct {
-	baseURL         string
-	authToken       string
-	searchPath      string
-	skillsPath      string
-	downloadPath    string
-	timeout         time.Duration
-	maxZipSize      int64
-	maxResponseSize int64
-	client          *http.Client
+	baseURL   string // ClawHub website URL (for search API)
+	convexURL string // Convex deployment URL (for query API)
+	timeout   time.Duration
+	client    *http.Client
 }
 
 // NewClawHubRegistry creates a new ClawHub registry client.
@@ -38,47 +42,28 @@ func NewClawHubRegistry(cfg ClawHubConfig) *ClawHubRegistry {
 		timeout = time.Duration(cfg.Timeout) * time.Second
 	}
 
-	maxZipSize := int64(50 * 1024 * 1024) // 50MB default
-	if cfg.MaxZipSize > 0 {
-		maxZipSize = int64(cfg.MaxZipSize)
-	}
-
-	maxResponseSize := int64(2 * 1024 * 1024) // 2MB default
-	if cfg.MaxResponseSize > 0 {
-		maxResponseSize = int64(cfg.MaxResponseSize)
-	}
-
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
-		baseURL = "https://clawhub.ai"
+		baseURL = defaultClawHubBaseURL
 	}
 
-	searchPath := cfg.SearchPath
-	if searchPath == "" {
-		searchPath = "/api/v1/search"
-	}
-
-	skillsPath := cfg.SkillsPath
-	if skillsPath == "" {
-		skillsPath = "/api/v1/skills"
-	}
-
-	downloadPath := cfg.DownloadPath
-	if downloadPath == "" {
-		downloadPath = "/api/v1/download"
+	convexURL := cfg.ConvexURL
+	if convexURL == "" {
+		convexURL = defaultConvexURL
 	}
 
 	return &ClawHubRegistry{
-		baseURL:         baseURL,
-		authToken:       cfg.AuthToken,
-		searchPath:      searchPath,
-		skillsPath:      skillsPath,
-		downloadPath:    downloadPath,
-		timeout:         timeout,
-		maxZipSize:      maxZipSize,
-		maxResponseSize: maxResponseSize,
+		baseURL:   baseURL,
+		convexURL: convexURL,
+		timeout:   timeout,
 		client: &http.Client{
-			Timeout: timeout,
+			// No client-level Timeout — use context deadlines instead
+			// so callers can control per-request timeouts.
+			Transport: &http.Transport{
+				MaxIdleConns:        5,
+				IdleConnTimeout:     30 * time.Second,
+				TLSHandshakeTimeout: 10 * time.Second,
+			},
 		},
 	}
 }
@@ -88,78 +73,191 @@ func (r *ClawHubRegistry) Name() string {
 	return "clawhub"
 }
 
-// Search searches the ClawHub registry for skills matching the query.
-func (r *ClawHubRegistry) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	// Build search URL
-	searchURL := r.baseURL + r.searchPath
-	reqURL, err := url.Parse(searchURL)
+// --- ClawHub search API ---
+
+// clawhubSearchResponse represents the response from clawhub.ai/api/search.
+type clawhubSearchResponse struct {
+	Results []clawhubSearchItem `json:"results"`
+}
+
+// clawhubSearchItem represents a single result from the search API.
+type clawhubSearchItem struct {
+	Score       float64 `json:"score"`
+	Slug        string  `json:"slug"`
+	DisplayName string  `json:"displayName"`
+	Summary     string  `json:"summary"`
+	Version     *string `json:"version"`
+	UpdatedAt   int64   `json:"updatedAt"`
+}
+
+// --- Convex API types ---
+
+// convexResponse is the wrapper for all Convex HTTP API responses.
+type convexResponse struct {
+	Status       string          `json:"status"`
+	Value        json.RawMessage `json:"value"`
+	ErrorMessage string          `json:"errorMessage,omitempty"`
+}
+
+// convexSkillListItem is a single skill from the skills:list Convex query.
+type convexSkillListItem struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"displayName"`
+	Summary     string `json:"summary"`
+	Stats       struct {
+		Downloads float64 `json:"downloads"`
+	} `json:"stats"`
+}
+
+// convexSkillDetail is the full skill detail from skills:getBySlug.
+type convexSkillDetail struct {
+	Owner struct {
+		Handle string `json:"handle"`
+	} `json:"owner"`
+	Skill struct {
+		Slug        string `json:"slug"`
+		DisplayName string `json:"displayName"`
+		Summary     string `json:"summary"`
+		Stats       struct {
+			Downloads float64 `json:"downloads"`
+		} `json:"stats"`
+	} `json:"skill"`
+	LatestVersion struct {
+		Version string `json:"version"`
+	} `json:"latestVersion"`
+	ResolvedSlug string `json:"resolvedSlug"`
+}
+
+// callConvex calls a Convex HTTP query endpoint.
+// Request: POST {convexURL}/api/query  {"path":"fnName","args":{...},"format":"json"}
+// Response: {"status":"success","value":...} or {"status":"error","errorMessage":"..."}
+func (r *ClawHubRegistry) callConvex(ctx context.Context, functionName string, args interface{}) (json.RawMessage, error) {
+	reqBody := map[string]interface{}{
+		"path":   functionName,
+		"args":   args,
+		"format": "json",
+	}
+	data, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse search URL: %w", err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Add query parameters
-	params := reqURL.Query()
-	params.Set("q", query)
-	if limit > 0 {
-		params.Set("limit", fmt.Sprintf("%d", limit))
-	}
-	reqURL.RawQuery = params.Encode()
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", reqURL.String(), nil)
+	reqURL := fmt.Sprintf("%s/api/query", r.convexURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(data)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
-	// Add auth token if provided
-	if r.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+r.authToken)
-	}
-
-	// Execute request with retry
-	resp, err := r.doRequestWithRetry(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute search request: %w", err)
+		return nil, fmt.Errorf("convex request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check response size
-	if resp.ContentLength > r.maxResponseSize {
-		return nil, fmt.Errorf("response too large: %d bytes", resp.ContentLength)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB max
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Check status code
+	var envelope convexResponse
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to decode convex response: %w", err)
+	}
+
+	if envelope.Status == "error" {
+		return nil, fmt.Errorf("convex error: %s", envelope.ErrorMessage)
+	}
+
+	return envelope.Value, nil
+}
+
+// Search searches the ClawHub registry for skills matching the query.
+// Non-empty query uses the clawhub.ai search API (vector search).
+// Empty query falls back to Convex skills:list (sorted by creation time).
+func (r *ClawHubRegistry) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	if query == "" {
+		return r.searchList(ctx, limit)
+	}
+	return r.searchQuery(ctx, query, limit)
+}
+
+// searchQuery uses the clawhub.ai search API for vector search.
+func (r *ClawHubRegistry) searchQuery(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	u := fmt.Sprintf("%s/api/search?q=%s&limit=%d", r.baseURL, url.QueryEscape(query), limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create search request: %w", err)
+	}
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("search request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("search request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("search failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse response
-	var response struct {
-		Results []struct {
-			Score       float64 `json:"score"`
-			Slug        string  `json:"slug"`
-			DisplayName string  `json:"display_name"`
-			Summary     string  `json:"summary"`
-			Version     string  `json:"version"`
-		} `json:"results"`
-	}
-
-	if err := json.NewDecoder(io.LimitReader(resp.Body, r.maxResponseSize)).Decode(&response); err != nil {
+	var searchResp clawhubSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
 		return nil, fmt.Errorf("failed to parse search response: %w", err)
 	}
 
-	// Convert to SearchResult
-	results := make([]SearchResult, len(response.Results))
-	for i, r := range response.Results {
-		results[i] = SearchResult{
-			Score:        r.Score,
-			Slug:         r.Slug,
-			DisplayName:  r.DisplayName,
-			Summary:      r.Summary,
-			Version:      r.Version,
-			RegistryName: "clawhub",
+	results := make([]SearchResult, 0, len(searchResp.Results))
+	for _, item := range searchResp.Results {
+		// Normalize score to 0-1 range (clawhub search returns scores in ~0-5 range)
+		score := item.Score
+		if score > 1.0 {
+			score = score / 5.0
 		}
+
+		results = append(results, SearchResult{
+			Score:        score,
+			Slug:         item.Slug,
+			DisplayName:  item.DisplayName,
+			Summary:      item.Summary,
+			Version:      "latest",
+			RegistryName: "clawhub",
+		})
+	}
+
+	return results, nil
+}
+
+// searchList fetches recent skills via Convex skills:list.
+func (r *ClawHubRegistry) searchList(ctx context.Context, limit int) ([]SearchResult, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	value, err := r.callConvex(ctx, "skills:list", map[string]interface{}{"limit": limit})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list skills: %w", err)
+	}
+
+	var items []convexSkillListItem
+	if err := json.Unmarshal(value, &items); err != nil {
+		return nil, fmt.Errorf("failed to parse list response: %w", err)
+	}
+
+	results := make([]SearchResult, 0, len(items))
+	for _, item := range items {
+		results = append(results, SearchResult{
+			Score:        1.0,
+			Slug:         item.Slug,
+			DisplayName:  item.DisplayName,
+			Summary:      item.Summary,
+			Version:      "latest",
+			RegistryName: "clawhub",
+			Downloads:    int64(item.Stats.Downloads),
+		})
 	}
 
 	return results, nil
@@ -167,111 +265,90 @@ func (r *ClawHubRegistry) Search(ctx context.Context, query string, limit int) (
 
 // GetSkillMeta retrieves metadata for a specific skill by slug.
 func (r *ClawHubRegistry) GetSkillMeta(ctx context.Context, slug string) (*SkillMeta, error) {
-	// Validate slug to prevent path traversal
 	if err := ValidateSkillIdentifier(slug); err != nil {
 		return nil, fmt.Errorf("invalid skill slug: %w", err)
 	}
 
-	// Build skills URL
-	skillsURL := fmt.Sprintf("%s%s/%s", r.baseURL, r.skillsPath, slug)
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", skillsURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add auth token if provided
-	if r.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+r.authToken)
-	}
-
-	// Execute request with retry
-	resp, err := r.doRequestWithRetry(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute metadata request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check status code
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("skill '%s' not found", slug)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("metadata request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var meta SkillMeta
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return nil, fmt.Errorf("failed to parse metadata response: %w", err)
-	}
-
-	meta.RegistryName = "clawhub"
-	meta.Slug = slug
-
-	return &meta, nil
-}
-
-// DownloadAndInstall fetches metadata, resolves the version, downloads and
-// installs the skill to targetDir.
-func (r *ClawHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, targetDir string) (*InstallResult, error) {
-	// Validate slug to prevent path traversal
-	if err := ValidateSkillIdentifier(slug); err != nil {
-		return nil, fmt.Errorf("invalid skill slug: %w", err)
-	}
-
-	// Get metadata to check for malware
-	meta, err := r.GetSkillMeta(ctx, slug)
+	value, err := r.callConvex(ctx, "skills:getBySlug", map[string]interface{}{"slug": slug})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get skill metadata: %w", err)
 	}
 
-	// Check malware flags
-	if meta.IsMalwareBlocked {
-		slog.Warn("skill blocked as malware", "slug", slug, "registry", "clawhub")
-		return &InstallResult{
-			Version:          meta.LatestVersion,
-			IsMalwareBlocked: true,
-			Summary:          meta.Summary,
-		}, nil
+	var detail convexSkillDetail
+	if err := json.Unmarshal(value, &detail); err != nil {
+		return nil, fmt.Errorf("failed to parse metadata response: %w", err)
 	}
 
-	// Build download URL
-	downloadURL := fmt.Sprintf("%s%s/%s", r.baseURL, r.downloadPath, slug)
-	if version != "" && version != "latest" {
-		downloadURL += fmt.Sprintf("?version=%s", version)
+	if detail.Skill.Slug == "" && detail.ResolvedSlug == "" {
+		return nil, fmt.Errorf("skill '%s' not found", slug)
 	}
 
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	metaSlug := detail.Skill.Slug
+	if metaSlug == "" {
+		metaSlug = detail.ResolvedSlug
+	}
+
+	version := detail.LatestVersion.Version
+	if version == "" {
+		version = "latest"
+	}
+
+	return &SkillMeta{
+		Slug:          metaSlug,
+		DisplayName:   detail.Skill.DisplayName,
+		Summary:       detail.Skill.Summary,
+		LatestVersion: version,
+		RegistryName:  "clawhub",
+	}, nil
+}
+
+// DownloadAndInstall fetches metadata to find the owner handle, then downloads
+// the SKILL.md from the openclaw/skills GitHub repository.
+func (r *ClawHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, targetDir string) (*InstallResult, error) {
+	if err := ValidateSkillIdentifier(slug); err != nil {
+		return nil, fmt.Errorf("invalid skill slug: %w", err)
+	}
+
+	// Get full skill detail including owner handle
+	value, err := r.callConvex(ctx, "skills:getBySlug", map[string]interface{}{"slug": slug})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get skill info: %w", err)
+	}
+
+	var detail convexSkillDetail
+	if err := json.Unmarshal(value, &detail); err != nil {
+		return nil, fmt.Errorf("failed to parse skill detail: %w", err)
+	}
+
+	if detail.Owner.Handle == "" {
+		return nil, fmt.Errorf("owner handle not found for skill '%s'", slug)
+	}
+
+	// Download SKILL.md from openclaw/skills GitHub repo
+	downloadURL := fmt.Sprintf(
+		"https://raw.githubusercontent.com/openclaw/skills/main/skills/%s/%s/SKILL.md",
+		detail.Owner.Handle, slug,
+	)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create download request: %w", err)
 	}
 
-	// Add auth token if provided
-	if r.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+r.authToken)
-	}
-
-	// Execute request with retry
-	resp, err := r.doRequestWithRetry(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute download request: %w", err)
+		return nil, fmt.Errorf("failed to download skill: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// Check status code
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("download request failed with status %d: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Check content length
-	if resp.ContentLength > r.maxZipSize {
-		return nil, fmt.Errorf("download too large: %d bytes (max: %d)", resp.ContentLength, r.maxZipSize)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB max
+	if err != nil {
+		return nil, fmt.Errorf("failed to read download body: %w", err)
 	}
 
 	// Create target directory
@@ -279,164 +356,20 @@ func (r *ClawHubRegistry) DownloadAndInstall(ctx context.Context, slug, version,
 		return nil, fmt.Errorf("failed to create target directory: %w", err)
 	}
 
-	// Stream download to temporary file
-	tempFile := targetDir + ".tmp.zip"
-	tempFD, err := os.Create(tempFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	// Write SKILL.md
+	skillPath := filepath.Join(targetDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, body, 0o644); err != nil {
+		return nil, fmt.Errorf("failed to write skill file: %w", err)
 	}
 
-	// Track bytes written
-	bytesWritten := int64(0)
-	buffer := make([]byte, 32*1024) // 32KB buffer
-
-	for {
-		n, err := resp.Body.Read(buffer)
-		if n > 0 {
-			bytesWritten += int64(n)
-			if bytesWritten > r.maxZipSize {
-				tempFD.Close()
-				os.Remove(tempFile)
-				return nil, fmt.Errorf("download exceeded maximum size: %d bytes", bytesWritten)
-			}
-
-			if _, writeErr := tempFD.Write(buffer[:n]); writeErr != nil {
-				tempFD.Close()
-				os.Remove(tempFile)
-				return nil, fmt.Errorf("failed to write to temp file: %w", writeErr)
-			}
-		}
-
-		if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			tempFD.Close()
-			os.Remove(tempFile)
-			return nil, fmt.Errorf("failed to read response body: %w", err)
-		}
-	}
-
-	tempFD.Close()
-
-	// Extract ZIP file
-	if err := r.extractZipFile(tempFile, targetDir); err != nil {
-		os.Remove(tempFile)
-		return nil, fmt.Errorf("failed to extract ZIP file: %w", err)
-	}
-
-	// Clean up temp file
-	os.Remove(tempFile)
-
-	// Determine installed version
-	installedVersion := meta.LatestVersion
-	if version != "" && version != "latest" {
-		installedVersion = version
-	}
+	slog.Debug("clawhub skill installed", "slug", slug, "owner", detail.Owner.Handle, "path", targetDir)
 
 	return &InstallResult{
-		Version:          installedVersion,
-		IsMalwareBlocked: meta.IsMalwareBlocked,
-		IsSuspicious:     meta.IsSuspicious,
-		Summary:          meta.Summary,
+		Version:          detail.LatestVersion.Version,
+		IsMalwareBlocked: false,
+		IsSuspicious:     false,
+		Summary:          detail.Skill.Summary,
 	}, nil
-}
-
-// extractZipFile extracts a ZIP file to the target directory.
-func (r *ClawHubRegistry) extractZipFile(zipPath, targetDir string) error {
-	// Open ZIP file
-	reader, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return fmt.Errorf("failed to open ZIP file: %w", err)
-	}
-	defer reader.Close()
-
-	// Extract each file
-	for _, file := range reader.File {
-		// Security check: prevent path traversal
-		if strings.Contains(file.Name, "..") || strings.HasPrefix(file.Name, "/") || strings.HasPrefix(file.Name, "\\") {
-			return fmt.Errorf("unsafe path in ZIP: %s", file.Name)
-		}
-
-		// Build target path
-		targetPath := filepath.Join(targetDir, file.Name)
-
-		// Create directory if needed
-		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(targetPath, file.FileInfo().Mode()); err != nil {
-				return fmt.Errorf("failed to create directory: %w", err)
-			}
-			continue
-		}
-
-		// Extract file
-		fileReader, err := file.Open()
-		if err != nil {
-			return fmt.Errorf("failed to open file in ZIP: %w", err)
-		}
-
-		// Ensure parent directory exists
-		parentDir := filepath.Dir(targetPath)
-		if parentDir != "." {
-			if err := os.MkdirAll(parentDir, 0o755); err != nil {
-				fileReader.Close()
-				return fmt.Errorf("failed to create parent directory: %w", err)
-			}
-		}
-
-		// Create target file
-		targetFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.FileInfo().Mode())
-		if err != nil {
-			fileReader.Close()
-			return fmt.Errorf("failed to create target file: %w", err)
-		}
-
-		// Copy file contents
-		if _, err := io.Copy(targetFile, fileReader); err != nil {
-			targetFile.Close()
-			fileReader.Close()
-			return fmt.Errorf("failed to copy file contents: %w", err)
-		}
-
-		targetFile.Close()
-		fileReader.Close()
-	}
-
-	return nil
-}
-
-// doRequestWithRetry executes an HTTP request with retry logic for rate limiting.
-func (r *ClawHubRegistry) doRequestWithRetry(req *http.Request) (*http.Response, error) {
-	var lastErr error
-	maxRetries := 3
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff
-			waitTime := time.Duration(1<<uint(attempt)) * time.Second
-			slog.Debug("retrying request", "attempt", attempt, "wait", waitTime)
-			time.Sleep(waitTime)
-		}
-
-		resp, err := r.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// Check for rate limiting (429)
-		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
-			lastErr = fmt.Errorf("rate limited")
-			continue
-		}
-
-		// Success
-		return resp, nil
-	}
-
-	return nil, fmt.Errorf("request failed after %d attempts: %w", maxRetries, lastErr)
 }
 
 // ValidateSkillIdentifier validates a skill identifier to prevent path traversal attacks.
@@ -461,14 +394,4 @@ func ValidateSkillIdentifier(slug string) error {
 	}
 
 	return nil
-}
-
-// strings.ContainsAny is a helper function to check if a string contains any of the given substrings.
-func containsAny(s string, substrings []string) bool {
-	for _, sub := range substrings {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }

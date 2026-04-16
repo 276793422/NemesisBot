@@ -134,14 +134,10 @@ func TestRegistryConfig_WithValues(t *testing.T) {
 			TTL:     5 * time.Minute,
 		},
 		ClawHub: ClawHubConfig{
-			Enabled:      true,
-			BaseURL:      "https://api.clawhub.ai",
-			AuthToken:    "test-token",
-			SearchPath:   "/api/v1/search",
-			SkillsPath:   "/api/v1/skills",
-			DownloadPath: "/api/v1/download",
-			Timeout:      30,
-			MaxZipSize:   50 * 1024 * 1024,
+			Enabled:   true,
+			BaseURL:   "https://clawhub.ai",
+			ConvexURL: "https://wry-manatee-359.convex.cloud",
+			Timeout:   30,
 		},
 		GitHub: GitHubConfig{
 			Enabled: true,
@@ -168,8 +164,8 @@ func TestRegistryConfig_WithValues(t *testing.T) {
 		t.Error("Expected ClawHub.Enabled to be true")
 	}
 
-	if config.ClawHub.BaseURL != "https://api.clawhub.ai" {
-		t.Errorf("Expected ClawHub.BaseURL 'https://api.clawhub.ai', got '%s'", config.ClawHub.BaseURL)
+	if config.ClawHub.ConvexURL != "https://wry-manatee-359.convex.cloud" {
+		t.Errorf("Expected ClawHub.ConvexURL 'https://wry-manatee-359.convex.cloud', got '%s'", config.ClawHub.ConvexURL)
 	}
 
 	if config.MaxConcurrentSearches != 5 {
@@ -200,24 +196,12 @@ func TestClawHubConfig_DefaultValues(t *testing.T) {
 		t.Error("Expected default Enabled to be false")
 	}
 
-	if config.BaseURL != "" {
-		t.Errorf("Expected default BaseURL empty, got '%s'", config.BaseURL)
-	}
-
-	if config.AuthToken != "" {
-		t.Errorf("Expected default AuthToken empty, got '%s'", config.AuthToken)
+	if config.ConvexURL != "" {
+		t.Errorf("Expected default ConvexURL empty, got '%s'", config.ConvexURL)
 	}
 
 	if config.Timeout != 0 {
 		t.Errorf("Expected default Timeout 0, got %d", config.Timeout)
-	}
-
-	if config.MaxZipSize != 0 {
-		t.Errorf("Expected default MaxZipSize 0, got %d", config.MaxZipSize)
-	}
-
-	if config.MaxResponseSize != 0 {
-		t.Errorf("Expected default MaxResponseSize 0, got %d", config.MaxResponseSize)
 	}
 }
 

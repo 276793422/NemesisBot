@@ -603,8 +603,8 @@ type GitHubSourceConfig struct {
 // SkillsClawHubConfig configures the ClawHub skill registry.
 type SkillsClawHubConfig struct {
 	Enabled   bool   `json:"enabled"`
-	BaseURL   string `json:"base_url,omitempty"`
-	AuthToken string `json:"auth_token,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`   // ClawHub website URL (for search API)
+	ConvexURL string `json:"convex_url,omitempty"`  // Convex deployment URL
 	Timeout   int    `json:"timeout,omitempty"`
 }
 
@@ -1019,7 +1019,7 @@ func LoadSkillsConfig(path string) (*SkillsFullConfig, error) {
 				SearchCache:           SkillsSearchCacheConfig{Enabled: true, MaxSize: 50, TTLSeconds: 300},
 				MaxConcurrentSearches: 2,
 				GitHubSources:         []GitHubSourceConfig{},
-				ClawHub:               SkillsClawHubConfig{Enabled: false},
+				ClawHub:               SkillsClawHubConfig{Enabled: true},
 			}, nil
 		}
 		return nil, err

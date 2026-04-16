@@ -107,6 +107,14 @@ func (t *FindSkillsTool) Execute(ctx context.Context, args map[string]interface{
 			output.WriteString(fmt.Sprintf("   Display Name: %s\n", result.DisplayName))
 		}
 
+		if result.Author != "" {
+			output.WriteString(fmt.Sprintf("   Author: %s\n", result.Author))
+		}
+
+		if result.Downloads > 0 {
+			output.WriteString(fmt.Sprintf("   Downloads: %d\n", result.Downloads))
+		}
+
 		if result.Summary != "" {
 			output.WriteString(fmt.Sprintf("   Description: %s\n", result.Summary))
 		}

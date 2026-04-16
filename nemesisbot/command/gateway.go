@@ -100,8 +100,23 @@ func CmdGateway() {
 	printGatewayBanner(cfg)
 
 	// Wire system tray callbacks to service manager
-	webURL := fmt.Sprintf("http://%s:%d", cfg.Channels.Web.Host, cfg.Channels.Web.Port)
-	ConfigureSystemTray(webURL, svcMgr.StartBot, svcMgr.StopBot)
+	// Replace 0.0.0.0 with 127.0.0.1 for browser compatibility
+	webHost := cfg.Channels.Web.Host
+	if webHost == "0.0.0.0" || webHost == "" {
+		webHost = "127.0.0.1"
+	}
+	webURL := fmt.Sprintf("http://%s:%d", webHost, cfg.Channels.Web.Port)
+	chatURL := fmt.Sprintf("http://%s:%d/chat/", webHost, cfg.Channels.Web.Port)
+
+	// Pass ProcessManager and auth info to SystemTray for Dashboard child process
+	if globalSystemTray != nil {
+		globalSystemTray.SetProcessManager(procMgr)
+		globalSystemTray.SetAuthToken(cfg.Channels.Web.AuthToken)
+		globalSystemTray.SetWebPort(cfg.Channels.Web.Port)
+		globalSystemTray.SetWebHost(webHost)
+	}
+
+	ConfigureSystemTray(webURL, chatURL, svcMgr.StartBot, svcMgr.StopBot)
 
 	// Wait for shutdown signal
 	// Supports: Ctrl+C, system tray quit, desktop UI close, WebSocket close, etc.

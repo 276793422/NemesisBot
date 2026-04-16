@@ -102,8 +102,8 @@ func TestNewRegistryManagerFromConfig(t *testing.T) {
 			name: "with clawhub enabled",
 			cfg: RegistryConfig{
 				ClawHub: ClawHubConfig{
-					Enabled: true,
-					BaseURL: "https://api.clawhub.ai",
+					Enabled:   true,
+					ConvexURL: "https://wry-manatee-359.convex.cloud",
 				},
 			},
 			check: func(t *testing.T, rm *RegistryManager) {

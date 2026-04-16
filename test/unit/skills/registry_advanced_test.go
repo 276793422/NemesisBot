@@ -182,14 +182,14 @@ func TestSkillIdentifierValidation(t *testing.T) {
 		{"Valid skill name", "weather", false},
 		{"Valid with hyphens", "my-skill-name", false},
 		{"Valid with numbers", "skill123", false},
+		{"Valid author/slug", "author/my-skill", false},
 		{"Empty string", "", true},
-		{"Path separator slash", "weather/skill", true},
 		{"Path separator backslash", "weather\\skill", true},
 		{"Path traversal attempt", "../etc/passwd", true},
 		{"Absolute path", "/etc/passwd", true},
-		{"Current directory", "./skill", true},
 		{"Parent directory", "../skill", true},
 		{"Multiple separators", "skill/../../test", true},
+		{"Multiple slashes", "a/b/c", true},
 	}
 
 	for _, tt := range tests {

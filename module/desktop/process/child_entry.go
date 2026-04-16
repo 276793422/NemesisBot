@@ -204,6 +204,21 @@ func runWailsWindow(childID, windowType string, windowData interface{}, wsClient
 		childLog("Starting headless window (auto-approve)")
 		return windows.RunHeadlessWindow(childID, data, wsClient)
 
+	case "dashboard":
+		dataMap, ok := windowData.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid window data type")
+		}
+
+		data := &windows.DashboardWindowData{
+			Token:   dataMap["token"].(string),
+			WebPort: int(dataMap["web_port"].(float64)),
+			WebHost: dataMap["web_host"].(string),
+		}
+
+		childLog("Starting Dashboard window (web=%s:%d)", data.WebHost, data.WebPort)
+		return windows.RunDashboardWindow(childID, data, wsClient)
+
 	default:
 		return fmt.Errorf("unknown window type: %s", windowType)
 	}

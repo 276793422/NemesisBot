@@ -285,7 +285,7 @@ func skillsFullConfigToRegistry(cfg *config.SkillsFullConfig) skills.RegistryCon
 	rc.ClawHub = skills.ClawHubConfig{
 		Enabled:   cfg.ClawHub.Enabled,
 		BaseURL:   cfg.ClawHub.BaseURL,
-		AuthToken: cfg.ClawHub.AuthToken,
+		ConvexURL: cfg.ClawHub.ConvexURL,
 		Timeout:   cfg.ClawHub.Timeout,
 	}
 

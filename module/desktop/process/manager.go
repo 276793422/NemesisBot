@@ -175,10 +175,17 @@ func (m *ProcessManager) SpawnChild(windowType string, data interface{}) (string
 
 	log.Printf("[ProcessManager] Window data sent to child %s", childID)
 
-	// 7. 创建结果通道
+	// 7. 持久窗口（如 dashboard）不等待结果，不设置超时终止
+	persistent := windowType == "dashboard"
+	if persistent {
+		log.Printf("[ProcessManager] Child %s is a persistent window (no result waiting)", childID)
+		return childID, nil, nil
+	}
+
+	// 8. 临时窗口（如 approval）：创建结果通道并等待子进程结果
 	resultCh := make(chan interface{}, 1)
 
-	// 8. 等待子进程连接和发送结果
+	// 9. 等待子进程连接和发送结果
 	go m.waitForChildResult(childID, resultCh)
 
 	return childID, resultCh, nil

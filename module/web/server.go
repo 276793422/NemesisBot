@@ -7,6 +7,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -34,17 +35,23 @@ type Server struct {
 	messageChan chan IncomingMessage
 	// Bus for publishing inbound messages
 	bus *bus.MessageBus
+
+	// Dashboard state
+	version   string
+	startTime time.Time
+	eventHub  *EventHub
 }
 
 // ServerConfig holds the server configuration
 type ServerConfig struct {
-	Host        string
-	Port        int
-	WSPath      string
-	AuthToken   string
-	SessionMgr  *SessionManager
-	Bus         *bus.MessageBus
-	Workspace   string // Workspace path for config files
+	Host       string
+	Port       int
+	WSPath     string
+	AuthToken  string
+	SessionMgr *SessionManager
+	Bus        *bus.MessageBus
+	Workspace  string // Workspace path for config files
+	Version    string // Application version
 }
 
 // NewServer creates a new HTTP server
@@ -56,7 +63,10 @@ func NewServer(config ServerConfig) *Server {
 		authToken:  config.AuthToken,
 		sessionMgr: config.SessionMgr,
 		bus:        config.Bus,
+		version:    config.Version,
 		running:    false,
+		startTime:  time.Now(),
+		eventHub:   NewEventHub(),
 	}
 
 	// Initialize CORS manager if workspace is provided
@@ -103,16 +113,21 @@ func (s *Server) Start(ctx context.Context) error {
 	// Create mux
 	mux := http.NewServeMux()
 
-	// Serve static files (embedded)
-	mux.HandleFunc("/", s.handleStaticFile)
-	mux.HandleFunc("/style.css", s.handleStaticFile)
-	mux.HandleFunc("/app.js", s.handleStaticFile)
-
-	// WebSocket endpoint
+	// WebSocket endpoint (must be registered before / catch-all)
 	mux.HandleFunc(s.wsPath, s.handleWebSocket)
 
 	// Health check endpoint
 	mux.HandleFunc("/health", s.handleHealth)
+
+	// API endpoints
+	mux.HandleFunc("/api/status", s.handleAPIStatus)
+	mux.HandleFunc("/api/events/stream", s.handleEventsStream)
+
+	// Static files using http.FileServer (catch-all, registered last)
+	staticFS, _ := StaticFiles()
+	if staticFS != nil {
+		mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	}
 
 	// Create HTTP server
 	s.httpServer = &http.Server{
@@ -184,53 +199,56 @@ func (s *Server) IsRunning() bool {
 	return s.running
 }
 
-// handleStaticFile serves static files
-func (s *Server) handleStaticFile(w http.ResponseWriter, r *http.Request) {
-	// Get file from embedded filesystem
-	staticFS, err := StaticFiles()
-	if err != nil {
-		http.Error(w, "Static files not available", http.StatusInternalServerError)
-		return
-	}
-	path := r.URL.Path[1:] // Remove leading slash
-	if path == "" {
-		path = "index.html"
-	}
+// handleAPIStatus returns system status as JSON
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	stats := s.sessionMgr.Stats()
 
-	file, err := staticFS.Open(path)
-	if err != nil {
-		http.Error(w, "File not found", http.StatusNotFound)
-		return
-	}
-	defer file.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Get file info
-	stat, err := file.Stat()
-	if err != nil {
-		http.Error(w, "File error", http.StatusInternalServerError)
-		return
-	}
+	uptime := time.Since(s.startTime).Seconds()
+	response := fmt.Sprintf(`{"version":%q,"uptime_seconds":%.0f,"ws_connected":%t,"session_count":%d}`,
+		s.version, uptime, s.running, stats["active_sessions"])
+	w.Write([]byte(response))
+}
 
-	// Set content type
-	contentType := "text/html; charset=utf-8"
-	switch path {
-	case "style.css":
-		contentType = "text/css; charset=utf-8"
-	case "app.js":
-		contentType = "application/javascript; charset=utf-8"
-	}
-	w.Header().Set("Content-Type", contentType)
+// handleEventsStream handles SSE connections for real-time event streaming
+func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Read file content
-	content := make([]byte, stat.Size())
-	_, err = file.Read(content)
-	if err != nil {
-		http.Error(w, "Read error", http.StatusInternalServerError)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
-	// Write to response
-	w.Write(content)
+	// Disable write deadline for SSE (long-lived connection)
+	rc := http.NewResponseController(w)
+	rc.SetWriteDeadline(time.Time{})
+
+	ch := s.eventHub.Subscribe()
+	defer s.eventHub.Unsubscribe(ch)
+
+	// Send initial heartbeat
+	fmt.Fprintf(w, "event: heartbeat\ndata: {\"ts\":\"%s\"}\n\n", time.Now().Format(time.RFC3339))
+	flusher.Flush()
+
+	for {
+		select {
+		case event := <-ch:
+			data, err := json.Marshal(event.Data)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // handleWebSocket handles WebSocket upgrade requests

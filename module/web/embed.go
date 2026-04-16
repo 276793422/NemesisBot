@@ -11,9 +11,9 @@ import (
 	"io/fs"
 )
 
-// staticFiles holds the embedded static files
+// staticFiles holds the embedded static files (all: prefix for recursive embedding)
 //
-//go:embed static/*
+//go:embed all:static
 var staticFiles embed.FS
 
 // StaticFiles returns the static files filesystem.

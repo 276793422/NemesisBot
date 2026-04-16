@@ -69,16 +69,21 @@ func TestValidateSkillIdentifier(t *testing.T) {
 			errMsg:     "identifier is required",
 		},
 		{
-			name:       "contains forward slash",
+			name:       "contains forward slash — author/slug format",
 			identifier: "skill/name",
+			wantErr:    false,
+		},
+		{
+			name:       "contains multiple forward slashes",
+			identifier: "a/b/c",
 			wantErr:    true,
-			errMsg:     "path separators",
+			errMsg:     "multiple slashes",
 		},
 		{
 			name:       "contains backslash",
 			identifier: "skill\\name",
 			wantErr:    true,
-			errMsg:     "path separators",
+			errMsg:     "backslashes",
 		},
 		{
 			name:       "contains double dot",
@@ -102,7 +107,7 @@ func TestValidateSkillIdentifier(t *testing.T) {
 			name:       "windows path traversal",
 			identifier: "..\\..\\windows",
 			wantErr:    true,
-			errMsg:     "directory traversal",
+			errMsg:     "backslashes",
 		},
 		{
 			name:       "mixed path separators",
@@ -114,13 +119,13 @@ func TestValidateSkillIdentifier(t *testing.T) {
 			name:       "absolute unix path",
 			identifier: "/usr/local/skill",
 			wantErr:    true,
-			errMsg:     "path separators",
+			errMsg:     "multiple slashes",
 		},
 		{
 			name:       "absolute windows path",
 			identifier: "C:\\Program Files\\skill",
 			wantErr:    true,
-			errMsg:     "path separators",
+			errMsg:     "backslashes",
 		},
 		{
 			name:       "valid single character",
@@ -293,14 +298,14 @@ func TestValidateSkillIdentifier_EdgeCases(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name:       "starts with slash after trim",
+			name:       "starts with slash — single slash is allowed",
 			identifier: " /skill",
-			wantErr:    true,
+			wantErr:    false,
 		},
 		{
-			name:       "ends with slash after trim",
+			name:       "ends with slash — single slash is allowed",
 			identifier: "skill/ ",
-			wantErr:    true,
+			wantErr:    false,
 		},
 		{
 			name:       "multiple slashes",
@@ -388,6 +393,10 @@ func TestValidateSkillIdentifier_RealWorldExamples(t *testing.T) {
 		"documentation-helper",
 		"security-scanner",
 		"performance-monitor",
+		// author/slug format (three-layer GitHub repos)
+		"clawcv/pdf-export",
+		"author/my-skill",
+		"nano-pdf-v2",
 	}
 
 	invalidExamples := []string{

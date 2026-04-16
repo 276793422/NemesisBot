@@ -25,6 +25,8 @@ type SearchResult struct {
 	RegistryName string  `json:"registry_name"`
 	SourceRepo   string  `json:"source_repo,omitempty"`   // e.g. "anthropics/skills"
 	DownloadPath string  `json:"download_path,omitempty"` // e.g. "skills/pdf/SKILL.md"
+	Author       string  `json:"author,omitempty"`        // skill author handle
+	Downloads    int64  `json:"downloads,omitempty"`      // download count
 }
 
 // SkillMeta holds metadata about a skill from a registry.
@@ -80,15 +82,10 @@ type SearchCacheConfig struct {
 
 // ClawHubConfig configures the ClawHub registry.
 type ClawHubConfig struct {
-	Enabled         bool
-	BaseURL         string
-	AuthToken       string
-	SearchPath      string // e.g. "/api/v1/search"
-	SkillsPath      string // e.g. "/api/v1/skills"
-	DownloadPath    string // e.g. "/api/v1/download"
-	Timeout         int    // seconds, 0 = default (30s)
-	MaxZipSize      int    // bytes, 0 = default (50MB)
-	MaxResponseSize int    // bytes, 0 = default (2MB)
+	Enabled   bool
+	BaseURL   string // ClawHub website URL (e.g. "https://clawhub.ai"), used for search API
+	ConvexURL string // Convex deployment URL (e.g. "https://wry-manatee-359.convex.cloud")
+	Timeout   int    // seconds, 0 = default (30s)
 }
 
 // GitHubConfig configures the GitHub registry (legacy single-source).

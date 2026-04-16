@@ -25,9 +25,9 @@
     }
   ],
   "clawhub": {
-    "enabled": false,
+    "enabled": true,
     "base_url": "https://clawhub.ai",
-    "auth_token": "",
+    "convex_url": "https://wry-manatee-359.convex.cloud",
     "timeout": 30
   }
 }

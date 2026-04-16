@@ -89,142 +89,113 @@ func TestServer_HandleHealth_WithSessions(t *testing.T) {
 	}
 }
 
-func TestServer_HandleStaticFile_Index(t *testing.T) {
-	sm := NewSessionManager(1 * time.Hour)
-	testBus := bus.NewMessageBus()
-
-	server := NewServer(ServerConfig{
-		Host:       "localhost",
-		Port:       8080,
-		WSPath:     "/ws",
-		SessionMgr: sm,
-		Bus:        testBus,
-	})
+func TestServer_StaticFiles_Index(t *testing.T) {
+	staticFS, err := StaticFiles()
+	if err != nil {
+		t.Skip("Static files not embedded, skipping test")
+	}
 
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
 
-	server.handleStaticFile(w, req)
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
-
-	// Should either return 200 with content or 500 if static files not available
-	// We don't fail the test either way since we don't control the embedded files
-	if resp.StatusCode == http.StatusInternalServerError {
-		// Static files not embedded - this is ok for testing
-		return
-	}
 
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200 or 500, got %d", resp.StatusCode)
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected HTML content type, got '%s'", contentType)
 	}
 }
 
-func TestServer_HandleStaticFile_CSS(t *testing.T) {
-	sm := NewSessionManager(1 * time.Hour)
-	testBus := bus.NewMessageBus()
+func TestServer_StaticFiles_CSS(t *testing.T) {
+	staticFS, err := StaticFiles()
+	if err != nil {
+		t.Skip("Static files not embedded, skipping test")
+	}
 
-	server := NewServer(ServerConfig{
-		Host:       "localhost",
-		Port:       8080,
-		WSPath:     "/ws",
-		SessionMgr: sm,
-		Bus:        testBus,
-	})
-
-	req := httptest.NewRequest("GET", "/style.css", nil)
+	req := httptest.NewRequest("GET", "/css/theme.css", nil)
 	w := httptest.NewRecorder()
 
-	server.handleStaticFile(w, req)
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
 
-	// Should either return 200 with CSS or 500 if static files not available
-	if resp.StatusCode == http.StatusInternalServerError {
-		// Static files not embedded - this is ok for testing
-		return
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		t.Errorf("Expected status 200 or 404, got %d", resp.StatusCode)
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		contentType := resp.Header.Get("Content-Type")
-		if !strings.Contains(contentType, "text/css") {
-			t.Errorf("Expected CSS content type, got '%s'", contentType)
-		}
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "text/css") {
+		t.Errorf("Expected CSS content type, got '%s'", contentType)
 	}
 }
 
-func TestServer_HandleStaticFile_JS(t *testing.T) {
-	sm := NewSessionManager(1 * time.Hour)
-	testBus := bus.NewMessageBus()
+func TestServer_StaticFiles_JS(t *testing.T) {
+	staticFS, err := StaticFiles()
+	if err != nil {
+		t.Skip("Static files not embedded, skipping test")
+	}
 
-	server := NewServer(ServerConfig{
-		Host:       "localhost",
-		Port:       8080,
-		WSPath:     "/ws",
-		SessionMgr: sm,
-		Bus:        testBus,
-	})
-
-	req := httptest.NewRequest("GET", "/app.js", nil)
+	req := httptest.NewRequest("GET", "/js/app.js", nil)
 	w := httptest.NewRecorder()
 
-	server.handleStaticFile(w, req)
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
 
-	// Should either return 200 with JS or 500 if static files not available
-	if resp.StatusCode == http.StatusInternalServerError {
-		// Static files not embedded - this is ok for testing
-		return
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		t.Errorf("Expected status 200 or 404, got %d", resp.StatusCode)
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		contentType := resp.Header.Get("Content-Type")
-		if !strings.Contains(contentType, "application/javascript") {
-			t.Errorf("Expected JavaScript content type, got '%s'", contentType)
-		}
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "application/javascript") {
+		t.Errorf("Expected JavaScript content type, got '%s'", contentType)
 	}
 }
 
-func TestServer_HandleStaticFile_NotFound(t *testing.T) {
-	sm := NewSessionManager(1 * time.Hour)
-	testBus := bus.NewMessageBus()
-
-	server := NewServer(ServerConfig{
-		Host:       "localhost",
-		Port:       8080,
-		WSPath:     "/ws",
-		SessionMgr: sm,
-		Bus:        testBus,
-	})
+func TestServer_StaticFiles_NotFound(t *testing.T) {
+	staticFS, err := StaticFiles()
+	if err != nil {
+		t.Skip("Static files not embedded, skipping test")
+	}
 
 	req := httptest.NewRequest("GET", "/nonexistent.html", nil)
 	w := httptest.NewRecorder()
 
-	server.handleStaticFile(w, req)
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
 
-	// Should either return 404 or 500 if static files not available
-	if resp.StatusCode == http.StatusInternalServerError {
-		// Static files not embedded - this is ok for testing
-		return
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_StaticFiles_ChatPage(t *testing.T) {
+	staticFS, err := StaticFiles()
+	if err != nil {
+		t.Skip("Static files not embedded, skipping test")
 	}
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("Expected status 404 or 500, got %d", resp.StatusCode)
+	req := httptest.NewRequest("GET", "/chat/", nil)
+	w := httptest.NewRecorder()
+
+	http.FileServer(http.FS(staticFS)).ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
 }
 

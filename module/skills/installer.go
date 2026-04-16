@@ -155,7 +155,7 @@ func (si *SkillInstaller) InstallFromRegistry(ctx context.Context, registryName,
 		return fmt.Errorf("registry '%s' not found", registryName)
 	}
 
-	skillDir := filepath.Join(si.workspace, "skills", slug)
+	skillDir := filepath.Join(si.workspace, "skills", filepath.Base(slug))
 	if _, err := os.Stat(skillDir); err == nil {
 		return fmt.Errorf("skill '%s' already exists", slug)
 	}

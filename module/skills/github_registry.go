@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ func NewGitHubRegistry(cfg GitHubConfig) *GitHubRegistry {
 		timeout: timeout,
 		maxSize: maxSize,
 		client: &http.Client{
-			Timeout: timeout,
+			// No client-level Timeout — use context deadlines instead
 			Transport: &http.Transport{
 				MaxIdleConns:        5,
 				IdleConnTimeout:     30 * time.Second,
@@ -107,7 +108,7 @@ func NewGitHubRegistryFromSource(source GitHubSourceConfig) *GitHubRegistry {
 		skillPathPattern: source.SkillPathPattern,
 		registryName:     source.Name,
 		client: &http.Client{
-			Timeout: timeout,
+			// No client-level Timeout — use context deadlines instead
 			Transport: &http.Transport{
 				MaxIdleConns:        5,
 				IdleConnTimeout:     30 * time.Second,
@@ -173,9 +174,26 @@ func (g *GitHubRegistry) searchSkillsJSON(ctx context.Context, query string, lim
 	return results, nil
 }
 
+// isThreeLayerPattern returns true if the skill path pattern contains {author},
+// indicating a three-layer directory structure: skills/{author}/{slug}/SKILL.md
+func (g *GitHubRegistry) isThreeLayerPattern() bool {
+	return strings.Contains(g.skillPathPattern, "{author}")
+}
+
 // searchGitHubAPI uses the GitHub Contents API to list skill directories.
+// For two-layer repos (skills/{slug}/SKILL.md), it lists the skills/ directory directly.
+// For three-layer repos (skills/{author}/{slug}/SKILL.md), it uses the Trees API
+// to get the full directory tree and matches against skill slugs.
 func (g *GitHubRegistry) searchGitHubAPI(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	// Use GitHub API to list contents of the skills/ directory
+	if g.isThreeLayerPattern() {
+		return g.searchThreeLayer(ctx, query, limit)
+	}
+	return g.searchTwoLayer(ctx, query, limit)
+}
+
+// searchTwoLayer searches two-layer repos (skills/{slug}/SKILL.md)
+// by listing the skills/ directory and matching against directory names.
+func (g *GitHubRegistry) searchTwoLayer(ctx context.Context, query string, limit int) ([]SearchResult, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/skills", g.repo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
@@ -199,7 +217,6 @@ func (g *GitHubRegistry) searchGitHubAPI(ctx context.Context, query string, limi
 		return nil, fmt.Errorf("GitHub API HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse directory listing
 	var entries []githubContentEntry
 	if err := json.Unmarshal(body, &entries); err != nil {
 		return nil, fmt.Errorf("failed to parse GitHub directory listing: %w", err)
@@ -215,7 +232,6 @@ func (g *GitHubRegistry) searchGitHubAPI(ctx context.Context, query string, limi
 			continue
 		}
 
-		// Match against directory name (slug)
 		slug := entry.Name
 		if contains(slug, query) {
 			downloadPath := strings.ReplaceAll(g.skillPathPattern, "{slug}", slug)
@@ -230,6 +246,134 @@ func (g *GitHubRegistry) searchGitHubAPI(ctx context.Context, query string, limi
 				DownloadPath: downloadPath,
 			})
 		}
+	}
+
+	return results, nil
+}
+
+// searchThreeLayer searches three-layer repos (skills/{author}/{slug}/SKILL.md)
+// using the GitHub Trees API with a streaming JSON decoder to handle large repos
+// (openclaw/skills has 65K+ entries, ~20MB response) efficiently.
+func (g *GitHubRegistry) searchThreeLayer(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/git/trees/%s?recursive=1", g.repo, g.branch)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create API request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	resp, err := utils.DoRequestWithRetry(g.client, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch tree: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("GitHub API HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Use streaming JSON decoder — avoids buffering the entire ~20MB response.
+	decoder := json.NewDecoder(resp.Body)
+
+	// Read opening {
+	if t, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("failed to read tree response: %w", err)
+	} else if t != json.Delim('{') {
+		return nil, fmt.Errorf("expected JSON object, got %v", t)
+	}
+
+	var truncated bool
+	results := make([]SearchResult, 0)
+	skillsSet := make(map[string]bool)
+
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		key, _ := keyToken.(string)
+
+		switch key {
+		case "truncated":
+			decoder.Decode(&truncated)
+
+		case "tree":
+			// Decode the tree array entry by entry (streaming)
+			if t, err := decoder.Token(); err != nil {
+				break
+			} else if t != json.Delim('[') {
+				break
+			}
+
+			for decoder.More() {
+				if len(results) >= limit {
+					break
+				}
+
+				var entry struct {
+					Path string `json:"path"`
+					Type string `json:"type"`
+				}
+				if err := decoder.Decode(&entry); err != nil {
+					continue // skip malformed entries
+				}
+
+				if entry.Type != "blob" {
+					continue
+				}
+				path := entry.Path
+				if !strings.HasPrefix(path, "skills/") || !strings.HasSuffix(path, "/SKILL.md") {
+					continue
+				}
+
+				inner := strings.TrimPrefix(path, "skills/")
+				inner = strings.TrimSuffix(inner, "/SKILL.md")
+				parts := strings.SplitN(inner, "/", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				author, slug := parts[0], parts[1]
+				if author == "" || slug == "" {
+					continue
+				}
+				if skillsSet[slug] {
+					continue
+				}
+
+				if query != "" && !contains(slug, query) {
+					continue
+				}
+
+				skillsSet[slug] = true
+				downloadPath := strings.ReplaceAll(
+					strings.ReplaceAll(g.skillPathPattern, "{author}", author),
+					"{slug}", slug,
+				)
+				results = append(results, SearchResult{
+					Score:        1.0,
+					Slug:         slug,
+					DisplayName:  slug,
+					Summary:      fmt.Sprintf("Skill from %s", g.repo),
+					Version:      "latest",
+					RegistryName: g.Name(),
+					SourceRepo:   g.repo,
+					DownloadPath: downloadPath,
+				})
+			}
+			// Consume closing ]
+			decoder.Token()
+
+		default:
+			// Skip other top-level fields (sha, url, etc.)
+			var discard interface{}
+			decoder.Decode(&discard)
+		}
+	}
+
+	if truncated {
+		slog.Debug("github tree truncated, results may be incomplete", "repo", g.repo)
 	}
 
 	return results, nil
@@ -350,7 +494,21 @@ func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, 
 
 // buildSkillURL constructs the download URL for a skill using the configured pattern.
 func (g *GitHubRegistry) buildSkillURL(slug string) string {
-	path := strings.ReplaceAll(g.skillPathPattern, "{slug}", slug)
+	path := g.skillPathPattern
+	if strings.Contains(path, "{author}") {
+		// Three-level pattern: skills/{author}/{slug}/SKILL.md
+		// slug may be "author/skill-name" or just "skill-name"
+		parts := strings.SplitN(slug, "/", 2)
+		if len(parts) == 2 {
+			path = strings.ReplaceAll(path, "{author}", parts[0])
+			path = strings.ReplaceAll(path, "{slug}", parts[1])
+		} else {
+			// Only slug provided, author unknown — cannot resolve
+			path = strings.ReplaceAll(path, "{slug}", slug)
+		}
+	} else {
+		path = strings.ReplaceAll(path, "{slug}", slug)
+	}
 	return fmt.Sprintf("%s/%s/%s/%s", g.baseURL, g.repo, g.branch, path)
 }
 

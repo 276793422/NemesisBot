@@ -35,13 +35,16 @@ func SetSystemTray(tray *systray.SystemTray) {
 
 // ConfigureSystemTray wires system tray callbacks to the service manager
 // This must be called after the service manager is created in CmdGateway
-func ConfigureSystemTray(webURL string, onStart, onStop func() error) {
+func ConfigureSystemTray(webURL, chatURL string, onStart, onStop func() error) {
 	if globalSystemTray == nil {
 		return
 	}
 
 	if webURL != "" {
 		globalSystemTray.SetWebUIURL(webURL)
+	}
+	if chatURL != "" {
+		globalSystemTray.SetChatURL(chatURL)
 	}
 
 	if onStart != nil {
