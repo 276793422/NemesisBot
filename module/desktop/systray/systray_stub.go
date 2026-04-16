@@ -34,5 +34,20 @@ func (s *SystemTray) SetOnQuit(fn func()) {}
 // SetWebUIURL 设置 Web UI 地址（stub）
 func (s *SystemTray) SetWebUIURL(url string) {}
 
+// SetChatURL 设置独立聊天界面地址（stub）
+func (s *SystemTray) SetChatURL(url string) {}
+
+// SetProcessManager 设置进程管理器（stub）
+func (s *SystemTray) SetProcessManager(pm interface{}) {}
+
+// SetAuthToken 设置认证 Token（stub）
+func (s *SystemTray) SetAuthToken(token string) {}
+
+// SetWebPort 设置 Web 端口（stub）
+func (s *SystemTray) SetWebPort(port int) {}
+
+// SetWebHost 设置 Web 主机地址（stub）
+func (s *SystemTray) SetWebHost(host string) {}
+
 // Notify 显示通知（stub）
 func (s *SystemTray) Notify(title, message string) {}

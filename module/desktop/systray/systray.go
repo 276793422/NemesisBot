@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/276793422/NemesisBot/module/desktop/process"
 	"github.com/getlantern/systray"
 )
 
@@ -19,6 +20,13 @@ type SystemTray struct {
 	quitCh     chan struct{}
 	menuItems  map[string]*systray.MenuItem
 	webUIURL   string
+	chatURL    string
+
+	// Dashboard 子进程支持
+	procMgr   *process.ProcessManager
+	authToken string
+	webPort   int
+	webHost   string
 
 	// 回调函数
 	onStartFunc     func()
@@ -98,7 +106,8 @@ func (s *SystemTray) setupMenu() {
 	systray.AddSeparator()
 
 	// 快捷访问
-	mWebUI := systray.AddMenuItem("打开 Web UI", "打开 Web 界面")
+	mWebUI := systray.AddMenuItem("打开 Dashboard", "打开管理面板（子进程模式）")
+	mChat := systray.AddMenuItem("打开聊天", "打开独立聊天界面")
 	systray.AddSeparator()
 
 	// 信息
@@ -113,15 +122,16 @@ func (s *SystemTray) setupMenu() {
 	s.menuItems["start"] = mStart
 	s.menuItems["stop"] = mStop
 	s.menuItems["webui"] = mWebUI
+	s.menuItems["chat"] = mChat
 	s.menuItems["quit"] = mQuit
 
 	// 启动事件监听
-	go s.handleMenuEvents(mStart, mStop, mWebUI, mQuit)
+	go s.handleMenuEvents(mStart, mStop, mWebUI, mChat, mQuit)
 }
 
 // handleMenuEvents 处理菜单点击事件
 func (s *SystemTray) handleMenuEvents(
-	mStart, mStop, mWebUI, mQuit *systray.MenuItem,
+	mStart, mStop, mWebUI, mChat, mQuit *systray.MenuItem,
 ) {
 	for {
 		select {
@@ -131,7 +141,14 @@ func (s *SystemTray) handleMenuEvents(
 			fn := s.onStartFunc
 			s.mu.RUnlock()
 			if fn != nil {
-				go fn()
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Start handler: %v", r)
+						}
+					}()
+					fn()
+				}()
 			}
 
 		case <-mStop.ClickedCh:
@@ -140,23 +157,84 @@ func (s *SystemTray) handleMenuEvents(
 			fn := s.onStopFunc
 			s.mu.RUnlock()
 			if fn != nil {
-				go fn()
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Stop handler: %v", r)
+						}
+					}()
+					fn()
+				}()
 			}
 
 		case <-mWebUI.ClickedCh:
-			log.Printf("[SysTray] Menu: Web UI clicked")
+			log.Printf("[SysTray] Menu: Dashboard clicked")
 			s.mu.RLock()
 			fn := s.onOpenWebUIFunc
 			url := s.webUIURL
+			procMgr := s.procMgr
+			token := s.authToken
+			webPort := s.webPort
+			webHost := s.webHost
 			s.mu.RUnlock()
 			if fn != nil {
-				go fn()
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Dashboard handler: %v", r)
+						}
+					}()
+					fn()
+				}()
+			} else if procMgr != nil {
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Dashboard spawn: %v", r)
+						}
+					}()
+					data := map[string]interface{}{
+						"token":    token,
+						"web_port": webPort,
+						"web_host": webHost,
+					}
+					childID, _, err := procMgr.SpawnChild("dashboard", data)
+					if err != nil {
+						log.Printf("[SysTray] Failed to spawn Dashboard: %v", err)
+					} else {
+						log.Printf("[SysTray] Dashboard spawned: %s", childID)
+					}
+				}()
 			} else {
 				if url == "" {
 					url = "http://127.0.0.1:49000"
 				}
-				go s.openBrowser(url)
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Dashboard browser open: %v", r)
+						}
+					}()
+					s.openBrowser(url)
+				}()
 			}
+
+		case <-mChat.ClickedCh:
+			log.Printf("[SysTray] Menu: Chat clicked")
+			s.mu.RLock()
+			url := s.chatURL
+			s.mu.RUnlock()
+			if url == "" {
+				url = "http://127.0.0.1:49000/chat/"
+			}
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[SysTray] Recovered from panic in Chat browser open: %v", r)
+					}
+				}()
+				s.openBrowser(url)
+			}()
 
 		case <-mQuit.ClickedCh:
 			log.Printf("[SysTray] Menu: Quit clicked")
@@ -164,7 +242,14 @@ func (s *SystemTray) handleMenuEvents(
 			fn := s.onQuitFunc
 			s.mu.RUnlock()
 			if fn != nil {
-				go fn()
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("[SysTray] Recovered from panic in Quit handler: %v", r)
+						}
+					}()
+					fn()
+				}()
 			}
 
 		case <-s.quitCh:
@@ -209,6 +294,41 @@ func (s *SystemTray) SetWebUIURL(url string) {
 	s.webUIURL = url
 }
 
+// SetChatURL 设置独立聊天界面地址
+func (s *SystemTray) SetChatURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatURL = url
+}
+
+// SetProcessManager 设置进程管理器（用于 Dashboard 子进程启动）
+func (s *SystemTray) SetProcessManager(pm *process.ProcessManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.procMgr = pm
+}
+
+// SetAuthToken 设置认证 Token
+func (s *SystemTray) SetAuthToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authToken = token
+}
+
+// SetWebPort 设置 Web 端口
+func (s *SystemTray) SetWebPort(port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webPort = port
+}
+
+// SetWebHost 设置 Web 主机地址
+func (s *SystemTray) SetWebHost(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webHost = host
+}
+
 // openBrowser 打开浏览器
 func (s *SystemTray) openBrowser(url string) {
 	var cmd string
@@ -216,18 +336,18 @@ func (s *SystemTray) openBrowser(url string) {
 
 	switch runtime.GOOS {
 	case "windows":
-		cmd = "cmd"
-		args = []string{"/c", "start"}
+		cmd = "powershell"
+		args = []string{"-WindowStyle", "Hidden", "-Command", "Start-Process", url}
 	case "darwin":
 		cmd = "open"
+		args = []string{url}
 	default: // linux
 		cmd = "xdg-open"
+		args = []string{url}
 	}
-	args = append(args, url)
 
 	log.Printf("[SysTray] Opening browser: %s", url)
 
-	// Start the browser command
 	if err := exec.Command(cmd, args...).Start(); err != nil {
 		log.Printf("[SysTray] Failed to open browser: %v", err)
 	}
