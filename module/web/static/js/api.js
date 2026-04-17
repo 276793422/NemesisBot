@@ -227,6 +227,9 @@ var NemesisAPI = {
 
   // Internal
   _buildWSUrl: function() {
+    if (window.__DASHBOARD_BACKEND__) {
+      return 'ws://' + window.__DASHBOARD_BACKEND__ + '/ws';
+    }
     var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return protocol + '//' + window.location.host + '/ws';
   },

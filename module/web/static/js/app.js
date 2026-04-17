@@ -1,15 +1,18 @@
 /* NemesisBot - Alpine.js App Core */
 
-// Global Store
-Alpine.store('app', {
-  connected: false,
-  authenticated: false,
-  page: 'chat',
-  theme: 'dark',
-  sidebarCollapsed: false,
-  focusMode: false,
-  version: '',
-  token: ''
+// Register store via alpine:init event so Alpine.store() is available
+// regardless of script load order (Alpine must be loaded with defer, after this file)
+document.addEventListener('alpine:init', function() {
+  Alpine.store('app', {
+    connected: false,
+    authenticated: false,
+    page: 'chat',
+    theme: 'dark',
+    sidebarCollapsed: false,
+    focusMode: false,
+    version: '',
+    token: ''
+  });
 });
 
 // Main App Component
