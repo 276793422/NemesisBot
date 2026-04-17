@@ -8,9 +8,10 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/desktop/process"
-	"github.com/getlantern/systray"
+	"fyne.io/systray"
 )
 
 // SystemTray 系统托盘
@@ -33,6 +34,10 @@ type SystemTray struct {
 	onStopFunc      func()
 	onOpenWebUIFunc func()
 	onQuitFunc      func()
+
+	// 左键双击检测
+	leftClickMu    sync.Mutex
+	leftClickTimer *time.Timer
 }
 
 // NewSystemTray 创建系统托盘实例
@@ -86,6 +91,9 @@ func (s *SystemTray) onReady() {
 	systray.SetTitle("NemesisBot")
 	systray.SetTooltip("NemesisBot - AI Agent")
 
+	// 左键单击无操作，左键双击打开 WebUI
+	systray.SetOnTapped(s.handleLeftClick)
+
 	// 设置菜单
 	s.setupMenu()
 
@@ -129,6 +137,67 @@ func (s *SystemTray) setupMenu() {
 	go s.handleMenuEvents(mStart, mStop, mWebUI, mChat, mQuit)
 }
 
+// handleLeftClick 处理左键单击（双击检测：单击无操作，双击打开 WebUI）
+func (s *SystemTray) handleLeftClick() {
+	s.leftClickMu.Lock()
+	defer s.leftClickMu.Unlock()
+
+	if s.leftClickTimer != nil {
+		// 定时器内第二次点击 → 双击
+		s.leftClickTimer.Stop()
+		s.leftClickTimer = nil
+		log.Printf("[SysTray] Left double click: opening WebUI")
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[SysTray] Recovered from panic in double click handler: %v", r)
+				}
+			}()
+			s.openWebUI()
+		}()
+	} else {
+		// 第一次点击 → 启动定时器，超时则忽略
+		s.leftClickTimer = time.AfterFunc(400*time.Millisecond, func() {
+			s.leftClickMu.Lock()
+			s.leftClickTimer = nil
+			s.leftClickMu.Unlock()
+		})
+	}
+}
+
+// openWebUI 打开 WebUI（供左键单击和菜单项共用）
+func (s *SystemTray) openWebUI() {
+	s.mu.RLock()
+	fn := s.onOpenWebUIFunc
+	url := s.webUIURL
+	procMgr := s.procMgr
+	token := s.authToken
+	webPort := s.webPort
+	webHost := s.webHost
+	s.mu.RUnlock()
+
+	if fn != nil {
+		fn()
+	} else if procMgr != nil {
+		data := map[string]interface{}{
+			"token":    token,
+			"web_port": webPort,
+			"web_host": webHost,
+		}
+		childID, _, err := procMgr.SpawnChild("dashboard", data)
+		if err != nil {
+			log.Printf("[SysTray] Failed to spawn Dashboard: %v", err)
+		} else {
+			log.Printf("[SysTray] Dashboard spawned: %s", childID)
+		}
+	} else {
+		if url == "" {
+			url = "http://127.0.0.1:49000"
+		}
+		s.openBrowser(url)
+	}
+}
+
 // handleMenuEvents 处理菜单点击事件
 func (s *SystemTray) handleMenuEvents(
 	mStart, mStop, mWebUI, mChat, mQuit *systray.MenuItem,
@@ -169,55 +238,14 @@ func (s *SystemTray) handleMenuEvents(
 
 		case <-mWebUI.ClickedCh:
 			log.Printf("[SysTray] Menu: Dashboard clicked")
-			s.mu.RLock()
-			fn := s.onOpenWebUIFunc
-			url := s.webUIURL
-			procMgr := s.procMgr
-			token := s.authToken
-			webPort := s.webPort
-			webHost := s.webHost
-			s.mu.RUnlock()
-			if fn != nil {
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("[SysTray] Recovered from panic in Dashboard handler: %v", r)
-						}
-					}()
-					fn()
-				}()
-			} else if procMgr != nil {
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("[SysTray] Recovered from panic in Dashboard spawn: %v", r)
-						}
-					}()
-					data := map[string]interface{}{
-						"token":    token,
-						"web_port": webPort,
-						"web_host": webHost,
-					}
-					childID, _, err := procMgr.SpawnChild("dashboard", data)
-					if err != nil {
-						log.Printf("[SysTray] Failed to spawn Dashboard: %v", err)
-					} else {
-						log.Printf("[SysTray] Dashboard spawned: %s", childID)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[SysTray] Recovered from panic in Dashboard handler: %v", r)
 					}
 				}()
-			} else {
-				if url == "" {
-					url = "http://127.0.0.1:49000"
-				}
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("[SysTray] Recovered from panic in Dashboard browser open: %v", r)
-						}
-					}()
-					s.openBrowser(url)
-				}()
-			}
+				s.openWebUI()
+			}()
 
 		case <-mChat.ClickedCh:
 			log.Printf("[SysTray] Menu: Chat clicked")
