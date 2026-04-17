@@ -27,6 +27,14 @@ type SearchResult struct {
 	DownloadPath string  `json:"download_path,omitempty"` // e.g. "skills/pdf/SKILL.md"
 	Author       string  `json:"author,omitempty"`        // skill author handle
 	Downloads    int64  `json:"downloads,omitempty"`      // download count
+	Truncated    bool    `json:"truncated,omitempty"`     // hint: more results may exist beyond this entry
+}
+
+// RegistrySearchResult holds the search results for a single registry source.
+type RegistrySearchResult struct {
+	RegistryName string         // e.g. "clawhub", "anthropics", "openclaw"
+	Results      []SearchResult // results from this registry (sorted by score desc)
+	Truncated    bool           // true if the registry may have more results than returned
 }
 
 // SkillMeta holds metadata about a skill from a registry.
@@ -184,13 +192,14 @@ func (rm *RegistryManager) GetSearchCache() *SearchCache {
 	return rm.searchCache
 }
 
-// SearchAll fans out the query to all registries concurrently
-// and merges results sorted by score descending.
-func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+// SearchAll fans out the query to all registries concurrently.
+// Each registry is searched independently with the given limit.
+// Results are returned grouped by registry, not merged.
+func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit int) ([]RegistrySearchResult, error) {
 	// 1. Check cache first if enabled
 	if rm.searchCache != nil {
 		if results, ok := rm.searchCache.Get(query, limit); ok {
-			slog.Debug("search cache hit", "query", query, "results", len(results))
+			slog.Debug("search cache hit", "query", query, "registries", len(results))
 			return results, nil
 		}
 	}
@@ -205,8 +214,10 @@ func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit in
 	}
 
 	type regResult struct {
-		results []SearchResult
-		err     error
+		name     string
+		results  []SearchResult
+		trunc    bool
+		err      error
 	}
 
 	// Semaphore: limit concurrency.
@@ -237,7 +248,16 @@ func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit in
 				resultsCh <- regResult{err: err}
 				return
 			}
-			resultsCh <- regResult{results: results}
+
+			// Check if the last result indicates truncation
+			truncated := false
+			if len(results) > 0 && results[len(results)-1].Truncated {
+				// Remove the truncation marker from the last result itself
+				results[len(results)-1].Truncated = false
+				truncated = true
+			}
+
+			resultsCh <- regResult{name: r.Name(), results: results, trunc: truncated}
 		}(reg)
 	}
 
@@ -247,17 +267,21 @@ func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit in
 		close(resultsCh)
 	}()
 
-	var merged []SearchResult
+	var grouped []RegistrySearchResult
 	var lastErr error
-
 	var anyRegistrySucceeded bool
+
 	for rr := range resultsCh {
 		if rr.err != nil {
 			lastErr = rr.err
 			continue
 		}
 		anyRegistrySucceeded = true
-		merged = append(merged, rr.results...)
+		grouped = append(grouped, RegistrySearchResult{
+			RegistryName: rr.name,
+			Results:      rr.results,
+			Truncated:    rr.trunc,
+		})
 	}
 
 	// If all registries failed, return the last error.
@@ -265,21 +289,13 @@ func (rm *RegistryManager) SearchAll(ctx context.Context, query string, limit in
 		return nil, fmt.Errorf("all registries failed: %w", lastErr)
 	}
 
-	// Sort by score descending.
-	sortByScoreDesc(merged)
-
-	// Clamp to limit.
-	if limit > 0 && len(merged) > limit {
-		merged = merged[:limit]
+	// 2. Store results in cache BEFORE clamping.
+	if rm.searchCache != nil && len(grouped) > 0 {
+		rm.searchCache.Put(query, grouped)
+		slog.Debug("search cache stored", "query", query, "registries", len(grouped))
 	}
 
-	// 2. Store in cache if enabled
-	if rm.searchCache != nil && len(merged) > 0 {
-		rm.searchCache.Put(query, merged)
-		slog.Debug("search cache stored", "query", query, "results", len(merged))
-	}
-
-	return merged, nil
+	return grouped, nil
 }
 
 // sortByScoreDesc sorts SearchResults by Score in descending order (insertion sort — small slices).

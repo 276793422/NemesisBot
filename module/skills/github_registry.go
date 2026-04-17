@@ -37,6 +37,7 @@ type GitHubRegistry struct {
 	indexPath        string // e.g. "skills.json"
 	skillPathPattern string // e.g. "skills/{slug}/SKILL.md"
 	registryName     string // override for Name(), e.g. "anthropics"
+	gitHubAPIURL     string // GitHub API base URL, default "https://api.github.com"
 }
 
 // NewGitHubRegistry creates a new GitHub registry client from config (legacy single-source).
@@ -125,6 +126,14 @@ func (g *GitHubRegistry) Name() string {
 	return "github"
 }
 
+// apiBaseURL returns the GitHub API base URL, defaulting to https://api.github.com.
+func (g *GitHubRegistry) apiBaseURL() string {
+	if g.gitHubAPIURL != "" {
+		return g.gitHubAPIURL
+	}
+	return "https://api.github.com"
+}
+
 // Search searches for available GitHub skills.
 // Dispatches to the appropriate search strategy based on indexType.
 func (g *GitHubRegistry) Search(ctx context.Context, query string, limit int) ([]SearchResult, error) {
@@ -194,7 +203,7 @@ func (g *GitHubRegistry) searchGitHubAPI(ctx context.Context, query string, limi
 // searchTwoLayer searches two-layer repos (skills/{slug}/SKILL.md)
 // by listing the skills/ directory and matching against directory names.
 func (g *GitHubRegistry) searchTwoLayer(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/contents/skills", g.repo)
+	apiURL := fmt.Sprintf("%s/repos/%s/contents/skills", g.apiBaseURL(), g.repo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -255,7 +264,7 @@ func (g *GitHubRegistry) searchTwoLayer(ctx context.Context, query string, limit
 // using the GitHub Trees API with a streaming JSON decoder to handle large repos
 // (openclaw/skills has 65K+ entries, ~20MB response) efficiently.
 func (g *GitHubRegistry) searchThreeLayer(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/git/trees/%s?recursive=1", g.repo, g.branch)
+	apiURL := fmt.Sprintf("%s/repos/%s/git/trees/%s?recursive=1", g.apiBaseURL(), g.repo, g.branch)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
@@ -310,6 +319,13 @@ func (g *GitHubRegistry) searchThreeLayer(ctx context.Context, query string, lim
 			for decoder.More() {
 				if len(results) >= limit {
 					break
+				}
+
+				// Check context cancellation
+				select {
+				case <-ctx.Done():
+					return nil, fmt.Errorf("tree search cancelled: %w", ctx.Err())
+				default:
 				}
 
 				var entry struct {
@@ -425,6 +441,7 @@ func (g *GitHubRegistry) GetSkillMeta(ctx context.Context, slug string) (*SkillM
 }
 
 // DownloadAndInstall downloads a skill from GitHub and installs it to the target directory.
+// Downloads all files and subdirectories within the skill directory, not just SKILL.md.
 func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, targetDir string) (*InstallResult, error) {
 	if err := utils.ValidateSkillIdentifier(slug); err != nil {
 		return nil, fmt.Errorf("invalid slug %q: %w", slug, err)
@@ -451,13 +468,29 @@ func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, 
 		installVersion = "main"
 	}
 
-	// Build the download URL(s)
+	// Use Trees API to download the full skill directory
+	if g.repo != "" && g.skillPathPattern != "" {
+		// Calculate the skill directory prefix from the pattern
+		dirPrefix := g.skillDirPrefix(slug)
+		if dirPrefix != "" {
+			if err := g.downloadSkillTree(ctx, dirPrefix, targetDir); err != nil {
+				return nil, fmt.Errorf("failed to download skill directory: %w", err)
+			}
+
+			return &InstallResult{
+				Version:          installVersion,
+				IsMalwareBlocked: false,
+				IsSuspicious:     false,
+				Summary:          meta.Summary,
+			}, nil
+		}
+	}
+
+	// Legacy fallback: download only SKILL.md (for repos without skillPathPattern)
 	var possibleURLs []string
 	if g.repo != "" && g.skillPathPattern != "" {
-		// Multi-source: use buildSkillURL to construct URL from pattern
 		possibleURLs = []string{g.buildSkillURL(slug)}
 	} else {
-		// Legacy fallback: try both direct repository and nemesisbot-skills repository
 		possibleURLs = []string{
 			fmt.Sprintf("%s/%s/main/SKILL.md", g.baseURL, slug),
 			fmt.Sprintf("%s/276793422/nemesisbot-skills/main/skills/%s/SKILL.md", g.baseURL, slug),
@@ -468,12 +501,10 @@ func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, 
 	for _, url := range possibleURLs {
 		body, err := g.doGet(ctx, url)
 		if err == nil {
-			// Create target directory
 			if err := os.MkdirAll(targetDir, 0o755); err != nil {
 				return nil, fmt.Errorf("failed to create directory: %w", err)
 			}
 
-			// Write the skill file
 			skillPath := filepath.Join(targetDir, "SKILL.md")
 			if err := os.WriteFile(skillPath, body, 0o644); err != nil {
 				return nil, fmt.Errorf("failed to write skill file: %w", err)
@@ -490,6 +521,39 @@ func (g *GitHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, 
 	}
 
 	return nil, fmt.Errorf("failed to download skill from GitHub: %w", lastErr)
+}
+
+// skillDirPrefix calculates the directory prefix for a skill from the skillPathPattern.
+// For example, "skills/{slug}/SKILL.md" with slug "pdf" → "skills/pdf"
+// For example, "skills/{author}/{slug}/SKILL.md" with slug "clawcv/pdf" → "skills/clawcv/pdf"
+func (g *GitHubRegistry) skillDirPrefix(slug string) string {
+	path := g.skillPathPattern
+	if strings.Contains(path, "{author}") {
+		parts := strings.SplitN(slug, "/", 2)
+		if len(parts) == 2 {
+			path = strings.ReplaceAll(path, "{author}", parts[0])
+			path = strings.ReplaceAll(path, "{slug}", parts[1])
+		} else {
+			return "" // Can't determine author from slug alone
+		}
+	} else {
+		path = strings.ReplaceAll(path, "{slug}", slug)
+	}
+
+	// Remove the trailing filename (e.g., "/SKILL.md") to get the directory prefix
+	// The last "/" separates the directory from the filename
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash < 0 {
+		return ""
+	}
+	return path[:lastSlash]
+}
+
+// downloadSkillTree downloads all files under the given directory prefix from GitHub
+// using the shared Trees API download logic.
+func (g *GitHubRegistry) downloadSkillTree(ctx context.Context, dirPrefix, targetDir string) error {
+	return DownloadSkillTreeFromGitHub(ctx, g.client, g.apiBaseURL(), g.baseURL,
+		g.repo, g.branch, dirPrefix, targetDir, int64(g.maxSize))
 }
 
 // buildSkillURL constructs the download URL for a skill using the configured pattern.

@@ -82,6 +82,12 @@ func extractFile(f *zip.File, destDir string) error {
 	return nil
 }
 
+// IsPathWithinDir checks if the path is within the base directory (security check).
+// Exported for use by other packages that need zip-slip style validation.
+func IsPathWithinDir(path, baseDir string) bool {
+	return isPathWithinDir(path, baseDir)
+}
+
 // isPathWithinDir checks if the path is within the base directory (security check)
 func isPathWithinDir(path, baseDir string) bool {
 	absPath, err := filepath.Abs(path)

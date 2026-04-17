@@ -77,10 +77,13 @@ func (t *FindSkillsTool) Execute(ctx context.Context, args map[string]interface{
 	}
 
 	// Search registries
-	results, err := t.registryManager.SearchAll(ctx, query, limit)
+	grouped, err := t.registryManager.SearchAll(ctx, query, limit)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to search registries: %v", err))
 	}
+
+	// Flatten grouped results for AI consumption
+	results := skills.FlattenSearchResults(grouped)
 
 	// Format output
 	if len(results) == 0 {

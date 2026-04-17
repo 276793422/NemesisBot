@@ -23,8 +23,8 @@ type SearchCache struct {
 
 // CacheEntry represents a single cache entry with search results and metadata.
 type CacheEntry struct {
-	Results      []SearchResult
-	Trigrams     []uint32 // trigram signature for similarity matching
+	Results      []RegistrySearchResult // grouped by registry
+	Trigrams     []uint32               // trigram signature for similarity matching
 	CreatedAt    time.Time
 	LastAccessAt time.Time
 	AccessCount  int
@@ -49,7 +49,8 @@ func NewSearchCache(cfg SearchCacheConfig) *SearchCache {
 
 // Get retrieves search results from cache, checking for similar queries if exact match not found.
 // Returns (results, true) if cache hit (exact or similar), (nil, false) if cache miss.
-func (sc *SearchCache) Get(query string, limit int) ([]SearchResult, bool) {
+// Results are clamped per-registry to the given limit.
+func (sc *SearchCache) Get(query string, limit int) ([]RegistrySearchResult, bool) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
@@ -68,11 +69,8 @@ func (sc *SearchCache) Get(query string, limit int) ([]SearchResult, bool) {
 		entry.AccessCount++
 		sc.hitCount++
 
-		// Clamp results to limit
-		if limit > 0 && len(entry.Results) > limit {
-			return entry.Results[:limit], true
-		}
-		return entry.Results, true
+		// Clamp results per-registry to limit
+		return clampRegistryResults(entry.Results, limit), true
 	}
 
 	// 2. Try similarity match (trigram + Jaccard)
@@ -100,20 +98,37 @@ func (sc *SearchCache) Get(query string, limit int) ([]SearchResult, bool) {
 		entry.AccessCount++
 		sc.hitCount++
 
-		// Clamp results to limit
-		if limit > 0 && len(entry.Results) > limit {
-			return entry.Results[:limit], true
-		}
-		return entry.Results, true
+		// Clamp results per-registry to limit
+		return clampRegistryResults(entry.Results, limit), true
 	}
 
 	sc.missCount++
 	return nil, false
 }
 
+// clampRegistryResults clamps each registry's results to the given limit.
+func clampRegistryResults(grouped []RegistrySearchResult, limit int) []RegistrySearchResult {
+	if limit <= 0 {
+		return grouped
+	}
+	clamped := make([]RegistrySearchResult, len(grouped))
+	for i, g := range grouped {
+		if len(g.Results) > limit {
+			clamped[i] = RegistrySearchResult{
+				RegistryName: g.RegistryName,
+				Results:      g.Results[:limit],
+				Truncated:    true, // clamped implies truncation
+			}
+		} else {
+			clamped[i] = g
+		}
+	}
+	return clamped
+}
+
 // Put stores search results in the cache with the query as key.
 // If the key already exists, it updates the entry and moves it to the front of LRU.
-func (sc *SearchCache) Put(query string, results []SearchResult) {
+func (sc *SearchCache) Put(query string, results []RegistrySearchResult) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 

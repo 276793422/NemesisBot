@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/276793422/NemesisBot/module/utils"
 )
 
 const (
@@ -29,10 +31,11 @@ const (
 //   - List:   Convex POST /api/query  {"path":"skills:list","args":{"limit":N},"format":"json"}
 //   - Meta:   Convex POST /api/query  {"path":"skills:getBySlug","args":{"slug":"..."},"format":"json"}
 type ClawHubRegistry struct {
-	baseURL   string // ClawHub website URL (for search API)
-	convexURL string // Convex deployment URL (for query API)
-	timeout   time.Duration
-	client    *http.Client
+	baseURL      string // ClawHub website URL (for search API)
+	convexURL    string // Convex deployment URL (for query API)
+	convexSiteURL string // Convex site URL override (for ZIP download); if empty, derived from convexURL
+	timeout      time.Duration
+	client       *http.Client
 }
 
 // NewClawHubRegistry creates a new ClawHub registry client.
@@ -71,6 +74,15 @@ func NewClawHubRegistry(cfg ClawHubConfig) *ClawHubRegistry {
 // Name returns the registry name.
 func (r *ClawHubRegistry) Name() string {
 	return "clawhub"
+}
+
+// siteURL returns the Convex site URL for ZIP downloads.
+// If explicitly set, returns that. Otherwise derives from convexURL (.convex.cloud → .convex.site).
+func (r *ClawHubRegistry) siteURL() string {
+	if r.convexSiteURL != "" {
+		return r.convexSiteURL
+	}
+	return strings.Replace(r.convexURL, ".convex.cloud", ".convex.site", 1)
 }
 
 // --- ClawHub search API ---
@@ -184,7 +196,7 @@ func (r *ClawHubRegistry) Search(ctx context.Context, query string, limit int) (
 
 // searchQuery uses the clawhub.ai search API for vector search.
 func (r *ClawHubRegistry) searchQuery(ctx context.Context, query string, limit int) ([]SearchResult, error) {
-	if limit <= 0 || limit > 50 {
+	if limit <= 0 {
 		limit = 20
 	}
 
@@ -228,12 +240,17 @@ func (r *ClawHubRegistry) searchQuery(ctx context.Context, query string, limit i
 		})
 	}
 
+	// Mark truncation: if we got exactly `limit` results, there may be more
+	if len(results) == limit {
+		results[len(results)-1].Truncated = true
+	}
+
 	return results, nil
 }
 
 // searchList fetches recent skills via Convex skills:list.
 func (r *ClawHubRegistry) searchList(ctx context.Context, limit int) ([]SearchResult, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 20
 	}
 
@@ -258,6 +275,12 @@ func (r *ClawHubRegistry) searchList(ctx context.Context, limit int) ([]SearchRe
 			RegistryName: "clawhub",
 			Downloads:    int64(item.Stats.Downloads),
 		})
+	}
+
+	// Mark truncation: Convex skills:list has a hard limit of 200.
+	// If the caller requested more than 200 and we got exactly 200, there are more.
+	if limit > 200 && len(results) == 200 {
+		results[len(results)-1].Truncated = true
 	}
 
 	return results, nil
@@ -303,7 +326,11 @@ func (r *ClawHubRegistry) GetSkillMeta(ctx context.Context, slug string) (*Skill
 }
 
 // DownloadAndInstall fetches metadata to find the owner handle, then downloads
-// the SKILL.md from the openclaw/skills GitHub repository.
+// the full skill directory (all files and subdirectories).
+//
+// Strategy:
+//  1. Try ZIP download from the Convex site URL (primary).
+//  2. Fallback to GitHub Trees API for individual file downloads.
 func (r *ClawHubRegistry) DownloadAndInstall(ctx context.Context, slug, version, targetDir string) (*InstallResult, error) {
 	if err := ValidateSkillIdentifier(slug); err != nil {
 		return nil, fmt.Errorf("invalid skill slug: %w", err)
@@ -324,52 +351,161 @@ func (r *ClawHubRegistry) DownloadAndInstall(ctx context.Context, slug, version,
 		return nil, fmt.Errorf("owner handle not found for skill '%s'", slug)
 	}
 
-	// Download SKILL.md from openclaw/skills GitHub repo
-	downloadURL := fmt.Sprintf(
-		"https://raw.githubusercontent.com/openclaw/skills/main/skills/%s/%s/SKILL.md",
-		detail.Owner.Handle, slug,
-	)
+	owner := detail.Owner.Handle
+	installVersion := detail.LatestVersion.Version
+	if installVersion == "" {
+		installVersion = "latest"
+	}
+
+	// Strategy 1: Try ZIP download from Convex site
+	if zipErr := r.downloadSkillZip(ctx, slug, targetDir); zipErr == nil {
+		slog.Debug("clawhub skill installed via ZIP", "slug", slug, "owner", owner, "path", targetDir)
+		return &InstallResult{
+			Version:          installVersion,
+			IsMalwareBlocked: false,
+			IsSuspicious:     false,
+			Summary:          detail.Skill.Summary,
+		}, nil
+	} else {
+		slog.Debug("ZIP download failed, falling back to GitHub Trees API", "slug", slug, "error", zipErr)
+	}
+
+	// Strategy 2: Fallback to GitHub Trees API
+	if treeErr := DownloadSkillTreeFromGitHub(ctx, r.client,
+		"https://api.github.com", "https://raw.githubusercontent.com",
+		"openclaw/skills", "main",
+		fmt.Sprintf("skills/%s/%s", owner, slug),
+		targetDir, 0, // 0 = use default 10MB limit
+	); treeErr != nil {
+		return nil, fmt.Errorf("all download strategies failed: %w", treeErr)
+	}
+
+	slog.Debug("clawhub skill installed via GitHub Trees API", "slug", slug, "owner", owner, "path", targetDir)
+
+	return &InstallResult{
+		Version:          installVersion,
+		IsMalwareBlocked: false,
+		IsSuspicious:     false,
+		Summary:          detail.Skill.Summary,
+	}, nil
+}
+
+// downloadSkillZip downloads a skill as a ZIP from the Convex site and extracts it.
+func (r *ClawHubRegistry) downloadSkillZip(ctx context.Context, slug, targetDir string) error {
+	siteURL := r.siteURL()
+	if siteURL == "" {
+		return fmt.Errorf("site URL not configured")
+	}
+	downloadURL := fmt.Sprintf("%s/api/v1/download?slug=%s", siteURL, url.QueryEscape(slug))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create download request: %w", err)
+		return fmt.Errorf("failed to create ZIP download request: %w", err)
 	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download skill: %w", err)
+		return fmt.Errorf("ZIP download request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("download failed with status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("ZIP download failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB max
+	// Check content type — should be ZIP
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" && !strings.Contains(contentType, "zip") &&
+		!strings.Contains(contentType, "application/octet-stream") {
+		return fmt.Errorf("unexpected content type for ZIP download: %s", contentType)
+	}
+
+	// Download to temp file
+	tmpFile, err := os.CreateTemp("", "clawhub-skill-*.zip")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read download body: %w", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, io.LimitReader(resp.Body, 50*1024*1024)); err != nil { // 50MB max
+		tmpFile.Close()
+		return fmt.Errorf("failed to write ZIP to temp file: %w", err)
+	}
+	tmpFile.Close()
+
+	// Extract to a staging directory
+	stagingDir, err := os.MkdirTemp("", "clawhub-skill-extract-*")
+	if err != nil {
+		return fmt.Errorf("failed to create staging directory: %w", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	if err := utils.ExtractZipFile(tmpPath, stagingDir); err != nil {
+		return fmt.Errorf("failed to extract ZIP: %w", err)
 	}
 
-	// Create target directory
+	// Check if ZIP contained a single top-level directory — flatten if so
+	finalSrc, err := flattenSingleTopDir(stagingDir)
+	if err != nil {
+		return fmt.Errorf("failed to process extracted contents: %w", err)
+	}
+
+	// Move contents to targetDir
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create target directory: %w", err)
+		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
-	// Write SKILL.md
-	skillPath := filepath.Join(targetDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, body, 0o644); err != nil {
-		return nil, fmt.Errorf("failed to write skill file: %w", err)
+	return moveDirContents(finalSrc, targetDir)
+}
+
+// flattenSingleTopDir checks if stagingDir contains a single subdirectory at the top level.
+// If so, returns the path to that subdirectory (for flattening). Otherwise returns stagingDir.
+func flattenSingleTopDir(stagingDir string) (string, error) {
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		return stagingDir, nil
 	}
 
-	slog.Debug("clawhub skill installed", "slug", slug, "owner", detail.Owner.Handle, "path", targetDir)
+	// If there's exactly one entry and it's a directory, flatten into it
+	if len(entries) == 1 && entries[0].IsDir() {
+		return filepath.Join(stagingDir, entries[0].Name()), nil
+	}
 
-	return &InstallResult{
-		Version:          detail.LatestVersion.Version,
-		IsMalwareBlocked: false,
-		IsSuspicious:     false,
-		Summary:          detail.Skill.Summary,
-	}, nil
+	return stagingDir, nil
+}
+
+// moveDirContents moves all files and directories from srcDir to dstDir.
+func moveDirContents(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("failed to read source directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+
+		if entry.IsDir() {
+			if err := os.MkdirAll(dstPath, 0o755); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+			if err := moveDirContents(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			data, err := os.ReadFile(srcPath)
+			if err != nil {
+				return fmt.Errorf("failed to read %s: %w", entry.Name(), err)
+			}
+			if err := os.WriteFile(dstPath, data, 0o644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", entry.Name(), err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // ValidateSkillIdentifier validates a skill identifier to prevent path traversal attacks.

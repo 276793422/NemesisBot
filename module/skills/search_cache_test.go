@@ -8,6 +8,12 @@ import (
 	"testing"
 	"time"
 )
+// wrapTestResults wraps a flat []SearchResult into []RegistrySearchResult for testing.
+func wrapTestResults(name string, results []SearchResult) []RegistrySearchResult {
+	return []RegistrySearchResult{
+		{RegistryName: name, Results: results},
+	}
+}
 
 func TestNewSearchCache(t *testing.T) {
 	tests := []struct {
@@ -100,7 +106,7 @@ func TestSearchCache_PutAndGet(t *testing.T) {
 	}
 
 	// Put results
-	sc.Put("test query", results)
+	sc.Put("test query", wrapTestResults("test", results))
 
 	// Get exact match
 	retrieved, ok := sc.Get("test query", 10)
@@ -109,11 +115,15 @@ func TestSearchCache_PutAndGet(t *testing.T) {
 	}
 
 	if len(retrieved) != 1 {
-		t.Errorf("expected 1 result, got %d", len(retrieved))
+		t.Errorf("expected 1 registry result, got %d", len(retrieved))
 	}
 
-	if retrieved[0].Slug != "skill1" {
-		t.Errorf("expected slug 'skill1', got '%s'", retrieved[0].Slug)
+	if len(retrieved[0].Results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(retrieved[0].Results))
+	}
+
+	if retrieved[0].Results[0].Slug != "skill1" {
+		t.Errorf("expected slug 'skill1', got '%s'", retrieved[0].Results[0].Slug)
 	}
 }
 
@@ -146,7 +156,7 @@ func TestSearchCache_TTLExpiry(t *testing.T) {
 		{Score: 0.9, Slug: "skill1"},
 	}
 
-	sc.Put("test", results)
+	sc.Put("test", wrapTestResults("test", results))
 
 	// Wait for expiry
 	time.Sleep(15 * time.Millisecond)
@@ -176,9 +186,9 @@ func TestSearchCache_LRU_Eviction(t *testing.T) {
 	results := []SearchResult{{Score: 0.9, Slug: "skill"}}
 
 	// Fill cache to max
-	sc.Put("query1", results)
-	sc.Put("query2", results)
-	sc.Put("query3", results)
+	sc.Put("query1", wrapTestResults("test", results))
+	sc.Put("query2", wrapTestResults("test", results))
+	sc.Put("query3", wrapTestResults("test", results))
 
 	stats := sc.Stats()
 	if stats.Size != 3 {
@@ -186,7 +196,7 @@ func TestSearchCache_LRU_Eviction(t *testing.T) {
 	}
 
 	// Add one more - should evict query1
-	sc.Put("query4", results)
+	sc.Put("query4", wrapTestResults("test", results))
 
 	stats = sc.Stats()
 	if stats.Size != 3 {
@@ -215,15 +225,15 @@ func TestSearchCache_UpdateLRU(t *testing.T) {
 	results := []SearchResult{{Score: 0.9, Slug: "skill"}}
 
 	// Add entries
-	sc.Put("query1", results)
-	sc.Put("query2", results)
-	sc.Put("query3", results)
+	sc.Put("query1", wrapTestResults("test", results))
+	sc.Put("query2", wrapTestResults("test", results))
+	sc.Put("query3", wrapTestResults("test", results))
 
 	// Access query1 to make it recently used
 	sc.Get("query1", 10)
 
 	// Add query4 - should evict query2 (least recently used after query1 access)
-	sc.Put("query4", results)
+	sc.Put("query4", wrapTestResults("test", results))
 
 	// query1 should still be present
 	_, ok := sc.Get("query1", 10)
@@ -248,7 +258,7 @@ func TestSearchCache_UpdateExisting(t *testing.T) {
 	results2 := []SearchResult{{Score: 0.8, Slug: "skill2"}}
 
 	// Put initial results
-	sc.Put("query", results1)
+	sc.Put("query", wrapTestResults("test", results1))
 
 	stats := sc.Stats()
 	if stats.Size != 1 {
@@ -256,7 +266,7 @@ func TestSearchCache_UpdateExisting(t *testing.T) {
 	}
 
 	// Update with new results
-	sc.Put("query", results2)
+	sc.Put("query", wrapTestResults("test", results2))
 
 	stats = sc.Stats()
 	if stats.Size != 1 {
@@ -266,11 +276,15 @@ func TestSearchCache_UpdateExisting(t *testing.T) {
 	// Get updated results
 	retrieved, _ := sc.Get("query", 10)
 	if len(retrieved) != 1 {
-		t.Errorf("expected 1 result, got %d", len(retrieved))
+		t.Errorf("expected 1 registry result, got %d", len(retrieved))
 	}
 
-	if retrieved[0].Slug != "skill2" {
-		t.Errorf("expected slug 'skill2', got '%s'", retrieved[0].Slug)
+	if len(retrieved[0].Results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(retrieved[0].Results))
+	}
+
+	if retrieved[0].Results[0].Slug != "skill2" {
+		t.Errorf("expected slug 'skill2', got '%s'", retrieved[0].Results[0].Slug)
 	}
 }
 
@@ -286,7 +300,7 @@ func TestSearchCache_GetWithLimit(t *testing.T) {
 		{Score: 0.7, Slug: "skill3"},
 	}
 
-	sc.Put("query", results)
+	sc.Put("query", wrapTestResults("test", results))
 
 	// Get with limit
 	retrieved, ok := sc.Get("query", 2)
@@ -294,8 +308,11 @@ func TestSearchCache_GetWithLimit(t *testing.T) {
 		t.Fatal("expected cache hit")
 	}
 
-	if len(retrieved) != 2 {
-		t.Errorf("expected 2 results with limit, got %d", len(retrieved))
+	if len(retrieved) != 1 {
+		t.Errorf("expected 1 registry result, got %d", len(retrieved))
+	}
+	if len(retrieved[0].Results) != 2 {
+		t.Errorf("expected 2 results with limit, got %d", len(retrieved[0].Results))
 	}
 
 	// Get without limit
@@ -304,8 +321,11 @@ func TestSearchCache_GetWithLimit(t *testing.T) {
 		t.Fatal("expected cache hit")
 	}
 
-	if len(retrieved) != 3 {
-		t.Errorf("expected 3 results without limit, got %d", len(retrieved))
+	if len(retrieved) != 1 {
+		t.Errorf("expected 1 registry result, got %d", len(retrieved))
+	}
+	if len(retrieved[0].Results) != 3 {
+		t.Errorf("expected 3 results without limit, got %d", len(retrieved[0].Results))
 	}
 }
 
@@ -318,9 +338,9 @@ func TestSearchCache_Clear(t *testing.T) {
 	results := []SearchResult{{Score: 0.9, Slug: "skill"}}
 
 	// Add some entries
-	sc.Put("query1", results)
-	sc.Put("query2", results)
-	sc.Put("query3", results)
+	sc.Put("query1", wrapTestResults("test", results))
+	sc.Put("query2", wrapTestResults("test", results))
+	sc.Put("query3", wrapTestResults("test", results))
 
 	stats := sc.Stats()
 	if stats.Size != 3 {
@@ -368,7 +388,7 @@ func TestSearchCache_Stats(t *testing.T) {
 	}
 
 	// Add entry
-	sc.Put("query", results)
+	sc.Put("query", wrapTestResults("test", results))
 
 	// Hit
 	sc.Get("query", 10)
@@ -564,7 +584,7 @@ func TestSearchCache_AccessCount(t *testing.T) {
 	})
 
 	results := []SearchResult{{Score: 0.9, Slug: "skill"}}
-	sc.Put("query", results)
+	sc.Put("query", wrapTestResults("test", results))
 
 	// Access multiple times
 	for i := 0; i < 5; i++ {
@@ -577,14 +597,16 @@ func TestSearchCache_AccessCount(t *testing.T) {
 		t.Error("expected cache hit")
 	}
 	if len(retrieved) != 1 {
-		t.Errorf("expected 1 result, got %d", len(retrieved))
+		t.Errorf("expected 1 registry result, got %d", len(retrieved))
 	}
 }
 
 func TestCacheEntry_Structure(t *testing.T) {
 	now := time.Now()
 	entry := &CacheEntry{
-		Results:      []SearchResult{{Score: 0.9, Slug: "skill"}},
+		Results: []RegistrySearchResult{
+			{RegistryName: "test", Results: []SearchResult{{Score: 0.9, Slug: "skill"}}},
+		},
 		Trigrams:     []uint32{1, 2, 3},
 		CreatedAt:    now,
 		LastAccessAt: now,
@@ -648,7 +670,7 @@ func TestSearchCache_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(idx int) {
 			query := "query" + string(rune('0'+idx))
-			sc.Put(query, results)
+			sc.Put(query, wrapTestResults("test", results))
 			sc.Get(query, 10)
 			done <- true
 		}(i)

@@ -122,8 +122,18 @@ func TestSkillInstaller_SearchAll(t *testing.T) {
 				}
 			}
 
-			if !tt.wantErr && len(results) != tt.wantCount {
-				t.Errorf("SearchAll() returned %d results, want %d", len(results), tt.wantCount)
+			if !tt.wantErr && len(results) == 0 {
+				t.Errorf("SearchAll() returned 0 registry groups, want at least 1")
+			}
+			// Verify total skill count across groups matches expected
+			if !tt.wantErr && tt.wantCount > 0 {
+				totalSkills := 0
+				for _, g := range results {
+					totalSkills += len(g.Results)
+				}
+				if totalSkills != tt.wantCount {
+					t.Errorf("SearchAll() total skills = %d, want %d", totalSkills, tt.wantCount)
+				}
 			}
 		})
 	}

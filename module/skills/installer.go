@@ -77,11 +77,22 @@ func (si *SkillInstaller) GetRegistryManager() *RegistryManager {
 
 // SearchAll searches all configured registries for skills matching the query.
 // This uses the search cache if enabled.
-func (si *SkillInstaller) SearchAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+// Results are returned grouped by registry source.
+func (si *SkillInstaller) SearchAll(ctx context.Context, query string, limit int) ([]RegistrySearchResult, error) {
 	if si.registryManager == nil {
 		return nil, fmt.Errorf("registry manager not configured")
 	}
 	return si.registryManager.SearchAll(ctx, query, limit)
+}
+
+// FlattenSearchResults flattens a slice of RegistrySearchResult into a single
+// slice of SearchResult, for callers that don't need per-registry grouping.
+func FlattenSearchResults(grouped []RegistrySearchResult) []SearchResult {
+	var flat []SearchResult
+	for _, g := range grouped {
+		flat = append(flat, g.Results...)
+	}
+	return flat
 }
 
 func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) error {
@@ -189,7 +200,8 @@ func (si *SkillInstaller) InstallFromRegistry(ctx context.Context, registryName,
 }
 
 // SearchRegistries searches across all configured registries.
-func (si *SkillInstaller) SearchRegistries(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+// Results are returned grouped by registry source.
+func (si *SkillInstaller) SearchRegistries(ctx context.Context, query string, limit int) ([]RegistrySearchResult, error) {
 	if si.registryManager == nil {
 		return nil, fmt.Errorf("registry manager not configured")
 	}
@@ -209,13 +221,19 @@ func (si *SkillInstaller) ListAvailableSkills(ctx context.Context) ([]AvailableS
 
 // listAvailableSkillsFromRegistry uses the registry manager to list available skills.
 func (si *SkillInstaller) listAvailableSkillsFromRegistry(ctx context.Context) ([]AvailableSkill, error) {
-	results, err := si.registryManager.SearchAll(ctx, "", 100) // Empty query to get all skills
+	grouped, err := si.registryManager.SearchAll(ctx, "", 100) // Empty query to get all skills
 	if err != nil {
 		return nil, fmt.Errorf("failed to search registries: %w", err)
 	}
 
-	skills := make([]AvailableSkill, len(results))
-	for i, result := range results {
+	// Flatten grouped results
+	var allResults []SearchResult
+	for _, g := range grouped {
+		allResults = append(allResults, g.Results...)
+	}
+
+	skills := make([]AvailableSkill, len(allResults))
+	for i, result := range allResults {
 		skills[i] = AvailableSkill{
 			Name:        result.Slug,
 			Description: result.Summary,

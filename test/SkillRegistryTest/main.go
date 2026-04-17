@@ -176,12 +176,22 @@ func testSearch(regMgr *skills.RegistryManager) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Helper: flatten grouped results
+	flatten := func(grouped []skills.RegistrySearchResult) []skills.SearchResult {
+		var all []skills.SearchResult
+		for _, g := range grouped {
+			all = append(all, g.Results...)
+		}
+		return all
+	}
+
 	// Test 1: Search with matching query
-	results, err := regMgr.SearchAll(ctx, "test", 5)
+	grouped, err := regMgr.SearchAll(ctx, "test", 5)
 	if err != nil {
 		fail("Search 'test'", err.Error())
 		return
 	}
+	results := flatten(grouped)
 	if len(results) == 0 {
 		fail("Search 'test'", "expected at least 1 result, got 0")
 		return
@@ -193,11 +203,12 @@ func testSearch(regMgr *skills.RegistryManager) {
 	pass("Search 'test' returns test-skill")
 
 	// Test 2: Search with non-matching query
-	results, err = regMgr.SearchAll(ctx, "nonexistent-skill-xyz", 5)
+	grouped, err = regMgr.SearchAll(ctx, "nonexistent-skill-xyz", 5)
 	if err != nil {
 		fail("Search 'nonexistent'", err.Error())
 		return
 	}
+	results = flatten(grouped)
 	if len(results) != 0 {
 		fail("Search 'nonexistent'", fmt.Sprintf("expected 0 results, got %d", len(results)))
 		return
@@ -205,11 +216,12 @@ func testSearch(regMgr *skills.RegistryManager) {
 	pass("Search 'nonexistent' returns empty")
 
 	// Test 3: Search with partial match
-	results, err = regMgr.SearchAll(ctx, "weather", 5)
+	grouped, err = regMgr.SearchAll(ctx, "weather", 5)
 	if err != nil {
 		fail("Search 'weather'", err.Error())
 		return
 	}
+	results = flatten(grouped)
 	if len(results) == 0 {
 		fail("Search 'weather'", "expected at least 1 result, got 0")
 		return
@@ -217,11 +229,12 @@ func testSearch(regMgr *skills.RegistryManager) {
 	pass("Search 'weather' returns weather-query")
 
 	// Test 4: Empty query (list all)
-	results, err = regMgr.SearchAll(ctx, "", 100)
+	grouped, err = regMgr.SearchAll(ctx, "", 100)
 	if err != nil {
 		fail("Search '' (list all)", err.Error())
 		return
 	}
+	results = flatten(grouped)
 	// Empty query matches nothing because contains() checks substring
 	if len(results) == len(skillsJSON) {
 		pass("Search '' (list all) returns all skills")

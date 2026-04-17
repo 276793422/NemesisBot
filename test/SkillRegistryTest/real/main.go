@@ -88,25 +88,31 @@ func main() {
 	// Step 3: Search for a skill
 	fmt.Println("[Step 3] Searching for skill 'build'...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	results, err := regMgr.SearchAll(ctx, "build", 10)
+	grouped, err := regMgr.SearchAll(ctx, "build", 10)
 	cancel()
 
 	if err != nil {
 		fmt.Printf("  ERROR: %v\n", err)
 		os.Exit(1)
 	}
-	if len(results) == 0 {
+
+	// Flatten grouped results
+	var allResults []skills.SearchResult
+	for _, g := range grouped {
+		allResults = append(allResults, g.Results...)
+	}
+	if len(allResults) == 0 {
 		fmt.Println("  ERROR: No skills found")
 		os.Exit(1)
 	}
 
-	fmt.Printf("  Found %d result(s):\n", len(results))
-	for i, r := range results {
+	fmt.Printf("  Found %d result(s):\n", len(allResults))
+	for i, r := range allResults {
 		fmt.Printf("    %d. %s - %s (score: %.1f)\n", i+1, r.Slug, r.Summary, r.Score)
 	}
 
 	// Pick the first result
-	target := results[0]
+	target := allResults[0]
 	fmt.Printf("\n  Selected: %s\n", target.Slug)
 	fmt.Println()
 

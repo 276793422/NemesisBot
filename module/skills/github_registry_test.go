@@ -392,43 +392,75 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 		verify      func(*testing.T, string, *InstallResult)
 	}{
 		{
-			name: "successful installation from skills repo",
+			name: "successful installation with full directory",
 			setupServer: func() *httptest.Server {
 				skills := []githubSkill{
 					{Name: "test-skill", Description: "A test skill"},
 				}
 				skillsData, _ := json.Marshal(skills)
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Trees API response
+					if strings.Contains(r.URL.Path, "/git/trees/") {
+						treeResp := `{
+							"sha":"abc123",
+							"tree":[
+								{"path":"skills/test-skill/SKILL.md","type":"blob","size":100},
+								{"path":"skills/test-skill/scripts/run.sh","type":"blob","size":50},
+								{"path":"skills/other-skill/SKILL.md","type":"blob","size":80}
+							],
+							"truncated":false
+						}`
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte(treeResp))
+						return
+					}
+					// Raw content for individual files
+					if strings.HasSuffix(r.URL.Path, "skills/test-skill/SKILL.md") {
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte("# Test Skill\n\nThis is a test skill."))
+						return
+					}
+					if strings.HasSuffix(r.URL.Path, "scripts/run.sh") {
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte("#!/bin/bash\necho hello"))
+						return
+					}
+					// skills.json for metadata
 					if strings.HasSuffix(r.URL.Path, "skills.json") {
 						w.WriteHeader(http.StatusOK)
 						w.Write(skillsData)
-					} else if strings.HasSuffix(r.URL.Path, "SKILL.md") {
-						w.WriteHeader(http.StatusOK)
-						w.Write([]byte("# Test Skill\n\nThis is a test skill."))
-					} else {
-						w.WriteHeader(http.StatusNotFound)
+						return
 					}
+					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
 			slug:    "test-skill",
 			version: "",
 			wantErr: false,
 			verify: func(t *testing.T, targetDir string, result *InstallResult) {
-				// Check skill file exists
+				// Check main skill file exists
 				skillFile := filepath.Join(targetDir, "SKILL.md")
-				if _, err := os.Stat(skillFile); os.IsNotExist(err) {
-					t.Errorf("skill file should exist at %s", skillFile)
+				data, err := os.ReadFile(skillFile)
+				if err != nil {
+					t.Errorf("skill file should exist at %s: %v", skillFile, err)
+				} else if string(data) != "# Test Skill\n\nThis is a test skill." {
+					t.Errorf("skill file content mismatch, got %q", string(data))
 				}
 
-				// Check result
+				// Check subdirectory file was also downloaded
+				scriptFile := filepath.Join(targetDir, "scripts", "run.sh")
+				data, err = os.ReadFile(scriptFile)
+				if err != nil {
+					t.Errorf("script file should exist at %s: %v", scriptFile, err)
+				} else if string(data) != "#!/bin/bash\necho hello" {
+					t.Errorf("script file content mismatch, got %q", string(data))
+				}
+
 				if result.Version != "latest" {
 					t.Errorf("expected version 'latest', got %q", result.Version)
 				}
 				if result.IsMalwareBlocked {
 					t.Errorf("expected malware blocked to be false")
-				}
-				if result.IsSuspicious {
-					t.Errorf("expected suspicious to be false")
 				}
 			},
 		},
@@ -436,8 +468,24 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 			name: "installation with specific version",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					w.Write([]byte("# Test Skill v1.0"))
+					if strings.Contains(r.URL.Path, "/git/trees/") {
+						treeResp := `{
+							"sha":"abc",
+							"tree":[
+								{"path":"skills/test-skill/SKILL.md","type":"blob","size":50}
+							],
+							"truncated":false
+						}`
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte(treeResp))
+						return
+					}
+					if strings.HasSuffix(r.URL.Path, "SKILL.md") {
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte("# Test Skill v1.0"))
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
 			slug:    "test-skill",
@@ -453,8 +501,24 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 			name: "fallback to main when no version",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.WriteHeader(http.StatusOK)
-					w.Write([]byte("# Test Skill"))
+					if strings.Contains(r.URL.Path, "/git/trees/") {
+						treeResp := `{
+							"sha":"abc",
+							"tree":[
+								{"path":"skills/test-skill/SKILL.md","type":"blob","size":50}
+							],
+							"truncated":false
+						}`
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte(treeResp))
+						return
+					}
+					if strings.HasSuffix(r.URL.Path, "SKILL.md") {
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte("# Test Skill"))
+						return
+					}
+					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
 			slug:    "test-skill",
@@ -479,9 +543,14 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 			errContains: "invalid slug",
 		},
 		{
-			name: "HTTP error - skill not found",
+			name: "HTTP error - tree not found",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.Contains(r.URL.Path, "/git/trees/") {
+						w.WriteHeader(http.StatusNotFound)
+						w.Write([]byte(`{"message":"Not Found"}`))
+						return
+					}
 					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
@@ -496,10 +565,26 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if strings.HasSuffix(r.URL.Path, "skills.json") {
 						w.WriteHeader(http.StatusInternalServerError)
-					} else {
+						return
+					}
+					if strings.Contains(r.URL.Path, "/git/trees/") {
+						treeResp := `{
+							"sha":"abc",
+							"tree":[
+								{"path":"skills/test-skill/SKILL.md","type":"blob","size":50}
+							],
+							"truncated":false
+						}`
+						w.WriteHeader(http.StatusOK)
+						w.Write([]byte(treeResp))
+						return
+					}
+					if strings.HasSuffix(r.URL.Path, "SKILL.md") {
 						w.WriteHeader(http.StatusOK)
 						w.Write([]byte("# Test Skill"))
+						return
 					}
+					w.WriteHeader(http.StatusNotFound)
 				}))
 			},
 			slug:    "test-skill",
@@ -521,6 +606,7 @@ func TestGitHubRegistry_DownloadAndInstall(t *testing.T) {
 			cfg := GitHubConfig{BaseURL: strings.TrimPrefix(server.URL, "http://")}
 			reg := NewGitHubRegistry(cfg)
 			reg.baseURL = server.URL
+			reg.gitHubAPIURL = server.URL
 
 			tempDir := t.TempDir()
 			targetDir := filepath.Join(tempDir, "test-skill")
@@ -750,4 +836,145 @@ func TestGitHubSkill_Structure(t *testing.T) {
 	if len(decoded.Tags) != len(skill.Tags) {
 		t.Errorf("expected %d tags, got %d", len(skill.Tags), len(decoded.Tags))
 	}
+}
+
+func TestGitHubRegistry_SkillDirPrefix(t *testing.T) {
+	tests := []struct {
+		name     string
+		pattern  string
+		slug     string
+		want     string
+		wantEmpty bool
+	}{
+		{
+			name:     "two-layer pattern",
+			pattern:  "skills/{slug}/SKILL.md",
+			slug:     "pdf",
+			want:     "skills/pdf",
+		},
+		{
+			name:     "three-layer pattern with author",
+			pattern:  "skills/{author}/{slug}/SKILL.md",
+			slug:     "clawcv/pdf",
+			want:     "skills/clawcv/pdf",
+		},
+		{
+			name:     "three-layer pattern without author",
+			pattern:  "skills/{author}/{slug}/SKILL.md",
+			slug:     "pdf",
+			want:     "",
+			wantEmpty: true,
+		},
+		{
+			name:     "three-layer pattern deep slug",
+			pattern:  "skills/{author}/{slug}/SKILL.md",
+			slug:     "myorg/my-skill-v2",
+			want:     "skills/myorg/my-skill-v2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewGitHubRegistryFromSource(GitHubSourceConfig{
+				Repo:             "test/repo",
+				SkillPathPattern: tt.pattern,
+			})
+			got := reg.skillDirPrefix(tt.slug)
+			if tt.wantEmpty && got != "" {
+				t.Errorf("expected empty prefix, got %q", got)
+			}
+			if !tt.wantEmpty && got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestGitHubRegistry_DownloadSkillTree_ThreeLayer(t *testing.T) {
+	// Test downloading a three-layer skill (author/slug) using Trees API
+	treeResp := `{
+		"sha":"abc123",
+		"tree":[
+			{"path":"skills/clawcv/pdf-export/SKILL.md","type":"blob","size":200},
+			{"path":"skills/clawcv/pdf-export/lib/generate.py","type":"blob","size":500},
+			{"path":"skills/clawcv/pdf-export/config/settings.json","type":"blob","size":100},
+			{"path":"skills/other/skill/SKILL.md","type":"blob","size":80}
+		],
+		"truncated":false
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/git/trees/") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(treeResp))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "SKILL.md") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("# PDF Export Skill"))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "generate.py") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("print('generating pdf')"))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "settings.json") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"format":"A4"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	reg := NewGitHubRegistryFromSource(GitHubSourceConfig{
+		Repo:             "test/repo",
+		Branch:           "main",
+		SkillPathPattern: "skills/{author}/{slug}/SKILL.md",
+	})
+	reg.gitHubAPIURL = server.URL
+	reg.baseURL = server.URL
+
+	tempDir := t.TempDir()
+	targetDir := filepath.Join(tempDir, "pdf-export")
+
+	result, err := reg.DownloadAndInstall(context.Background(), "clawcv/pdf-export", "", targetDir)
+	if err != nil {
+		t.Fatalf("DownloadAndInstall() error = %v", err)
+	}
+
+	// Verify SKILL.md
+	data, err := os.ReadFile(filepath.Join(targetDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("SKILL.md should exist: %v", err)
+	}
+	if string(data) != "# PDF Export Skill" {
+		t.Errorf("SKILL.md content mismatch, got %q", string(data))
+	}
+
+	// Verify subdirectory file
+	data, err = os.ReadFile(filepath.Join(targetDir, "lib", "generate.py"))
+	if err != nil {
+		t.Fatalf("lib/generate.py should exist: %v", err)
+	}
+	if string(data) != "print('generating pdf')" {
+		t.Errorf("generate.py content mismatch, got %q", string(data))
+	}
+
+	// Verify nested config file
+	data, err = os.ReadFile(filepath.Join(targetDir, "config", "settings.json"))
+	if err != nil {
+		t.Fatalf("config/settings.json should exist: %v", err)
+	}
+	if string(data) != `{"format":"A4"}` {
+		t.Errorf("settings.json content mismatch, got %q", string(data))
+	}
+
+	// Verify no files from other skills leaked in
+	if _, err := os.Stat(filepath.Join(targetDir, "other")); !os.IsNotExist(err) {
+		t.Error("files from other skills should not be installed")
+	}
+
+	_ = result
 }

@@ -1,14 +1,18 @@
 package skills
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- Mock servers ---
@@ -343,36 +347,191 @@ func TestClawHubRegistry_GetSkillMeta_InvalidSlug(t *testing.T) {
 	}
 }
 
-func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
+func TestClawHubRegistry_DownloadAndInstall_ZIP(t *testing.T) {
 	convexMock := newConvexMock()
 	defer convexMock.Close()
 
-	// Create a mock GitHub raw server to serve SKILL.md
-	githubMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "SKILL.md") {
-			w.Header().Set("Content-Type", "text/markdown")
+	// Create a ZIP containing the skill files
+	zipBuf := new(bytes.Buffer)
+	zw := zip.NewWriter(zipBuf)
+	f, _ := zw.CreateHeader(&zip.FileHeader{Name: "SKILL.md", Method: zip.Deflate})
+	f.Write([]byte("# Test Skill\n\nFrom ZIP download."))
+	f2, _ := zw.CreateHeader(&zip.FileHeader{Name: "scripts/run.sh", Method: zip.Deflate})
+	f2.Write([]byte("#!/bin/bash\necho hello"))
+	f3, _ := zw.CreateHeader(&zip.FileHeader{Name: "references/api.md", Method: zip.Deflate})
+	f3.Write([]byte("# API Reference"))
+	zw.Close()
+
+	// Mock server that serves the ZIP download
+	siteMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/download") {
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Disposition", `attachment; filename="test-skill-1.0.0.zip"`)
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("# Test Skill\n\nThis is a test skill."))
+			w.Write(zipBuf.Bytes())
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	defer githubMock.Close()
+	defer siteMock.Close()
 
 	reg := NewClawHubRegistry(ClawHubConfig{ConvexURL: convexMock.URL()})
-	// We can't easily override the GitHub URL, so test with the real flow
-	// The download will fail because the URL points to raw.githubusercontent.com
-	_, err := reg.DownloadAndInstall(context.Background(), "test-skill", "", t.TempDir())
+	reg.convexSiteURL = siteMock.URL
+	tempDir := t.TempDir()
+
+	result, err := reg.DownloadAndInstall(context.Background(), "test-skill", "", tempDir)
+	if err != nil {
+		t.Fatalf("DownloadAndInstall() error = %v", err)
+	}
+
+	// Verify SKILL.md was extracted
+	data, err := os.ReadFile(filepath.Join(tempDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("SKILL.md should exist: %v", err)
+	}
+	if string(data) != "# Test Skill\n\nFrom ZIP download." {
+		t.Errorf("SKILL.md content mismatch, got %q", string(data))
+	}
+
+	// Verify subdirectory files were extracted
+	data, err = os.ReadFile(filepath.Join(tempDir, "scripts", "run.sh"))
+	if err != nil {
+		t.Fatalf("scripts/run.sh should exist: %v", err)
+	}
+	if string(data) != "#!/bin/bash\necho hello" {
+		t.Errorf("scripts/run.sh content mismatch, got %q", string(data))
+	}
+
+	data, err = os.ReadFile(filepath.Join(tempDir, "references", "api.md"))
+	if err != nil {
+		t.Fatalf("references/api.md should exist: %v", err)
+	}
+	if string(data) != "# API Reference" {
+		t.Errorf("references/api.md content mismatch, got %q", string(data))
+	}
+
+	if result.Version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got %q", result.Version)
+	}
+	if result.Summary != "A test skill for testing" {
+		t.Errorf("expected summary 'A test skill for testing', got %q", result.Summary)
+	}
+}
+
+func TestClawHubRegistry_DownloadAndInstall_ZIP_TopLevelDir(t *testing.T) {
+	convexMock := newConvexMock()
+	defer convexMock.Close()
+
+	// Create a ZIP with a single top-level directory that should be flattened
+	zipBuf := new(bytes.Buffer)
+	zw := zip.NewWriter(zipBuf)
+	f, _ := zw.CreateHeader(&zip.FileHeader{Name: "test-skill/SKILL.md", Method: zip.Deflate})
+	f.Write([]byte("# Test Skill\n\nFlattened from top-level dir."))
+	f2, _ := zw.CreateHeader(&zip.FileHeader{Name: "test-skill/config.json", Method: zip.Deflate})
+	f2.Write([]byte(`{"key":"value"}`))
+	zw.Close()
+
+	siteMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/api/v1/download") {
+			w.Header().Set("Content-Type", "application/zip")
+			w.WriteHeader(http.StatusOK)
+			w.Write(zipBuf.Bytes())
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer siteMock.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{ConvexURL: convexMock.URL()})
+	reg.convexSiteURL = siteMock.URL
+	tempDir := t.TempDir()
+
+	result, err := reg.DownloadAndInstall(context.Background(), "test-skill", "", tempDir)
+	if err != nil {
+		t.Fatalf("DownloadAndInstall() error = %v", err)
+	}
+
+	// Files should be flattened (no "test-skill/" subdirectory)
+	data, err := os.ReadFile(filepath.Join(tempDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("SKILL.md should exist at target root: %v", err)
+	}
+	if string(data) != "# Test Skill\n\nFlattened from top-level dir." {
+		t.Errorf("SKILL.md content mismatch, got %q", string(data))
+	}
+
+	data, err = os.ReadFile(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatalf("config.json should exist at target root: %v", err)
+	}
+	if string(data) != `{"key":"value"}` {
+		t.Errorf("config.json content mismatch, got %q", string(data))
+	}
+
+	_ = result
+}
+
+func TestClawHubRegistry_DownloadAndInstall_FallbackToTreesAPI(t *testing.T) {
+	t.Skip("Skipping: fallback hits real GitHub API (openclaw/skills) which is too large for unit tests. " +
+		"The Trees API download path is tested via GitHub registry tests.")
+
+	convexMock := newConvexMock()
+	defer convexMock.Close()
+
+	// Mock server that fails ZIP download to trigger fallback
+	siteMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer siteMock.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{ConvexURL: convexMock.URL()})
+	reg.convexSiteURL = siteMock.URL
+
+	// Use short timeout to avoid hanging on real GitHub API
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tempDir := t.TempDir()
+
+	// The fallback calls the real GitHub API, so it will fail because
+	// testowner/test-skill doesn't exist on real GitHub.
+	_, err := reg.DownloadAndInstall(ctx, "test-skill", "", tempDir)
 	if err == nil {
-		// If it succeeded (unlikely in test), verify the file exists
+		// If it somehow succeeded, verify files exist
+		skillFile := filepath.Join(tempDir, "SKILL.md")
+		if _, statErr := os.Stat(skillFile); os.IsNotExist(statErr) {
+			t.Error("SKILL.md should exist after successful install")
+		}
+	} else {
+		if !strings.Contains(err.Error(), "all download strategies failed") && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Errorf("expected 'all download strategies failed' error, got %q", err.Error())
+		}
+	}
+}
+
+func TestClawHubRegistry_DownloadAndInstall(t *testing.T) {
+	convexMock := newConvexMock()
+	defer convexMock.Close()
+
+	reg := NewClawHubRegistry(ClawHubConfig{ConvexURL: convexMock.URL()})
+
+	// Without site URL override, the ZIP download will fail (empty derived URL).
+	// The fallback to GitHub Trees API will also fail (or timeout).
+	// Use a short timeout to avoid hanging on the large openclaw/skills repo.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := reg.DownloadAndInstall(ctx, "test-skill", "", t.TempDir())
+	if err == nil {
+		// If it succeeded, verify the file exists
 		skillFile := filepath.Join(t.TempDir(), "SKILL.md")
 		if _, statErr := os.Stat(skillFile); os.IsNotExist(statErr) {
 			t.Error("SKILL.md should exist after successful install")
 		}
 	} else {
-		// Expected: download failed because testowner/test-skill doesn't exist on GitHub
-		if !strings.Contains(err.Error(), "download") && !strings.Contains(err.Error(), "status") {
-			t.Errorf("expected download-related error, got %q", err.Error())
+		// Expected: download failed
+		if !strings.Contains(err.Error(), "all download strategies failed") && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Errorf("expected download failure, got %q", err.Error())
 		}
 	}
 }

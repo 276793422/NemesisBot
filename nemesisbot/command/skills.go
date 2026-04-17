@@ -393,47 +393,63 @@ func cmdSkillsSearch(cfg *config.Config, installer *skills.SkillInstaller) {
 	// Use the enhanced search functionality with registry manager
 	if installer.HasRegistryManager() {
 		// Use RegistryManager.SearchAll
-		results, err := installer.SearchAll(ctx, query, limit)
+		grouped, err := installer.SearchAll(ctx, query, limit)
 		if err != nil {
 			fmt.Printf("✗ Failed to search skills: %v\n", err)
 			return
 		}
 
-		if len(results) == 0 {
+		if len(grouped) == 0 {
 			fmt.Printf("No skills found matching '%s'\n", query)
 			return
 		}
 
-		fmt.Printf("\n📦 Found %d skill(s):\n", len(results))
-		fmt.Println("-------------------")
-		for i, result := range results {
-			fmt.Printf("%d. **%s**", i+1, result.Slug)
-			if result.Version != "" {
-				fmt.Printf(" v%s", result.Version)
-			}
-			fmt.Printf(" (score: %.2f, registry: %s)\n", result.Score, result.RegistryName)
-
-			if result.DisplayName != "" && result.DisplayName != result.Slug {
-				fmt.Printf("   Name: %s\n", result.DisplayName)
+		totalSkills := 0
+		for _, g := range grouped {
+			if len(g.Results) == 0 {
+				continue
 			}
 
-			if result.Author != "" {
-				fmt.Printf("   Author: %s\n", result.Author)
+			fmt.Printf("\n📦 %s (%d/%d results)", g.RegistryName, len(g.Results), limit)
+			if g.Truncated {
+				fmt.Printf(", API 已达上限")
 			}
-
-			if result.Downloads > 0 {
-				fmt.Printf("   Downloads: %d\n", result.Downloads)
-			}
-
-			if result.Summary != "" {
-				fmt.Printf("   Description: %s\n", result.Summary)
-			}
-
-			// Show install command
-			fmt.Printf("   Install: nemesisbot skills install %s/%s\n", result.RegistryName, result.Slug)
-
 			fmt.Println()
+			fmt.Println("-------------------")
+
+			for i, result := range g.Results {
+				fmt.Printf("%d. **%s**", i+1, result.Slug)
+				if result.Version != "" {
+					fmt.Printf(" v%s", result.Version)
+				}
+				fmt.Printf(" (score: %.2f)\n", result.Score)
+
+				if result.DisplayName != "" && result.DisplayName != result.Slug {
+					fmt.Printf("   Name: %s\n", result.DisplayName)
+				}
+
+				if result.Author != "" {
+					fmt.Printf("   Author: %s\n", result.Author)
+				}
+
+				if result.Downloads > 0 {
+					fmt.Printf("   Downloads: %d\n", result.Downloads)
+				}
+
+				if result.Summary != "" {
+					fmt.Printf("   Description: %s\n", result.Summary)
+				}
+
+				// Show install command
+				fmt.Printf("   Install: nemesisbot skills install %s/%s\n", result.RegistryName, result.Slug)
+
+				fmt.Println()
+			}
+
+			totalSkills += len(g.Results)
 		}
+
+		fmt.Printf("Total: %d skills from %d registries\n", totalSkills, len(grouped))
 	} else {
 		// Fallback to old ListAvailableSkills method
 		availableSkills, err := installer.ListAvailableSkills(ctx)

@@ -340,11 +340,15 @@ func TestRegistryManager_SearchAll_SingleRegistry(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("expected 1 result, got %d", len(results))
+		t.Errorf("expected 1 registry result, got %d", len(results))
 	}
 
-	if results[0].Slug != "skill1" {
-		t.Errorf("expected slug 'skill1', got '%s'", results[0].Slug)
+	if len(results[0].Results) != 1 {
+		t.Errorf("expected 1 result, got %d", len(results[0].Results))
+	}
+
+	if results[0].Results[0].Slug != "skill1" {
+		t.Errorf("expected slug 'skill1', got '%s'", results[0].Results[0].Slug)
 	}
 }
 
@@ -376,13 +380,16 @@ func TestRegistryManager_SearchAll_MultipleRegistries(t *testing.T) {
 		t.Fatalf("SearchAll failed: %v", err)
 	}
 
+	// Should get results from 2 registries
 	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
+		t.Errorf("expected 2 registry results, got %d", len(results))
 	}
 
-	// Results should be sorted by score descending
-	if results[0].Score < results[1].Score {
-		t.Error("results should be sorted by score descending")
+	// Each registry should have 1 result
+	for i, g := range results {
+		if len(g.Results) != 1 {
+			t.Errorf("registry %d: expected 1 result, got %d", i, len(g.Results))
+		}
 	}
 }
 
@@ -409,8 +416,11 @@ func TestRegistryManager_SearchAll_WithLimit(t *testing.T) {
 		t.Fatalf("SearchAll failed: %v", err)
 	}
 
-	if len(results) != 5 {
-		t.Errorf("expected 5 results, got %d", len(results))
+	if len(results) != 1 {
+		t.Errorf("expected 1 registry result, got %d", len(results))
+	}
+	if len(results[0].Results) != 5 {
+		t.Errorf("expected 5 results, got %d", len(results[0].Results))
 	}
 
 	// Test with limit 0 (no limit)
@@ -419,8 +429,11 @@ func TestRegistryManager_SearchAll_WithLimit(t *testing.T) {
 		t.Fatalf("SearchAll failed: %v", err)
 	}
 
-	if len(results) != 10 {
-		t.Errorf("expected 10 results with limit 0, got %d", len(results))
+	if len(results) != 1 {
+		t.Errorf("expected 1 registry result, got %d", len(results))
+	}
+	if len(results[0].Results) != 10 {
+		t.Errorf("expected 10 results with limit 0, got %d", len(results[0].Results))
 	}
 }
 
@@ -464,7 +477,10 @@ func TestRegistryManager_SearchAll_PartialFailure(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("expected 1 result from succeeding registry, got %d", len(results))
+		t.Errorf("expected 1 registry result from succeeding registry, got %d", len(results))
+	}
+	if len(results[0].Results) != 1 {
+		t.Errorf("expected 1 skill result, got %d", len(results[0].Results))
 	}
 }
 
@@ -531,7 +547,7 @@ func TestRegistryManager_SearchAll_ConcurrencyLimit(t *testing.T) {
 	}
 
 	if len(results) != 5 {
-		t.Errorf("expected 5 results, got %d", len(results))
+		t.Errorf("expected 5 registry results, got %d", len(results))
 	}
 }
 
