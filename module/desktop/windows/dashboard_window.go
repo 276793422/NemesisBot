@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/276793422/NemesisBot/module/desktop/websocket"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // DashboardWindowData Dashboard 窗口数据
@@ -41,8 +42,9 @@ func (d *DashboardWindowData) GetTimeout() int {
 // DashboardWindow Dashboard 窗口
 type DashboardWindow struct {
 	*WindowBase
-	ctx  context.Context
-	data *DashboardWindowData
+	ctx      context.Context
+	data     *DashboardWindowData
+	wsClient *websocket.WebSocketClient
 }
 
 // NewDashboardWindow 创建 Dashboard 窗口
@@ -52,6 +54,7 @@ func NewDashboardWindow(windowID string, data *DashboardWindowData, wsClient *we
 	return &DashboardWindow{
 		WindowBase: base,
 		data:       data,
+		wsClient:   wsClient,
 	}
 }
 
@@ -62,10 +65,31 @@ func (w *DashboardWindow) Startup(ctx context.Context) error {
 		return err
 	}
 
+	// 注册父进程命令回调
+	if w.wsClient != nil {
+		w.wsClient.SetOnCommand(func(command string, data map[string]interface{}) {
+			w.handleParentCommand(command, data)
+		})
+	}
+
 	fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Startup: token=%s... web=%s:%d\n",
 		w.ID, w.data.Token[:min(8, len(w.data.Token))], w.data.WebHost, w.data.WebPort)
 
 	return nil
+}
+
+// handleParentCommand 处理父进程发来的命令
+func (w *DashboardWindow) handleParentCommand(command string, data map[string]interface{}) {
+	switch command {
+	case "bring_to_front":
+		fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received bring_to_front command\n", w.ID)
+		if w.ctx != nil {
+			wailsruntime.WindowShow(w.ctx)
+			wailsruntime.WindowUnminimise(w.ctx)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Unknown command: %s\n", w.ID, command)
+	}
 }
 
 // Shutdown 关闭窗口

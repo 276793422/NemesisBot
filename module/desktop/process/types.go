@@ -14,14 +14,15 @@ type PlatformSpecific interface{}
 
 // ChildProcess 子进程抽象
 type ChildProcess struct {
-	ID        string
-	Cmd       *exec.Cmd
-	PID       int
-	Stdin     *WriteCloser
-	Stdout    *ReadCloser
-	Stderr    *ReadCloser
-	Platform  PlatformSpecific
-	CreatedAt time.Time
+	ID         string
+	Cmd        *exec.Cmd
+	PID        int
+	WindowType string // 窗口类型: "dashboard", "approval" 等
+	Stdin      *WriteCloser
+	Stdout     *ReadCloser
+	Stderr     *ReadCloser
+	Platform   PlatformSpecific
+	CreatedAt  time.Time
 }
 
 // WriteCloser 带编码器的写入关闭器

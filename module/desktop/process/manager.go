@@ -112,6 +112,7 @@ func (m *ProcessManager) SpawnChild(windowType string, data interface{}) (string
 	}
 
 	child.ID = childID
+	child.WindowType = windowType
 	m.children[childID] = child
 
 	log.Printf("[ProcessManager] Child %s created (PID: %d)", childID, child.PID)
@@ -318,4 +319,26 @@ func (m *ProcessManager) GetChild(childID string) (*ChildProcess, bool) {
 	defer m.mu.RUnlock()
 	child, ok := m.children[childID]
 	return child, ok
+}
+
+// GetChildByType 按窗口类型查找子进程（返回第一个匹配的）
+func (m *ProcessManager) GetChildByType(windowType string) (*ChildProcess, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, child := range m.children {
+		if child.WindowType == windowType {
+			return child, true
+		}
+	}
+	return nil, false
+}
+
+// SendCommand 向子进程发送命令（父→子方向）
+func (m *ProcessManager) SendCommand(childID string, command string, data map[string]interface{}) error {
+	msg := map[string]interface{}{
+		"type":    "command",
+		"command": command,
+		"data":    data,
+	}
+	return m.wsServer.SendToChild(childID, msg)
 }

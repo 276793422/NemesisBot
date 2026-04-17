@@ -165,36 +165,46 @@ func (s *SystemTray) handleLeftClick() {
 	}
 }
 
-// openWebUI 打开 WebUI（供左键单击和菜单项共用）
+// openWebUI 打开 WebUI（供左键双击和菜单项共用，单例模式）
 func (s *SystemTray) openWebUI() {
 	s.mu.RLock()
-	fn := s.onOpenWebUIFunc
-	url := s.webUIURL
 	procMgr := s.procMgr
 	token := s.authToken
 	webPort := s.webPort
 	webHost := s.webHost
 	s.mu.RUnlock()
 
-	if fn != nil {
-		fn()
-	} else if procMgr != nil {
-		data := map[string]interface{}{
-			"token":    token,
-			"web_port": webPort,
-			"web_host": webHost,
-		}
-		childID, _, err := procMgr.SpawnChild("dashboard", data)
+	if procMgr == nil {
+		log.Printf("[SysTray] No process manager, cannot open WebUI")
+		return
+	}
+
+	// 检查是否已有 dashboard 子进程
+	existing, found := procMgr.GetChildByType("dashboard")
+	if found {
+		// 尝试发送 bring_to_front 命令
+		err := procMgr.SendCommand(existing.ID, "bring_to_front", nil)
 		if err != nil {
-			log.Printf("[SysTray] Failed to spawn Dashboard: %v", err)
+			// 发送失败说明连接已断开，子进程可能已死，清理后重新创建
+			log.Printf("[SysTray] Dashboard child exists but command failed (%v), cleaning up and respawning", err)
+			procMgr.TerminateChild(existing.ID)
 		} else {
-			log.Printf("[SysTray] Dashboard spawned: %s", childID)
+			log.Printf("[SysTray] Dashboard already running, sent bring_to_front to %s", existing.ID)
+			return
 		}
+	}
+
+	// 没有已存在的 dashboard，spawn 新的
+	data := map[string]interface{}{
+		"token":    token,
+		"web_port": webPort,
+		"web_host": webHost,
+	}
+	childID, _, err := procMgr.SpawnChild("dashboard", data)
+	if err != nil {
+		log.Printf("[SysTray] Failed to spawn Dashboard: %v", err)
 	} else {
-		if url == "" {
-			url = "http://127.0.0.1:49000"
-		}
-		s.openBrowser(url)
+		log.Printf("[SysTray] Dashboard spawned: %s", childID)
 	}
 }
 

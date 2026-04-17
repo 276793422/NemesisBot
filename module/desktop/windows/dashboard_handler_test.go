@@ -7,14 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"testing"
 )
 
-// TestDashboardProxyInjectsToken verifies the proxy injects the token script into HTML.
-func TestDashboardProxyInjectsToken(t *testing.T) {
+// TestDashboardHandlerInjectsToken verifies the handler injects the init script into HTML.
+func TestDashboardHandlerInjectsToken(t *testing.T) {
 	// Create a mock backend server
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -22,12 +20,13 @@ func TestDashboardProxyInjectsToken(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	backendURL, _ := url.Parse(backend.URL)
-	proxy := NewTestProxy(backendURL, "test-token-123")
+	tokenTag := fmt.Sprintf(`<script>window.__DASHBOARD_TOKEN__="%s";window.__DASHBOARD_BACKEND__="%s:%d";</script>`, "test-token-123", "127.0.0.1", 49000)
+
+	handler := newTestHandler(backend.URL, tokenTag)
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("Expected 200, got %d", rec.Code)
@@ -36,6 +35,9 @@ func TestDashboardProxyInjectsToken(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "__DASHBOARD_TOKEN__") {
 		t.Error("Token script not injected into HTML")
+	}
+	if !strings.Contains(body, "__DASHBOARD_BACKEND__") {
+		t.Error("Backend URL not injected into HTML")
 	}
 	if !strings.Contains(body, "test-token-123") {
 		t.Error("Token value not in response")
@@ -47,12 +49,12 @@ func TestDashboardProxyInjectsToken(t *testing.T) {
 	headIdx := strings.Index(body, "</head>")
 	tokenIdx := strings.Index(body, "__DASHBOARD_TOKEN__")
 	if headIdx == -1 || tokenIdx == -1 || tokenIdx > headIdx {
-		t.Error("Token script should be injected before </head>")
+		t.Error("Init script should be injected before </head>")
 	}
 }
 
-// TestDashboardProxyPreservesNonHTML verifies non-HTML responses pass through unchanged.
-func TestDashboardProxyPreservesNonHTML(t *testing.T) {
+// TestDashboardHandlerPreservesNonHTML verifies non-HTML responses pass through unchanged.
+func TestDashboardHandlerPreservesNonHTML(t *testing.T) {
 	cssContent := "body { background: red; }"
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,12 +63,13 @@ func TestDashboardProxyPreservesNonHTML(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	backendURL, _ := url.Parse(backend.URL)
-	proxy := NewTestProxy(backendURL, "token")
+	tokenTag := fmt.Sprintf(`<script>window.__DASHBOARD_TOKEN__="%s";window.__DASHBOARD_BACKEND__="%s:%d";</script>`, "token", "127.0.0.1", 49000)
+
+	handler := newTestHandler(backend.URL, tokenTag)
 
 	req := httptest.NewRequest("GET", "/style.css", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
 	if body != cssContent {
@@ -77,8 +80,8 @@ func TestDashboardProxyPreservesNonHTML(t *testing.T) {
 	}
 }
 
-// TestDashboardProxyPassesThroughJS verifies JS files pass through unchanged.
-func TestDashboardProxyPassesThroughJS(t *testing.T) {
+// TestDashboardHandlerPassesThroughJS verifies JS files pass through unchanged.
+func TestDashboardHandlerPassesThroughJS(t *testing.T) {
 	jsContent := "console.log('hello');"
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +90,13 @@ func TestDashboardProxyPassesThroughJS(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	backendURL, _ := url.Parse(backend.URL)
-	proxy := NewTestProxy(backendURL, "token")
+	tokenTag := fmt.Sprintf(`<script>window.__DASHBOARD_TOKEN__="%s";window.__DASHBOARD_BACKEND__="%s:%d";</script>`, "token", "127.0.0.1", 49000)
+
+	handler := newTestHandler(backend.URL, tokenTag)
 
 	req := httptest.NewRequest("GET", "/app.js", nil)
 	rec := httptest.NewRecorder()
-	proxy.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	body := rec.Body.String()
 	if body != jsContent {
@@ -100,22 +104,42 @@ func TestDashboardProxyPassesThroughJS(t *testing.T) {
 	}
 }
 
-// Ensure io.Writer is satisfied by responseRecorder
-var _ io.Writer = (*responseRecorder)(nil)
-func NewTestProxy(target *url.URL, token string) *DashboardProxy {
-	return &DashboardProxy{
-		proxy: func() *httputil.ReverseProxy {
-			p := httputil.NewSingleHostReverseProxy(target)
-			p.Director = func(req *http.Request) {
-				req.URL.Scheme = target.Scheme
-				req.URL.Host = target.Host
-				req.Host = target.Host
-			}
-			return p
-		}(),
-		tokenTag: fmt.Sprintf(`<script>window.__DASHBOARD_TOKEN__="%s";</script>`, token),
-	}
-}
+// newTestHandler creates an HTTP handler that proxies to backendURL and injects tokenTag into HTML.
+func newTestHandler(backendURL, tokenTag string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp, err := http.Get(backendURL + r.URL.RequestURI())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
 
-// Ensure io.Writer is satisfied by responseRecorder
-var _ io.Writer = (*responseRecorder)(nil)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		ct := resp.Header.Get("Content-Type")
+
+		if strings.Contains(ct, "text/html") && len(body) > 0 {
+			bodyStr := string(body)
+			if idx := strings.LastIndex(bodyStr, "</head>"); idx != -1 {
+				bodyStr = bodyStr[:idx] + tokenTag + bodyStr[idx:]
+			}
+			body = []byte(bodyStr)
+		}
+
+		for k, vals := range resp.Header {
+			if strings.EqualFold(k, "Content-Length") {
+				continue
+			}
+			for _, v := range vals {
+				w.Header().Add(k, v)
+			}
+		}
+
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+	})
+}

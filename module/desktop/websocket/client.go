@@ -22,6 +22,10 @@ type WebSocketClient struct {
 	receiveCh chan interface{}
 	done      chan struct{}
 	mu        sync.RWMutex
+
+	// 命令回调（父→子命令，非阻塞）
+	onCommand func(command string, data map[string]interface{})
+	cmdMu     sync.RWMutex
 }
 
 // NewWebSocketClient 创建 WebSocket 客户端
@@ -92,6 +96,21 @@ func (c *WebSocketClient) readLoop() {
 			continue
 		}
 
+		// 检查是否是父进程发来的 command 消息
+		if m, ok := data.(map[string]interface{}); ok {
+			if msgType, _ := m["type"].(string); msgType == "command" {
+				command, _ := m["command"].(string)
+				cmdData, _ := m["data"].(map[string]interface{})
+				c.cmdMu.RLock()
+				fn := c.onCommand
+				c.cmdMu.RUnlock()
+				if fn != nil && command != "" {
+					fn(command, cmdData)
+					continue
+				}
+			}
+		}
+
 		select {
 		case c.receiveCh <- data:
 		case <-time.After(5 * time.Second):
@@ -133,6 +152,13 @@ func (c *WebSocketClient) Receive() (interface{}, error) {
 	case <-time.After(30 * time.Second):
 		return nil, ErrClientReceiveTimeout
 	}
+}
+
+// SetOnCommand 注册命令回调（父→子命令，如 "bring_to_front"）
+func (c *WebSocketClient) SetOnCommand(fn func(command string, data map[string]interface{})) {
+	c.cmdMu.Lock()
+	defer c.cmdMu.Unlock()
+	c.onCommand = fn
 }
 
 // Close 关闭连接

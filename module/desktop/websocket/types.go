@@ -4,7 +4,7 @@ package websocket
 
 // WebSocketMessage WebSocket 消息
 type WebSocketMessage struct {
-	Type      string                 // "result", "event", "error"
+	Type      string                 // "result", "event", "error", "command"
 	WindowID  string                 // 窗口 ID
 	Data      map[string]interface{} // 数据
 	Timestamp int64                  // 时间戳
