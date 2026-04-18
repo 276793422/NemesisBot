@@ -379,38 +379,11 @@ func TestIncomingMessage_Struct(t *testing.T) {
 }
 
 func TestClientMessage_Struct(t *testing.T) {
-	msg := ClientMessage{
-		Type:      MessageTypeMessage,
-		Content:   "test content",
-		Timestamp: time.Now(),
-	}
-
-	if msg.Type != MessageTypeMessage {
-		t.Errorf("Expected Type '%s', got '%s'", MessageTypeMessage, msg.Type)
-	}
-
-	if msg.Content != "test content" {
-		t.Errorf("Expected Content 'test content', got '%s'", msg.Content)
-	}
+	// Old ClientMessage type removed in Phase 3.
+	// ProtocolMessage tests are in test/unit/web/protocol_test.go
 }
 
 func TestServerMessage_Struct(t *testing.T) {
-	msg := ServerMessage{
-		Type:      MessageTypeMessage,
-		Role:      "assistant",
-		Content:   "test response",
-		Timestamp: time.Now(),
-	}
-
-	if msg.Type != MessageTypeMessage {
-		t.Errorf("Expected Type '%s', got '%s'", MessageTypeMessage, msg.Type)
-	}
-
-	if msg.Role != "assistant" {
-		t.Errorf("Expected Role 'assistant', got '%s'", msg.Role)
-	}
-
-	if msg.Content != "test response" {
-		t.Errorf("Expected Content 'test response', got '%s'", msg.Content)
-	}
+	// Old ServerMessage type removed in Phase 3.
+	// ProtocolMessage tests are in test/unit/web/protocol_test.go
 }

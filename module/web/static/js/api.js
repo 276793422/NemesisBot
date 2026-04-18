@@ -81,18 +81,20 @@ var NemesisAPI = {
     }
   },
 
-  // Send message
+  // Send message (new three-level protocol)
   send: function(content) {
     var message = {
       type: 'message',
-      content: content,
+      module: 'chat',
+      cmd: 'send',
+      data: { content: content },
       timestamp: new Date().toISOString()
     };
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     } else {
-      this._messageQueue.push(message);
+      this._messageQueue.push(content);
       this.connect();
     }
   },
@@ -260,7 +262,13 @@ var NemesisAPI = {
     this._stopHeartbeat();
     this._heartbeatInterval = setInterval(function() {
       if (NemesisAPI.ws && NemesisAPI.ws.readyState === WebSocket.OPEN) {
-        NemesisAPI.ws.send(JSON.stringify({ type: 'ping', timestamp: new Date().toISOString() }));
+        NemesisAPI.ws.send(JSON.stringify({
+          type: 'system',
+          module: 'heartbeat',
+          cmd: 'ping',
+          data: {},
+          timestamp: new Date().toISOString()
+        }));
       }
     }, 30000);
   },

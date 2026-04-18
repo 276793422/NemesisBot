@@ -6,7 +6,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -139,66 +138,13 @@ func TestSession_Mutex(t *testing.T) {
 }
 
 func TestClientMessage_JSON(t *testing.T) {
-	msg := ClientMessage{
-		Type:      MessageTypeMessage,
-		Content:   "test content",
-		Timestamp: time.Now(),
-	}
-
-	// Test marshaling
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Errorf("Failed to marshal ClientMessage: %v", err)
-	}
-
-	// Test unmarshaling
-	var unmarshaled ClientMessage
-	err = json.Unmarshal(data, &unmarshaled)
-	if err != nil {
-		t.Errorf("Failed to unmarshal ClientMessage: %v", err)
-	}
-
-	if unmarshaled.Type != msg.Type {
-		t.Errorf("Expected Type '%s', got '%s'", msg.Type, unmarshaled.Type)
-	}
-
-	if unmarshaled.Content != msg.Content {
-		t.Errorf("Expected Content '%s', got '%s'", msg.Content, unmarshaled.Content)
-	}
+	// Replaced by TestProtocolMessage_RoundTrip in test/unit/web/protocol_test.go
+	// Old ClientMessage type has been removed
 }
 
 func TestServerMessage_JSON(t *testing.T) {
-	msg := ServerMessage{
-		Type:      MessageTypeMessage,
-		Role:      "assistant",
-		Content:   "test response",
-		Timestamp: time.Now(),
-	}
-
-	// Test marshaling
-	data, err := json.Marshal(msg)
-	if err != nil {
-		t.Errorf("Failed to marshal ServerMessage: %v", err)
-	}
-
-	// Test unmarshaling
-	var unmarshaled ServerMessage
-	err = json.Unmarshal(data, &unmarshaled)
-	if err != nil {
-		t.Errorf("Failed to unmarshal ServerMessage: %v", err)
-	}
-
-	if unmarshaled.Type != msg.Type {
-		t.Errorf("Expected Type '%s', got '%s'", msg.Type, unmarshaled.Type)
-	}
-
-	if unmarshaled.Role != msg.Role {
-		t.Errorf("Expected Role '%s', got '%s'", msg.Role, unmarshaled.Role)
-	}
-
-	if unmarshaled.Content != msg.Content {
-		t.Errorf("Expected Content '%s', got '%s'", msg.Content, unmarshaled.Content)
-	}
+	// Replaced by TestProtocolMessage_RoundTrip in test/unit/web/protocol_test.go
+	// Old ServerMessage type has been removed
 }
 
 func TestProcessMessages_ContextCancellation(t *testing.T) {

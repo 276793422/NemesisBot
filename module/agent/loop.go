@@ -296,6 +296,11 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 	}
 }
 
+// GetRegistry returns the agent registry.
+func (al *AgentLoop) GetRegistry() *AgentRegistry {
+	return al.registry
+}
+
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
 

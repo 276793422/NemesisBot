@@ -186,6 +186,13 @@ func (c *WebChannel) BroadcastToAll(content string) error {
 	return nil
 }
 
+// SetHistoryProvider injects a history provider into the web server.
+func (c *WebChannel) SetHistoryProvider(provider web.HistoryProvider) {
+	if c.server != nil {
+		c.server.SetHistoryProvider(provider)
+	}
+}
+
 // IsRunning returns whether the channel is running
 func (c *WebChannel) IsRunning() bool {
 	return c.running

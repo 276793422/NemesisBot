@@ -54,23 +54,28 @@ function chatPage() {
     },
 
     onMessage: function(data) {
-      if (data.type === 'message') {
-        this.messages.push({
-          role: data.role || 'assistant',
-          content: data.content,
-          timestamp: data.timestamp
-        });
-        this.streaming = false;
-      } else if (data.type === 'error') {
-        this.messages.push({
-          role: 'error',
-          content: data.content,
-          timestamp: data.timestamp
-        });
-        this.streaming = false;
-      } else if (data.type === 'pong') {
-        // Ignore pong
+      // Handle new three-level protocol format
+      if (data.module !== undefined) {
+        if (data.type === 'message' && data.module === 'chat') {
+          if (data.cmd === 'receive') {
+            this.messages.push({
+              role: data.data.role || 'assistant',
+              content: data.data.content,
+              timestamp: data.timestamp
+            });
+            this.streaming = false;
+          }
+        } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
+          this.messages.push({
+            role: 'error',
+            content: data.data.content || data.data,
+            timestamp: data.timestamp
+          });
+          this.streaming = false;
+        }
+        // Ignore heartbeat.pong and other system messages
       }
+      // Note: old flat format no longer supported after Phase 3 migration
 
       this.$nextTick(function() {
         this.scrollToBottom();

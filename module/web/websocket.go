@@ -7,7 +7,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -16,28 +15,6 @@ import (
 	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/gorilla/websocket"
 )
-
-// WebSocket message types
-const (
-	MessageTypeMessage = "message"
-	MessageTypePing    = "ping"
-	MessageTypePong    = "pong"
-)
-
-// ClientMessage is a message sent from the client to the server
-type ClientMessage struct {
-	Type      string    `json:"type"`
-	Content   string    `json:"content,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// ServerMessage is a message sent from the server to the client
-type ServerMessage struct {
-	Type      string    `json:"type"`
-	Role      string    `json:"role,omitempty"` // "user" or "assistant"
-	Content   string    `json:"content,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-}
 
 // WebSocketUpgrader handles the WebSocket upgrade
 var WebSocketUpgrader = websocket.Upgrader{
@@ -141,7 +118,7 @@ func (sq *sendQueue) stop() {
 }
 
 // HandleWebSocket handles a WebSocket connection with thread-safe sending
-func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan chan<- IncomingMessage, authToken string) error {
+func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan chan<- IncomingMessage, authToken string, historyProvider HistoryProvider) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.ErrorCF("web", "Panic in WebSocket handler", map[string]interface{}{
@@ -222,69 +199,30 @@ func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan c
 			continue
 		}
 
-		// Parse client message
-		var clientMsg ClientMessage
-		if err := json.Unmarshal(data, &clientMsg); err != nil {
-			logger.ErrorCF("web", "Failed to parse client message", map[string]interface{}{
+		// Parse protocol message
+		protoMsg, err := ParseProtocolMessage(data)
+		if err != nil {
+			logger.ErrorCF("web", "Failed to parse protocol message", map[string]interface{}{
 				"error":      err.Error(),
 				"data":       string(data),
 				"session_id": session.ID,
 			})
-			// Send error message to client
-			sendErrorViaQueue(sq, "Invalid message format")
+			sendErrorViaQueue(sq, "Invalid protocol message format")
 			continue
 		}
 
-		// Handle different message types
-		switch clientMsg.Type {
-		case MessageTypeMessage:
-			// Validate content
-			if clientMsg.Content == "" {
-				logger.WarnCF("web", "Received empty message", map[string]interface{}{
-					"session_id": session.ID,
-				})
-				sendErrorViaQueue(sq, "Message content cannot be empty")
-				continue
-			}
-
-			// Send to message channel for processing
-			select {
-			case messageChan <- IncomingMessage{
-				SessionID: session.ID,
-				SenderID:  session.SenderID,
-				ChatID:    session.ChatID,
-				Content:   clientMsg.Content,
-				Timestamp: clientMsg.Timestamp,
-			}:
-				logger.DebugCF("web", "Message forwarded to channel", map[string]interface{}{
-					"session_id": session.ID,
-					"content":    clientMsg.Content,
-				})
-			default:
-				logger.WarnC("web", "Message channel full, dropping message")
-				sendErrorViaQueue(sq, "Server busy, please try again")
-			}
-
-		case MessageTypePing:
-			// Respond with pong using send queue
-			pongMsg := ServerMessage{
-				Type:      MessageTypePong,
-				Timestamp: time.Now(),
-			}
-			if err := sendServerMessageViaQueue(sq, pongMsg); err != nil {
-				logger.ErrorCF("web", "Failed to send pong", map[string]interface{}{
-					"error":      err.Error(),
-					"session_id": session.ID,
-				})
-				return err
-			}
-
+		// Dispatch by type
+		switch protoMsg.Type {
+		case "message":
+			handleMessageModule(session, sq, messageChan, protoMsg, historyProvider)
+		case "system":
+			handleSystemModule(sq, protoMsg)
 		default:
-			logger.WarnCF("web", "Unknown message type", map[string]interface{}{
-				"message_type": clientMsg.Type,
-				"session_id":   session.ID,
+			logger.WarnCF("web", "Unknown protocol type", map[string]interface{}{
+				"type":       protoMsg.Type,
+				"session_id": session.ID,
 			})
-			sendErrorViaQueue(sq, fmt.Sprintf("Unknown message type: %s", clientMsg.Type))
+			sendErrorViaQueue(sq, fmt.Sprintf("Unknown protocol type: %s", protoMsg.Type))
 		}
 	}
 }
@@ -298,27 +236,24 @@ type IncomingMessage struct {
 	Timestamp time.Time
 }
 
-// sendServerMessageViaQueue sends a message using the send queue
-func sendServerMessageViaQueue(sq *sendQueue, msg ServerMessage) error {
-	data, err := json.Marshal(msg)
+// sendProtocolMessageViaQueue sends a ProtocolMessage using the send queue.
+func sendProtocolMessageViaQueue(sq *sendQueue, msg *ProtocolMessage) error {
+	data, err := msg.ToJSON()
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return fmt.Errorf("failed to marshal protocol message: %w", err)
 	}
-
 	return sq.send(websocket.TextMessage, data)
 }
 
-// sendErrorViaQueue sends an error message using the send queue
+// sendErrorViaQueue sends an error message using the send queue (new protocol).
 func sendErrorViaQueue(sq *sendQueue, message string) {
-	errorMsg := ServerMessage{
-		Type:      "error",
-		Content:   message,
-		Timestamp: time.Now(),
-	}
-	_ = sendServerMessageViaQueue(sq, errorMsg)
+	errorMsg, _ := NewProtocolMessage("system", "error", "notify", map[string]string{
+		"content": message,
+	})
+	_ = sendProtocolMessageViaQueue(sq, errorMsg)
 }
 
-// BroadcastToSession sends a message to a specific session
+// BroadcastToSession sends a message to a specific session using the new protocol.
 func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, content string) error {
 	logger.DebugCF("web", "BroadcastToSession called",
 		map[string]interface{}{
@@ -328,14 +263,20 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 			"content_preview": content[:min(100, len(content))],
 		})
 
-	msg := ServerMessage{
-		Type:      MessageTypeMessage,
-		Role:      role,
-		Content:   content,
-		Timestamp: time.Now(),
+	msg, err := NewProtocolMessage("message", "chat", "receive", map[string]string{
+		"role":    role,
+		"content": content,
+	})
+	if err != nil {
+		logger.ErrorCF("web", "Failed to create protocol message",
+			map[string]interface{}{
+				"session_id": sessionID,
+				"error":      err.Error(),
+			})
+		return fmt.Errorf("failed to create protocol message: %w", err)
 	}
 
-	data, err := json.Marshal(msg)
+	data, err := msg.ToJSON()
 	if err != nil {
 		logger.ErrorCF("web", "Failed to marshal message",
 			map[string]interface{}{
@@ -368,6 +309,156 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 		})
 
 	return nil
+}
+
+// handleMessageModule dispatches messages with type=="message" in the new protocol.
+func handleMessageModule(session *Session, sq *sendQueue, messageChan chan<- IncomingMessage, msg *ProtocolMessage, historyProvider HistoryProvider) {
+	switch msg.Module {
+	case "chat":
+		switch msg.Cmd {
+		case "send":
+			handleChatSend(session, sq, messageChan, msg)
+		case "history_request":
+			handleHistoryRequest(sq, msg, historyProvider)
+		default:
+			logger.WarnCF("web", "Unknown chat cmd", map[string]interface{}{
+				"cmd":        msg.Cmd,
+				"session_id": session.ID,
+			})
+			sendErrorViaQueue(sq, fmt.Sprintf("Unknown chat cmd: %s", msg.Cmd))
+		}
+	default:
+		logger.WarnCF("web", "Unknown message module", map[string]interface{}{
+			"module":     msg.Module,
+			"session_id": session.ID,
+		})
+		sendErrorViaQueue(sq, fmt.Sprintf("Unknown message module: %s", msg.Module))
+	}
+}
+
+// handleChatSend processes a chat.send message (new protocol).
+func handleChatSend(session *Session, sq *sendQueue, messageChan chan<- IncomingMessage, msg *ProtocolMessage) {
+	var data struct {
+		Content string `json:"content"`
+	}
+	if err := msg.DecodeData(&data); err != nil {
+		sendErrorViaQueue(sq, "Invalid chat.send data")
+		return
+	}
+
+	if data.Content == "" {
+		sendErrorViaQueue(sq, "Message content cannot be empty")
+		return
+	}
+
+	select {
+	case messageChan <- IncomingMessage{
+		SessionID: session.ID,
+		SenderID:  session.SenderID,
+		ChatID:    session.ChatID,
+		Content:   data.Content,
+		Timestamp: time.Now(),
+	}:
+		logger.DebugCF("web", "Message forwarded to channel (new protocol)", map[string]interface{}{
+			"session_id": session.ID,
+			"content":    data.Content,
+		})
+	default:
+		logger.WarnC("web", "Message channel full, dropping message")
+		sendErrorViaQueue(sq, "Server busy, please try again")
+	}
+}
+
+// handleHistoryRequest processes a chat.history_request message.
+func handleHistoryRequest(sq *sendQueue, msg *ProtocolMessage, historyProvider HistoryProvider) {
+	var reqData HistoryRequestData
+	if err := msg.DecodeData(&reqData); err != nil {
+		sendErrorViaQueue(sq, "Invalid history_request data")
+		return
+	}
+
+	// Response type (used for both nil and non-nil provider paths)
+	type historyResponse struct {
+		RequestID   string           `json:"request_id"`
+		Messages    []HistoryMessage `json:"messages"`
+		HasMore     bool             `json:"has_more"`
+		OldestIndex int              `json:"oldest_index"`
+		TotalCount  int              `json:"total_count"`
+	}
+
+	if historyProvider == nil {
+		// No history provider configured, return empty result with request_id
+		logger.WarnC("web", "History request received but no history provider configured")
+		resp, _ := NewProtocolMessage("message", "chat", "history", &historyResponse{
+			RequestID:   reqData.RequestID,
+			Messages:    []HistoryMessage{},
+			HasMore:     false,
+			OldestIndex: -1,
+			TotalCount:  0,
+		})
+		data, _ := resp.ToJSON()
+		_ = sq.send(websocket.TextMessage, data)
+		return
+	}
+
+	// Default limit
+	limit := reqData.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	page, err := historyProvider.GetHistory(limit, reqData.BeforeIndex)
+	if err != nil {
+		logger.ErrorCF("web", "Failed to get history", map[string]interface{}{
+			"error":      err.Error(),
+			"request_id": reqData.RequestID,
+		})
+		sendErrorViaQueue(sq, "Failed to load history")
+		return
+	}
+
+	resp, _ := NewProtocolMessage("message", "chat", "history", &historyResponse{
+		RequestID:   reqData.RequestID,
+		Messages:    page.Messages,
+		HasMore:     page.HasMore,
+		OldestIndex: page.OldestIndex,
+		TotalCount:  page.TotalCount,
+	})
+
+	data, _ := resp.ToJSON()
+	if err := sq.send(websocket.TextMessage, data); err != nil {
+		logger.ErrorCF("web", "Failed to send history response", map[string]interface{}{
+			"error":      err.Error(),
+			"request_id": reqData.RequestID,
+		})
+	}
+}
+
+// handleSystemModule dispatches messages with type=="system" in the new protocol.
+func handleSystemModule(sq *sendQueue, msg *ProtocolMessage) {
+	switch msg.Module {
+	case "heartbeat":
+		switch msg.Cmd {
+		case "ping":
+			pong, _ := NewProtocolMessage("system", "heartbeat", "pong", map[string]interface{}{})
+			data, _ := pong.ToJSON()
+			_ = sq.send(websocket.TextMessage, data)
+		default:
+			sendErrorViaQueue(sq, fmt.Sprintf("Unknown heartbeat cmd: %s", msg.Cmd))
+		}
+	case "error":
+		switch msg.Cmd {
+		case "notify":
+			// Client sent an error notification, log it
+			logger.WarnCF("web", "Client error notification", map[string]interface{}{
+				"data": string(msg.Data),
+			})
+		default:
+			sendErrorViaQueue(sq, fmt.Sprintf("Unknown error cmd: %s", msg.Cmd))
+		}
+	default:
+		sendErrorViaQueue(sq, fmt.Sprintf("Unknown system module: %s", msg.Module))
+	}
 }
 
 func min(a, b int) int {

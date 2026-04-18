@@ -261,15 +261,7 @@ func TestMin(t *testing.T) {
 }
 
 func TestMessageTypeConstants(t *testing.T) {
-	if MessageTypeMessage != "message" {
-		t.Errorf("Expected MessageTypeMessage 'message', got '%s'", MessageTypeMessage)
-	}
-
-	if MessageTypePing != "ping" {
-		t.Errorf("Expected MessageTypePing 'ping', got '%s'", MessageTypePing)
-	}
-
-	if MessageTypePong != "pong" {
-		t.Errorf("Expected MessageTypePong 'pong', got '%s'", MessageTypePong)
-	}
+	// Old MessageTypeMessage/MessageTypePing/MessageTypePong constants removed in Phase 3.
+	// Protocol type/module/cmd string constants are now used directly.
+	// ProtocolMessage tests are in test/unit/web/protocol_test.go
 }

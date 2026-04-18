@@ -40,6 +40,9 @@ type Server struct {
 	version   string
 	startTime time.Time
 	eventHub  *EventHub
+
+	// History provider for chat history loading
+	historyProvider HistoryProvider
 }
 
 // ServerConfig holds the server configuration
@@ -307,7 +310,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 		}()
 
-		if err := HandleWebSocket(session, s.sessionMgr, s.messageChan, s.authToken); err != nil {
+		if err := HandleWebSocket(session, s.sessionMgr, s.messageChan, s.authToken, s.historyProvider); err != nil {
 			logger.ErrorCF("web", "WebSocket handler error", map[string]interface{}{
 				"error":      err.Error(),
 				"session_id": session.ID,
@@ -354,6 +357,11 @@ func (s *Server) processMessages(ctx context.Context) {
 // SendToSession sends a message to a specific session
 func (s *Server) SendToSession(sessionID, role, content string) error {
 	return BroadcastToSession(s.sessionMgr, sessionID, role, content)
+}
+
+// SetHistoryProvider sets the history provider for chat history loading.
+func (s *Server) SetHistoryProvider(provider HistoryProvider) {
+	s.historyProvider = provider
 }
 
 // GetSessionManager returns the session manager

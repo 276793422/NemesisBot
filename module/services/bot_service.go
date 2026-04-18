@@ -18,6 +18,7 @@ import (
 	"github.com/276793422/NemesisBot/module/heartbeat"
 	"github.com/276793422/NemesisBot/module/logger"
 	"github.com/276793422/NemesisBot/module/providers"
+	"github.com/276793422/NemesisBot/module/routing"
 	"github.com/276793422/NemesisBot/module/state"
 	"github.com/276793422/NemesisBot/module/tools"
 )
@@ -312,6 +313,9 @@ func (s *BotService) initComponents() error {
 	// Inject channel manager into agent loop
 	s.agentLoop.SetChannelManager(s.channelMgr)
 
+	// Inject history provider into web channel for chat history loading
+	s.injectHistoryProvider()
+
 	// Setup cron tool
 	cronStorePath := filepath.Join(s.workspace, "cron", "jobs.json")
 	s.cronSvc = cron.NewCronService(cronStorePath, nil)
@@ -464,4 +468,37 @@ func (s *BotService) setStateWithError(state BotState, err error) {
 		"state": state.String(),
 		"error": err.Error(),
 	})
+}
+
+// injectHistoryProvider creates a SessionHistoryProvider and injects it into the web channel.
+func (s *BotService) injectHistoryProvider() {
+	registry := s.agentLoop.GetRegistry()
+	if registry == nil {
+		logger.WarnC("bot_service", "Cannot inject history provider: agent registry is nil")
+		return
+	}
+
+	defaultAgent := registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		logger.WarnC("bot_service", "Cannot inject history provider: default agent is nil")
+		return
+	}
+	if defaultAgent.Sessions == nil {
+		logger.WarnC("bot_service", "Cannot inject history provider: default agent has no session manager")
+		return
+	}
+
+	sessionKey := routing.BuildAgentMainSessionKey(defaultAgent.ID)
+	provider := NewSessionHistoryProvider(defaultAgent.Sessions, sessionKey)
+
+	if ch, ok := s.channelMgr.GetChannel("web"); ok {
+		if webCh, ok := ch.(*channels.WebChannel); ok {
+			webCh.SetHistoryProvider(provider)
+			logger.InfoCF("bot_service", "History provider injected into web channel", map[string]interface{}{
+				"session_key": sessionKey,
+			})
+		}
+	} else {
+		logger.WarnC("bot_service", "Cannot inject history provider: web channel not found")
+	}
 }

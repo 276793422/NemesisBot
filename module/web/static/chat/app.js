@@ -44,7 +44,7 @@ class AuthManager {
     }
 }
 
-// WebSocket Manager
+// WebSocket Manager - Uses three-level dispatch protocol
 class WebSocketManager {
     constructor(url, authToken) {
         this.url = url;
@@ -55,7 +55,7 @@ class WebSocketManager {
         this.messageQueue = [];
         this.onMessage = null;
         this.onStatusChange = null;
-        this.onAuthError = null;  // New callback for auth errors
+        this.onAuthError = null;
         this.manualClose = false;
     }
 
@@ -84,8 +84,8 @@ class WebSocketManager {
 
                 // Send queued messages
                 while (this.messageQueue.length > 0) {
-                    const msg = this.messageQueue.shift();
-                    this.send(msg.content);
+                    const content = this.messageQueue.shift();
+                    this.send(content);
                 }
             };
 
@@ -145,10 +145,13 @@ class WebSocketManager {
         this.connect();
     }
 
+    // Send a chat message using new three-level protocol
     send(content) {
         const message = {
             type: 'message',
-            content: content,
+            module: 'chat',
+            cmd: 'send',
+            data: { content: content },
             timestamp: new Date().toISOString()
         };
 
@@ -156,8 +159,28 @@ class WebSocketManager {
             this.ws.send(JSON.stringify(message));
         } else {
             console.log('Queueing message (not connected)');
-            this.messageQueue.push(message);
+            this.messageQueue.push(content);
             this.connect();
+        }
+    }
+
+    // Request chat history using new protocol
+    sendHistoryRequest(requestId, limit, beforeIndex) {
+        const data = { request_id: requestId, limit: limit };
+        if (beforeIndex !== null && beforeIndex !== undefined) {
+            data.before_index = beforeIndex;
+        }
+
+        const message = {
+            type: 'message',
+            module: 'chat',
+            cmd: 'history_request',
+            data: data,
+            timestamp: new Date().toISOString()
+        };
+
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(message));
         }
     }
 
@@ -188,15 +211,26 @@ class WebSocketManager {
         }
     }
 
+    // Heartbeat uses new three-level protocol
     startHeartbeat() {
-        setInterval(() => {
+        this._heartbeatTimer = setInterval(() => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({
-                    type: 'ping',
+                    type: 'system',
+                    module: 'heartbeat',
+                    cmd: 'ping',
+                    data: {},
                     timestamp: new Date().toISOString()
                 }));
             }
         }, 30000); // Every 30 seconds
+    }
+
+    stopHeartbeat() {
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
     }
 }
 
@@ -239,6 +273,53 @@ class MessageRenderer {
             messageDiv.querySelectorAll('pre code').forEach((block) => {
                 hljs.highlightElement(block);
             });
+        }
+    }
+
+    // Prepend history messages at the top of the container
+    prependMessages(messages) {
+        if (!messages || messages.length === 0) return;
+
+        // Save current scroll position
+        const oldScrollHeight = this.container.scrollHeight;
+
+        // Create a document fragment for batch insertion
+        const fragment = document.createDocumentFragment();
+
+        for (const msg of messages) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.classList.add(msg.role);
+
+            // Format content
+            if (msg.role === 'assistant') {
+                messageDiv.innerHTML = this.renderMarkdown(msg.content);
+            } else {
+                messageDiv.textContent = msg.content;
+            }
+
+            fragment.appendChild(messageDiv);
+        }
+
+        // Insert at the top
+        this.container.insertBefore(fragment, this.container.firstChild);
+
+        // Restore scroll position so the user sees the same content
+        const newScrollHeight = this.container.scrollHeight;
+        this.container.scrollTop = newScrollHeight - oldScrollHeight;
+
+        // Apply syntax highlighting to newly added assistant messages
+        if (typeof hljs !== 'undefined') {
+            // Only highlight the newly prepended messages
+            const children = this.container.children;
+            for (let i = 0; i < messages.length && i < children.length; i++) {
+                const child = children[i];
+                if (child.classList.contains('assistant')) {
+                    child.querySelectorAll('pre code').forEach((block) => {
+                        hljs.highlightElement(block);
+                    });
+                }
+            }
         }
     }
 
@@ -313,6 +394,12 @@ class UIController {
         this.statusIndicator = null;
         this.statusText = null;
         this.authManager = new AuthManager();
+
+        // History loading state
+        this._historyLoading = false;
+        this._oldestIndex = null;
+        this._hasMoreHistory = false;
+        this._pendingHistoryRequests = new Map(); // requestId -> resolve callback
     }
 
     init() {
@@ -423,6 +510,7 @@ class UIController {
         if (confirm('确定要退出登录吗？')) {
             // Disconnect WebSocket
             if (this.wsManager) {
+                this.wsManager.stopHeartbeat();
                 this.wsManager.manualClose = true;
                 this.wsManager.disconnect();
             }
@@ -470,7 +558,13 @@ class UIController {
 
         // Set up callbacks
         this.wsManager.onMessage = (data) => this.handleMessage(data);
-        this.wsManager.onStatusChange = (status) => this.updateStatus(status);
+        this.wsManager.onStatusChange = (status) => {
+            this.updateStatus(status);
+            // Load history when connected
+            if (status === 'connected') {
+                this.loadHistory();
+            }
+        };
         this.wsManager.onAuthError = (error) => {
             // Auth error during chat session - token might have expired
             alert('认证失败：' + error + '\n请重新登录');
@@ -492,6 +586,9 @@ class UIController {
             this.input.style.height = Math.min(this.input.scrollHeight, 150) + 'px';
         });
 
+        // Setup scroll listener for loading more history
+        this.setupScrollListener(messagesContainer);
+
         // Connect to WebSocket
         this.wsManager.connect();
         this.wsManager.startHeartbeat();
@@ -500,20 +597,71 @@ class UIController {
         this.input.focus();
     }
 
+    // Setup scroll listener to load more history when scrolling to top
+    setupScrollListener(container) {
+        container.addEventListener('scroll', () => {
+            if (container.scrollTop < 50 && this._hasMoreHistory && !this._historyLoading) {
+                this.loadHistory();
+            }
+        });
+    }
+
+    // Load history messages
+    loadHistory() {
+        if (this._historyLoading) return;
+
+        this._historyLoading = true;
+        const requestId = 'hist_' + Date.now();
+
+        const limit = 20;
+        const beforeIndex = this._oldestIndex;
+
+        this.wsManager.sendHistoryRequest(requestId, limit, beforeIndex);
+    }
+
+    // Handle incoming messages (new three-level protocol only)
     handleMessage(data) {
-        if (data.type === 'message') {
-            this.renderer.appendMessage(
-                data.role || 'assistant',
-                data.content,
-                data.timestamp
-            );
-            this.enableInput();
-        } else if (data.type === 'error') {
-            this.renderer.appendMessage('', data.content, data.timestamp, true);
-            this.enableInput();
-        } else if (data.type === 'pong') {
-            // Pong received, connection is alive
+        if (data.type === 'message' && data.module === 'chat') {
+            switch (data.cmd) {
+                case 'history':
+                    this.handleHistoryResponse(data.data);
+                    break;
+                case 'receive':
+                    this.renderer.appendMessage(
+                        data.data.role || 'assistant',
+                        data.data.content,
+                        data.timestamp
+                    );
+                    this.enableInput();
+                    break;
+            }
+        } else if (data.type === 'system' && data.module === 'heartbeat' && data.cmd === 'pong') {
             console.log('Pong received');
+        } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
+            this.renderer.appendMessage('', data.data.content || data.data, data.timestamp, true);
+            this.enableInput();
+        }
+    }
+
+    // Handle history response
+    handleHistoryResponse(data) {
+        this._historyLoading = false;
+
+        if (!data) return;
+
+        const messages = data.messages || [];
+
+        if (messages.length > 0) {
+            this.renderer.prependMessages(messages);
+        }
+
+        this._hasMoreHistory = data.has_more || false;
+        this._oldestIndex = data.oldest_index;
+
+        // If this is the initial load (no messages existed before), scroll to bottom
+        if (data.total_count > 0 && this._oldestIndex === 0) {
+            // All history loaded, no more to fetch
+            this._hasMoreHistory = false;
         }
     }
 
@@ -533,7 +681,7 @@ class UIController {
         this.input.value = '';
         this.input.style.height = 'auto';
 
-        // Send to server
+        // Send to server (uses new protocol)
         this.wsManager.send(content);
     }
 
