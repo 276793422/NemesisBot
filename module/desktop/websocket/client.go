@@ -20,14 +20,14 @@ type WebSocketClient struct {
 	serverURL string
 	conn      *websocket.Conn
 	sendCh    chan []byte
-	receiveCh chan interface{}
 	done      chan struct{}
+	doneOnce  sync.Once
 	mu        sync.RWMutex
 
-	// 新协议：Dispatcher 用于处理收到的 Request/Notification
+	// Dispatcher 用于处理收到的 Request/Notification
 	dispatcher *Dispatcher
 
-	// 新协议：pending map 用于 Request-Response 关联
+	// pending map 用于 Request-Response 关联
 	pending   map[string]chan *Message
 	pendingMu sync.RWMutex
 }
@@ -41,7 +41,6 @@ func NewWebSocketClient(wsKey *WebSocketKey) *WebSocketClient {
 		key:        wsKey.Key,
 		serverURL:  serverURL,
 		sendCh:     make(chan []byte, 10),
-		receiveCh:  make(chan interface{}, 10),
 		done:       make(chan struct{}),
 		dispatcher: NewDispatcher(),
 		pending:    make(map[string]chan *Message),
@@ -83,10 +82,10 @@ func (c *WebSocketClient) Connect() error {
 	return nil
 }
 
-// readLoop 读取循环（双协议检测）
+// readLoop 读取循环
 func (c *WebSocketClient) readLoop() {
 	defer func() {
-		close(c.done)
+		c.doneOnce.Do(func() { close(c.done) })
 	}()
 
 	for {
@@ -96,29 +95,21 @@ func (c *WebSocketClient) readLoop() {
 			return
 		}
 
-		// 尝试解析为新协议消息
 		var msg Message
-		if err := json.Unmarshal(message, &msg); err == nil && msg.JSONRPC == Version {
-			c.handleProtocolMessage(&msg)
-			continue
-		}
-
-		// 旧协议 fallback
-		var data interface{}
-		if err := json.Unmarshal(message, &data); err != nil {
+		if err := json.Unmarshal(message, &msg); err != nil {
 			log.Printf("[WebSocketClient-%s] JSON decode error: %v", c.id, err)
 			continue
 		}
 
-		select {
-		case c.receiveCh <- data:
-		case <-time.After(5 * time.Second):
-			log.Printf("[WebSocketClient-%s] Receive channel full", c.id)
+		if msg.JSONRPC == Version {
+			c.handleProtocolMessage(&msg)
+		} else {
+			log.Printf("[WebSocketClient-%s] Non-protocol message ignored (no jsonrpc field)", c.id)
 		}
 	}
 }
 
-// handleProtocolMessage 处理新协议消息
+// handleProtocolMessage 处理协议消息
 func (c *WebSocketClient) handleProtocolMessage(msg *Message) {
 	switch {
 	case msg.IsResponse():
@@ -143,7 +134,6 @@ func (c *WebSocketClient) handleProtocolMessage(msg *Message) {
 			if err != nil {
 				log.Printf("[WebSocketClient-%s] Dispatch error: %v", c.id, err)
 			}
-			// 如果是 Request 且有响应，发回去
 			if msg.IsRequest() && resp != nil {
 				if sendErr := c.sendRaw(resp); sendErr != nil {
 					log.Printf("[WebSocketClient-%s] Failed to send response: %v", c.id, sendErr)
@@ -191,21 +181,7 @@ func (c *WebSocketClient) sendRaw(msg *Message) error {
 	}
 }
 
-// Send 发送消息（旧接口，兼容）
-func (c *WebSocketClient) Send(data interface{}) error {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-	select {
-	case c.sendCh <- raw:
-		return nil
-	case <-time.After(5 * time.Second):
-		return ErrClientSendTimeout
-	}
-}
-
-// Notify 发送 Notification（新协议，不等响应）
+// Notify 发送 Notification（不等响应）
 func (c *WebSocketClient) Notify(method string, params interface{}) error {
 	msg, err := NewNotification(method, params)
 	if err != nil {
@@ -214,7 +190,7 @@ func (c *WebSocketClient) Notify(method string, params interface{}) error {
 	return c.sendRaw(msg)
 }
 
-// Call 发送 Request 并等待 Response（新协议，带 ID 关联）
+// Call 发送 Request 并等待 Response（带 ID 关联）
 func (c *WebSocketClient) Call(ctx context.Context, method string, params interface{}) (*Message, error) {
 	msg, err := NewRequest(method, params)
 	if err != nil {
@@ -249,16 +225,6 @@ func (c *WebSocketClient) Call(ctx context.Context, method string, params interf
 	}
 }
 
-// Receive 接收消息（旧接口，阻塞）
-func (c *WebSocketClient) Receive() (interface{}, error) {
-	select {
-	case data := <-c.receiveCh:
-		return data, nil
-	case <-time.After(30 * time.Second):
-		return nil, ErrClientReceiveTimeout
-	}
-}
-
 // RegisterHandler 注册 Request 处理器（处理父进程发来的 Request）
 func (c *WebSocketClient) RegisterHandler(method string, fn HandlerFunc) {
 	c.dispatcher.Register(method, fn)
@@ -277,7 +243,7 @@ func (c *WebSocketClient) SetFallbackHandler(fn HandlerFunc) {
 // Close 关闭连接
 func (c *WebSocketClient) Close() error {
 	log.Printf("[WebSocketClient-%s] Closing", c.id)
-	close(c.done)
+	c.doneOnce.Do(func() { close(c.done) })
 
 	c.mu.RLock()
 	conn := c.conn
@@ -292,7 +258,6 @@ func (c *WebSocketClient) Close() error {
 
 // Errors
 var (
-	ErrClientSendTimeout    = &WebSocketError{Code: "SEND_TIMEOUT", Message: "Send timeout"}
-	ErrClientReceiveTimeout = &WebSocketError{Code: "RECEIVE_TIMEOUT", Message: "Receive timeout"}
-	ErrClientCallTimeout    = &WebSocketError{Code: "CALL_TIMEOUT", Message: "Call timeout"}
+	ErrClientSendTimeout = &WebSocketError{Code: "SEND_TIMEOUT", Message: "Send timeout"}
+	ErrClientCallTimeout = &WebSocketError{Code: "CALL_TIMEOUT", Message: "Call timeout"}
 )

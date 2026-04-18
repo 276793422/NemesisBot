@@ -97,19 +97,6 @@ func (w *WindowBase) SendResult(result interface{}) {
 	}
 }
 
-// ReceiveFromParent 从父进程接收数据
-func (w *WindowBase) ReceiveFromParent() (interface{}, error) {
-	log.Printf("[Window-%s] Waiting for data from parent...", w.ID)
-
-	data, err := w.WSClient.Receive()
-	if err != nil {
-		return nil, err
-	}
-
-	log.Printf("[Window-%s] Received data from parent", w.ID)
-	return data, nil
-}
-
 // Bind 返回绑定结构（由子类重写）
 func (w *WindowBase) Bind() []interface{} {
 	return []interface{}{w}

@@ -4,7 +4,6 @@ package process
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -262,29 +261,10 @@ WaitForConnection:
 		}
 	})
 
-	// 同时等待新协议（通过 resultMap 投递）和旧协议（通过 ReceiveCh）
-	// 新协议路径：子进程 SendResult → Notify("approval.submit") → server readLoop 检测新协议
-	//   → conn.Dispatcher → approval.submit handler → resultMap → resultCh
-	// 旧协议路径：子进程 SendResult → Send(map) → server readLoop 检测旧协议 → ReceiveCh
+	// 等待结果：通过 resultMap 投递（由连接级 Dispatcher 的 approval.submit handler 触发）
 	select {
 	case <-resultCh:
-		// 新协议路径已经将结果投递到 resultCh
-		log.Printf("[ProcessManager] Received result via new protocol for child %s", childID)
-	case data := <-conn.ReceiveCh:
-		// 旧协议路径
-		var parsed map[string]interface{}
-		if err := json.Unmarshal(data, &parsed); err != nil {
-			resultCh <- map[string]interface{}{
-				"success": false,
-				"error":   fmt.Sprintf("failed to parse result: %v", err),
-			}
-		} else {
-			// 如果 resultCh 还没被新协议填充，投递旧协议结果
-			select {
-			case resultCh <- parsed:
-			default:
-			}
-		}
+		log.Printf("[ProcessManager] Received result for child %s", childID)
 	case <-time.After(5 * time.Minute):
 		resultCh <- map[string]interface{}{
 			"success": false,
@@ -376,13 +356,6 @@ func (m *ProcessManager) GetChildByType(windowType string) (*ChildProcess, bool)
 		}
 	}
 	return nil, false
-}
-
-// SendCommand 向子进程发送命令（旧接口，兼容包装）
-// 内部映射 command → window.command 使用新协议 Notification
-func (m *ProcessManager) SendCommand(childID string, command string, data map[string]interface{}) error {
-	method := "window." + command
-	return m.wsServer.SendNotification(childID, method, data)
 }
 
 // NotifyChild 向子进程发送 Notification（新协议，不等响应）

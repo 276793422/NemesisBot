@@ -32,11 +32,6 @@ func (m *ProcessManager) SpawnChild(windowType string, data interface{}) (string
 	return "", nil, fmt.Errorf("ProcessManager is not available in cross-compile builds")
 }
 
-// SendCommand 向子进程发送命令（存根）
-func (m *ProcessManager) SendCommand(childID string, command string, data map[string]interface{}) error {
-	return fmt.Errorf("ProcessManager is not available in cross-compile builds")
-}
-
 // NotifyChild 向子进程发送 Notification（存根）
 func (m *ProcessManager) NotifyChild(childID string, method string, params interface{}) error {
 	return fmt.Errorf("ProcessManager is not available in cross-compile builds")

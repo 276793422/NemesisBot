@@ -11,7 +11,6 @@ func TestChildConnection(t *testing.T) {
 		ID:       "conn-1",
 		Key:      "test-key",
 		SendCh:   make(chan []byte, 10),
-		ReceiveCh: make(chan []byte, 10),
 		ChildPID: 1234,
 		Meta:     map[string]string{"child_id": "child-1"},
 	}
@@ -31,12 +30,17 @@ func TestChildConnection(t *testing.T) {
 
 	// Test channel operations
 	conn.SendCh <- []byte("test")
-	select {
-	case data := <-conn.ReceiveCh:
-		t.Errorf("Unexpected data from ReceiveCh: %s", data)
-	default:
-		// Expected: no data
+}
+
+func TestChildConnectionCloseSendIdempotent(t *testing.T) {
+	conn := &ChildConnection{
+		ID:     "conn-close-test",
+		SendCh: make(chan []byte, 10),
 	}
+
+	// Close twice should not panic (sync.Once protection)
+	conn.CloseSend()
+	conn.CloseSend()
 }
 
 func TestWebSocketError(t *testing.T) {

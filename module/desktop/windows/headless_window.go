@@ -25,13 +25,8 @@ func RunHeadlessWindow(windowID string, data *ApprovalWindowData, wsClient *webs
 
 		log.Printf("[HeadlessWindow] Sending auto-approve result: %+v", result)
 
-		// 通过 WebSocket 发送结果
-		if err := wsClient.Send(map[string]interface{}{
-			"type":     "result",
-			"window":   windowID,
-			"data":     result,
-			"timestamp": time.Now().Unix(),
-		}); err != nil {
+		// 通过新协议发送结果
+		if err := wsClient.Notify("approval.submit", result); err != nil {
 			log.Printf("[HeadlessWindow] Failed to send result: %v", err)
 		}
 	}()

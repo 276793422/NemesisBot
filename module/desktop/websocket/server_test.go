@@ -74,13 +74,13 @@ func TestWebSocketServerGetConnectionNotFound(t *testing.T) {
 	}
 }
 
-func TestWebSocketServerSendToChildNotFound(t *testing.T) {
+func TestWebSocketServerSendNotificationNotFound(t *testing.T) {
 	kg := NewKeyGenerator()
 	srv := NewWebSocketServer(kg)
 
-	err := srv.SendToChild("nonexistent", map[string]interface{}{"test": true})
+	err := srv.SendNotification("nonexistent", "window.bring_to_front", nil)
 	if err == nil {
-		t.Error("Expected error when sending to nonexistent child")
+		t.Error("Expected error when sending notification to nonexistent child")
 	}
 	if !errors.Is(err, ErrConnectionNotFound) {
 		t.Errorf("Expected ErrConnectionNotFound, got: %v", err)
@@ -126,24 +126,10 @@ func TestWebSocketServerStartStopQuick(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Immediately stop to test quick lifecycle
 	time.Sleep(10 * time.Millisecond)
 
 	if err := srv.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
-	}
-}
-
-func TestWebSocketServerSendNotificationNotFound(t *testing.T) {
-	kg := NewKeyGenerator()
-	srv := NewWebSocketServer(kg)
-
-	err := srv.SendNotification("nonexistent", "window.bring_to_front", nil)
-	if err == nil {
-		t.Error("Expected error when sending notification to nonexistent child")
-	}
-	if !errors.Is(err, ErrConnectionNotFound) {
-		t.Errorf("Expected ErrConnectionNotFound, got: %v", err)
 	}
 }
 
@@ -174,7 +160,6 @@ func TestWebSocketServerRegisterHandler(t *testing.T) {
 		return NewResponse(msg.ID, map[string]string{"ok": "true"})
 	})
 
-	// Server-level Dispatcher should have the handler registered
 	if len(srv.dispatcher.handlers) != 1 {
 		t.Errorf("Expected 1 handler, got %d", len(srv.dispatcher.handlers))
 	}
@@ -196,13 +181,11 @@ func TestWebSocketServerSendNotificationToConnection(t *testing.T) {
 	kg := NewKeyGenerator()
 	srv := NewWebSocketServer(kg)
 
-	// Simulate a registered connection
 	conn := &ChildConnection{
-		ID:        "child-1",
-		Key:       "test-key",
-		SendCh:    make(chan []byte, 10),
-		ReceiveCh: make(chan []byte, 10),
-		Meta:      make(map[string]string),
+		ID:     "child-1",
+		Key:    "test-key",
+		SendCh: make(chan []byte, 10),
+		Meta:   make(map[string]string),
 	}
 	srv.mu.Lock()
 	srv.connections["child-1"] = conn
@@ -213,7 +196,6 @@ func TestWebSocketServerSendNotificationToConnection(t *testing.T) {
 		t.Fatalf("SendNotification failed: %v", err)
 	}
 
-	// Verify the message was sent through the SendCh
 	select {
 	case data := <-conn.SendCh:
 		var msg Message
@@ -241,21 +223,17 @@ func TestWebSocketServerConnectionLevelDispatcher(t *testing.T) {
 	connCalled := false
 	srvCalled := false
 
-	// 注册服务器级处理器
 	srv.RegisterNotificationHandler("test.notify", func(ctx context.Context, msg *Message) {
 		srvCalled = true
 	})
 
-	// 模拟带 Dispatcher 的连接
 	conn := &ChildConnection{
-		ID:        "child-1",
-		Key:       "test-key",
-		SendCh:    make(chan []byte, 10),
-		ReceiveCh: make(chan []byte, 10),
-		Meta:      make(map[string]string),
+		ID:         "child-1",
+		Key:        "test-key",
+		SendCh:     make(chan []byte, 10),
+		Meta:       make(map[string]string),
 		Dispatcher: NewDispatcher(),
 	}
-	// 注册连接级处理器
 	conn.Dispatcher.RegisterNotification("test.notify", func(ctx context.Context, msg *Message) {
 		connCalled = true
 	})
@@ -264,9 +242,7 @@ func TestWebSocketServerConnectionLevelDispatcher(t *testing.T) {
 	srv.connections["child-1"] = conn
 	srv.mu.Unlock()
 
-	// 构造新协议 notification 消息
 	notif, _ := NewNotification("test.notify", nil)
-
 	srv.handleServerProtocolMessage(conn, notif)
 
 	if !connCalled {
@@ -275,4 +251,55 @@ func TestWebSocketServerConnectionLevelDispatcher(t *testing.T) {
 	if srvCalled {
 		t.Error("Server-level dispatcher should not be called when connection-level exists")
 	}
+}
+
+func TestRemoveAllConnectionKeys(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	conn := &ChildConnection{
+		ID:     "uuid-123",
+		SendCh: make(chan []byte, 10),
+		Meta:   map[string]string{"child_id": "child-1"},
+	}
+
+	// 注册双键
+	srv.mu.Lock()
+	srv.connections["uuid-123"] = conn
+	srv.connections["child-1"] = conn
+	srv.mu.Unlock()
+
+	if len(srv.connections) != 2 {
+		t.Fatalf("Expected 2 keys, got %d", len(srv.connections))
+	}
+
+	// removeAllConnectionKeys 应该同时删除两个 key
+	srv.removeAllConnectionKeys(conn)
+
+	if len(srv.connections) != 0 {
+		t.Errorf("Expected 0 keys after removal, got %d", len(srv.connections))
+	}
+}
+
+func TestRemoveConnectionIdempotent(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	conn := &ChildConnection{
+		ID:     "uuid-456",
+		SendCh: make(chan []byte, 10),
+		Meta:   map[string]string{"child_id": "child-2"},
+	}
+
+	srv.mu.Lock()
+	srv.connections["uuid-456"] = conn
+	srv.connections["child-2"] = conn
+	srv.mu.Unlock()
+
+	// 第一次移除
+	srv.RemoveConnection("child-2")
+
+	// 第二次移除应该不 panic（conn 已被删除，查找不到直接返回）
+	srv.RemoveConnection("child-2")
+	srv.RemoveConnection("uuid-456")
 }

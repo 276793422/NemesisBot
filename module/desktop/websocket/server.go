@@ -26,10 +26,10 @@ type WebSocketServer struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 
-	// 新协议：父进程侧 Dispatcher，处理子进程发来的 Request/Notification
+	// 父进程侧 Dispatcher，处理子进程发来的 Request/Notification
 	dispatcher *Dispatcher
 
-	// 新协议：pending map 用于 CallChild 的 Request-Response 关联
+	// pending map 用于 CallChild 的 Request-Response 关联
 	pending   map[string]chan *Message
 	pendingMu sync.RWMutex
 }
@@ -78,7 +78,6 @@ func (s *WebSocketServer) Start() error {
 
 // acceptLoop 接受连接循环
 func (s *WebSocketServer) acceptLoop(ln net.Listener) {
-	// 创建 HTTP mux
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleWebSocket)
 
@@ -95,7 +94,6 @@ func (s *WebSocketServer) acceptLoop(ln net.Listener) {
 
 // handleWebSocket 处理 WebSocket 连接
 func (s *WebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// 升级到 WebSocket
 	wsConn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[WebSocketServer] Upgrade failed: %v", err)
@@ -132,7 +130,6 @@ func (s *WebSocketServer) handleConnection(wsConn *websocket.Conn) {
 		Key:        wsKey.Key,
 		ChildPID:   wsKey.ChildPID,
 		SendCh:     make(chan []byte, 10),
-		ReceiveCh:  make(chan []byte, 10),
 		Meta:       make(map[string]string),
 		Dispatcher: NewDispatcher(),
 	}
@@ -152,10 +149,10 @@ func (s *WebSocketServer) handleConnection(wsConn *websocket.Conn) {
 	go s.writeLoop(wsConn, childConn)
 }
 
-// readLoop 读取循环（双协议检测）
+// readLoop 读取循环
 func (s *WebSocketServer) readLoop(wsConn *websocket.Conn, conn *ChildConnection) {
 	defer func() {
-		s.RemoveConnection(conn.ID)
+		s.removeAllConnectionKeys(conn)
 		wsConn.Close()
 	}()
 
@@ -169,18 +166,16 @@ func (s *WebSocketServer) readLoop(wsConn *websocket.Conn, conn *ChildConnection
 				return
 			}
 
-			// 尝试解析为新协议消息
 			var msg Message
-			if err := json.Unmarshal(message, &msg); err == nil && msg.JSONRPC == Version {
-				s.handleServerProtocolMessage(conn, &msg)
+			if err := json.Unmarshal(message, &msg); err != nil {
+				log.Printf("[WebSocketServer] JSON decode error: %v", err)
 				continue
 			}
 
-			// 旧协议 fallback：放入 ReceiveCh
-			select {
-			case conn.ReceiveCh <- message:
-			case <-time.After(5 * time.Second):
-				log.Printf("[WebSocketServer] Receive channel full")
+			if msg.JSONRPC == Version {
+				s.handleServerProtocolMessage(conn, &msg)
+			} else {
+				log.Printf("[WebSocketServer] Non-protocol message ignored (no jsonrpc field)")
 			}
 		}
 	}
@@ -279,30 +274,7 @@ func (s *WebSocketServer) GetPort() int {
 	return s.port
 }
 
-// SendToChild 发送消息到子进程（旧接口，兼容）
-func (s *WebSocketServer) SendToChild(childID string, data interface{}) error {
-	s.mu.RLock()
-	conn, ok := s.connections[childID]
-	s.mu.RUnlock()
-
-	if !ok {
-		return ErrConnectionNotFound
-	}
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	select {
-	case conn.SendCh <- jsonData:
-		return nil
-	case <-time.After(5 * time.Second):
-		return ErrServerSendTimeout
-	}
-}
-
-// SendNotification 向子进程发送 Notification（新协议）
+// SendNotification 向子进程发送 Notification
 func (s *WebSocketServer) SendNotification(childID string, method string, params interface{}) error {
 	s.mu.RLock()
 	conn, ok := s.connections[childID]
@@ -321,7 +293,7 @@ func (s *WebSocketServer) SendNotification(childID string, method string, params
 	return nil
 }
 
-// CallChild 向子进程发送 Request 并等待 Response（新协议）
+// CallChild 向子进程发送 Request 并等待 Response
 func (s *WebSocketServer) CallChild(ctx context.Context, childID string, method string, params interface{}) (*Message, error) {
 	s.mu.RLock()
 	conn, ok := s.connections[childID]
@@ -372,26 +344,36 @@ func (s *WebSocketServer) RegisterNotificationHandler(method string, fn Notifica
 	s.dispatcher.RegisterNotification(method, fn)
 }
 
-// RemoveConnection 移除连接
-func (s *WebSocketServer) RemoveConnection(childID string) {
+// removeAllConnectionKeys 移除连接的所有 key（UUID + ChildID），并安全关闭 SendCh
+func (s *WebSocketServer) removeAllConnectionKeys(conn *ChildConnection) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if conn, ok := s.connections[childID]; ok {
-		// 安全关闭通道
-		select {
-		case <-conn.SendCh:
-		default:
-			close(conn.SendCh)
-		}
-		select {
-		case <-conn.ReceiveCh:
-		default:
-			close(conn.ReceiveCh)
-		}
-		delete(s.connections, childID)
-		log.Printf("[WebSocketServer] Connection removed: %s", childID)
+	// 收集所有指向此 conn 的 key
+	keys := []string{conn.ID}
+	if childID, ok := conn.Meta["child_id"]; ok {
+		keys = append(keys, childID)
 	}
+
+	for _, key := range keys {
+		delete(s.connections, key)
+	}
+
+	// 安全关闭 SendCh（sync.Once 防止重复 close panic）
+	conn.CloseSend()
+
+	log.Printf("[WebSocketServer] Connection removed: %s", conn.ID)
+}
+
+// RemoveConnection 按 key 移除连接（外部调用入口）
+func (s *WebSocketServer) RemoveConnection(childID string) {
+	s.mu.RLock()
+	conn, ok := s.connections[childID]
+	s.mu.RUnlock()
+	if !ok {
+		return
+	}
+	s.removeAllConnectionKeys(conn)
 }
 
 // GetConnection 获取连接
@@ -404,6 +386,5 @@ func (s *WebSocketServer) GetConnection(childID string) *ChildConnection {
 // Errors
 var (
 	ErrConnectionNotFound = &WebSocketError{Code: "CONN_NOT_FOUND", Message: "Connection not found"}
-	ErrServerSendTimeout  = &WebSocketError{Code: "SEND_TIMEOUT", Message: "Send timeout"}
 	ErrServerCallTimeout  = &WebSocketError{Code: "CALL_TIMEOUT", Message: "Call timeout"}
 )

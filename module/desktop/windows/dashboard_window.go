@@ -5,6 +5,7 @@ package windows
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/276793422/NemesisBot/module/desktop/websocket"
@@ -65,14 +66,72 @@ func (w *DashboardWindow) Startup(ctx context.Context) error {
 		return err
 	}
 
-	// 注册父进程命令处理器（新协议 Dispatcher）
+	// 注册父进程通知处理器
 	if w.wsClient != nil {
+		// window.bring_to_front — 将窗口带到前台
 		w.wsClient.RegisterNotificationHandler("window.bring_to_front", func(ctx context.Context, msg *websocket.Message) {
-			fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received bring_to_front command\n", w.ID)
+			fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received bring_to_front\n", w.ID)
 			if w.ctx != nil {
 				wailsruntime.WindowShow(w.ctx)
 				wailsruntime.WindowUnminimise(w.ctx)
 			}
+		})
+
+		// window.minimize — 最小化窗口
+		w.wsClient.RegisterNotificationHandler("window.minimize", func(ctx context.Context, msg *websocket.Message) {
+			fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received minimize\n", w.ID)
+			if w.ctx != nil {
+				wailsruntime.WindowMinimise(w.ctx)
+			}
+		})
+
+		// state.service_status — 服务状态变更通知
+		w.wsClient.RegisterNotificationHandler("state.service_status", func(ctx context.Context, msg *websocket.Message) {
+			var status map[string]interface{}
+			if err := msg.DecodeParams(&status); err != nil {
+				log.Printf("[DashboardWindow-%s] Failed to decode service_status: %v", w.ID, err)
+				return
+			}
+			log.Printf("[DashboardWindow-%s] Service status update: %+v", w.ID, status)
+			// 前端可通过 Wails 事件系统接收
+			wailsruntime.EventsEmit(w.ctx, "state:service_status", status)
+		})
+
+		// state.config_changed — 配置变更通知
+		w.wsClient.RegisterNotificationHandler("state.config_changed", func(ctx context.Context, msg *websocket.Message) {
+			var config map[string]interface{}
+			if err := msg.DecodeParams(&config); err != nil {
+				log.Printf("[DashboardWindow-%s] Failed to decode config_changed: %v", w.ID, err)
+				return
+			}
+			log.Printf("[DashboardWindow-%s] Config changed: %+v", w.ID, config)
+			wailsruntime.EventsEmit(w.ctx, "state:config_changed", config)
+		})
+
+		// state.cluster_event — 集群事件通知
+		w.wsClient.RegisterNotificationHandler("state.cluster_event", func(ctx context.Context, msg *websocket.Message) {
+			var event map[string]interface{}
+			if err := msg.DecodeParams(&event); err != nil {
+				log.Printf("[DashboardWindow-%s] Failed to decode cluster_event: %v", w.ID, err)
+				return
+			}
+			log.Printf("[DashboardWindow-%s] Cluster event: %+v", w.ID, event)
+			wailsruntime.EventsEmit(w.ctx, "state:cluster_event", event)
+		})
+
+		// dashboard.notification — 通知推送
+		w.wsClient.RegisterNotificationHandler("dashboard.notification", func(ctx context.Context, msg *websocket.Message) {
+			var notif map[string]interface{}
+			if err := msg.DecodeParams(&notif); err != nil {
+				log.Printf("[DashboardWindow-%s] Failed to decode notification: %v", w.ID, err)
+				return
+			}
+			wailsruntime.EventsEmit(w.ctx, "dashboard:notification", notif)
+		})
+
+		// system.ping — 健康检查（Respond with pong）
+		w.wsClient.RegisterHandler("system.ping", func(ctx context.Context, msg *websocket.Message) (*websocket.Message, error) {
+			return websocket.NewResponse(msg.ID, map[string]string{"status": "ok"})
 		})
 	}
 
