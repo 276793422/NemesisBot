@@ -25,11 +25,3 @@ type HistoryRequestData struct {
 	Limit       int    `json:"limit,omitempty"`
 	BeforeIndex *int   `json:"before_index,omitempty"`
 }
-
-// HistoryProvider is the interface for retrieving chat history.
-type HistoryProvider interface {
-	// GetHistory returns a page of history messages.
-	// limit controls the maximum number of messages to return.
-	// beforeIndex, if provided, requests messages older than this index.
-	GetHistory(limit int, beforeIndex *int) (*HistoryPage, error)
-}

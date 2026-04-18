@@ -143,6 +143,12 @@
         <div x-data="chatPage()" class="page-chat" x-init="init()" @destroy="destroy()">
           <!-- Messages -->
           <div class="chat-messages" x-ref="chatMessages">
+            <!-- History loading indicator -->
+            <div x-show="_historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
+              <span class="spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;"></span>
+              <span style="vertical-align:middle;"> 加载历史消息...</span>
+            </div>
+
             <!-- Welcome message -->
             <div class="message assistant" x-show="messages.length === 0">
               <div class="message-avatar">NB</div>

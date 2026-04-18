@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -375,6 +376,12 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return "", resp, err
 	}
 
+	// Handle history requests (bypass LLM, read directly from session)
+	if msg.Metadata != nil && msg.Metadata["request_type"] == "history" {
+		al.handleHistoryRequest(msg)
+		return "", "", nil
+	}
+
 	// Check for commands
 	if response, handled := al.handleCommand(ctx, msg); handled {
 		return "", response, nil
@@ -495,5 +502,109 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
 		SendResponse:    true,
+	})
+}
+
+// handleHistoryRequest processes a history request by reading from the agent session
+// and publishing the response directly via the bus (bypasses LLM).
+func (al *AgentLoop) handleHistoryRequest(msg bus.InboundMessage) {
+	// Parse request data from Content (JSON payload)
+	var reqData struct {
+		RequestID   string `json:"request_id"`
+		Limit       int    `json:"limit,omitempty"`
+		BeforeIndex *int   `json:"before_index,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(msg.Content), &reqData); err != nil {
+		logger.ErrorCF("agent", "Failed to parse history request", map[string]interface{}{
+			"error": err.Error(),
+		})
+		al.publishHistoryResponse(msg.ChatID, "", nil, false, 0, 0)
+		return
+	}
+
+	// Default limit
+	limit := reqData.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Resolve agent and session key using routing
+	agent := al.registry.GetDefaultAgent()
+	sessionKey := routing.BuildAgentMainSessionKey(agent.ID)
+
+	// Read history from session
+	allMsgs := agent.Sessions.GetHistory(sessionKey)
+
+	// Filter: only keep user and assistant messages
+	type historyMessage struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	filtered := make([]historyMessage, 0, len(allMsgs))
+	for _, m := range allMsgs {
+		if m.Role == "user" || m.Role == "assistant" {
+			filtered = append(filtered, historyMessage{
+				Role:    m.Role,
+				Content: m.Content,
+			})
+		}
+	}
+
+	totalCount := len(filtered)
+
+	// Determine pagination boundaries
+	end := totalCount
+	if reqData.BeforeIndex != nil && *reqData.BeforeIndex >= 0 && *reqData.BeforeIndex < totalCount {
+		end = *reqData.BeforeIndex
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+
+	hasMore := start > 0
+	oldestIndex := start
+
+	var pageMessages []historyMessage
+	if start < end {
+		pageMessages = filtered[start:end]
+	} else {
+		pageMessages = []historyMessage{}
+	}
+
+	al.publishHistoryResponse(msg.ChatID, reqData.RequestID, pageMessages, hasMore, oldestIndex, totalCount)
+}
+
+// publishHistoryResponse builds and publishes a history response via the bus.
+func (al *AgentLoop) publishHistoryResponse(chatID, requestID string, messages interface{}, hasMore bool, oldestIndex, totalCount int) {
+	responseData := map[string]interface{}{
+		"request_id":   requestID,
+		"messages":     messages,
+		"has_more":     hasMore,
+		"oldest_index": oldestIndex,
+		"total_count":  totalCount,
+	}
+
+	content, err := json.Marshal(responseData)
+	if err != nil {
+		logger.ErrorCF("agent", "Failed to marshal history response", map[string]interface{}{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	al.bus.PublishOutbound(bus.OutboundMessage{
+		Channel: "web",
+		ChatID:  chatID,
+		Content: string(content),
+		Type:    "history",
+	})
+
+	logger.DebugCF("agent", "History response published", map[string]interface{}{
+		"chat_id":      chatID,
+		"request_id":   requestID,
+		"total_count":  totalCount,
+		"has_more":     hasMore,
+		"oldest_index": oldestIndex,
 	})
 }

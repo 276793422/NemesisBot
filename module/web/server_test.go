@@ -387,3 +387,74 @@ func TestServerMessage_Struct(t *testing.T) {
 	// Old ServerMessage type removed in Phase 3.
 	// ProtocolMessage tests are in test/unit/web/protocol_test.go
 }
+
+// --- SendHistoryToSession tests ---
+
+func TestServer_SendHistoryToSession_NonExistentSession(t *testing.T) {
+	sm := NewSessionManager(1 * time.Hour)
+	testBus := bus.NewMessageBus()
+
+	server := NewServer(ServerConfig{
+		Host:       "localhost",
+		Port:       8080,
+		WSPath:     "/ws",
+		SessionMgr: sm,
+		Bus:        testBus,
+	})
+
+	jsonContent := `{"request_id":"r1","messages":[],"has_more":false,"oldest_index":0,"total_count":0}`
+	err := server.SendHistoryToSession("non-existent", jsonContent)
+	if err == nil {
+		t.Error("Expected error sending to non-existent session")
+	}
+}
+
+func TestServer_SendHistoryToSession_InvalidJSON(t *testing.T) {
+	sm := NewSessionManager(1 * time.Hour)
+	testBus := bus.NewMessageBus()
+
+	server := NewServer(ServerConfig{
+		Host:       "localhost",
+		Port:       8080,
+		WSPath:     "/ws",
+		SessionMgr: sm,
+		Bus:        testBus,
+	})
+
+	err := server.SendHistoryToSession("any-session", "not valid json")
+	if err == nil {
+		t.Error("Expected error for invalid JSON content")
+	}
+}
+
+// --- Metadata propagation tests ---
+
+func TestIncomingMessage_Metadata(t *testing.T) {
+	msg := IncomingMessage{
+		SessionID: "test-session",
+		SenderID:  "test-sender",
+		ChatID:    "test-chat",
+		Content:   "test content",
+		Timestamp: time.Now(),
+		Metadata:  map[string]string{"request_type": "history"},
+	}
+
+	if msg.Metadata == nil {
+		t.Fatal("Metadata should not be nil")
+	}
+	if msg.Metadata["request_type"] != "history" {
+		t.Errorf("Metadata request_type = %q, want %q", msg.Metadata["request_type"], "history")
+	}
+}
+
+func TestIncomingMessage_NilMetadata(t *testing.T) {
+	msg := IncomingMessage{
+		SessionID: "test-session",
+		Content:   "test content",
+		Timestamp: time.Now(),
+	}
+
+	if msg.Metadata != nil {
+		t.Error("Metadata should be nil when not set")
+	}
+}

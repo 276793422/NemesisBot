@@ -42,9 +42,6 @@ type Server struct {
 	eventHub   *EventHub
 	workspace  string // Workspace path for config/log file access
 	modelName  string // Current LLM model name
-
-	// History provider for chat history loading
-	historyProvider HistoryProvider
 }
 
 // ServerConfig holds the server configuration
@@ -308,7 +305,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 		}()
 
-		if err := HandleWebSocket(session, s.sessionMgr, s.messageChan, s.authToken, s.historyProvider); err != nil {
+		if err := HandleWebSocket(session, s.sessionMgr, s.messageChan, s.authToken); err != nil {
 			logger.ErrorCF("web", "WebSocket handler error", map[string]interface{}{
 				"error":      err.Error(),
 				"session_id": session.ID,
@@ -340,6 +337,7 @@ func (s *Server) processMessages(ctx context.Context) {
 				ChatID:   msg.ChatID,
 				Content:  msg.Content,
 				Media:    []string{},
+				Metadata: msg.Metadata,
 			}
 			s.bus.PublishInbound(inboundMsg)
 
@@ -357,9 +355,21 @@ func (s *Server) SendToSession(sessionID, role, content string) error {
 	return BroadcastToSession(s.sessionMgr, sessionID, role, content)
 }
 
-// SetHistoryProvider sets the history provider for chat history loading.
-func (s *Server) SetHistoryProvider(provider HistoryProvider) {
-	s.historyProvider = provider
+// SendHistoryToSession sends a history response to a specific session.
+func (s *Server) SendHistoryToSession(sessionID, jsonContent string) error {
+	var data interface{}
+	if err := json.Unmarshal([]byte(jsonContent), &data); err != nil {
+		return fmt.Errorf("failed to unmarshal history data: %w", err)
+	}
+	msg, err := NewProtocolMessage("message", "chat", "history", data)
+	if err != nil {
+		return fmt.Errorf("failed to create protocol message: %w", err)
+	}
+	bytes, err := msg.ToJSON()
+	if err != nil {
+		return fmt.Errorf("failed to marshal protocol message: %w", err)
+	}
+	return s.sessionMgr.Broadcast(sessionID, bytes)
 }
 
 // GetSessionManager returns the session manager

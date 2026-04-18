@@ -140,6 +140,11 @@ func (c *WebChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 		return fmt.Errorf("invalid chat ID format: %s", msg.ChatID)
 	}
 
+	// Handle history responses via dedicated method
+	if msg.Type == "history" {
+		return c.server.SendHistoryToSession(sessionID, msg.Content)
+	}
+
 	logger.DebugCF("web", "Sending message to session",
 		map[string]interface{}{
 			"session_id":  sessionID,
@@ -184,13 +189,6 @@ func (c *WebChannel) BroadcastToAll(content string) error {
 		}
 	}
 	return nil
-}
-
-// SetHistoryProvider injects a history provider into the web server.
-func (c *WebChannel) SetHistoryProvider(provider web.HistoryProvider) {
-	if c.server != nil {
-		c.server.SetHistoryProvider(provider)
-	}
 }
 
 // SetWorkspace sets the workspace path on the web server for API handlers

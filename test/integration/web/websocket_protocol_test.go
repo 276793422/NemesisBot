@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/276793422/NemesisBot/module/session"
 	. "github.com/276793422/NemesisBot/module/web"
 	"github.com/gorilla/websocket"
 )
@@ -24,7 +23,7 @@ var integrationUpgrader = websocket.Upgrader{
 }
 
 // setupIntegrationWS creates a test server + connected WebSocket pair.
-func setupIntegrationWS(t *testing.T, historyProvider HistoryProvider) (*websocket.Conn, chan IncomingMessage, func()) {
+func setupIntegrationWS(t *testing.T) (*websocket.Conn, chan IncomingMessage, func()) {
 	t.Helper()
 
 	sessionMgr := NewSessionManager(1 * time.Hour)
@@ -39,7 +38,7 @@ func setupIntegrationWS(t *testing.T, historyProvider HistoryProvider) (*websock
 
 		sess := sessionMgr.CreateSession(conn)
 
-		if err := HandleWebSocket(sess, sessionMgr, messageChan, "", historyProvider); err != nil {
+		if err := HandleWebSocket(sess, sessionMgr, messageChan, ""); err != nil {
 			t.Logf("HandleWebSocket error: %v", err)
 		}
 	}))
@@ -81,7 +80,7 @@ func mustRawMarshal(v interface{}) json.RawMessage {
 }
 
 func TestWSProtocol_ChatSend(t *testing.T) {
-	ws, msgChan, cleanup := setupIntegrationWS(t, nil)
+	ws, msgChan, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{
@@ -112,7 +111,7 @@ func TestWSProtocol_ChatSend(t *testing.T) {
 }
 
 func TestWSProtocol_ChatSend_EmptyContent(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{
@@ -137,7 +136,7 @@ func TestWSProtocol_ChatSend_EmptyContent(t *testing.T) {
 }
 
 func TestWSProtocol_ChatSend_MissingData(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{
@@ -155,7 +154,7 @@ func TestWSProtocol_ChatSend_MissingData(t *testing.T) {
 }
 
 func TestWSProtocol_HeartbeatPingPong(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{
@@ -180,7 +179,7 @@ func TestWSProtocol_HeartbeatPingPong(t *testing.T) {
 }
 
 func TestWSProtocol_UnknownType(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{Type: "unknown_type", Module: "test", Cmd: "test"}
@@ -194,7 +193,7 @@ func TestWSProtocol_UnknownType(t *testing.T) {
 }
 
 func TestWSProtocol_UnknownChatCmd(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{Type: "message", Module: "chat", Cmd: "nonexistent"}
@@ -208,7 +207,7 @@ func TestWSProtocol_UnknownChatCmd(t *testing.T) {
 }
 
 func TestWSProtocol_UnknownMessageModule(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{Type: "message", Module: "nonexistent", Cmd: "test"}
@@ -222,7 +221,7 @@ func TestWSProtocol_UnknownMessageModule(t *testing.T) {
 }
 
 func TestWSProtocol_InvalidJSON(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+	ws, _, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	ws.WriteMessage(websocket.TextMessage, []byte(`not valid json`))
@@ -233,101 +232,43 @@ func TestWSProtocol_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestWSProtocol_HistoryRequest_NilProvider(t *testing.T) {
-	ws, _, cleanup := setupIntegrationWS(t, nil)
+func TestWSProtocol_HistoryRequest_RoutedToChannel(t *testing.T) {
+	ws, msgChan, cleanup := setupIntegrationWS(t)
 	defer cleanup()
 
 	msg := ProtocolMessage{
 		Type:   "message",
 		Module: "chat",
 		Cmd:    "history_request",
-		Data:   mustRawMarshal(HistoryRequestData{RequestID: "req-nil", Limit: 10}),
+		Data:   mustRawMarshal(HistoryRequestData{RequestID: "req-test", Limit: 10}),
 	}
 	data, _ := json.Marshal(msg)
 	ws.WriteMessage(websocket.TextMessage, data)
 
-	resp := readWSJSON(t, ws, 2*time.Second)
-	if resp["cmd"] != "history" {
-		t.Errorf("cmd = %v, want history", resp["cmd"])
-	}
-	dataMap := resp["data"].(map[string]interface{})
-	if dataMap["total_count"].(float64) != 0 {
-		t.Errorf("total_count = %v, want 0", dataMap["total_count"])
-	}
-	if dataMap["request_id"] != "req-nil" {
-		t.Errorf("request_id = %v, want req-nil", dataMap["request_id"])
-	}
-}
-
-func TestWSProtocol_HistoryRequest_WithProvider(t *testing.T) {
-	sm := session.NewSessionManager("")
-	sm.AddMessage("test-key", "user", "Hello")
-	sm.AddMessage("test-key", "assistant", "Hi!")
-	sm.AddMessage("test-key", "user", "How are you?")
-	sm.AddMessage("test-key", "tool", "tool_result") // should be filtered
-	sm.AddMessage("test-key", "user", "Good")
-
-	provider := &integrationHistoryProvider{sm: sm, key: "test-key"}
-
-	ws, _, cleanup := setupIntegrationWS(t, provider)
-	defer cleanup()
-
-	msg := ProtocolMessage{
-		Type:   "message",
-		Module: "chat",
-		Cmd:    "history_request",
-		Data:   mustRawMarshal(HistoryRequestData{RequestID: "req-provider", Limit: 10}),
-	}
-	data, _ := json.Marshal(msg)
-	ws.WriteMessage(websocket.TextMessage, data)
-
-	resp := readWSJSON(t, ws, 2*time.Second)
-	if resp["cmd"] != "history" {
-		t.Errorf("cmd = %v, want history", resp["cmd"])
-	}
-	dataMap := resp["data"].(map[string]interface{})
-	if dataMap["total_count"].(float64) != 4 {
-		t.Errorf("total_count = %v, want 4 (tool filtered out)", dataMap["total_count"])
-	}
-	messages := dataMap["messages"].([]interface{})
-	if len(messages) != 4 {
-		t.Errorf("messages count = %d, want 4", len(messages))
-	}
-}
-
-// integrationHistoryProvider wraps session.SessionManager for testing
-type integrationHistoryProvider struct {
-	sm  *session.SessionManager
-	key string
-}
-
-func (p *integrationHistoryProvider) GetHistory(limit int, beforeIndex *int) (*HistoryPage, error) {
-	allMsgs := p.sm.GetHistory(p.key)
-
-	filtered := make([]HistoryMessage, 0, len(allMsgs))
-	for _, msg := range allMsgs {
-		if msg.Role == "user" || msg.Role == "assistant" {
-			filtered = append(filtered, HistoryMessage{
-				Role:    msg.Role,
-				Content: msg.Content,
-			})
+	select {
+	case incoming := <-msgChan:
+		// Verify the message is routed through messageChan with proper metadata
+		if incoming.Metadata == nil {
+			t.Fatal("Metadata should not be nil for history request")
 		}
+		if incoming.Metadata["request_type"] != "history" {
+			t.Errorf("Metadata request_type = %q, want %q", incoming.Metadata["request_type"], "history")
+		}
+		// Verify Content contains the JSON request data
+		var reqData HistoryRequestData
+		if err := json.Unmarshal([]byte(incoming.Content), &reqData); err != nil {
+			t.Fatalf("Failed to parse Content as HistoryRequestData: %v", err)
+		}
+		if reqData.RequestID != "req-test" {
+			t.Errorf("RequestID = %q, want %q", reqData.RequestID, "req-test")
+		}
+		if reqData.Limit != 10 {
+			t.Errorf("Limit = %d, want 10", reqData.Limit)
+		}
+		if incoming.SessionID == "" {
+			t.Error("SessionID should not be empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for history request on channel")
 	}
-
-	totalCount := len(filtered)
-	end := totalCount
-	if beforeIndex != nil && *beforeIndex >= 0 && *beforeIndex < totalCount {
-		end = *beforeIndex
-	}
-	start := end - limit
-	if start < 0 {
-		start = 0
-	}
-
-	return &HistoryPage{
-		Messages:    filtered[start:end],
-		HasMore:     start > 0,
-		OldestIndex: start,
-		TotalCount:  totalCount,
-	}, nil
 }

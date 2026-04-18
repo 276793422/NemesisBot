@@ -8,6 +8,13 @@ function chatPage() {
     _wsCallback: null,
     _statusCallback: null,
 
+    // History state
+    _hasMoreHistory: true,
+    _historyLoading: false,
+    _oldestIndex: null,
+    _historyLoaded: false,
+    _scrollHandler: null,
+
     init: function() {
       // Subscribe to WebSocket messages
       this._wsCallback = function(data) {
@@ -17,18 +24,32 @@ function chatPage() {
 
       this._statusCallback = function(status) {
         Alpine.store('app').connected = (status === 'connected');
+
+        // Load history on first connection
+        if (status === 'connected' && !this._historyLoaded) {
+          this.loadHistory();
+        }
       }.bind(this);
       NemesisAPI.onStatusChange = this._statusCallback;
+
+      // Setup scroll listener for loading more history
+      this.setupScrollListener();
 
       // Reconnect if needed
       var token = Alpine.store('app').token;
       if (token && (!NemesisAPI.ws || NemesisAPI.ws.readyState !== WebSocket.OPEN)) {
         NemesisAPI.connect(null, token);
+      } else if (NemesisAPI.ws && NemesisAPI.ws.readyState === WebSocket.OPEN && !this._historyLoaded) {
+        this.loadHistory();
       }
     },
 
     destroy: function() {
-      // Don't disconnect WebSocket - other pages may still need it
+      // Remove scroll listener
+      if (this._scrollHandler && this.$refs.chatMessages) {
+        this.$refs.chatMessages.removeEventListener('scroll', this._scrollHandler);
+        this._scrollHandler = null;
+      }
     },
 
     send: function() {
@@ -64,6 +85,8 @@ function chatPage() {
               timestamp: data.timestamp
             });
             this.streaming = false;
+          } else if (data.cmd === 'history') {
+            this.handleHistoryResponse(data.data);
           }
         } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
           this.messages.push({
@@ -75,11 +98,86 @@ function chatPage() {
         }
         // Ignore heartbeat.pong and other system messages
       }
-      // Note: old flat format no longer supported after Phase 3 migration
 
       this.$nextTick(function() {
         this.scrollToBottom();
         this.renderCodeBlocks();
+      }.bind(this));
+    },
+
+    // Load history from server
+    loadHistory: function() {
+      if (this._historyLoading) return;
+
+      this._historyLoading = true;
+      var requestId = 'hist_' + Date.now();
+      var limit = 20;
+      var beforeIndex = this._oldestIndex;
+
+      NemesisAPI.sendHistoryRequest(requestId, limit, beforeIndex);
+    },
+
+    // Handle history response from server
+    handleHistoryResponse: function(data) {
+      this._historyLoading = false;
+      if (!data) return;
+
+      var historyMessages = data.messages || [];
+
+      if (historyMessages.length > 0) {
+        // Remember scroll position before prepending
+        var container = this.$refs.chatMessages;
+        var oldScrollHeight = container ? container.scrollHeight : 0;
+
+        // Prepend history messages to the top
+        var newMessages = historyMessages.map(function(m) {
+          return {
+            role: m.role,
+            content: m.content,
+            timestamp: new Date().toISOString()
+          };
+        });
+        this.messages = newMessages.concat(this.messages);
+
+        // Restore scroll position after messages are prepended
+        this.$nextTick(function() {
+          if (container) {
+            var newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - oldScrollHeight;
+          }
+        });
+      }
+
+      this._hasMoreHistory = data.has_more || false;
+      this._oldestIndex = data.oldest_index;
+      this._historyLoaded = true;
+
+      // Scroll to bottom on initial load (first page of history)
+      if (this._oldestIndex === 0 || !data.has_more) {
+        this._hasMoreHistory = false;
+        this.$nextTick(function() {
+          this.scrollToBottom();
+        }.bind(this));
+      }
+    },
+
+    // Setup scroll listener to load more history when scrolled to top
+    setupScrollListener: function() {
+      var self = this;
+      this._scrollHandler = function() {
+        var container = self.$refs.chatMessages;
+        if (!container) return;
+
+        if (container.scrollTop <= 50 && self._hasMoreHistory && !self._historyLoading && self._historyLoaded) {
+          self.loadHistory();
+        }
+      };
+
+      this.$nextTick(function() {
+        var container = this.$refs.chatMessages;
+        if (container) {
+          container.addEventListener('scroll', this._scrollHandler);
+        }
       }.bind(this));
     },
 

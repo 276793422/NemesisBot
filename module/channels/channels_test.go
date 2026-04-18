@@ -173,7 +173,59 @@ func TestWebChannel(t *testing.T) {
 	channel.setRunning(false)
 }
 
-// TestTelegramChannel tests Telegram channel creation
+// TestWebChannel_Send_HistoryType tests that Send with Type="history" is correctly typed
+func TestWebChannel_Send_HistoryType(t *testing.T) {
+	msgBus := bus.NewMessageBus()
+
+	cfg := &config.WebChannelConfig{
+		Enabled:        false,
+		Host:           "localhost",
+		Port:           8080,
+		Path:           "/ws",
+		SessionTimeout: 3600,
+	}
+
+	channel, err := NewWebChannel(cfg, msgBus)
+	if err != nil {
+		t.Fatalf("NewWebChannel() failed: %v", err)
+	}
+
+	// When not running, should error regardless of type
+	ctx := context.Background()
+	err = channel.Send(ctx, bus.OutboundMessage{
+		Channel: "web",
+		ChatID:  "web:test-session",
+		Content: `{"request_id":"r1","messages":[]}`,
+		Type:    "history",
+	})
+	if err == nil {
+		t.Error("Expected error when sending history to stopped channel")
+	}
+}
+
+// TestWebChannel_OutboundMessage_TypeField tests that the Type field on OutboundMessage
+// correctly distinguishes normal from history messages
+func TestWebChannel_OutboundMessage_TypeField(t *testing.T) {
+	normalMsg := bus.OutboundMessage{
+		Channel: "web",
+		ChatID:  "web:session-1",
+		Content: "hello",
+		Type:    "",
+	}
+	if normalMsg.Type != "" {
+		t.Errorf("Normal message Type should be empty, got %q", normalMsg.Type)
+	}
+
+	historyMsg := bus.OutboundMessage{
+		Channel: "web",
+		ChatID:  "web:session-1",
+		Content: `{"request_id":"r1"}`,
+		Type:    "history",
+	}
+	if historyMsg.Type != "history" {
+		t.Errorf("History message Type should be 'history', got %q", historyMsg.Type)
+	}
+}
 func TestTelegramChannel(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 

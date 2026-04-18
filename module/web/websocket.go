@@ -7,6 +7,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -118,7 +119,7 @@ func (sq *sendQueue) stop() {
 }
 
 // HandleWebSocket handles a WebSocket connection with thread-safe sending
-func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan chan<- IncomingMessage, authToken string, historyProvider HistoryProvider) error {
+func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan chan<- IncomingMessage, authToken string) error {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.ErrorCF("web", "Panic in WebSocket handler", map[string]interface{}{
@@ -214,7 +215,7 @@ func HandleWebSocket(session *Session, sessionMgr *SessionManager, messageChan c
 		// Dispatch by type
 		switch protoMsg.Type {
 		case "message":
-			handleMessageModule(session, sq, messageChan, protoMsg, historyProvider)
+			handleMessageModule(session, sq, messageChan, protoMsg)
 		case "system":
 			handleSystemModule(sq, protoMsg)
 		default:
@@ -234,6 +235,7 @@ type IncomingMessage struct {
 	ChatID    string
 	Content   string
 	Timestamp time.Time
+	Metadata  map[string]string // Additional metadata (e.g. request_type)
 }
 
 // sendProtocolMessageViaQueue sends a ProtocolMessage using the send queue.
@@ -312,14 +314,14 @@ func BroadcastToSession(sessionMgr *SessionManager, sessionID string, role, cont
 }
 
 // handleMessageModule dispatches messages with type=="message" in the new protocol.
-func handleMessageModule(session *Session, sq *sendQueue, messageChan chan<- IncomingMessage, msg *ProtocolMessage, historyProvider HistoryProvider) {
+func handleMessageModule(session *Session, sq *sendQueue, messageChan chan<- IncomingMessage, msg *ProtocolMessage) {
 	switch msg.Module {
 	case "chat":
 		switch msg.Cmd {
 		case "send":
 			handleChatSend(session, sq, messageChan, msg)
 		case "history_request":
-			handleHistoryRequest(sq, msg, historyProvider)
+			handleHistoryRequest(session, sq, messageChan, msg)
 		default:
 			logger.WarnCF("web", "Unknown chat cmd", map[string]interface{}{
 				"cmd":        msg.Cmd,
@@ -369,68 +371,37 @@ func handleChatSend(session *Session, sq *sendQueue, messageChan chan<- Incoming
 	}
 }
 
-// handleHistoryRequest processes a chat.history_request message.
-func handleHistoryRequest(sq *sendQueue, msg *ProtocolMessage, historyProvider HistoryProvider) {
+// handleHistoryRequest processes a chat.history_request message by routing it through the bus.
+func handleHistoryRequest(session *Session, sq *sendQueue, messageChan chan<- IncomingMessage, msg *ProtocolMessage) {
 	var reqData HistoryRequestData
 	if err := msg.DecodeData(&reqData); err != nil {
 		sendErrorViaQueue(sq, "Invalid history_request data")
 		return
 	}
 
-	// Response type (used for both nil and non-nil provider paths)
-	type historyResponse struct {
-		RequestID   string           `json:"request_id"`
-		Messages    []HistoryMessage `json:"messages"`
-		HasMore     bool             `json:"has_more"`
-		OldestIndex int              `json:"oldest_index"`
-		TotalCount  int              `json:"total_count"`
-	}
-
-	if historyProvider == nil {
-		// No history provider configured, return empty result with request_id
-		logger.WarnC("web", "History request received but no history provider configured")
-		resp, _ := NewProtocolMessage("message", "chat", "history", &historyResponse{
-			RequestID:   reqData.RequestID,
-			Messages:    []HistoryMessage{},
-			HasMore:     false,
-			OldestIndex: -1,
-			TotalCount:  0,
-		})
-		data, _ := resp.ToJSON()
-		_ = sq.send(websocket.TextMessage, data)
-		return
-	}
-
-	// Default limit
-	limit := reqData.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-
-	page, err := historyProvider.GetHistory(limit, reqData.BeforeIndex)
+	// Serialize request data as JSON content for the agent to parse
+	payload, err := json.Marshal(reqData)
 	if err != nil {
-		logger.ErrorCF("web", "Failed to get history", map[string]interface{}{
-			"error":      err.Error(),
-			"request_id": reqData.RequestID,
-		})
-		sendErrorViaQueue(sq, "Failed to load history")
+		sendErrorViaQueue(sq, "Failed to serialize history request")
 		return
 	}
 
-	resp, _ := NewProtocolMessage("message", "chat", "history", &historyResponse{
-		RequestID:   reqData.RequestID,
-		Messages:    page.Messages,
-		HasMore:     page.HasMore,
-		OldestIndex: page.OldestIndex,
-		TotalCount:  page.TotalCount,
-	})
-
-	data, _ := resp.ToJSON()
-	if err := sq.send(websocket.TextMessage, data); err != nil {
-		logger.ErrorCF("web", "Failed to send history response", map[string]interface{}{
-			"error":      err.Error(),
+	select {
+	case messageChan <- IncomingMessage{
+		SessionID: session.ID,
+		SenderID:  session.SenderID,
+		ChatID:    session.ChatID,
+		Content:   string(payload),
+		Timestamp: time.Now(),
+		Metadata:  map[string]string{"request_type": "history"},
+	}:
+		logger.DebugCF("web", "History request forwarded to channel", map[string]interface{}{
+			"session_id": session.ID,
 			"request_id": reqData.RequestID,
 		})
+	default:
+		logger.WarnC("web", "Message channel full, dropping history request")
+		sendErrorViaQueue(sq, "Server busy, please try again")
 	}
 }
 

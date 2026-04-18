@@ -99,6 +99,24 @@ var NemesisAPI = {
     }
   },
 
+  // Send history request
+  sendHistoryRequest: function(requestId, limit, beforeIndex) {
+    var data = { request_id: requestId, limit: limit };
+    if (beforeIndex !== null && beforeIndex !== undefined) {
+      data.before_index = beforeIndex;
+    }
+    var message = {
+      type: 'message',
+      module: 'chat',
+      cmd: 'history_request',
+      data: data,
+      timestamp: new Date().toISOString()
+    };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
+  },
+
   // Disconnect
   disconnect: function() {
     this._manualClose = true;
