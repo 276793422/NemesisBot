@@ -282,11 +282,25 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 	c.cluster.LogRPCInfo("Attempting to connect to peer %s at %v", peerID, fullAddresses)
 
 	// Select best address and try to connect
+	//
+	// Connection strategy: each CallWithContext dials a new, exclusive TCP connection.
+	// This avoids the concurrent response mismatch bug where multiple callers sharing
+	// the same pooled connection could consume each other's messages from recvChan.
+	//
+	// Trade-off: adds ~1 TCP handshake per call (negligible vs LLM processing time).
+	// This is safe for the current scale (a few nodes, low-frequency RPC).
+	//
+	// Future upgrade path (if high-frequency cross-subnet RPC becomes a bottleneck):
+	//   Implement a "pending calls map" dispatcher — one goroutine per connection reads
+	//   recvChan and routes each message to the correct waiter by messageID. This enables
+	//   true connection multiplexing without message stealing. See: docs/PLAN/2026-04-19_CLUSTER_HIGH_SEVERITY_FIXES.md
 	selectedAddress, conn, err := c.connectToPeer(ctx, peerID, fullAddresses)
 	if err != nil {
 		c.cluster.LogRPCError("Failed to connect to peer %s: %v", peerID, err)
 		return nil, fmt.Errorf("failed to connect to peer %s: %w", peerID, err)
 	}
+	// Connection is exclusive to this call — close when done
+	defer conn.Close()
 
 	c.cluster.LogRPCInfo("Connected to peer %s at %s", peerID, selectedAddress)
 
@@ -298,8 +312,6 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 	c.cluster.LogRPCInfo("Sending request action=%s to peer %s (id=%s)", req.Action, peerID, req.ID)
 	if err := conn.Send(req); err != nil {
 		c.cluster.LogRPCError("Failed to send request to peer %s: %v", peerID, err)
-		// Connection might be bad, remove it from pool
-		c.pool.Remove(peerID, selectedAddress)
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	c.cluster.LogRPCInfo("Request sent successfully to peer %s, waiting for response (id=%s)", peerID, req.ID)
@@ -308,7 +320,6 @@ func (c *Client) CallWithContext(ctx context.Context, peerID, action string, pay
 	response, err := c.receiveResponseWithContext(ctx, conn, req.ID)
 	if err != nil {
 		c.cluster.LogRPCError("Failed to receive response from %s for %s: %v", peerID, req.ID, err)
-		c.pool.Remove(peerID, selectedAddress)
 		return nil, fmt.Errorf("failed to receive response: %w", err)
 	}
 
@@ -457,25 +468,37 @@ func (c *Client) connectToPeer(ctx context.Context, peerID string, addresses []s
 	return "", nil, fmt.Errorf("all connection attempts failed for peer %s", peerID)
 }
 
-// tryConnect attempts to establish a connection to a specific address
+// tryConnect dials a new, exclusive TCP connection to the given address.
+// The connection is NOT added to the pool — the caller owns it and must close it.
 func (c *Client) tryConnect(ctx context.Context, peerID, address string) (string, *transport.TCPConn, error) {
-	// Check context before attempting connection
 	select {
 	case <-ctx.Done():
 		return address, nil, ctx.Err()
 	default:
 	}
 
-	c.cluster.LogRPCDebug("Attempting to get connection to %s (peer=%s)", address, peerID)
+	c.cluster.LogRPCDebug("Dialing exclusive connection to %s (peer=%s)", address, peerID)
 
-	conn, err := c.pool.Get(peerID, address)
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	netConn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
-		c.cluster.LogRPCError("Failed to get connection to %s: %v", address, err)
 		return address, nil, err
 	}
 
-	c.cluster.LogRPCDebug("Successfully got connection to %s", address)
-	return address, conn, nil
+	config := &transport.TCPConnConfig{
+		NodeID:         peerID,
+		Address:        address,
+		ReadBufferSize: 100,
+		SendBufferSize: 100,
+		SendTimeout:    10 * time.Second,
+		IdleTimeout:    0, // No idle timeout — connection lifetime controlled by caller
+		AuthToken:      c.authToken,
+	}
+	tcpConn := transport.NewTCPConn(netConn, config)
+	tcpConn.Start()
+
+	c.cluster.LogRPCDebug("Exclusive connection established to %s", address)
+	return address, tcpConn, nil
 }
 
 // selectBestAddress selects the best address from a list
