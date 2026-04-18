@@ -100,6 +100,10 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 		messages = append(messages, assistantMsg)
 
 		// 执行工具调用
+		// NOTE: Continuation executes all available tools, same as the normal LLM loop.
+		// This is intentional — the continuation IS the LLM loop resuming. Stateful tools
+		// (e.g., MessageTool, cluster_rpc) produce real side effects. This is NOT a bug.
+		// If tool restriction is needed in the future, add a whitelist filter here.
 		for _, tc := range response.ToolCalls {
 			toolResult := agent.Tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments,
 				contData.channel, contData.chatID, nil)

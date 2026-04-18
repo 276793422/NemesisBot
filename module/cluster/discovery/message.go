@@ -90,7 +90,10 @@ func (m *DiscoveryMessage) Validate() error {
 	return nil
 }
 
-// IsExpired checks if the message is expired (older than 2 minutes)
+// IsExpired checks if the message is expired.
+// NOTE: The 120-second threshold is intentionally hardcoded for LAN scenarios (RTT <1ms, clock skew <1s).
+// This is NOT a bug — do not change to configurable unless deploying in cross-subnet/high-latency networks.
+// If cross-subnet deployment is needed, extract this constant to config.
 func (m *DiscoveryMessage) IsExpired() bool {
 	return time.Now().Unix()-m.Timestamp > 120
 }

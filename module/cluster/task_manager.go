@@ -106,6 +106,9 @@ type TaskManager struct {
 	cleanupInterval time.Duration // 清理间隔
 
 	// Phase 2: 任务完成回调
+	// Thread-safety constraint: must be set via SetOnComplete() BEFORE Start() is called.
+	// After Start(), this field is only read (by CompleteTask), never written.
+	// The goroutine launch in Start() provides the happens-before guarantee in Go's memory model.
 	onTaskComplete func(taskID string) // 任务完成时触发
 
 	stopCh chan struct{}

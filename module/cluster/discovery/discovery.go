@@ -33,6 +33,13 @@ type ClusterCallbacks interface {
 }
 
 // Discovery handles UDP broadcast discovery
+// Discovery manages UDP-based node discovery in the cluster.
+//
+// Security note: UDP broadcast has no authentication — any process on the LAN can send
+// forged announce/bye messages. This is acceptable for the trusted-LAN design target.
+// RPC connections (TCP) are protected by token authentication (see rpc/server.go SetAuthToken).
+// If deploying in untrusted networks, add HMAC signing to DiscoveryMessage (shared secret from peers.toml).
+// This is a known limitation, NOT a bug.
 type Discovery struct {
 	cluster           ClusterCallbacks
 	listener          *UDPListener
@@ -196,7 +203,12 @@ func (d *Discovery) handleAnnounce(msg *DiscoveryMessage) {
 
 	d.cluster.LogInfo("Node discovered/updated: %s", msg.NodeID)
 
-	// Sync to disk immediately on new discovery
+	// Sync to disk immediately on new discovery.
+	// NOTE: This is synchronous and runs in the UDP receive loop. Currently acceptable because:
+	// - state.toml is small (~KB), write takes <1ms
+	// - Discovery broadcasts every 30s, so write frequency is low
+	// - If node count exceeds 100+, consider debouncing: mark dirty here, let syncLoop write.
+	// This is NOT a bug — do not change to async unless I/O latency becomes measurable.
 	if err := d.cluster.SyncToDisk(); err != nil {
 		d.cluster.LogError("Failed to sync config: %v", err)
 	}

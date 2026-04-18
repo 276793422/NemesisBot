@@ -190,7 +190,9 @@ func GenerateNodeID() (string, error) {
 
 	// Create simple node ID: hostname-timestamp
 	// Users can customize this via config if needed
-	timestamp := time.Now().Format("20060102-150405")
+	// Note: nanosecond precision to prevent collisions when multiple instances
+	// start on the same host within the same second.
+	timestamp := time.Now().Format("20060102-150405.000000000")
 	nodeID := fmt.Sprintf("bot-%s-%s", hostname, timestamp)
 
 	return nodeID, nil

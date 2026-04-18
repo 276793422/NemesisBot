@@ -496,7 +496,13 @@ func (c *Cluster) SubmitTask(ctx context.Context, peerID, action string, payload
 		return "", fmt.Errorf("task manager not initialized")
 	}
 
-	taskID := generateTaskID()
+	// Use task_id from payload if provided (single source of truth, avoids ID mismatch
+	// between the payload sent to the remote node and the TaskManager record).
+	// Fallback to generating a new ID if not present.
+	taskID, _ := payload["task_id"].(string)
+	if taskID == "" {
+		taskID = generateTaskID()
+	}
 	task := &Task{
 		ID:              taskID,
 		Action:          action,

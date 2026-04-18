@@ -7,6 +7,7 @@ package channels
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -449,8 +450,9 @@ func (ch *RPCChannel) getRequestTimeout(metadata map[string]string) time.Duratio
 }
 
 // generateCorrelationID generates a unique correlation ID
+// Format: rpc-{nanosecond}-{random} to prevent collisions on systems with microsecond clocks
 func generateCorrelationID() string {
-	return fmt.Sprintf("rpc-%d", time.Now().UnixNano())
+	return fmt.Sprintf("rpc-%d-%04d", time.Now().UnixNano(), rand.Intn(10000))
 }
 
 // extractCorrelationID extracts correlation ID from content
