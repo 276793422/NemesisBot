@@ -134,7 +134,7 @@ function chatPage() {
           return {
             role: m.role,
             content: m.content,
-            timestamp: new Date().toISOString()
+            timestamp: m.timestamp || new Date().toISOString()
           };
         });
         this.messages = newMessages.concat(this.messages);

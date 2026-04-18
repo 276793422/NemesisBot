@@ -298,6 +298,14 @@ class MessageRenderer {
                 messageDiv.textContent = msg.content;
             }
 
+            // Add timestamp
+            if (msg.timestamp) {
+                const timeDiv = document.createElement('div');
+                timeDiv.className = 'message-time';
+                timeDiv.textContent = this.formatTime(msg.timestamp);
+                messageDiv.appendChild(timeDiv);
+            }
+
             fragment.appendChild(messageDiv);
         }
 

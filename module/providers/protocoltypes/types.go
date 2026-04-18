@@ -3,6 +3,8 @@
 // Copyright (c) 2026 NemesisBot contributors
 package protocoltypes
 
+import "time"
+
 type ToolCall struct {
 	ID        string                 `json:"id"`
 	Type      string                 `json:"type,omitempty"`
@@ -34,6 +36,7 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Timestamp  time.Time  `json:"timestamp,omitempty"`
 }
 
 type ToolDefinition struct {

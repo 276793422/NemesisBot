@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
@@ -537,15 +538,17 @@ func (al *AgentLoop) handleHistoryRequest(msg bus.InboundMessage) {
 
 	// Filter: only keep user and assistant messages
 	type historyMessage struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role      string    `json:"role"`
+		Content   string    `json:"content"`
+		Timestamp time.Time `json:"timestamp,omitempty"`
 	}
 	filtered := make([]historyMessage, 0, len(allMsgs))
 	for _, m := range allMsgs {
 		if m.Role == "user" || m.Role == "assistant" {
 			filtered = append(filtered, historyMessage{
-				Role:    m.Role,
-				Content: m.Content,
+				Role:      m.Role,
+				Content:   m.Content,
+				Timestamp: m.Timestamp,
 			})
 		}
 	}
