@@ -6,25 +6,6 @@ import (
 	"testing"
 )
 
-func TestWebSocketMessage(t *testing.T) {
-	msg := WebSocketMessage{
-		Type:      "result",
-		WindowID:  "win-1",
-		Data:      map[string]interface{}{"approved": true},
-		Timestamp: 1710000000,
-	}
-
-	if msg.Type != "result" {
-		t.Errorf("Expected Type 'result', got '%s'", msg.Type)
-	}
-	if msg.WindowID != "win-1" {
-		t.Errorf("Expected WindowID 'win-1', got '%s'", msg.WindowID)
-	}
-	if msg.Data["approved"] != true {
-		t.Errorf("Expected approved=true, got %v", msg.Data["approved"])
-	}
-}
-
 func TestChildConnection(t *testing.T) {
 	conn := &ChildConnection{
 		ID:       "conn-1",

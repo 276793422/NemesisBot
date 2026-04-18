@@ -3,6 +3,8 @@
 package websocket
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -129,5 +131,148 @@ func TestWebSocketServerStartStopQuick(t *testing.T) {
 
 	if err := srv.Stop(); err != nil {
 		t.Fatalf("Stop failed: %v", err)
+	}
+}
+
+func TestWebSocketServerSendNotificationNotFound(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	err := srv.SendNotification("nonexistent", "window.bring_to_front", nil)
+	if err == nil {
+		t.Error("Expected error when sending notification to nonexistent child")
+	}
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("Expected ErrConnectionNotFound, got: %v", err)
+	}
+}
+
+func TestWebSocketServerCallChildNotFound(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resp, err := srv.CallChild(ctx, "nonexistent", "system.ping", nil)
+	if err == nil {
+		t.Error("Expected error when calling nonexistent child")
+	}
+	if resp != nil {
+		t.Error("Expected nil response for nonexistent child")
+	}
+	if !errors.Is(err, ErrConnectionNotFound) {
+		t.Errorf("Expected ErrConnectionNotFound, got: %v", err)
+	}
+}
+
+func TestWebSocketServerRegisterHandler(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	srv.RegisterHandler("test.method", func(ctx context.Context, msg *Message) (*Message, error) {
+		return NewResponse(msg.ID, map[string]string{"ok": "true"})
+	})
+
+	// Server-level Dispatcher should have the handler registered
+	if len(srv.dispatcher.handlers) != 1 {
+		t.Errorf("Expected 1 handler, got %d", len(srv.dispatcher.handlers))
+	}
+}
+
+func TestWebSocketServerRegisterNotificationHandler(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	srv.RegisterNotificationHandler("test.notify", func(ctx context.Context, msg *Message) {
+	})
+
+	if len(srv.dispatcher.notifHandlers) != 1 {
+		t.Errorf("Expected 1 notification handler, got %d", len(srv.dispatcher.notifHandlers))
+	}
+}
+
+func TestWebSocketServerSendNotificationToConnection(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	// Simulate a registered connection
+	conn := &ChildConnection{
+		ID:        "child-1",
+		Key:       "test-key",
+		SendCh:    make(chan []byte, 10),
+		ReceiveCh: make(chan []byte, 10),
+		Meta:      make(map[string]string),
+	}
+	srv.mu.Lock()
+	srv.connections["child-1"] = conn
+	srv.mu.Unlock()
+
+	err := srv.SendNotification("child-1", "window.bring_to_front", map[string]string{"window": "main"})
+	if err != nil {
+		t.Fatalf("SendNotification failed: %v", err)
+	}
+
+	// Verify the message was sent through the SendCh
+	select {
+	case data := <-conn.SendCh:
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal sent message: %v", err)
+		}
+		if msg.JSONRPC != Version {
+			t.Errorf("JSONRPC = %q, want %q", msg.JSONRPC, Version)
+		}
+		if msg.Method != "window.bring_to_front" {
+			t.Errorf("Method = %q, want %q", msg.Method, "window.bring_to_front")
+		}
+		if msg.ID != "" {
+			t.Error("Notification should have empty ID")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timeout waiting for message in SendCh")
+	}
+}
+
+func TestWebSocketServerConnectionLevelDispatcher(t *testing.T) {
+	kg := NewKeyGenerator()
+	srv := NewWebSocketServer(kg)
+
+	connCalled := false
+	srvCalled := false
+
+	// 注册服务器级处理器
+	srv.RegisterNotificationHandler("test.notify", func(ctx context.Context, msg *Message) {
+		srvCalled = true
+	})
+
+	// 模拟带 Dispatcher 的连接
+	conn := &ChildConnection{
+		ID:        "child-1",
+		Key:       "test-key",
+		SendCh:    make(chan []byte, 10),
+		ReceiveCh: make(chan []byte, 10),
+		Meta:      make(map[string]string),
+		Dispatcher: NewDispatcher(),
+	}
+	// 注册连接级处理器
+	conn.Dispatcher.RegisterNotification("test.notify", func(ctx context.Context, msg *Message) {
+		connCalled = true
+	})
+
+	srv.mu.Lock()
+	srv.connections["child-1"] = conn
+	srv.mu.Unlock()
+
+	// 构造新协议 notification 消息
+	notif, _ := NewNotification("test.notify", nil)
+
+	srv.handleServerProtocolMessage(conn, notif)
+
+	if !connCalled {
+		t.Error("Connection-level dispatcher handler was not called")
+	}
+	if srvCalled {
+		t.Error("Server-level dispatcher should not be called when connection-level exists")
 	}
 }

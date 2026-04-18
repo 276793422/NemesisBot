@@ -183,7 +183,7 @@ func (s *SystemTray) openWebUI() {
 	existing, found := procMgr.GetChildByType("dashboard")
 	if found {
 		// 尝试发送 bring_to_front 命令
-		err := procMgr.SendCommand(existing.ID, "bring_to_front", nil)
+		err := procMgr.NotifyChild(existing.ID, "window.bring_to_front", nil)
 		if err != nil {
 			// 发送失败说明连接已断开，子进程可能已死，清理后重新创建
 			log.Printf("[SysTray] Dashboard child exists but command failed (%v), cleaning up and respawning", err)

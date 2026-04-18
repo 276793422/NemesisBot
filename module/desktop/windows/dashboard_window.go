@@ -65,10 +65,14 @@ func (w *DashboardWindow) Startup(ctx context.Context) error {
 		return err
 	}
 
-	// 注册父进程命令回调
+	// 注册父进程命令处理器（新协议 Dispatcher）
 	if w.wsClient != nil {
-		w.wsClient.SetOnCommand(func(command string, data map[string]interface{}) {
-			w.handleParentCommand(command, data)
+		w.wsClient.RegisterNotificationHandler("window.bring_to_front", func(ctx context.Context, msg *websocket.Message) {
+			fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received bring_to_front command\n", w.ID)
+			if w.ctx != nil {
+				wailsruntime.WindowShow(w.ctx)
+				wailsruntime.WindowUnminimise(w.ctx)
+			}
 		})
 	}
 
@@ -76,20 +80,6 @@ func (w *DashboardWindow) Startup(ctx context.Context) error {
 		w.ID, w.data.Token[:min(8, len(w.data.Token))], w.data.WebHost, w.data.WebPort)
 
 	return nil
-}
-
-// handleParentCommand 处理父进程发来的命令
-func (w *DashboardWindow) handleParentCommand(command string, data map[string]interface{}) {
-	switch command {
-	case "bring_to_front":
-		fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Received bring_to_front command\n", w.ID)
-		if w.ctx != nil {
-			wailsruntime.WindowShow(w.ctx)
-			wailsruntime.WindowUnminimise(w.ctx)
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "[DashboardWindow-%s] Unknown command: %s\n", w.ID, command)
-	}
 }
 
 // Shutdown 关闭窗口

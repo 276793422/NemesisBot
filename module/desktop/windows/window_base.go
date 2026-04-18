@@ -6,7 +6,6 @@ import (
 	"context"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/276793422/NemesisBot/module/desktop/websocket"
 )
@@ -84,13 +83,8 @@ func (w *WindowBase) SetData(data WindowData) error {
 func (w *WindowBase) SendResult(result interface{}) {
 	log.Printf("[Window-%s] Sending result: %+v", w.ID, result)
 
-	// 通过 WebSocket 发送
-	if err := w.WSClient.Send(map[string]interface{}{
-		"type":     "result",
-		"window":   w.ID,
-		"data":     result,
-		"timestamp": time.Now().Unix(),
-	}); err != nil {
+	// 通过新协议发送 approval.submit Notification
+	if err := w.WSClient.Notify("approval.submit", result); err != nil {
 		log.Printf("[Window-%s] Failed to send result: %v", w.ID, err)
 		return
 	}

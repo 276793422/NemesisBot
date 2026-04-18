@@ -24,6 +24,10 @@ type ProcessManager struct {
 	nextID      int64
 	ctx         context.Context
 	cancel      context.CancelFunc
+
+	// 新协议：approval 结果等待通道，key=childID
+	resultMap   map[string]chan interface{}
+	resultMapMu sync.RWMutex
 }
 
 // NewProcessManager 创建进程管理器
@@ -41,6 +45,7 @@ func NewProcessManager() *ProcessManager {
 		nextID:   0,
 		ctx:      ctx,
 		cancel:   cancel,
+		resultMap: make(map[string]chan interface{}),
 	}
 }
 
@@ -194,6 +199,16 @@ func (m *ProcessManager) SpawnChild(windowType string, data interface{}) (string
 
 // waitForChildResult 等待子进程结果
 func (m *ProcessManager) waitForChildResult(childID string, resultCh chan interface{}) {
+	// 注册 resultMap，让 approval.submit handler 可以投递
+	m.resultMapMu.Lock()
+	m.resultMap[childID] = resultCh
+	m.resultMapMu.Unlock()
+	defer func() {
+		m.resultMapMu.Lock()
+		delete(m.resultMap, childID)
+		m.resultMapMu.Unlock()
+	}()
+
 	// 等待 WebSocket 连接建立（最多等待 10 秒）
 	var conn *websocket.ChildConnection
 	timeout := time.After(10 * time.Second)
@@ -227,10 +242,36 @@ WaitForConnection:
 
 	log.Printf("[ProcessManager] Connection established for child %s", childID)
 
-	// 等待结果消息
+	// 在连接级 Dispatcher 上注册 approval.submit 处理器
+	// 子进程通过新协议发来的 approval.submit 会被路由到这里
+	conn.Dispatcher.RegisterNotification("approval.submit", func(ctx context.Context, msg *websocket.Message) {
+		var result interface{}
+		if err := msg.DecodeParams(&result); err != nil {
+			log.Printf("[ProcessManager] Failed to decode approval.submit params: %v", err)
+			return
+		}
+		m.resultMapMu.RLock()
+		ch := m.resultMap[childID]
+		m.resultMapMu.RUnlock()
+		if ch != nil {
+			select {
+			case ch <- result:
+			default:
+				log.Printf("[ProcessManager] Result channel full for child %s", childID)
+			}
+		}
+	})
+
+	// 同时等待新协议（通过 resultMap 投递）和旧协议（通过 ReceiveCh）
+	// 新协议路径：子进程 SendResult → Notify("approval.submit") → server readLoop 检测新协议
+	//   → conn.Dispatcher → approval.submit handler → resultMap → resultCh
+	// 旧协议路径：子进程 SendResult → Send(map) → server readLoop 检测旧协议 → ReceiveCh
 	select {
+	case <-resultCh:
+		// 新协议路径已经将结果投递到 resultCh
+		log.Printf("[ProcessManager] Received result via new protocol for child %s", childID)
 	case data := <-conn.ReceiveCh:
-		// 解析 JSON 字节数据
+		// 旧协议路径
 		var parsed map[string]interface{}
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			resultCh <- map[string]interface{}{
@@ -238,7 +279,11 @@ WaitForConnection:
 				"error":   fmt.Sprintf("failed to parse result: %v", err),
 			}
 		} else {
-			resultCh <- parsed
+			// 如果 resultCh 还没被新协议填充，投递旧协议结果
+			select {
+			case resultCh <- parsed:
+			default:
+			}
 		}
 	case <-time.After(5 * time.Minute):
 		resultCh <- map[string]interface{}{
@@ -333,12 +378,19 @@ func (m *ProcessManager) GetChildByType(windowType string) (*ChildProcess, bool)
 	return nil, false
 }
 
-// SendCommand 向子进程发送命令（父→子方向）
+// SendCommand 向子进程发送命令（旧接口，兼容包装）
+// 内部映射 command → window.command 使用新协议 Notification
 func (m *ProcessManager) SendCommand(childID string, command string, data map[string]interface{}) error {
-	msg := map[string]interface{}{
-		"type":    "command",
-		"command": command,
-		"data":    data,
-	}
-	return m.wsServer.SendToChild(childID, msg)
+	method := "window." + command
+	return m.wsServer.SendNotification(childID, method, data)
+}
+
+// NotifyChild 向子进程发送 Notification（新协议，不等响应）
+func (m *ProcessManager) NotifyChild(childID string, method string, params interface{}) error {
+	return m.wsServer.SendNotification(childID, method, params)
+}
+
+// CallChild 向子进程发送 Request 并等待 Response（新协议）
+func (m *ProcessManager) CallChild(ctx context.Context, childID string, method string, params interface{}) (*websocket.Message, error) {
+	return m.wsServer.CallChild(ctx, childID, method, params)
 }
