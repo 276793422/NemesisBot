@@ -27,7 +27,16 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 		return
 	}
 
-	// 2. 清理快照（内存 + 磁盘）
+	// 2. 先获取任务结果（数据齐全后再删除快照）
+	task, err := al.cluster.GetTask(taskID)
+	if err != nil {
+		logger.ErrorCF("agent", "Task not found for continuation",
+			map[string]interface{}{"task_id": taskID})
+		// 快照仍在，可重试
+		return
+	}
+
+	// 3. 数据已齐全，安全清理快照（内存 + 磁盘）
 	al.contMu.Lock()
 	delete(al.continuations, taskID)
 	al.contMu.Unlock()
@@ -35,14 +44,6 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 		if store := al.cluster.GetContinuationStore(); store != nil {
 			store.Delete(taskID)
 		}
-	}
-
-	// 3. 从 Cluster 获取回调结果
-	task, err := al.cluster.GetTask(taskID)
-	if err != nil {
-		logger.ErrorCF("agent", "Task not found for continuation",
-			map[string]interface{}{"task_id": taskID})
-		return
 	}
 
 	// 4. 构建续行消息：快照 + 真实工具结果
@@ -140,6 +141,10 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 				"content_len":    len(finalContent),
 				"target_channel": contData.channel,
 			})
+		// 续行完成，清理任务记录
+		if al.cluster != nil {
+			al.cluster.CleanupTask(taskID)
+		}
 	}
 }
 

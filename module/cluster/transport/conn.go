@@ -36,8 +36,9 @@ type TCPConn struct {
 	closeChan chan struct{}    // Close signal
 
 	// State
-	closed  atomic.Bool // Connection closed flag
-	started atomic.Bool // Goroutines started flag
+	closed       atomic.Bool   // Connection closed flag
+	started      atomic.Bool   // Goroutines started flag
+	droppedCount atomic.Uint64 // Number of dropped messages (recvChan full)
 
 	// Timing
 	createdAt time.Time
@@ -187,6 +188,7 @@ func (tc *TCPConn) readLoop() {
 		case tc.recvChan <- &msg:
 		default:
 			// Channel full, drop message (backpressure)
+			tc.droppedCount.Add(1)
 		}
 	}
 }
@@ -374,6 +376,11 @@ func (tc *TCPConn) UpdateLastUsed() {
 // SetNodeID sets the node ID
 func (tc *TCPConn) SetNodeID(nodeID string) {
 	tc.nodeID = nodeID
+}
+
+// GetDroppedCount returns the number of messages dropped due to full recvChan
+func (tc *TCPConn) GetDroppedCount() uint64 {
+	return tc.droppedCount.Load()
 }
 
 // RemoteAddr returns the remote address (for compatibility with old interface)

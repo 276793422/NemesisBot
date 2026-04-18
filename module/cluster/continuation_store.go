@@ -36,14 +36,18 @@ func NewContinuationStore(workspace string) (*ContinuationStore, error) {
 	return &ContinuationStore{cacheDir: cacheDir}, nil
 }
 
-// Save 保存续行快照到磁盘
+// Save 保存续行快照到磁盘（原子写入：先写 tmp 再 rename）
 func (s *ContinuationStore) Save(snapshot *ContinuationSnapshot) error {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return fmt.Errorf("failed to marshal snapshot: %w", err)
 	}
 	filePath := filepath.Join(s.cacheDir, snapshot.TaskID+".json")
-	return os.WriteFile(filePath, data, 0644)
+	tmpPath := filePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, filePath)
 }
 
 // Load 从磁盘加载续行快照
@@ -77,7 +81,8 @@ func (s *ContinuationStore) CleanupOld(maxAge time.Duration) (int, error) {
 	cutoff := time.Now().Add(-maxAge)
 
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		ext := filepath.Ext(entry.Name())
+		if entry.IsDir() || (ext != ".json" && ext != ".tmp") {
 			continue
 		}
 

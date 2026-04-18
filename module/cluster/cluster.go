@@ -113,13 +113,7 @@ func NewCluster(workspace string) (*Cluster, error) {
 		tags:              []string{}, // Default tags
 	}
 
-	// Load static config to get local node info (role, category, tags)
-	if err := cluster.loadStaticConfig(); err != nil {
-		logger.DiscoveryError("Failed to load static config: %v", err)
-		// Continue anyway, will use defaults
-	}
-
-	// Load static config if available (contains manually configured peers)
+	// Load static config to get local node info and manually configured peers
 	if err := cluster.loadStaticConfig(); err != nil {
 		logger.DiscoveryError("Failed to load static config: %v", err)
 		// Continue anyway, will use defaults
@@ -564,6 +558,13 @@ func (c *Cluster) GetTask(taskID string) (*Task, error) {
 // GetContinuationStore 暴露续行快照存储给 AgentLoop
 func (c *Cluster) GetContinuationStore() *ContinuationStore {
 	return c.contStore
+}
+
+// CleanupTask 清理已完成的任务（由续行流程调用）
+func (c *Cluster) CleanupTask(taskID string) {
+	if c.taskManager != nil {
+		c.taskManager.store.Delete(taskID)
+	}
 }
 
 // SetMessageBus 设置消息总线（Phase 2: 由 AgentLoop 在 setupClusterRPCChannel 中调用）

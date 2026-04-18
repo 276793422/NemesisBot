@@ -146,14 +146,22 @@ func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *P
 
 	h.cluster.LogRPCInfo("[PeerChat] Request sent to MessageBus, waiting for LLM response (correlation_id=%s)", correlationID)
 
-	// 7. Wait for response (no timeout — LLM can take as long as needed)
-	response, ok := <-respCh
-	if ok {
-		h.cluster.LogRPCInfo("[PeerChat] LLM response received for task %s, correlation_id=%s", taskID, correlationID)
-		h.sendCallback(sourceInfo, taskID, "success", response, "")
-	} else {
-		h.cluster.LogRPCError("[PeerChat] Response channel closed for task %s (channel stopped)", taskID)
-		h.sendCallback(sourceInfo, taskID, "error", "", "response channel closed")
+	// 7. Wait for response with timeout (59min = RPCChannel 58min cleanup + 1min margin)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 59*time.Minute)
+	defer waitCancel()
+
+	select {
+	case response, ok := <-respCh:
+		if ok {
+			h.cluster.LogRPCInfo("[PeerChat] LLM response received for task %s, correlation_id=%s", taskID, correlationID)
+			h.sendCallback(sourceInfo, taskID, "success", response, "")
+		} else {
+			h.cluster.LogRPCError("[PeerChat] Response channel closed for task %s (channel stopped)", taskID)
+			h.sendCallback(sourceInfo, taskID, "error", "", "response channel closed")
+		}
+	case <-waitCtx.Done():
+		h.cluster.LogRPCError("[PeerChat] LLM processing timeout for task %s (59min)", taskID)
+		h.sendCallback(sourceInfo, taskID, "error", "", "LLM processing timeout")
 	}
 }
 
@@ -178,17 +186,24 @@ func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID
 		payload["error"] = errMsg
 	}
 
-	// 通过 RPC client 发送回调（短连接，毫秒级）
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	_, err := h.cluster.CallWithContext(ctx, sourceNodeID, "peer_chat_callback", payload)
-	if err != nil {
-		h.cluster.LogRPCError("[PeerChat] Callback failed for task %s to node %s: %v", taskID, sourceNodeID, err)
-		return
+	// 通过 RPC client 发送回调（3 次重试，覆盖短暂网络故障）
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := h.cluster.CallWithContext(ctx, sourceNodeID, "peer_chat_callback", payload)
+		cancel()
+		if err == nil {
+			h.cluster.LogRPCInfo("[PeerChat] Callback sent successfully for task %s to node %s", taskID, sourceNodeID)
+			return
+		}
+		h.cluster.LogRPCError("[PeerChat] Callback attempt %d/%d failed for task %s to node %s: %v",
+			attempt+1, maxRetries, taskID, sourceNodeID, err)
+		if attempt < maxRetries-1 {
+			backoff := time.Duration(attempt+1) * 5 * time.Second
+			time.Sleep(backoff)
+		}
 	}
-
-	h.cluster.LogRPCInfo("[PeerChat] Callback sent successfully for task %s to node %s", taskID, sourceNodeID)
+	h.cluster.LogRPCError("[PeerChat] All callback retries exhausted for task %s to node %s", taskID, sourceNodeID)
 }
 
 // parsePayload parses the incoming payload into PeerChatPayload
