@@ -37,9 +37,11 @@ type Server struct {
 	bus *bus.MessageBus
 
 	// Dashboard state
-	version   string
-	startTime time.Time
-	eventHub  *EventHub
+	version    string
+	startTime  time.Time
+	eventHub   *EventHub
+	workspace  string // Workspace path for config/log file access
+	modelName  string // Current LLM model name
 
 	// History provider for chat history loading
 	historyProvider HistoryProvider
@@ -67,6 +69,7 @@ func NewServer(config ServerConfig) *Server {
 		sessionMgr: config.SessionMgr,
 		bus:        config.Bus,
 		version:    config.Version,
+		workspace:  config.Workspace,
 		running:    false,
 		startTime:  time.Now(),
 		eventHub:   NewEventHub(),
@@ -113,6 +116,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start message processor
 	go s.processMessages(ctx)
 
+	// Start SSE status publisher
+	go s.publishStatusLoop(ctx)
+
 	// Create mux
 	mux := http.NewServeMux()
 
@@ -124,6 +130,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// API endpoints
 	mux.HandleFunc("/api/status", s.handleAPIStatus)
+	mux.HandleFunc("/api/logs", s.handleAPILogs)
+	mux.HandleFunc("/api/scanner/status", s.handleAPIScannerStatus)
+	mux.HandleFunc("/api/config", s.handleAPIConfig)
 	mux.HandleFunc("/api/events/stream", s.handleEventsStream)
 
 	// Static files using http.FileServer (catch-all, registered last)
@@ -202,18 +211,7 @@ func (s *Server) IsRunning() bool {
 	return s.running
 }
 
-// handleAPIStatus returns system status as JSON
-func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
-	stats := s.sessionMgr.Stats()
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	uptime := time.Since(s.startTime).Seconds()
-	response := fmt.Sprintf(`{"version":%q,"uptime_seconds":%.0f,"ws_connected":%t,"session_count":%d}`,
-		s.version, uptime, s.running, stats["active_sessions"])
-	w.Write([]byte(response))
-}
+// handleAPIStatus is now in api_handlers.go
 
 // handleEventsStream handles SSE connections for real-time event streaming
 func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
@@ -367,6 +365,51 @@ func (s *Server) SetHistoryProvider(provider HistoryProvider) {
 // GetSessionManager returns the session manager
 func (s *Server) GetSessionManager() *SessionManager {
 	return s.sessionMgr
+}
+
+// GetEventHub returns the SSE event hub for external integration
+func (s *Server) GetEventHub() *EventHub {
+	return s.eventHub
+}
+
+// SetModelName sets the current LLM model name for status reporting
+func (s *Server) SetModelName(name string) {
+	s.modelName = name
+}
+
+// SetWorkspace sets the workspace path for API handlers
+func (s *Server) SetWorkspace(ws string) {
+	s.workspace = ws
+}
+
+// Expose handlers for testing
+func (s *Server) HandleAPIStatusForTest(w http.ResponseWriter, r *http.Request)    { s.handleAPIStatus(w, r) }
+func (s *Server) HandleAPILogsForTest(w http.ResponseWriter, r *http.Request)      { s.handleAPILogs(w, r) }
+func (s *Server) HandleAPIScannerStatusForTest(w http.ResponseWriter, r *http.Request) {
+	s.handleAPIScannerStatus(w, r)
+}
+func (s *Server) HandleAPIConfigForTest(w http.ResponseWriter, r *http.Request)    { s.handleAPIConfig(w, r) }
+func (s *Server) HandleEventsStreamForTest(w http.ResponseWriter, r *http.Request) { s.handleEventsStream(w, r) }
+func (s *Server) PublishStatusLoopForTest(ctx context.Context)                     { s.publishStatusLoop(ctx) }
+
+// publishStatusLoop periodically pushes status events via SSE
+func (s *Server) publishStatusLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			stats := s.sessionMgr.Stats()
+			s.eventHub.Publish("status", map[string]interface{}{
+				"version":        s.version,
+				"uptime_seconds": int64(time.Since(s.startTime).Seconds()),
+				"ws_connected":   s.running,
+				"session_count":  stats["active_sessions"],
+			})
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // dispatchOutbound handles outbound messages from the message bus

@@ -399,6 +399,9 @@ func (s *BotService) startServices() error {
 	go s.agentLoop.Run(s.ctx)
 	logger.InfoC("bot_service", "Agent loop started")
 
+	// Inject dashboard dependencies (workspace, SSE hook, model name)
+	s.injectDashboardDependencies(cfg)
+
 	// Start cron service
 	if s.cronSvc != nil {
 		if err := s.cronSvc.Start(); err != nil {
@@ -500,5 +503,43 @@ func (s *BotService) injectHistoryProvider() {
 		}
 	} else {
 		logger.WarnC("bot_service", "Cannot inject history provider: web channel not found")
+	}
+}
+
+// injectDashboardDependencies injects workspace path, model name, and SSE logger hook
+// into the web channel. Must be called AFTER channelMgr.StartAll() so that the web server exists.
+func (s *BotService) injectDashboardDependencies(cfg *config.Config) {
+	ch, ok := s.channelMgr.GetChannel("web")
+	if !ok {
+		return
+	}
+	webCh, ok := ch.(*channels.WebChannel)
+	if !ok {
+		return
+	}
+
+	// Inject workspace path for API handlers
+	webCh.SetWorkspace(s.workspace)
+
+	// Inject model name for status endpoint
+	if s.provider != nil {
+		modelName := s.provider.GetDefaultModel()
+		webCh.SetModelName(modelName)
+	}
+
+	// Bridge logger → SSE EventHub
+	server := webCh.GetServer()
+	if server != nil {
+		hub := server.GetEventHub()
+		logger.SetLogHook(func(entry logger.LogEntry) {
+			hub.Publish("log", map[string]interface{}{
+				"source":    "general",
+				"timestamp": entry.Timestamp,
+				"level":     entry.Level,
+				"component": entry.Component,
+				"message":   entry.Message,
+			})
+		})
+		logger.InfoC("bot_service", "SSE logger hook injected into web channel")
 	}
 }

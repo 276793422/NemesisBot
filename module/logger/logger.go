@@ -41,7 +41,21 @@ var (
 	// Double layer switches
 	loggingEnabled bool // Master switch: controls whether to log at all
 	consoleEnabled bool // Console switch: controls console output
+
+	// SSE hook — optional callback for real-time event publishing
+	logHook LogHook
 )
+
+// LogHook is a callback function invoked for each log entry.
+// Used to bridge logger output to SSE EventHub for Dashboard real-time updates.
+type LogHook func(entry LogEntry)
+
+// SetLogHook sets an optional callback that is invoked (asynchronously) for each log entry.
+func SetLogHook(hook LogHook) {
+	mu.Lock()
+	defer mu.Unlock()
+	logHook = hook
+}
 
 type Logger struct {
 	file *os.File
@@ -200,6 +214,11 @@ func logMessage(level LogLevel, component string, message string, fields map[str
 	)
 
 	log.Println(logLine)
+
+	// SSE hook — non-blocking asynchronous callback for real-time event publishing
+	if logHook != nil {
+		go logHook(entry)
+	}
 
 	// Note: FATAL level logs are no longer automatically exit.
 	// Callers should handle program termination if needed.

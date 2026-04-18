@@ -193,6 +193,25 @@ func (c *WebChannel) SetHistoryProvider(provider web.HistoryProvider) {
 	}
 }
 
+// SetWorkspace sets the workspace path on the web server for API handlers
+func (c *WebChannel) SetWorkspace(workspace string) {
+	if c.server != nil {
+		c.server.SetWorkspace(workspace)
+	}
+}
+
+// SetModelName sets the current LLM model name on the web server
+func (c *WebChannel) SetModelName(name string) {
+	if c.server != nil {
+		c.server.SetModelName(name)
+	}
+}
+
+// GetServer returns the underlying web server for external integration
+func (c *WebChannel) GetServer() *web.Server {
+	return c.server
+}
+
 // IsRunning returns whether the channel is running
 func (c *WebChannel) IsRunning() bool {
 	return c.running
