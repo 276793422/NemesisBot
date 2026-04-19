@@ -153,32 +153,56 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 }
 
 // loadContinuation 加载续行快照（内存优先，磁盘回退）
-// 增加重试机制：回调可能在 saveContinuation 之前到达（H3 竞态），
-// 重试 2 次以等待快照保存完成。
+// 使用 save barrier 模式：如果内存中存在条目但 ready 未 close，
+// 等待 saveContinuation 完成数据填充（最多 5 秒），避免竞态条件。
+// 磁盘路径不受 barrier 影响（进程重启后走磁盘恢复）。
 func (al *AgentLoop) loadContinuation(taskID string) *continuationData {
-	// 尝试加载，最多 3 次（初始 + 2 次重试），每次间隔 100ms
-	for attempt := 0; attempt < 3; attempt++ {
-		if data := al.tryLoadContinuation(taskID); data != nil {
-			return data
-		}
-		if attempt < 2 {
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-	return nil
-}
-
-// tryLoadContinuation 单次尝试加载续行快照
-func (al *AgentLoop) tryLoadContinuation(taskID string) *continuationData {
-	// 先查内存
-	al.contMu.RLock()
-	data, exists := al.continuations[taskID]
-	al.contMu.RUnlock()
-	if exists {
+	// 尝试从内存加载（带 save barrier 等待）
+	if data := al.waitForContinuation(taskID); data != nil {
 		return data
 	}
 
-	// 再查磁盘（AgentLoop 重启后的恢复路径）
+	// 内存中没有，尝试磁盘（AgentLoop 重启后的恢复路径）
+	return al.tryLoadFromDisk(taskID)
+}
+
+// waitForContinuation 等待续行快照就绪（save barrier 实现）
+// 如果内存中已有条目，等待其 ready channel close（最多 5 秒）。
+// 如果没有条目，短暂重试等待 saveContinuation 注册条目。
+func (al *AgentLoop) waitForContinuation(taskID string) *continuationData {
+	// 最多等待 5 秒，分多次检查
+	// 场景：SubmitTask 返回后 → AgentLoop 正在从 ExecuteWithContext 返回 → 还没到 saveContinuation
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		al.contMu.RLock()
+		data, exists := al.continuations[taskID]
+		al.contMu.RUnlock()
+
+		if !exists {
+			// 快照还没注册，短暂等待后重试
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// 条目已存在，等待 ready channel close（saveContinuation 填充数据并 close）
+		select {
+		case <-data.ready:
+			// 数据已就绪，返回
+			return data
+		case <-time.After(time.Until(deadline)):
+			// 超时，ready 未 close（异常情况：saveContinuation 卡在磁盘写入）
+			logger.WarnCF("agent", "Continuation ready timeout, falling back to disk",
+				map[string]interface{}{"task_id": taskID})
+			return nil
+		}
+	}
+
+	// 5 秒内未找到条目
+	return nil
+}
+
+// tryLoadFromDisk 从磁盘加载续行快照（进程重启后的恢复路径）
+func (al *AgentLoop) tryLoadFromDisk(taskID string) *continuationData {
 	if al.cluster == nil {
 		return nil
 	}
@@ -203,6 +227,8 @@ func (al *AgentLoop) tryLoadContinuation(taskID string) *continuationData {
 }
 
 // saveContinuation 保存续行快照（内存 + 磁盘双写）
+// 使用 save barrier 模式：先注册 ready channel，数据填充后 close，
+// 确保 loadContinuation 能等待数据就绪而不需要轮询重试。
 func (al *AgentLoop) saveContinuation(taskID string, messages []providers.Message,
 	toolCallID, channel, chatID string) {
 	snapshot := make([]providers.Message, len(messages))
@@ -213,9 +239,10 @@ func (al *AgentLoop) saveContinuation(taskID string, messages []providers.Messag
 		toolCallID: toolCallID,
 		channel:    channel,
 		chatID:     chatID,
+		ready:      make(chan struct{}),
 	}
 
-	// 写入内存
+	// 写入内存（此时 ready 未 close，loadContinuation 会等待）
 	al.contMu.Lock()
 	al.continuations[taskID] = contData
 	al.contMu.Unlock()
@@ -234,6 +261,9 @@ func (al *AgentLoop) saveContinuation(taskID string, messages []providers.Messag
 			})
 		}
 	}
+
+	// 数据已就绪，close ready channel（解除 loadContinuation 的等待）
+	close(contData.ready)
 
 	logger.InfoCF("agent", "Continuation snapshot saved (memory + disk)",
 		map[string]interface{}{"task_id": taskID})

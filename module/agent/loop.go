@@ -61,6 +61,7 @@ type continuationData struct {
 	toolCallID string              // 触发异步的 tool call ID
 	channel    string              // 原始通道
 	chatID     string              // 原始会话 ID
+	ready      chan struct{}       // save barrier: close 后表示数据已就绪，可被 loadContinuation 安全读取
 }
 
 // Busy message returned when session is busy

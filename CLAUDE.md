@@ -209,20 +209,20 @@ bus.PublishOutbound()
 
 ### 关键配置位置
 
-**超时配置**（module/agent/loop.go:1595-1596）：
+**超时配置**（module/agent/loop_tools.go:217）：
 - 目前配置为长超时层级（由外到内）：
 ```go
-// RPC Client (client.go:195)        - 60 分钟（最外层）
-// PeerChat Handler (peer_chat_handler.go:132) - 59 分钟
-// RPCChannel (loop.go:1595)         - 58 分钟（最内层）
+// RPC Client (client.go:195)               - 60 分钟（最外层 TCP 连接超时）
+// PeerChat Handler (peer_chat_handler.go:170) - 59 分钟（B 端 LLM 处理超时）
+// RPCChannel (loop_tools.go:217)            - 24 小时（B 端安全网，LLM 需要多久就等多久）
 cfg := &channels.RPCChannelConfig{
     MessageBus:      msgBus,
-    RequestTimeout:  58 * time.Minute,  // Line 1595
-    CleanupInterval: 30 * time.Second,  // Line 1596
+    RequestTimeout:  24 * time.Hour,     // B端: 极长超时（安全网）
+    CleanupInterval: 30 * time.Second,
 }
 ```
 
-**重要**：超时层级为 RPC Client (60min) > PeerChat (59min) > RPCChannel (58min)，确保内层先超时，外层能正确处理。
+**重要**：RPC Client (60min) > PeerChat (59min) 确保同步调用层正确超时。RPCChannel 设为 24 小时是因为它作为 B 端 LLM 的安全网，不应比外层先超时。
 
 **通道启动**（module/agent/loop.go:1606）：
 - RPC 通道绝不能在 `setupClusterRPCChannel()` 中启动
@@ -288,7 +288,7 @@ A 端接收回调（续行）:
 7. Cluster.handleTaskComplete → bus.PublishInbound("system", "cluster_continuation:{taskID}")
 8. AgentLoop.processMessage 拦截 cluster_continuation 前缀
 9. handleClusterContinuation(taskID):
-   - 加载续行快照（先查内存，再查磁盘）
+   - 加载续行快照（save barrier: 先查内存并等待 ready channel，再查磁盘回退）
    - 追加真实工具结果到 messages
    - 续行 LLM 调用（支持多步骤工具链继续执行）
    - 发送最终响应给用户
@@ -297,6 +297,7 @@ A 端接收回调（续行）:
 **关键注意事项**：
 - `cluster_rpc` 工具实现 `ContextualTool` 接口，通过 `SetContext(channel, chatID)` 注入上下文
 - 快照保存时机：在追加 tool_result 之前（此时 messages 包含 assistant 的 tool_call 但不包含 tool_result）
+- **save barrier 机制**：`continuationData` 含 `ready chan struct{}`，`saveContinuation` 写入数据后 `close(ready)`，`loadContinuation` 等待 `ready`（最多 5 秒）确保回调早于 save 到达时不会丢失数据
 - 嵌套异步：续行中再次触发 cluster_rpc 时，自动保存新快照
 - `Cluster.SetMessageBus()` 必须在 `setupClusterRPCChannel` 中、`SetRPCChannel` 之前调用
 
@@ -360,6 +361,8 @@ A 端接收回调（续行）:
 - `cluster-test/main.go`：多节点测试
 - `rpc/server_test.go`：RPC 服务器测试
 - `transport/`：连接池和帧测试
+- `p2p/`：P2P 集群完整 Mock 测试（真实 TCP + Mock Cluster 接口）
+  - 12 个测试覆盖：基础 RPC、双向通信、任务分发+回调、TaskManager 生命周期、并发多任务、认证强制、角色能力查询、加密发现、节点下线、错误处理、消息验证、全链路集成
 
 ### 运行特定测试类别
 
@@ -372,6 +375,9 @@ go test ./module/cluster/rpc/...
 
 # 传输层测试
 go test ./test/cluster/transport/...
+
+# P2P 集群 Mock 测试（12 个端到端测试）
+go test ./test/cluster/p2p/ -v -timeout 60s
 ```
 
 ### 其他测试
@@ -509,6 +515,7 @@ nemesisbot.exe --local gateway
 - `test/unit/` - 单元测试
 - `test/integration/` - 集成测试
 - `test/cluster/` - 集群和 RPC 测试
+  - `test/cluster/p2p/` - P2P 集群完整 Mock 测试
 
 **文档**：
 - `docs/BUG/` - 已知问题和调查，已知问题的分析，文件创建到这里，每个文件记录一个 BUG 或一个文件记录多个 BUG

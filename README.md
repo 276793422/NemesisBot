@@ -42,8 +42,8 @@
 - **角色分离** - manager / coordinator / worker / observer / standby
 - **业务分类** - design / development / testing / ops / deployment / analysis / general
 - **自定义标签** - 灵活的多维度分类体系
-- **UDP 自动发现** - 局域网内自动发现其他节点
-- **异步 RPC 通信** - 节点间非阻塞远程调用，支持多步骤工具链
+- **加密 UDP 自动发现** - 局域网内自动发现其他节点（AES-256-GCM 加密广播）
+- **异步 RPC 通信** - 节点间非阻塞远程调用，支持多步骤工具链，令牌认证保护
 - **续行快照模式** - LLM 上下文在异步调用点保存，回调到达后自动续行
 - **静态+动态配置** - 手动配置已知节点，自动发现新节点
 - **连接池管理** - 高效的连接复用和管理
@@ -617,7 +617,9 @@ NemesisBot/
 │   └── ...              # BUG、INFO、PLAN、REPORT 等分类文档
 └── test/                 # 🧪 测试目录
     ├── unit/             # 单元测试
-    └── integration/      # 集成测试
+    ├── integration/      # 集成测试
+    └── cluster/          # 集群测试
+        └── p2p/          # P2P 集群 Mock 测试（12 个端到端测试）
 ```
 
 ---
