@@ -1944,3 +1944,105 @@ func TestDiscoveryBroadcastLoopStopHandling(t *testing.T) {
 		t.Error("Timeout waiting for broadcast loop to stop")
 	}
 }
+
+// TestDiscovery_ByeMessageReceived verifies that a discovery instance correctly
+// processes an incoming bye message and calls HandleNodeOffline on the cluster.
+func TestDiscovery_ByeMessageReceived(t *testing.T) {
+	mock := NewMockClusterCallbacks("local-node")
+	disc, err := NewDiscovery(0, mock)
+	if err != nil {
+		t.Fatalf("Failed to create discovery: %v", err)
+	}
+
+	if err := disc.Start(); err != nil {
+		t.Fatalf("Failed to start discovery: %v", err)
+	}
+	defer disc.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Get the listener's actual assigned port (not the requested port which is 0)
+	actualPort := disc.listener.conn.LocalAddr().(*net.UDPAddr).Port
+
+	// Send a bye message directly to the listener via unicast
+	byeMsg := NewByeMessage("remote-node-going-down")
+	data, err := byeMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal bye message: %v", err)
+	}
+
+	targetAddr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("127.0.0.1:%d", actualPort))
+	if err != nil {
+		t.Fatalf("Failed to resolve address: %v", err)
+	}
+
+	conn, err := net.DialUDP("udp4", nil, targetAddr)
+	if err != nil {
+		t.Fatalf("Failed to dial UDP: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write(data); err != nil {
+		t.Fatalf("Failed to write bye message: %v", err)
+	}
+
+	// Wait for processing
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify HandleNodeOffline was called
+	offlineNodes := mock.GetOfflineNodes()
+	if len(offlineNodes) == 0 {
+		t.Fatal("Expected HandleNodeOffline to be called after receiving bye message")
+	}
+	if offlineNodes[0].NodeID != "remote-node-going-down" {
+		t.Errorf("Expected offline node 'remote-node-going-down', got '%s'", offlineNodes[0].NodeID)
+	}
+}
+
+// TestDiscovery_ByeOnStop_NoBroadcastError verifies that Stop() successfully
+// broadcasts a bye message (no error logged).
+func TestDiscovery_ByeOnStop_NoBroadcastError(t *testing.T) {
+	mock := NewMockClusterCallbacks("test-node")
+	disc, err := NewDiscovery(0, mock)
+	if err != nil {
+		t.Fatalf("Failed to create discovery: %v", err)
+	}
+
+	if err := disc.Start(); err != nil {
+		t.Fatalf("Failed to start discovery: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop should broadcast bye message before stopping listener
+	if err := disc.Stop(); err != nil {
+		t.Fatalf("Stop should succeed: %v", err)
+	}
+
+	// Verify no error logged for bye broadcast failure
+	errors := mock.GetLogErrors()
+	for _, e := range errors {
+		if strings.Contains(e, "Failed to broadcast bye") {
+			t.Errorf("Bye broadcast should succeed, got error: %s", e)
+		}
+	}
+}
+
+// TestDiscovery_ByeMessageFormat verifies the bye message is correctly constructed
+func TestDiscovery_ByeMessageFormat(t *testing.T) {
+	nodeID := "test-node-bye"
+	msg := NewByeMessage(nodeID)
+
+	if msg.Type != MessageTypeBye {
+		t.Errorf("Expected type %s, got %s", MessageTypeBye, msg.Type)
+	}
+	if msg.NodeID != nodeID {
+		t.Errorf("Expected NodeID %s, got %s", nodeID, msg.NodeID)
+	}
+	if msg.Version != ProtocolVersion {
+		t.Errorf("Expected version %s, got %s", ProtocolVersion, msg.Version)
+	}
+	if msg.IsExpired() {
+		t.Error("Newly created bye message should not be expired")
+	}
+}

@@ -951,6 +951,63 @@ func TestConstants(t *testing.T) {
 	}
 }
 
+// TestCluster_NodeIDPersistence verifies that NodeID is persisted across restarts.
+// When a cluster is created, it should save the NodeID to peers.toml.
+// When a second cluster is created in the same workspace, it should load the same NodeID.
+func TestCluster_NodeIDPersistence(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// First cluster: should generate a new NodeID and persist it
+	cluster1, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create first cluster: %v", err)
+	}
+	id1 := cluster1.GetNodeID()
+	if id1 == "" {
+		t.Fatal("First cluster should have a non-empty NodeID")
+	}
+	cluster1.logger.Close()
+
+	// Second cluster in the same workspace: should load the persisted NodeID
+	cluster2, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create second cluster: %v", err)
+	}
+	defer func() {
+		if cluster2.logger != nil {
+			cluster2.logger.Close()
+		}
+	}()
+	id2 := cluster2.GetNodeID()
+
+	if id1 != id2 {
+		t.Errorf("NodeID should persist across restarts: first=%s, second=%s", id1, id2)
+	}
+}
+
+// TestCluster_NodeIDPersistence_NewWorkspace generates a fresh ID when no config exists
+func TestCluster_NodeIDPersistence_NewWorkspace(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	cluster1, err := NewCluster(dir1)
+	if err != nil {
+		t.Fatalf("Failed to create cluster1: %v", err)
+	}
+	defer cluster1.logger.Close()
+
+	cluster2, err := NewCluster(dir2)
+	if err != nil {
+		t.Fatalf("Failed to create cluster2: %v", err)
+	}
+	defer cluster2.logger.Close()
+
+	// Different workspaces should produce different NodeIDs
+	if cluster1.GetNodeID() == cluster2.GetNodeID() {
+		t.Error("Clusters in different workspaces should have different NodeIDs")
+	}
+}
+
 // TestNodeStatus_Constants tests node status constants
 func TestNodeStatus_Constants(t *testing.T) {
 	if StatusOnline != "online" {

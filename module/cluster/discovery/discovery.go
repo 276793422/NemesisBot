@@ -114,6 +114,14 @@ func (d *Discovery) Stop() error {
 
 	d.mu.Unlock()
 
+	// Broadcast bye message before shutting down so peers detect offline immediately.
+	// Best-effort: UDP is unreliable, but LAN packet loss is negligible.
+	// The 90-second timeout in peers' syncLoop serves as fallback.
+	byeMsg := NewByeMessage(d.cluster.GetNodeID())
+	if err := d.listener.Broadcast(byeMsg); err != nil {
+		d.cluster.LogError("Failed to broadcast bye message: %v", err)
+	}
+
 	// Stop listener
 	if err := d.listener.Stop(); err != nil {
 		return fmt.Errorf("failed to stop listener: %w", err)

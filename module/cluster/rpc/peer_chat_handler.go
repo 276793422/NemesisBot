@@ -7,6 +7,7 @@ package rpc
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/276793422/NemesisBot/module/bus"
@@ -123,7 +124,7 @@ func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *P
 	h.cluster.LogRPCInfo("[PeerChat] Using session_key=%s for sender=%s", sessionKey, senderID)
 
 	// 5. Construct InboundMessage
-	correlationID := fmt.Sprintf("peer-chat-%d", time.Now().UnixNano())
+	correlationID := fmt.Sprintf("peer-chat-%d-%04d", time.Now().UnixNano(), rand.Intn(10000))
 	inbound := &bus.InboundMessage{
 		Channel:       "rpc",
 		ChatID:        chatID,

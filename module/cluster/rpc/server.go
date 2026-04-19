@@ -262,10 +262,10 @@ func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessag
 		// No handler for this action, return default response
 		s.cluster.LogRPCInfo("No handler for action '%s', returning default response", req.Action)
 
-		// Create default response
+		// Create generic error response — do NOT echo payload back (may contain sensitive info)
 		defaultPayload := map[string]interface{}{
-			"response": fmt.Sprintf("Resp: %v", req.Payload),
-			"status":   "no_handler",
+			"status": "no_handler",
+			"error":  fmt.Sprintf("no handler for action: %s", req.Action),
 		}
 		resp := transport.NewResponse(req, defaultPayload)
 

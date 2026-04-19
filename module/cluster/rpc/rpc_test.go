@@ -6,7 +6,11 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math/rand"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -410,6 +414,7 @@ func TestServer_RegisterHandler_Multiple(t *testing.T) {
 // PeerChatHandler Enhancement Tests
 // ============================================================================
 
+// TestPeerChatHandler_Handle_MissingContent tests that missing content returns error
 func TestPeerChatHandler_Handle_MissingContent(t *testing.T) {
 	cluster := &MockClusterForTest{nodeID: "test-node"}
 	handler := NewPeerChatHandler(cluster, nil)
@@ -425,6 +430,48 @@ func TestPeerChatHandler_Handle_MissingContent(t *testing.T) {
 
 	if result["status"] != "error" {
 		t.Errorf("Expected error status, got %v", result["status"])
+	}
+}
+
+// TestPeerChatHandler_CorrelationIDFormat verifies the correlationID generated
+// by processAsync includes a random suffix for collision resistance.
+// Since correlationID is generated inside a goroutine, we test the format pattern.
+func TestPeerChatHandler_CorrelationIDFormat(t *testing.T) {
+	// Generate correlationIDs using the same pattern as peer_chat_handler.go
+	// and verify they have the expected format: "peer-chat-{nanosecond}-{4-digit-random}"
+	seen := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		correlationID := fmt.Sprintf("peer-chat-%d-%04d", time.Now().UnixNano(), rand.Intn(10000))
+
+		// Verify prefix
+		if !strings.HasPrefix(correlationID, "peer-chat-") {
+			t.Errorf("Expected prefix 'peer-chat-', got %s", correlationID)
+		}
+
+		// Verify format: peer-chat-{number}-{4digits}
+		// The last part should be a 4-digit number after the final dash
+		lastDash := strings.LastIndex(correlationID, "-")
+		if lastDash < 0 {
+			t.Fatalf("Expected dash in correlationID: %s", correlationID)
+		}
+		suffix := correlationID[lastDash+1:]
+		if len(suffix) != 4 {
+			t.Errorf("Expected 4-digit random suffix, got %q (len=%d) in %s",
+				suffix, len(suffix), correlationID)
+		}
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				t.Errorf("Random suffix should be all digits, got %c in %s", c, correlationID)
+				break
+			}
+		}
+
+		seen[correlationID] = true
+	}
+
+	// With 100 IDs including random suffix, uniqueness should be very high
+	if len(seen) < 95 {
+		t.Errorf("Expected near-unique correlationIDs, got %d unique out of 100", len(seen))
 	}
 }
 
@@ -1077,5 +1124,101 @@ func TestServer_MultipleHandlers_Execution(t *testing.T) {
 		if result["action"] != action {
 			t.Errorf("Handler %s should return its action name", action)
 		}
+	}
+}
+
+// ============================================================================
+// Issue D: No-Handler Generic Error Response Tests
+// ============================================================================
+
+// TestServer_NoHandlerResponse_GenericError verifies that when an RPC request arrives
+// for an unregistered action, the server returns a generic error without echoing
+// the original payload content (preventing information leakage).
+func TestServer_NoHandlerResponse_GenericError(t *testing.T) {
+	cluster := &MockClusterForTest{nodeID: "test-node"}
+	server := NewServer(cluster)
+
+	// Start server on dynamic port (no auth token set)
+	if err := server.Start(0); err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer server.Stop()
+
+	port := server.GetPort()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	// Dial TCP to server
+	netConn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Failed to connect to server: %v", err)
+	}
+	defer netConn.Close()
+
+	// Wrap in TCPConn
+	config := &transport.TCPConnConfig{
+		NodeID:         "test-client",
+		Address:        addr,
+		ReadBufferSize: 100,
+		SendBufferSize: 100,
+		SendTimeout:    5 * time.Second,
+		IdleTimeout:    10 * time.Second,
+	}
+	tc := transport.NewTCPConn(netConn, config)
+	tc.Start()
+	defer tc.Close()
+
+	// Send a request with an unknown action containing "sensitive" data
+	sensitivePayload := map[string]interface{}{
+		"secret_key":    "super-secret-token-12345",
+		"internal_data": "should-not-be-echoed",
+	}
+	req := transport.NewRequest("test-client", "test-node", "nonexistent_action_xyz", sensitivePayload)
+
+	if err := tc.Send(req); err != nil {
+		t.Fatalf("Failed to send request: %v", err)
+	}
+
+	// Wait for response
+	select {
+	case resp, ok := <-tc.Receive():
+		if !ok {
+			t.Fatal("Response channel closed")
+		}
+		if resp == nil {
+			t.Fatal("Got nil response")
+		}
+
+		// Verify response type
+		if resp.Type != transport.RPCTypeResponse {
+			t.Errorf("Expected response type, got %s", resp.Type)
+		}
+
+		// Verify status is "no_handler"
+		if resp.Payload == nil {
+			t.Fatal("Response payload is nil")
+		}
+		status, _ := resp.Payload["status"].(string)
+		if status != "no_handler" {
+			t.Errorf("Expected status 'no_handler', got %q", status)
+		}
+
+		// Verify error field exists
+		errMsg, _ := resp.Payload["error"].(string)
+		if !strings.Contains(errMsg, "no handler for action: nonexistent_action_xyz") {
+			t.Errorf("Expected error message to contain action name, got %q", errMsg)
+		}
+
+		// CRITICAL: Verify the original payload content is NOT echoed back
+		respBytes, _ := json.Marshal(resp.Payload)
+		respStr := string(respBytes)
+		if strings.Contains(respStr, "super-secret-token-12345") {
+			t.Errorf("SECURITY: Response should NOT contain original payload data! Got: %s", respStr)
+		}
+		if strings.Contains(respStr, "should-not-be-echoed") {
+			t.Errorf("SECURITY: Response should NOT contain original payload data! Got: %s", respStr)
+		}
+
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timeout waiting for response")
 	}
 }

@@ -73,12 +73,6 @@ type Cluster struct {
 
 // NewCluster creates a new cluster instance
 func NewCluster(workspace string) (*Cluster, error) {
-	// Generate node ID
-	nodeID, err := GenerateNodeID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate node ID: %w", err)
-	}
-
 	// Create cluster directory
 	clusterDir := filepath.Join(workspace, "cluster")
 	if err := os.MkdirAll(clusterDir, 0755); err != nil {
@@ -88,6 +82,33 @@ func NewCluster(workspace string) (*Cluster, error) {
 	// Config paths
 	staticConfigPath := filepath.Join(clusterDir, "peers.toml") // Static configuration
 	dynamicStatePath := filepath.Join(clusterDir, "state.toml") // Dynamic state
+
+	// Resolve node ID: reuse persisted ID if available, otherwise generate and persist.
+	// This ensures cluster identity survives restarts — other nodes won't see a
+	// "new" node with a different ID every time this process restarts.
+	nodeID := ""
+	if existingConfig, err := LoadStaticConfig(staticConfigPath); err == nil {
+		if existingConfig.Node.ID != "" {
+			nodeID = existingConfig.Node.ID
+		}
+	}
+	if nodeID == "" {
+		generated, err := GenerateNodeID()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate node ID: %w", err)
+		}
+		nodeID = generated
+
+		// Persist the new ID so future restarts reuse it
+		initialConfig := &StaticConfig{
+			Cluster: ClusterMeta{ID: "auto-discovered", AutoDiscovery: true},
+			Node:    NodeInfo{ID: nodeID},
+		}
+		if err := SaveStaticConfig(staticConfigPath, initialConfig); err != nil {
+			// Non-fatal: ID works in-memory, just won't survive next restart
+			// Will be overwritten when loadStaticConfig runs below
+		}
+	}
 
 	// Create logger
 	logger, err := NewClusterLogger(workspace)
