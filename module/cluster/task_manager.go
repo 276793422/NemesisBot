@@ -209,8 +209,8 @@ func (tm *TaskManager) cleanupCompleted() {
 	for _, status := range statuses {
 		tasks, _ := tm.store.ListByStatus(status)
 		for _, task := range tasks {
-			// 只清理完成超过 30 分钟的任务（为续行流程留足时间）
-			if task.CompletedAt != nil && time.Since(*task.CompletedAt) > 30*time.Minute {
+			// 只清理完成超过 2 小时的任务（为续行流程留足时间，应对高负载排队场景）
+			if task.CompletedAt != nil && time.Since(*task.CompletedAt) > 2*time.Hour {
 				tm.store.Delete(task.ID)
 			}
 		}

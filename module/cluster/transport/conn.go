@@ -318,8 +318,11 @@ func (tc *TCPConn) Close() error {
 		close(tc.recvChan)
 		return nil
 	case <-time.After(5 * time.Second):
-		// Timeout — close recvChan anyway to prevent consumer goroutine leaks
-		close(tc.recvChan)
+		// Timeout — do NOT close recvChan here because readLoop might still
+		// try to write to it (send on closed channel panics). Instead, let
+		// readLoop exit on its own (it will see closed=true or get a conn error).
+		// The recvChan will be garbage-collected once readLoop releases its reference.
+		// Consumers of Receive() should have their own timeouts.
 		return errors.New("timeout waiting for connection to close")
 	}
 }

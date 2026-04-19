@@ -209,8 +209,12 @@ func (s *Server) handleConnection(netConn net.Conn) {
 	tc := transport.NewTCPConn(netConn, config)
 	tc.Start()
 
-	// Add to connections map
+	// Add to connections map (close any existing connection from same address)
 	s.connMu.Lock()
+	if old, exists := s.conns[remoteAddr]; exists {
+		s.cluster.LogRPCInfo("Closing old connection from %s (replaced by new connection)", remoteAddr)
+		old.Close()
+	}
 	s.conns[remoteAddr] = tc
 	s.connMu.Unlock()
 
