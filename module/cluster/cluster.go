@@ -57,7 +57,11 @@ type Cluster struct {
 	rpcChannel  *channels.RPCChannel // RPC channel for LLM communication
 	taskManager *TaskManager         // 异步任务管理器
 	contStore   *ContinuationStore  // Phase 2: 续行快照存储
+	resultStore *TaskResultStore    // H4: B 端任务结果持久化
 	bus         *bus.MessageBus     // Phase 2: 消息总线（用于续行通知）
+
+	// Testing: override CallWithContext (non-nil in tests only)
+	callWithContextFn func(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error)
 
 	// Configuration
 	udpPort           int
@@ -69,6 +73,7 @@ type Cluster struct {
 	mu      sync.RWMutex
 	running bool
 	stopCh  chan struct{}
+	wg      sync.WaitGroup // H4: recoveryLoop 等后台 goroutine 的 WaitGroup
 }
 
 // NewCluster creates a new cluster instance
@@ -140,6 +145,9 @@ func NewCluster(workspace string) (*Cluster, error) {
 		// Continue anyway, will use defaults
 	}
 
+	// Initialize TaskResultStore for H4 (B-side task result persistence)
+	cluster.resultStore, _ = NewTaskResultStore(workspace)
+
 	// Load dynamic state if available (contains discovered peers)
 	if err := cluster.loadDynamicState(); err != nil {
 		logger.DiscoveryError("Failed to load dynamic state: %v", err)
@@ -185,8 +193,15 @@ func (c *Cluster) Start() error {
 	// Other nodes can connect using any IP that reaches this machine
 	c.address = fmt.Sprintf("0.0.0.0:%d", c.rpcPort)
 
-	// Initialize discovery
-	disc, err := discovery.NewDiscovery(c.udpPort, c)
+	// Pre-load RPC auth token to derive encryption key for discovery
+	var encKey []byte
+	staticConfig, _ := LoadStaticConfig(c.staticConfigPath)
+	if staticConfig != nil && staticConfig.Cluster.RPCAuthToken != "" {
+		encKey = discovery.DeriveKey(staticConfig.Cluster.RPCAuthToken)
+	}
+
+	// Initialize discovery with encryption key
+	disc, err := discovery.NewDiscovery(c.udpPort, c, encKey)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery: %w", err)
 	}
@@ -211,10 +226,10 @@ func (c *Cluster) Start() error {
 	// Create and start RPC server
 	c.rpcServer = rpc.NewServer(c)
 
-	// Load RPC auth token from config
-	staticConfig, err := LoadStaticConfig(c.staticConfigPath)
-	if err == nil && staticConfig.Cluster.RPCAuthToken != "" {
+	// Set RPC auth token on both server and client
+	if staticConfig != nil && staticConfig.Cluster.RPCAuthToken != "" {
 		c.rpcServer.SetAuthToken(staticConfig.Cluster.RPCAuthToken)
+		c.rpcClient.SetAuthToken(staticConfig.Cluster.RPCAuthToken)
 		c.logger.RPCInfo("RPC authentication enabled")
 	} else {
 		c.logger.RPCInfo("RPC authentication disabled (no token configured)")
@@ -223,6 +238,10 @@ func (c *Cluster) Start() error {
 	if err := c.rpcServer.Start(c.rpcPort); err != nil {
 		return fmt.Errorf("failed to start RPC server: %w", err)
 	}
+
+	// Start recovery loop for H4 (A-side polling for stale pending tasks)
+	c.wg.Add(1)
+	go c.recoveryLoop()
 
 	c.logger.DiscoveryInfo("Cluster started: node_id=%s, udp_port=%d, rpc_port=%d, address=%s",
 		c.nodeID, c.udpPort, c.rpcPort, c.address)
@@ -246,6 +265,9 @@ func (c *Cluster) Stop() error {
 	close(c.stopCh)
 
 	c.mu.Unlock()
+
+	// Wait for background goroutines (recoveryLoop, etc.)
+	c.wg.Wait()
 
 	// Stop TaskManager
 	if c.taskManager != nil {
@@ -346,7 +368,7 @@ func (c *Cluster) SyncToDisk() error {
 			ID:           c.nodeID,
 			Name:         c.nodeName,
 			Address:      c.address,
-			Role:         "worker",
+			Role:         c.role,
 			Capabilities: []string{},
 		},
 		Discovered: []PeerConfig{},
@@ -494,6 +516,11 @@ func (c *Cluster) Call(peerID, action string, payload map[string]interface{}) ([
 
 // CallWithContext makes an RPC call to a peer with context support for cancellation and timeout
 func (c *Cluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	// Testing override
+	if c.callWithContextFn != nil {
+		return c.callWithContextFn(ctx, peerID, action, payload)
+	}
+
 	if c.rpcClient == nil {
 		return nil, fmt.Errorf("RPC client not initialized")
 	}
@@ -587,6 +614,19 @@ func (c *Cluster) GetContinuationStore() *ContinuationStore {
 	return c.contStore
 }
 
+// GetTaskResultStore 暴露任务结果存储给 PeerChatHandler
+func (c *Cluster) GetTaskResultStore() *TaskResultStore {
+	return c.resultStore
+}
+
+// GetTaskResultStorer 满足 rpc.Cluster 接口（返回 TaskResultStorer）
+func (c *Cluster) GetTaskResultStorer() rpc.TaskResultStorer {
+	if c.resultStore == nil {
+		return nil
+	}
+	return c.resultStore
+}
+
 // CleanupTask 清理已完成的任务（由续行流程调用）
 func (c *Cluster) CleanupTask(taskID string) {
 	if c.taskManager != nil {
@@ -597,6 +637,84 @@ func (c *Cluster) CleanupTask(taskID string) {
 // SetMessageBus 设置消息总线（Phase 2: 由 AgentLoop 在 setupClusterRPCChannel 中调用）
 func (c *Cluster) SetMessageBus(bus *bus.MessageBus) {
 	c.bus = bus
+}
+
+// recoveryLoop A 端定期轮询 B 端，恢复因 callback 失败而悬挂的 pending 任务
+func (c *Cluster) recoveryLoop() {
+	defer c.wg.Done()
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.pollStalePendingTasks()
+		}
+	}
+}
+
+// pollStalePendingTasks 查询超过 2 分钟仍在 pending 的任务
+func (c *Cluster) pollStalePendingTasks() {
+	if c.taskManager == nil {
+		return
+	}
+	tasks, _ := c.taskManager.ListPendingTasks()
+	for _, task := range tasks {
+		age := time.Since(task.CreatedAt)
+		if age < 2*time.Minute {
+			continue // 太新，跳过
+		}
+		if age > 24*time.Hour {
+			// 兜底超时
+			c.taskManager.CompleteCallback(task.ID, "error", "", "task timed out after 24h")
+			continue
+		}
+		// RPC 查询 B 端
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		result, err := c.CallWithContext(ctx, task.PeerID, "query_task_result",
+			map[string]interface{}{"task_id": task.ID})
+		cancel()
+		if err != nil {
+			continue // B 不可达，下个周期再试
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(result, &resp); err != nil {
+			continue
+		}
+		switch resp["status"] {
+		case "running":
+			continue // B 还在处理
+		case "done":
+			c.taskManager.CompleteCallback(
+				task.ID,
+				stringValue(resp["result_status"]),
+				stringValue(resp["response"]),
+				stringValue(resp["error"]),
+			)
+			// 发送 confirm 通知 B 端可以清理
+			c.confirmDelivery(task.PeerID, task.ID)
+		case "not_found":
+			c.taskManager.CompleteCallback(task.ID, "error", "", "remote task not found")
+		}
+	}
+}
+
+// confirmDelivery 通知 B 端可以清理已确认接收的任务结果
+func (c *Cluster) confirmDelivery(peerID, taskID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, _ = c.CallWithContext(ctx, peerID, "confirm_task_delivery",
+		map[string]interface{}{"task_id": taskID})
+}
+
+// stringValue 从 map[string]interface{} 中安全提取字符串值
+func stringValue(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
 }
 
 // handleTaskComplete 任务完成回调（Phase 2: 通过 bus 通知 AgentLoop 续行）
@@ -865,6 +983,50 @@ func (c *Cluster) registerPeerChatHandlers() {
 
 	// Register custom handlers (hello, etc.)
 	handlers.RegisterCustomHandlers(c.logger, c.GetNodeID, registrar)
+
+	// H4: Register query_task_result handler (B-side responds to A's polling)
+	registrar("query_task_result", c.buildQueryTaskResultHandler())
+
+	// H4: Register confirm_task_delivery handler (A confirms it received the result)
+	registrar("confirm_task_delivery", c.buildConfirmTaskDeliveryHandler())
+}
+
+// buildQueryTaskResultHandler creates the query_task_result handler (extracted for testability)
+func (c *Cluster) buildQueryTaskResultHandler() func(map[string]interface{}) (map[string]interface{}, error) {
+	return func(payload map[string]interface{}) (map[string]interface{}, error) {
+		taskID, _ := payload["task_id"].(string)
+		if taskID == "" {
+			return map[string]interface{}{"status": "error", "error": "task_id is required"}, nil
+		}
+		if c.resultStore == nil {
+			return map[string]interface{}{"status": "error", "error": "result store not initialized"}, nil
+		}
+		entry := c.resultStore.Get(taskID)
+		if entry == nil {
+			return map[string]interface{}{"status": "not_found", "task_id": taskID}, nil
+		}
+		return map[string]interface{}{
+			"status":        entry.Status,
+			"task_id":       entry.TaskID,
+			"result_status": entry.ResultStatus,
+			"response":      entry.Response,
+			"error":         entry.Error,
+		}, nil
+	}
+}
+
+// buildConfirmTaskDeliveryHandler creates the confirm_task_delivery handler (extracted for testability)
+func (c *Cluster) buildConfirmTaskDeliveryHandler() func(map[string]interface{}) (map[string]interface{}, error) {
+	return func(payload map[string]interface{}) (map[string]interface{}, error) {
+		taskID, _ := payload["task_id"].(string)
+		if taskID == "" {
+			return map[string]interface{}{"status": "error", "error": "task_id is required"}, nil
+		}
+		if c.resultStore != nil {
+			c.resultStore.Delete(taskID)
+		}
+		return map[string]interface{}{"status": "confirmed", "task_id": taskID}, nil
+	}
 }
 
 // RegisterBasicHandlers registers basic RPC handlers (default and custom)

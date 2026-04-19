@@ -436,6 +436,7 @@ func (m *asyncTestCluster) GetPeer(peerID string) (interface{}, error)   { retur
 func (m *asyncTestCluster) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetworkInterface, error) {
 	return []clusterrpc.LocalNetworkInterface{{IP: "127.0.0.1", Mask: "255.255.255.0"}}, nil
 }
+func (m *asyncTestCluster) GetTaskResultStorer() clusterrpc.TaskResultStorer { return nil }
 
 // CallWithContext 实现 B 端回调 A 端
 // PeerChatHandler.sendCallback 通过此方法发送回调

@@ -20,10 +20,12 @@ type UDPListener struct {
 	running   bool
 	stopCh    chan struct{}
 	onMessage func(*DiscoveryMessage, *net.UDPAddr)
+	encKey    []byte // AES encryption key (nil = no encryption)
 }
 
-// NewUDPListener creates a new UDP listener
-func NewUDPListener(port int) (*UDPListener, error) {
+// NewUDPListener creates a new UDP listener.
+// encKey is the AES-256 key for broadcast encryption; pass nil to disable encryption.
+func NewUDPListener(port int, encKey []byte) (*UDPListener, error) {
 	// Listen on all interfaces (IPv4)
 	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -35,10 +37,14 @@ func NewUDPListener(port int) (*UDPListener, error) {
 		return nil, fmt.Errorf("failed to listen on UDP port %d: %w", port, err)
 	}
 
+	// Capture the actual port (important when port 0 is used for auto-assignment)
+	actualPort := conn.LocalAddr().(*net.UDPAddr).Port
+
 	return &UDPListener{
 		conn:   conn,
-		port:   port,
+		port:   actualPort,
 		stopCh: make(chan struct{}),
+		encKey: encKey,
 	}, nil
 }
 
@@ -85,7 +91,7 @@ func (l *UDPListener) Stop() error {
 
 // receiveLoop receives UDP messages
 func (l *UDPListener) receiveLoop() {
-	buf := make([]byte, 1024)
+	buf := make([]byte, 4096)
 
 	for {
 		select {
@@ -105,9 +111,23 @@ func (l *UDPListener) receiveLoop() {
 				return
 			}
 
+			// Decrypt if encryption is enabled
+			rawData := buf[:n]
+			var msgData []byte
+			if l.encKey != nil {
+				decrypted, err := decryptData(l.encKey, rawData)
+				if err != nil {
+					// Decryption failed (non-cluster node or tampered data), silently discard
+					continue
+				}
+				msgData = decrypted
+			} else {
+				msgData = rawData
+			}
+
 			// Parse message
 			var msg DiscoveryMessage
-			if err := json.Unmarshal(buf[:n], &msg); err != nil {
+			if err := json.Unmarshal(msgData, &msg); err != nil {
 				// Invalid message, skip
 				continue
 			}
@@ -137,6 +157,15 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	// Encrypt if encryption is enabled
+	if l.encKey != nil {
+		encrypted, err := encryptData(l.encKey, data)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt message: %w", err)
+		}
+		data = encrypted
+	}
+
 	// Get local broadcast addresses
 	broadcastAddrs := l.getBroadcastAddresses()
 
@@ -150,17 +179,6 @@ func (l *UDPListener) Broadcast(msg *DiscoveryMessage) error {
 		l.conn.WriteToUDP(data, targetAddr)
 	}
 
-	// Also broadcast to a range of ports to support multi-port discovery
-	for port := basePort + 1; port <= basePort+10; port++ {
-		for _, addr := range broadcastAddrs {
-			targetAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", addr, port))
-			if err != nil {
-				continue
-			}
-			l.conn.WriteToUDP(data, targetAddr)
-		}
-	}
-
 	return nil
 }
 
@@ -170,7 +188,7 @@ func (l *UDPListener) getBroadcastAddresses() []string {
 		"255.255.255.255", // Global broadcast
 	}
 
-	// Try to get local subnet broadcast
+	// Try to get local subnet broadcast addresses
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return broadcastList
@@ -188,25 +206,30 @@ func (l *UDPListener) getBroadcastAddresses() []string {
 		}
 
 		for _, addr := range ifaceAddrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			if ip == nil || ip.IsLoopback() {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() {
 				continue
 			}
 
-			// For IPv4, create subnet broadcast
-			if ip.To4() != nil {
-				// Get subnet broadcast by replacing last octet with 255
-				ip4 := ip.To4()
-				broadcastIP := fmt.Sprintf("%d.%d.%d.255", ip4[0], ip4[1], ip4[2])
-				broadcastList = append(broadcastList, broadcastIP)
+			// Only handle IPv4
+			ip4 := ipNet.IP.To4()
+			if ip4 == nil {
+				continue
 			}
+
+			// Calculate correct broadcast address using the subnet mask
+			mask := ipNet.Mask
+			if len(mask) != 4 {
+				continue
+			}
+
+			// broadcast = ip | ^mask
+			broadcastIP := make(net.IP, 4)
+			for i := range ip4 {
+				broadcastIP[i] = ip4[i] | ^mask[i]
+			}
+
+			broadcastList = append(broadcastList, broadcastIP.String())
 		}
 	}
 

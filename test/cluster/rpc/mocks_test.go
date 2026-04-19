@@ -70,6 +70,10 @@ func (m *mockCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, 
 		{IP: "127.0.0.1", Mask: "255.0.0.0"},
 	}, nil
 }
+func (m *mockCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *mockCluster) GetTaskResultStorer() rpc.TaskResultStorer { return nil }
 
 // mockRPCChannel implements channels.RPCChannel struct for testing
 type mockRPCChannel struct {
@@ -126,6 +130,10 @@ func (m *integrationTestCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetwork
 		{IP: "127.0.0.1", Mask: "255.0.0.0"},
 	}, nil
 }
+func (m *integrationTestCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *integrationTestCluster) GetTaskResultStorer() rpc.TaskResultStorer { return nil }
 
 // Helper method to create RPC client with custom settings
 func createRPCClient(cluster *mockCluster) *rpc.Client {

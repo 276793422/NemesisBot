@@ -138,3 +138,8 @@ func (m *rpcServerCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterf
 		{IP: "127.0.0.1", Mask: "255.255.255.0"},
 	}, nil
 }
+func (m *rpcServerCluster) GetActionsSchema() []interface{}          { return nil }
+func (m *rpcServerCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *rpcServerCluster) GetTaskResultStorer() rpc.TaskResultStorer { return nil }

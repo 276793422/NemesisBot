@@ -675,6 +675,7 @@ func (m *continuationCluster) GetPeer(peerID string) (interface{}, error)   { re
 func (m *continuationCluster) GetLocalNetworkInterfaces() ([]clusterrpc.LocalNetworkInterface, error) {
 	return []clusterrpc.LocalNetworkInterface{{IP: "127.0.0.1", Mask: "255.255.255.0"}}, nil
 }
+func (m *continuationCluster) GetTaskResultStorer() clusterrpc.TaskResultStorer { return nil }
 
 func (m *continuationCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
 	// 从全局注册表查找目标节点（兼容 asyncTestNode 和 continuationTestNode）

@@ -71,6 +71,10 @@ func (s *Server) Start(port int) error {
 		s.mu.Unlock()
 		return fmt.Errorf("server already running")
 	}
+
+	// Recreate shutdown channel to allow restart
+	s.shutdownCh = make(chan struct{})
+
 	s.mu.Unlock()
 
 	// Register default handlers
@@ -247,6 +251,16 @@ func (s *Server) handleConnection(netConn net.Conn) {
 // handleRequest handles an RPC request
 func (s *Server) handleRequest(conn *transport.TCPConn, req *transport.RPCMessage) {
 	s.cluster.LogRPCInfo("Received request: action=%s, from=%s, id=%s", req.Action, req.From, req.ID)
+
+	// Validate message fields
+	if err := req.Validate(); err != nil {
+		s.cluster.LogRPCError("Invalid request from %s: %v", conn.GetNodeID(), err)
+		resp := transport.NewError(req, fmt.Sprintf("validation failed: %v", err))
+		if err := s.sendMessage(conn, resp); err != nil {
+			s.cluster.LogRPCError("Failed to send validation error response: %v", err)
+		}
+		return
+	}
 
 	// Update node ID if not set
 	if conn.GetNodeID() == "" {

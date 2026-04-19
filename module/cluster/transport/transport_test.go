@@ -1666,3 +1666,81 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// TestTCPConnSendCloseRace verifies that concurrent Send and Close do not cause a panic or race.
+func TestTCPConnSendCloseRace(t *testing.T) {
+	mockConn := NewMockConn()
+	config := DefaultTCPConnConfig("node-1", "127.0.0.1:8080")
+	config.SendTimeout = 5 * time.Second
+
+	conn := NewTCPConn(mockConn, config)
+	conn.Start()
+
+	var wg sync.WaitGroup
+	panicCh := make(chan interface{}, 1)
+
+	// Launch 100 goroutines that concurrently call Send
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					select {
+					case panicCh <- r:
+					default:
+					}
+				}
+			}()
+			msg := &RPCMessage{
+				Version: RPCProtocolVersion,
+				ID:      "race-msg",
+				Type:    RPCTypeRequest,
+				From:    "node-1",
+				To:      "node-2",
+				Action:  "ping",
+			}
+			_ = conn.Send(msg)
+		}()
+	}
+
+	// After a short delay, close the connection while Sends are in-flight
+	time.Sleep(10 * time.Millisecond)
+	conn.Close()
+
+	wg.Wait()
+
+	// Check for panics
+	select {
+	case p := <-panicCh:
+		t.Fatalf("concurrent Send/Close caused panic: %v", p)
+	default:
+	}
+}
+
+// TestTCPConnRecvChanClosedOnClose verifies that Close() closes recvChan so consumers unblock.
+func TestTCPConnRecvChanClosedOnClose(t *testing.T) {
+	mockConn := NewMockConn()
+	config := DefaultTCPConnConfig("node-1", "127.0.0.1:8080")
+	config.IdleTimeout = 0
+
+	conn := NewTCPConn(mockConn, config)
+	conn.Start()
+
+	// Close the connection
+	err := conn.Close()
+	if err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	// Receive channel should be closed, so this should return immediately with zero value
+	select {
+	case msg, ok := <-conn.Receive():
+		if ok && msg != nil {
+			t.Error("expected nil message from closed recvChan")
+		}
+		// ok == false means channel closed — expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("recvChan was not closed after Close(); consumer goroutine would leak")
+	}
+}

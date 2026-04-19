@@ -198,8 +198,19 @@ func (m *MockClusterCallbacks) SetSyncError(err error) {
 }
 
 // Test UDPListener creation and configuration
+
+func findAvailableUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", ":0")
+	if err != nil {
+		t.Fatalf("Failed to find available UDP port: %v", err)
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).Port
+}
+
 func TestNewUDPListener(t *testing.T) {
-	listener, err := NewUDPListener(0) // Use port 0 for automatic assignment
+	listener, err := NewUDPListener(0, nil) // Use port 0 for automatic assignment
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -219,14 +230,14 @@ func TestNewUDPListener(t *testing.T) {
 
 func TestNewUDPListenerInvalidPort(t *testing.T) {
 	// Test with an invalid port (should still work with port 0)
-	_, err := NewUDPListener(-1)
+	_, err := NewUDPListener(-1, nil)
 	if err == nil {
 		t.Error("Expected error for invalid port")
 	}
 }
 
 func TestUDPListenerSetMessageHandler(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -247,7 +258,7 @@ func TestUDPListenerSetMessageHandler(t *testing.T) {
 }
 
 func TestUDPListenerStartStop(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -286,7 +297,7 @@ func TestUDPListenerStartStop(t *testing.T) {
 }
 
 func TestUDPListenerStopWithoutStart(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -299,7 +310,7 @@ func TestUDPListenerStopWithoutStart(t *testing.T) {
 
 func TestUDPListenerGetPort(t *testing.T) {
 	port := 12345
-	listener, err := NewUDPListener(port)
+	listener, err := NewUDPListener(port, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -311,7 +322,7 @@ func TestUDPListenerGetPort(t *testing.T) {
 }
 
 func TestUDPListenerIsRunning(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -594,7 +605,7 @@ func TestDiscoveryMessageString(t *testing.T) {
 // Test Discovery creation and lifecycle
 func TestNewDiscovery(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -618,7 +629,7 @@ func TestNewDiscovery(t *testing.T) {
 
 func TestDiscoverySetBroadcastInterval(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -633,7 +644,7 @@ func TestDiscoverySetBroadcastInterval(t *testing.T) {
 
 func TestDiscoveryStartStop(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -676,7 +687,7 @@ func TestDiscoveryStartStop(t *testing.T) {
 
 func TestDiscoveryStopWithoutStart(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -689,7 +700,7 @@ func TestDiscoveryStopWithoutStart(t *testing.T) {
 
 func TestDiscoveryIsRunning(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -717,7 +728,7 @@ func TestDiscoveryIsRunning(t *testing.T) {
 // Test message handling
 func TestDiscoveryHandleMessage(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -808,7 +819,7 @@ func TestDiscoveryHandleMessage(t *testing.T) {
 
 func TestDiscoveryHandleByeMessage(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -842,7 +853,7 @@ func TestDiscoveryHandleByeMessage(t *testing.T) {
 func TestDiscoveryHandleAnnounceWithSyncError(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
 	mock.SetSyncError(errors.New("sync to disk failed"))
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -877,7 +888,7 @@ func TestDiscoveryHandleAnnounceWithSyncError(t *testing.T) {
 func TestDiscoverySendAnnounce(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
 	mock.localIPs = []string{"192.168.1.100"} // Ensure we have IPs
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -895,7 +906,7 @@ func TestDiscoverySendAnnounce(t *testing.T) {
 func TestDiscoverySendAnnounceNoIPs(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
 	mock.localIPs = []string{} // No IPs available
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -913,7 +924,7 @@ func TestDiscoverySendAnnounceNoIPs(t *testing.T) {
 // Test broadcastLoop stop channel
 func TestDiscoveryBroadcastLoopStop(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -944,7 +955,7 @@ func TestDiscoveryBroadcastLoopStop(t *testing.T) {
 // Test sendAnnounce error logging
 func TestDiscoverySendAnnounceWithErrorLogging(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -967,7 +978,7 @@ func TestDiscoverySendAnnounceWithErrorLogging(t *testing.T) {
 func TestDiscoveryHandleByeWithSyncError(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
 	mock.SetSyncError(errors.New("sync failed"))
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1007,7 +1018,7 @@ func TestDiscoveryHandleByeWithSyncError(t *testing.T) {
 
 // Test getBroadcastAddresses with different network configurations
 func TestGetBroadcastAddressesWithDifferentConfigs(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1048,7 +1059,7 @@ func TestGetBroadcastAddressesWithDifferentConfigs(t *testing.T) {
 
 // Test getBroadcastAddresses with mocked network interfaces
 func TestGetBroadcastAddressesWithMockedInterfaces(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1077,20 +1088,20 @@ func TestGetBroadcastAddressesWithMockedInterfaces(t *testing.T) {
 // Test NewUDPListener error handling for various scenarios
 func TestNewUDPListenerErrorHandling(t *testing.T) {
 	// Test with invalid port
-	_, err := NewUDPListener(-1)
+	_, err := NewUDPListener(-1, nil)
 	if err == nil {
 		t.Error("Expected error for negative port")
 	}
 
 	// Test with very high port that might fail
-	_, err = NewUDPListener(65535)
+	_, err = NewUDPListener(65535, nil)
 	if err != nil {
 		// This might work on some systems, so it's not a failure
 		t.Logf("Port 65535 might be available: %v", err)
 	}
 
 	// Test with port 0 (should work - automatic assignment)
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Errorf("Port 0 should work: %v", err)
 	}
@@ -1099,7 +1110,7 @@ func TestNewUDPListenerErrorHandling(t *testing.T) {
 
 // Test receiveLoop error handling for different error scenarios
 func TestUDPListenerReceiveLoopErrorScenarios(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1128,7 +1139,7 @@ func TestUDPListenerReceiveLoopErrorScenarios(t *testing.T) {
 
 // Test receiveLoop with multiple messages
 func TestUDPListenerReceiveLoopMultipleMessages(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1165,7 +1176,7 @@ func TestUDPListenerReceiveLoopMultipleMessages(t *testing.T) {
 
 // Test Broadcast function error handling for different scenarios
 func TestUDPListenerBroadcastErrorScenarios(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1228,7 +1239,7 @@ func TestUDPListenerBroadcastErrorScenarios(t *testing.T) {
 
 // Test Broadcast to multiple ports
 func TestUDPListenerBroadcastMultiplePorts(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1254,7 +1265,7 @@ func TestUDPListenerBroadcastMultiplePorts(t *testing.T) {
 
 // Test getBroadcastAddresses with different network configurations
 func TestGetBroadcastAddressesWithNetworkConfigurations(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1300,7 +1311,7 @@ func TestGetBroadcastAddressesWithNetworkConfigurations(t *testing.T) {
 
 // Test getBroadcastAddresses consistency
 func TestGetBroadcastAddressesConsistency(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1341,7 +1352,7 @@ func TestDiscoverySendAnnounceScenarios(t *testing.T) {
 	// Test 1: Normal case with IPs
 	mock1 := NewMockClusterCallbacks("test-node")
 	mock1.localIPs = []string{"192.168.1.100", "10.0.0.1"}
-	discovery1, err := NewDiscovery(0, mock1)
+	discovery1, err := NewDiscovery(0, mock1, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1355,7 +1366,7 @@ func TestDiscoverySendAnnounceScenarios(t *testing.T) {
 	// Test 2: No IPs available
 	mock2 := NewMockClusterCallbacks("test-node")
 	mock2.localIPs = []string{}
-	discovery2, err := NewDiscovery(0, mock2)
+	discovery2, err := NewDiscovery(0, mock2, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1369,7 +1380,7 @@ func TestDiscoverySendAnnounceScenarios(t *testing.T) {
 	// Test 3: Empty IP list
 	mock3 := NewMockClusterCallbacks("test-node")
 	mock3.localIPs = nil
-	discovery3, err := NewDiscovery(0, mock3)
+	discovery3, err := NewDiscovery(0, mock3, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1384,7 +1395,7 @@ func TestDiscoverySendAnnounceScenarios(t *testing.T) {
 // Test Discovery handleMessage with different message types
 func TestDiscoveryHandleMessageScenarios(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1432,7 +1443,7 @@ func TestDiscoveryHandleMessageScenarios(t *testing.T) {
 // Test Discovery with concurrent operations
 func TestDiscoveryConcurrentOperations(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1501,7 +1512,7 @@ func TestDiscoveryDifferentPorts(t *testing.T) {
 	ports := []int{19002, 19003, 19004}
 	for _, port := range ports {
 		mock := NewMockClusterCallbacks(fmt.Sprintf("node-%d", port))
-		discovery, err := NewDiscovery(port, mock)
+		discovery, err := NewDiscovery(port, mock, nil)
 		if err != nil {
 			t.Errorf("Failed to create discovery on port %d: %v", port, err)
 			continue
@@ -1530,7 +1541,7 @@ func TestDiscoveryDifferentPorts(t *testing.T) {
 func TestDiscoveryConfigurations(t *testing.T) {
 	// Test 1: Different broadcast intervals
 	mock1 := NewMockClusterCallbacks("node1")
-	discovery1, err := NewDiscovery(0, mock1)
+	discovery1, err := NewDiscovery(0, mock1, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1542,7 +1553,7 @@ func TestDiscoveryConfigurations(t *testing.T) {
 
 	// Test 2: Very short interval
 	mock2 := NewMockClusterCallbacks("node2")
-	discovery2, err := NewDiscovery(0, mock2)
+	discovery2, err := NewDiscovery(0, mock2, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1554,7 +1565,7 @@ func TestDiscoveryConfigurations(t *testing.T) {
 
 	// Test 3: Very long interval
 	mock3 := NewMockClusterCallbacks("node3")
-	discovery3, err := NewDiscovery(0, mock3)
+	discovery3, err := NewDiscovery(0, mock3, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1569,7 +1580,7 @@ func TestDiscoveryConfigurations(t *testing.T) {
 // Test Discovery with background operations to cover broadcast loops
 func TestDiscoveryBackgroundOperations(t *testing.T) {
 	mock := NewMockClusterCallbacks("bg-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1601,7 +1612,7 @@ func TestDiscoveryBackgroundOperations(t *testing.T) {
 // Test Discovery with long-running background operations
 func TestDiscoveryLongRunningBackgroundOperations(t *testing.T) {
 	mock := NewMockClusterCallbacks("long-bg-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1638,7 +1649,7 @@ func TestListenerEdgeCases(t *testing.T) {
 	// Test NewUDPListener with edge case ports
 	edgePorts := []int{0, 1, 65534, 65535}
 	for _, port := range edgePorts {
-		listener, err := NewUDPListener(port)
+		listener, err := NewUDPListener(port, nil)
 		if err != nil {
 			// Port might be in use or invalid, this is acceptable
 			continue
@@ -1653,7 +1664,7 @@ func TestListenerEdgeCases(t *testing.T) {
 	}
 
 	// Test listener state transitions
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener: %v", err)
 	}
@@ -1716,7 +1727,7 @@ func TestJitter(t *testing.T) {
 
 // Test broadcast addresses
 func TestGetBroadcastAddresses(t *testing.T) {
-	listener, err := NewUDPListener(0)
+	listener, err := NewUDPListener(0, nil)
 	if err != nil {
 		t.Fatalf("Failed to create UDP listener: %v", err)
 	}
@@ -1744,17 +1755,17 @@ func TestGetBroadcastAddresses(t *testing.T) {
 
 // Integration test: Send and receive UDP messages
 func TestUDPMessaging(t *testing.T) {
-	// Create two listeners on different ports
+	// Two listeners on different ports; test direct UDP send to verify receive path
 	port1 := 19000
 	port2 := 19001
 
-	listener1, err := NewUDPListener(port1)
+	listener1, err := NewUDPListener(port1, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener1: %v", err)
 	}
 	defer listener1.Stop()
 
-	listener2, err := NewUDPListener(port2)
+	listener2, err := NewUDPListener(port2, nil)
 	if err != nil {
 		t.Fatalf("Failed to create listener2: %v", err)
 	}
@@ -1774,7 +1785,7 @@ func TestUDPMessaging(t *testing.T) {
 		t.Fatalf("Failed to start listener2: %v", err)
 	}
 
-	// Send a message from listener1 to listener2
+	// Create and send a message directly to listener2's port
 	msg := NewAnnounceMessage(
 		"node-1",
 		"Node 1",
@@ -1786,16 +1797,20 @@ func TestUDPMessaging(t *testing.T) {
 		[]string{"llm"},
 	)
 
-	// Broadcast to local subnet
-	err = listener1.Broadcast(msg)
+	data, err := msg.Bytes()
 	if err != nil {
-		t.Fatalf("Failed to broadcast: %v", err)
+		t.Fatalf("Failed to marshal message: %v", err)
 	}
+
+	targetAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port2))
+	listener1.conn.WriteToUDP(data, targetAddr)
 
 	// Wait for message to be received
 	select {
-	case <-received:
-		// Message received successfully
+	case recvMsg := <-received:
+		if recvMsg.NodeID != "node-1" {
+			t.Errorf("Expected node_id 'node-1', got %s", recvMsg.NodeID)
+		}
 	case <-time.After(2 * time.Second):
 		t.Error("Timeout waiting for message")
 	}
@@ -1804,7 +1819,7 @@ func TestUDPMessaging(t *testing.T) {
 // Test concurrent access
 func TestConcurrentDiscoveryAccess(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1859,7 +1874,7 @@ func TestNewDiscoveryEdgeCases(t *testing.T) {
 	// are covered when NewUDPListener fails
 
 	// Test with a high port that might fail
-	_, err := NewDiscovery(65535, NewMockClusterCallbacks("test-node"))
+	_, err := NewDiscovery(65535, NewMockClusterCallbacks("test-node"), nil)
 	if err != nil {
 		// This is acceptable - the port might be available or not
 		t.Logf("NewDiscovery with port 65535 failed: %v (this is acceptable)", err)
@@ -1873,7 +1888,7 @@ func TestDiscoveryStartErrorHandling(t *testing.T) {
 	// but we've covered the main error case in the Stop function
 
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1894,7 +1909,7 @@ func TestDiscoveryStartErrorHandling(t *testing.T) {
 // Test Stop function's error handling when listener stop fails
 func TestDiscoveryStopErrorHandling(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1915,7 +1930,7 @@ func TestDiscoveryStopErrorHandling(t *testing.T) {
 // Test broadcastLoop's stop channel handling more thoroughly
 func TestDiscoveryBroadcastLoopStopHandling(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	discovery, err := NewDiscovery(0, mock)
+	discovery, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -1949,7 +1964,7 @@ func TestDiscoveryBroadcastLoopStopHandling(t *testing.T) {
 // processes an incoming bye message and calls HandleNodeOffline on the cluster.
 func TestDiscovery_ByeMessageReceived(t *testing.T) {
 	mock := NewMockClusterCallbacks("local-node")
-	disc, err := NewDiscovery(0, mock)
+	disc, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -2003,7 +2018,7 @@ func TestDiscovery_ByeMessageReceived(t *testing.T) {
 // broadcasts a bye message (no error logged).
 func TestDiscovery_ByeOnStop_NoBroadcastError(t *testing.T) {
 	mock := NewMockClusterCallbacks("test-node")
-	disc, err := NewDiscovery(0, mock)
+	disc, err := NewDiscovery(0, mock, nil)
 	if err != nil {
 		t.Fatalf("Failed to create discovery: %v", err)
 	}
@@ -2044,5 +2059,835 @@ func TestDiscovery_ByeMessageFormat(t *testing.T) {
 	}
 	if msg.IsExpired() {
 		t.Error("Newly created bye message should not be expired")
+	}
+}
+
+// --- Encryption tests ---
+
+// TestUDPMessaging_Encrypted verifies two listeners with the same key can communicate
+func TestUDPMessaging_Encrypted(t *testing.T) {
+	port1 := findAvailableUDPPort(t)
+	port2 := findAvailableUDPPort(t)
+	encKey := DeriveKey("shared-secret")
+
+	listener1, err := NewUDPListener(port1, encKey)
+	if err != nil {
+		t.Fatalf("Failed to create listener1: %v", err)
+	}
+	listener2, err := NewUDPListener(port2, encKey)
+	if err != nil {
+		t.Fatalf("Failed to create listener2: %v", err)
+	}
+
+	received := make(chan *DiscoveryMessage, 1)
+	listener2.SetMessageHandler(func(msg *DiscoveryMessage, addr *net.UDPAddr) {
+		received <- msg
+	})
+
+	if err := listener1.Start(); err != nil {
+		t.Fatalf("Failed to start listener1: %v", err)
+	}
+	defer listener1.Stop()
+	if err := listener2.Start(); err != nil {
+		t.Fatalf("Failed to start listener2: %v", err)
+	}
+	defer listener2.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Send encrypted message directly from listener1 to listener2's port
+	announceMsg := NewAnnounceMessage("node-1", "Node 1", []string{"192.168.1.1"}, 8080, "worker", "dev", nil, nil)
+	data, err := announceMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	encrypted, err := encryptData(encKey, data)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	targetAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port2))
+	listener1.conn.WriteToUDP(encrypted, targetAddr)
+
+	select {
+	case msg := <-received:
+		if msg.NodeID != "node-1" {
+			t.Errorf("Expected NodeID 'node-1', got '%s'", msg.NodeID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for encrypted message")
+	}
+}
+
+// TestUDPMessaging_DifferentKey_Fail verifies listeners with different keys cannot communicate
+func TestUDPMessaging_DifferentKey_Fail(t *testing.T) {
+	port1 := findAvailableUDPPort(t)
+	port2 := findAvailableUDPPort(t)
+	key1 := DeriveKey("secret-a")
+	key2 := DeriveKey("secret-b")
+
+	listener1, err := NewUDPListener(port1, key1)
+	if err != nil {
+		t.Fatalf("Failed to create listener1: %v", err)
+	}
+	listener2, err := NewUDPListener(port2, key2)
+	if err != nil {
+		t.Fatalf("Failed to create listener2: %v", err)
+	}
+
+	received := make(chan *DiscoveryMessage, 1)
+	listener2.SetMessageHandler(func(msg *DiscoveryMessage, addr *net.UDPAddr) {
+		received <- msg
+	})
+
+	if err := listener1.Start(); err != nil {
+		t.Fatalf("Failed to start listener1: %v", err)
+	}
+	defer listener1.Stop()
+	if err := listener2.Start(); err != nil {
+		t.Fatalf("Failed to start listener2: %v", err)
+	}
+	defer listener2.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// listener1 encrypts with key1, listener2 tries to decrypt with key2
+	announceMsg := NewAnnounceMessage("node-1", "Node 1", []string{"192.168.1.1"}, 8080, "worker", "dev", nil, nil)
+	data, err := announceMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	encrypted, err := encryptData(key1, data)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	targetAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port2))
+	listener1.conn.WriteToUDP(encrypted, targetAddr)
+
+	select {
+	case <-received:
+		t.Error("Should not receive message encrypted with a different key")
+	case <-time.After(1 * time.Second):
+		// Expected: no message received
+	}
+}
+
+// TestUDPMessaging_NoKey_Plaintext verifies backward compatibility without encryption
+func TestUDPMessaging_NoKey_Plaintext(t *testing.T) {
+	port1 := findAvailableUDPPort(t)
+	port2 := findAvailableUDPPort(t)
+
+	listener1, err := NewUDPListener(port1, nil)
+	if err != nil {
+		t.Fatalf("Failed to create listener1: %v", err)
+	}
+	listener2, err := NewUDPListener(port2, nil)
+	if err != nil {
+		t.Fatalf("Failed to create listener2: %v", err)
+	}
+
+	received := make(chan *DiscoveryMessage, 1)
+	listener2.SetMessageHandler(func(msg *DiscoveryMessage, addr *net.UDPAddr) {
+		received <- msg
+	})
+
+	if err := listener1.Start(); err != nil {
+		t.Fatalf("Failed to start listener1: %v", err)
+	}
+	defer listener1.Stop()
+	if err := listener2.Start(); err != nil {
+		t.Fatalf("Failed to start listener2: %v", err)
+	}
+	defer listener2.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	announceMsg := NewAnnounceMessage("node-plain", "Plain Node", []string{"10.0.0.1"}, 9090, "worker", "test", nil, nil)
+	data, err := announceMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	targetAddr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port2))
+	listener1.conn.WriteToUDP(data, targetAddr)
+
+	select {
+	case msg := <-received:
+		if msg.NodeID != "node-plain" {
+			t.Errorf("Expected NodeID 'node-plain', got '%s'", msg.NodeID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for plaintext message")
+	}
+}
+
+// TestDiscovery_EncryptedBroadcast verifies encrypted broadcast via the full Discovery layer
+func TestDiscovery_EncryptedBroadcast(t *testing.T) {
+	encKey := DeriveKey("cluster-token")
+
+	mock2 := NewMockClusterCallbacks("node-2")
+	disc2, err := NewDiscovery(0, mock2, encKey)
+	if err != nil {
+		t.Fatalf("Failed to create disc2: %v", err)
+	}
+
+	if err := disc2.Start(); err != nil {
+		t.Fatalf("Failed to start disc2: %v", err)
+	}
+	defer disc2.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Manually send encrypted announce to disc2's listener port
+	announceMsg := NewAnnounceMessage("node-1", "Node 1", []string{"192.168.1.1"}, 8080, "worker", "dev", nil, nil)
+	data, err := announceMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	encrypted, err := encryptData(encKey, data)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	port2 := disc2.listener.GetPort()
+	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port2))
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+	conn.Write(encrypted)
+
+	// Wait for processing
+	time.Sleep(500 * time.Millisecond)
+
+	nodes := mock2.GetDiscoveredNodes()
+	found := false
+	for _, n := range nodes {
+		if n.NodeID == "node-1" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected node-2 to discover node-1 via encrypted broadcast")
+	}
+}
+
+// TestDiscovery_EncryptedByeMessage verifies bye messages work with encryption
+func TestDiscovery_EncryptedByeMessage(t *testing.T) {
+	encKey := DeriveKey("cluster-token")
+
+	mock := NewMockClusterCallbacks("receiver-node")
+	disc, err := NewDiscovery(0, mock, encKey)
+	if err != nil {
+		t.Fatalf("Failed to create discovery: %v", err)
+	}
+
+	if err := disc.Start(); err != nil {
+		t.Fatalf("Failed to start discovery: %v", err)
+	}
+	defer disc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Manually send an encrypted bye message to the discovery listener
+	byeMsg := NewByeMessage("departing-node")
+	data, err := byeMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal bye: %v", err)
+	}
+
+	encrypted, err := encryptData(encKey, data)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	port := disc.listener.GetPort()
+	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+	conn.Write(encrypted)
+
+	// Wait for processing
+	time.Sleep(500 * time.Millisecond)
+
+	offlineNodes := mock.GetOfflineNodes()
+	found := false
+	for _, n := range offlineNodes {
+		if n.NodeID == "departing-node" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected receiver to detect departing-node offline via encrypted bye")
+	}
+}
+
+// TestDiscovery_MixedEncryption_Reject verifies encrypted listener rejects plaintext
+func TestDiscovery_MixedEncryption_Reject(t *testing.T) {
+	encKey := DeriveKey("cluster-token")
+
+	mock := NewMockClusterCallbacks("encrypted-node")
+	disc, err := NewDiscovery(0, mock, encKey)
+	if err != nil {
+		t.Fatalf("Failed to create discovery: %v", err)
+	}
+
+	if err := disc.Start(); err != nil {
+		t.Fatalf("Failed to start discovery: %v", err)
+	}
+	defer disc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Send a plaintext JSON message (no encryption)
+	plainMsg := NewAnnounceMessage("plaintext-node", "Plain", []string{"192.168.1.1"}, 8080, "worker", "dev", nil, nil)
+	data, err := plainMsg.Bytes()
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+
+	port := disc.listener.GetPort()
+	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatalf("Failed to dial: %v", err)
+	}
+	defer conn.Close()
+	conn.Write(data)
+
+	// Wait and verify no node discovered
+	time.Sleep(500 * time.Millisecond)
+
+	nodes := mock.GetDiscoveredNodes()
+	for _, n := range nodes {
+		if n.NodeID == "plaintext-node" {
+			t.Error("Encrypted listener should reject plaintext messages")
+		}
+	}
+}
+
+// =====================================================================
+// P2P Mock Tests — bidirectional, multi-node, key-group scenarios
+// =====================================================================
+
+// sendEncryptedUDP is a test helper that marshals, encrypts, and sends a
+// DiscoveryMessage to the target listener via localhost UDP.
+func sendEncryptedUDP(t *testing.T, encKey []byte, msg *DiscoveryMessage, targetPort int) {
+	t.Helper()
+	data, err := msg.Bytes()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if encKey != nil {
+		data, err = encryptData(encKey, data)
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+	}
+	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", targetPort))
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.Write(data)
+}
+
+// sendPlaintextUDP is a test helper that marshals and sends a plaintext
+// DiscoveryMessage to the target listener via localhost UDP.
+func sendPlaintextUDP(t *testing.T, msg *DiscoveryMessage, targetPort int) {
+	t.Helper()
+	sendEncryptedUDP(t, nil, msg, targetPort)
+}
+
+// --- P2P-1: Bidirectional encrypted discovery ---
+
+// TestP2P_EncryptedBidirectionalDiscovery simulates two nodes on the same LAN
+// that discover each other via encrypted announce messages. Both directions
+// are verified: A→B and B→A.
+func TestP2P_EncryptedBidirectionalDiscovery(t *testing.T) {
+	sharedKey := DeriveKey("lan-secret-2026")
+
+	mockA := NewMockClusterCallbacks("node-A")
+	discA, err := NewDiscovery(0, mockA, sharedKey)
+	if err != nil {
+		t.Fatalf("create discA: %v", err)
+	}
+
+	mockB := NewMockClusterCallbacks("node-B")
+	discB, err := NewDiscovery(0, mockB, sharedKey)
+	if err != nil {
+		t.Fatalf("create discB: %v", err)
+	}
+
+	// Start both
+	if err := discA.Start(); err != nil {
+		t.Fatalf("start discA: %v", err)
+	}
+	defer discA.Stop()
+	if err := discB.Start(); err != nil {
+		t.Fatalf("start discB: %v", err)
+	}
+	defer discB.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA := discA.listener.GetPort()
+	portB := discB.listener.GetPort()
+
+	// A announces → B receives
+	msgA := NewAnnounceMessage("node-A", "Node A", []string{"192.168.1.10"}, 21950, "worker", "dev", []string{"gpu"}, []string{"llm"})
+	sendEncryptedUDP(t, sharedKey, msgA, portB)
+
+	// B announces → A receives
+	msgB := NewAnnounceMessage("node-B", "Node B", []string{"192.168.1.20"}, 21951, "coordinator", "dev", []string{"cpu"}, []string{"tools"})
+	sendEncryptedUDP(t, sharedKey, msgB, portA)
+
+	// Wait for processing
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify B discovered A
+	nodesB := mockB.GetDiscoveredNodes()
+	foundA := false
+	for _, n := range nodesB {
+		if n.NodeID == "node-A" {
+			foundA = true
+			if n.Role != "worker" {
+				t.Errorf("A's role: got %q, want worker", n.Role)
+			}
+			if n.RPCPort != 21950 {
+				t.Errorf("A's RPCPort: got %d, want 21950", n.RPCPort)
+			}
+			break
+		}
+	}
+	if !foundA {
+		t.Error("B should have discovered A")
+	}
+
+	// Verify A discovered B
+	nodesA := mockA.GetDiscoveredNodes()
+	foundB := false
+	for _, n := range nodesA {
+		if n.NodeID == "node-B" {
+			foundB = true
+			if n.Role != "coordinator" {
+				t.Errorf("B's role: got %q, want coordinator", n.Role)
+			}
+			break
+		}
+	}
+	if !foundB {
+		t.Error("A should have discovered B")
+	}
+}
+
+// --- P2P-2: Bidirectional encrypted bye ---
+
+// TestP2P_EncryptedBidirectionalBye simulates two nodes, then one sends an
+// encrypted bye. The remaining node marks the departed node as offline.
+func TestP2P_EncryptedBidirectionalBye(t *testing.T) {
+	sharedKey := DeriveKey("bye-test-key")
+
+	mockA := NewMockClusterCallbacks("node-A")
+	discA, err := NewDiscovery(0, mockA, sharedKey)
+	if err != nil {
+		t.Fatalf("create discA: %v", err)
+	}
+
+	mockB := NewMockClusterCallbacks("node-B")
+	discB, err := NewDiscovery(0, mockB, sharedKey)
+	if err != nil {
+		t.Fatalf("create discB: %v", err)
+	}
+
+	if err := discA.Start(); err != nil {
+		t.Fatalf("start discA: %v", err)
+	}
+	defer discA.Stop()
+	if err := discB.Start(); err != nil {
+		t.Fatalf("start discB: %v", err)
+	}
+	defer discB.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA := discA.listener.GetPort()
+
+	// B announces first (so A knows B exists)
+	msgB := NewAnnounceMessage("node-B", "Node B", []string{"192.168.1.20"}, 21951, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, sharedKey, msgB, portA)
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify A discovered B
+	nodesA := mockA.GetDiscoveredNodes()
+	found := false
+	for _, n := range nodesA {
+		if n.NodeID == "node-B" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("A should have discovered B before bye test")
+	}
+
+	// B sends encrypted bye → A receives
+	byeB := NewByeMessage("node-B")
+	sendEncryptedUDP(t, sharedKey, byeB, portA)
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify A marked B offline
+	offlineA := mockA.GetOfflineNodes()
+	foundOffline := false
+	for _, n := range offlineA {
+		if n.NodeID == "node-B" {
+			foundOffline = true
+			if n.Reason != "node shutdown" {
+				t.Errorf("Bye reason: got %q, want 'node shutdown'", n.Reason)
+			}
+		}
+	}
+	if !foundOffline {
+		t.Error("A should have marked B offline after encrypted bye")
+	}
+}
+
+// --- P2P-3: Three-node mesh with encrypted discovery ---
+
+// TestP2P_ThreeNodeEncryptedMesh simulates three nodes forming a fully
+// connected mesh. Every node discovers every other node via encrypted messages.
+func TestP2P_ThreeNodeEncryptedMesh(t *testing.T) {
+	sharedKey := DeriveKey("mesh-secret")
+
+	mockA := NewMockClusterCallbacks("mesh-A")
+	discA, _ := NewDiscovery(0, mockA, sharedKey)
+
+	mockB := NewMockClusterCallbacks("mesh-B")
+	discB, _ := NewDiscovery(0, mockB, sharedKey)
+
+	mockC := NewMockClusterCallbacks("mesh-C")
+	discC, _ := NewDiscovery(0, mockC, sharedKey)
+
+	discA.Start()
+	defer discA.Stop()
+	discB.Start()
+	defer discB.Stop()
+	discC.Start()
+	defer discC.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA := discA.listener.GetPort()
+	portB := discB.listener.GetPort()
+	portC := discC.listener.GetPort()
+
+	// A broadcasts to B and C
+	msgA := NewAnnounceMessage("mesh-A", "A", []string{"10.0.0.1"}, 30001, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, sharedKey, msgA, portB)
+	sendEncryptedUDP(t, sharedKey, msgA, portC)
+
+	// B broadcasts to A and C
+	msgB := NewAnnounceMessage("mesh-B", "B", []string{"10.0.0.2"}, 30002, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, sharedKey, msgB, portA)
+	sendEncryptedUDP(t, sharedKey, msgB, portC)
+
+	// C broadcasts to A and B
+	msgC := NewAnnounceMessage("mesh-C", "C", []string{"10.0.0.3"}, 30003, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, sharedKey, msgC, portA)
+	sendEncryptedUDP(t, sharedKey, msgC, portB)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify full mesh: each node should have 2 discovered peers
+	assertHasNode := func(t *testing.T, mock *MockClusterCallbacks, expectedID string) {
+		t.Helper()
+		for _, n := range mock.GetDiscoveredNodes() {
+			if n.NodeID == expectedID {
+				return
+			}
+		}
+		t.Errorf("node %s not found in discovered peers", expectedID)
+	}
+
+	assertHasNode(t, mockA, "mesh-B")
+	assertHasNode(t, mockA, "mesh-C")
+	assertHasNode(t, mockB, "mesh-A")
+	assertHasNode(t, mockB, "mesh-C")
+	assertHasNode(t, mockC, "mesh-A")
+	assertHasNode(t, mockC, "mesh-B")
+}
+
+// --- P2P-4: Two key-groups on same LAN, full isolation ---
+
+// TestP2P_TwoKeyGroupsIsolation simulates two independent clusters (Alpha and
+// Beta) on the same LAN, each with its own encryption key. Nodes in Alpha can
+// discover each other but NOT nodes in Beta, and vice versa.
+func TestP2P_TwoKeyGroupsIsolation(t *testing.T) {
+	keyAlpha := DeriveKey("alpha-cluster-key")
+	keyBeta := DeriveKey("beta-cluster-key")
+
+	// Alpha cluster: A1, A2
+	mockA1 := NewMockClusterCallbacks("alpha-1")
+	discA1, _ := NewDiscovery(0, mockA1, keyAlpha)
+
+	mockA2 := NewMockClusterCallbacks("alpha-2")
+	discA2, _ := NewDiscovery(0, mockA2, keyAlpha)
+
+	// Beta cluster: B1
+	mockB1 := NewMockClusterCallbacks("beta-1")
+	discB1, _ := NewDiscovery(0, mockB1, keyBeta)
+
+	discA1.Start()
+	defer discA1.Stop()
+	discA2.Start()
+	defer discA2.Stop()
+	discB1.Start()
+	defer discB1.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA2 := discA2.listener.GetPort()
+	portB1 := discB1.listener.GetPort()
+
+	// A1 announces → A2 (same key, should succeed)
+	msgA1 := NewAnnounceMessage("alpha-1", "A1", []string{"10.0.0.1"}, 40001, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, keyAlpha, msgA1, portA2)
+
+	// A1 announces → B1 (different key, should be silently rejected)
+	sendEncryptedUDP(t, keyAlpha, msgA1, portB1)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// A2 should have discovered A1
+	found := false
+	for _, n := range mockA2.GetDiscoveredNodes() {
+		if n.NodeID == "alpha-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("A2 should discover A1 (same key group)")
+	}
+
+	// B1 should NOT have discovered A1
+	for _, n := range mockB1.GetDiscoveredNodes() {
+		if n.NodeID == "alpha-1" {
+			t.Error("B1 should NOT discover A1 (different key group)")
+		}
+	}
+}
+
+// --- P2P-5: Plaintext node cannot join encrypted cluster ---
+
+// TestP2P_PlaintextCannotJoinEncryptedCluster has an encrypted node (A) and a
+// plaintext node (B). B sends plaintext announce to A; A must reject it.
+// Also, A sends encrypted announce to B; B (no key) can't decrypt it.
+func TestP2P_PlaintextCannotJoinEncryptedCluster(t *testing.T) {
+	key := DeriveKey("secure-cluster")
+
+	mockA := NewMockClusterCallbacks("encrypted-node")
+	discA, _ := NewDiscovery(0, mockA, key)
+
+	mockB := NewMockClusterCallbacks("plaintext-node")
+	discB, _ := NewDiscovery(0, mockB, nil) // no encryption
+
+	discA.Start()
+	defer discA.Stop()
+	discB.Start()
+	defer discB.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA := discA.listener.GetPort()
+	portB := discB.listener.GetPort()
+
+	// B sends plaintext to A → A should reject (can't decrypt)
+	msgB := NewAnnounceMessage("plaintext-node", "B", []string{"10.0.0.2"}, 50002, "worker", "dev", nil, nil)
+	sendPlaintextUDP(t, msgB, portA)
+
+	// A sends encrypted to B → B can't decrypt (binary garbage, not valid JSON)
+	msgA := NewAnnounceMessage("encrypted-node", "A", []string{"10.0.0.1"}, 50001, "worker", "dev", nil, nil)
+	sendEncryptedUDP(t, key, msgA, portB)
+
+	time.Sleep(500 * time.Millisecond)
+
+	// A should NOT have B
+	for _, n := range mockA.GetDiscoveredNodes() {
+		if n.NodeID == "plaintext-node" {
+			t.Error("Encrypted A should NOT discover plaintext B")
+		}
+	}
+
+	// B should NOT have A
+	for _, n := range mockB.GetDiscoveredNodes() {
+		if n.NodeID == "encrypted-node" {
+			t.Error("Plaintext B should NOT discover encrypted A")
+		}
+	}
+}
+
+// --- P2P-6: Two plaintext nodes work normally (backward compat) ---
+
+// TestP2P_PlaintextBidirectional verifies that two nodes without encryption
+// can still discover each other, ensuring backward compatibility.
+func TestP2P_PlaintextBidirectional(t *testing.T) {
+	mockA := NewMockClusterCallbacks("plain-A")
+	discA, _ := NewDiscovery(0, mockA, nil)
+
+	mockB := NewMockClusterCallbacks("plain-B")
+	discB, _ := NewDiscovery(0, mockB, nil)
+
+	discA.Start()
+	defer discA.Stop()
+	discB.Start()
+	defer discB.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portA := discA.listener.GetPort()
+	portB := discB.listener.GetPort()
+
+	msgA := NewAnnounceMessage("plain-A", "A", []string{"10.0.0.1"}, 60001, "worker", "dev", nil, nil)
+	sendPlaintextUDP(t, msgA, portB)
+
+	msgB := NewAnnounceMessage("plain-B", "B", []string{"10.0.0.2"}, 60002, "worker", "dev", nil, nil)
+	sendPlaintextUDP(t, msgB, portA)
+
+	time.Sleep(500 * time.Millisecond)
+
+	assertHasNode := func(t *testing.T, mock *MockClusterCallbacks, expectedID string) {
+		t.Helper()
+		for _, n := range mock.GetDiscoveredNodes() {
+			if n.NodeID == expectedID {
+				return
+			}
+		}
+		t.Errorf("node %s not found in discovered peers", expectedID)
+	}
+
+	assertHasNode(t, mockA, "plain-B")
+	assertHasNode(t, mockB, "plain-A")
+}
+
+// --- P2P-7: Announce data integrity over encrypted channel ---
+
+// TestP2P_EncryptedAnnounceDataIntegrity verifies that all fields of an announce
+// message survive the encrypt→UDP→decrypt→unmarshal roundtrip intact.
+func TestP2P_EncryptedAnnounceDataIntegrity(t *testing.T) {
+	key := DeriveKey("integrity-check")
+
+	mockReceiver := NewMockClusterCallbacks("receiver")
+	disc, _ := NewDiscovery(0, mockReceiver, key)
+	disc.Start()
+	defer disc.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	original := NewAnnounceMessage(
+		"sender-xyz",
+		"Sender Node",
+		[]string{"192.168.1.10", "10.0.0.5", "172.16.0.1"},
+		12345,
+		"coordinator",
+		"production",
+		[]string{"gpu", "fast-storage"},
+		[]string{"llm", "tools", "vision"},
+	)
+
+	sendEncryptedUDP(t, key, original, disc.listener.GetPort())
+	time.Sleep(500 * time.Millisecond)
+
+	nodes := mockReceiver.GetDiscoveredNodes()
+	if len(nodes) == 0 {
+		t.Fatal("Expected sender to be discovered")
+	}
+
+	n := nodes[0]
+	if n.NodeID != "sender-xyz" {
+		t.Errorf("NodeID: got %q", n.NodeID)
+	}
+	if n.Name != "Sender Node" {
+		t.Errorf("Name: got %q", n.Name)
+	}
+	if len(n.Addresses) != 3 {
+		t.Errorf("Addresses count: got %d", len(n.Addresses))
+	}
+	if n.RPCPort != 12345 {
+		t.Errorf("RPCPort: got %d", n.RPCPort)
+	}
+	if n.Role != "coordinator" {
+		t.Errorf("Role: got %q", n.Role)
+	}
+	if n.Category != "production" {
+		t.Errorf("Category: got %q", n.Category)
+	}
+	if len(n.Tags) != 2 {
+		t.Errorf("Tags count: got %d", len(n.Tags))
+	}
+	if len(n.Capabilities) != 3 {
+		t.Errorf("Capabilities count: got %d", len(n.Capabilities))
+	}
+}
+
+// --- P2P-8: Rapid fire multiple messages ---
+
+// TestP2P_EncryptedRapidFire sends multiple encrypted announce messages rapidly
+// from A to B, verifying all are received (stress test for the decrypt path).
+func TestP2P_EncryptedRapidFire(t *testing.T) {
+	key := DeriveKey("rapid-key")
+
+	mockB := NewMockClusterCallbacks("rapid-B")
+	discB, _ := NewDiscovery(0, mockB, key)
+	discB.Start()
+	defer discB.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	portB := discB.listener.GetPort()
+	count := 10
+
+	for i := 0; i < count; i++ {
+		msg := NewAnnounceMessage(
+			fmt.Sprintf("rapid-node-%d", i),
+			fmt.Sprintf("Node %d", i),
+			[]string{fmt.Sprintf("10.0.0.%d", i)},
+			7000+i,
+			"worker", "test", nil, nil,
+		)
+		sendEncryptedUDP(t, key, msg, portB)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	nodes := mockB.GetDiscoveredNodes()
+	if len(nodes) < count/2 {
+		t.Errorf("Expected at least %d discovered nodes, got %d (UDP is unreliable, but localhost should deliver most)", count/2, len(nodes))
+	}
+
+	// Verify at least the first and last made it through
+	foundFirst, foundLast := false, false
+	for _, n := range nodes {
+		if n.NodeID == "rapid-node-0" {
+			foundFirst = true
+		}
+		if n.NodeID == fmt.Sprintf("rapid-node-%d", count-1) {
+			foundLast = true
+		}
+	}
+	if !foundFirst {
+		t.Error("First rapid message was not received")
+	}
+	if !foundLast {
+		t.Error("Last rapid message was not received")
 	}
 }

@@ -143,21 +143,29 @@ func (n *Node) HasCapability(capability string) bool {
 
 // GetID returns the node ID (for RPC interface)
 func (n *Node) GetID() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.ID
 }
 
 // GetName returns the node name (for RPC interface)
 func (n *Node) GetName() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.Name
 }
 
 // GetAddress returns the node address (for RPC interface)
 func (n *Node) GetAddress() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.Address
 }
 
 // GetCapabilities returns the node capabilities (for RPC interface)
 func (n *Node) GetCapabilities() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.Capabilities
 }
 
@@ -177,6 +185,8 @@ func (n *Node) GetRPCPort() int {
 
 // String returns a string representation of the node
 func (n *Node) String() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return fmt.Sprintf("Node{id=%s, name=%s, address=%s, status=%s}",
 		n.ID, n.Name, n.Address, n.Status)
 }

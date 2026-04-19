@@ -56,6 +56,7 @@ func (m *MockClusterForTest) GetLocalNetworkInterfaces() ([]LocalNetworkInterfac
 func (m *MockClusterForTest) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
 	return []byte(`{"status":"ok"}`), nil
 }
+func (m *MockClusterForTest) GetTaskResultStorer() TaskResultStorer { return nil }
 
 // MockRPCChannelForTest is a mock RPC channel for testing
 type MockRPCChannelForTest struct {

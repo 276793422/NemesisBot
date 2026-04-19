@@ -30,15 +30,17 @@ type PeerChatResponse struct {
 
 // PeerChatHandler handles peer-to-peer chat and collaboration requests
 type PeerChatHandler struct {
-	cluster    Cluster
-	rpcChannel *channels.RPCChannel
+	cluster     Cluster
+	rpcChannel  *channels.RPCChannel
+	resultStore TaskResultStorer // H4: B 端任务结果持久化
 }
 
 // NewPeerChatHandler creates a new peer chat handler
 func NewPeerChatHandler(cluster Cluster, rpcChannel *channels.RPCChannel) *PeerChatHandler {
 	return &PeerChatHandler{
-		cluster:    cluster,
-		rpcChannel: rpcChannel,
+		cluster:     cluster,
+		rpcChannel:  rpcChannel,
+		resultStore: cluster.GetTaskResultStorer(), // H4: 从 cluster 接口获取
 	}
 }
 
@@ -73,10 +75,19 @@ func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]int
 	// 5. 提取 source 信息（用于回调）
 	sourceInfo, _ := payload["_source"].(map[string]interface{})
 
-	// 6. 启动异步处理
-	go h.processAsync(payload, &req, taskID, sourceInfo)
+	// 6. H4: 标记 running 状态（B 端持久化）
+	var sourceNodeID string
+	if sourceInfo != nil {
+		sourceNodeID, _ = sourceInfo["node_id"].(string)
+	}
+	if h.resultStore != nil && sourceNodeID != "" {
+		h.resultStore.SetRunning(taskID, sourceNodeID)
+	}
 
-	// 7. 立即返回 ACK
+	// 7. 启动异步处理
+	go h.processAsync(payload, &req, taskID, sourceInfo, sourceNodeID)
+
+	// 8. 立即返回 ACK
 	h.cluster.LogRPCInfo("[PeerChat] Task %s accepted, processing asynchronously", taskID)
 	return map[string]interface{}{
 		"status":  "accepted",
@@ -85,13 +96,17 @@ func (h *PeerChatHandler) Handle(payload map[string]interface{}) (map[string]int
 }
 
 // processAsync 异步处理 LLM 请求
-func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *PeerChatPayload, taskID string, sourceInfo map[string]interface{}) {
+func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *PeerChatPayload, taskID string, sourceInfo map[string]interface{}, sourceNodeID string) {
 	h.cluster.LogRPCInfo("[PeerChat] Async processing started for task %s", taskID)
 
 	// 1. Check if rpcChannel is available
 	if h.rpcChannel == nil {
 		h.cluster.LogRPCError("[PeerChat] RPC channel is not available", nil)
-		h.sendCallback(sourceInfo, taskID, "error", "", "rpc channel not available")
+		if h.sendCallback(sourceInfo, taskID, "error", "", "rpc channel not available") {
+			h.deleteResult(taskID)
+		} else {
+			h.persistResult(taskID, "error", "", "rpc channel not available", sourceNodeID)
+		}
 		return
 	}
 
@@ -141,7 +156,11 @@ func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *P
 	respCh, err := h.rpcChannel.Input(ctx, inbound)
 	if err != nil {
 		h.cluster.LogRPCError("[PeerChat] Failed to send to RPC channel: %v", err)
-		h.sendCallback(sourceInfo, taskID, "error", "", "failed to process: "+err.Error())
+		if h.sendCallback(sourceInfo, taskID, "error", "", "failed to process: "+err.Error()) {
+			h.deleteResult(taskID)
+		} else {
+			h.persistResult(taskID, "error", "", "failed to process: "+err.Error(), sourceNodeID)
+		}
 		return
 	}
 
@@ -155,24 +174,36 @@ func (h *PeerChatHandler) processAsync(rawPayload map[string]interface{}, req *P
 	case response, ok := <-respCh:
 		if ok {
 			h.cluster.LogRPCInfo("[PeerChat] LLM response received for task %s, correlation_id=%s", taskID, correlationID)
-			h.sendCallback(sourceInfo, taskID, "success", response, "")
+			if h.sendCallback(sourceInfo, taskID, "success", response, "") {
+				h.deleteResult(taskID)
+			} else {
+				h.persistResult(taskID, "success", response, "", sourceNodeID)
+			}
 		} else {
 			h.cluster.LogRPCError("[PeerChat] Response channel closed for task %s (channel stopped)", taskID)
-			h.sendCallback(sourceInfo, taskID, "error", "", "response channel closed")
+			if h.sendCallback(sourceInfo, taskID, "error", "", "response channel closed") {
+				h.deleteResult(taskID)
+			} else {
+				h.persistResult(taskID, "error", "", "response channel closed", sourceNodeID)
+			}
 		}
 	case <-waitCtx.Done():
 		h.cluster.LogRPCError("[PeerChat] LLM processing timeout for task %s (59min)", taskID)
-		h.sendCallback(sourceInfo, taskID, "error", "", "LLM processing timeout")
+		if h.sendCallback(sourceInfo, taskID, "error", "", "LLM processing timeout") {
+			h.deleteResult(taskID)
+		} else {
+			h.persistResult(taskID, "error", "", "LLM processing timeout", sourceNodeID)
+		}
 	}
 }
 
-// sendCallback 回调源节点
-func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID, status, response, errMsg string) {
+// sendCallback 回调源节点，返回 true 表示成功，false 表示所有重试失败
+func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID, status, response, errMsg string) bool {
 	// 提取 source 节点信息
 	sourceNodeID, _ := sourceInfo["node_id"].(string)
 	if sourceNodeID == "" {
 		h.cluster.LogRPCError("[PeerChat] No source node_id in task %s, cannot callback", taskID)
-		return
+		return false
 	}
 
 	h.cluster.LogRPCInfo("[PeerChat] Calling back to source node %s for task %s", sourceNodeID, taskID)
@@ -195,7 +226,7 @@ func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID
 		cancel()
 		if err == nil {
 			h.cluster.LogRPCInfo("[PeerChat] Callback sent successfully for task %s to node %s", taskID, sourceNodeID)
-			return
+			return true
 		}
 		h.cluster.LogRPCError("[PeerChat] Callback attempt %d/%d failed for task %s to node %s: %v",
 			attempt+1, maxRetries, taskID, sourceNodeID, err)
@@ -205,6 +236,29 @@ func (h *PeerChatHandler) sendCallback(sourceInfo map[string]interface{}, taskID
 		}
 	}
 	h.cluster.LogRPCError("[PeerChat] All callback retries exhausted for task %s to node %s", taskID, sourceNodeID)
+	return false
+}
+
+// persistResult H4: 持久化任务结果到磁盘（callback 失败时调用）
+func (h *PeerChatHandler) persistResult(taskID, resultStatus, response, errMsg, sourceNodeID string) {
+	if h.resultStore == nil || sourceNodeID == "" {
+		return
+	}
+	if err := h.resultStore.SetResult(taskID, resultStatus, response, errMsg, sourceNodeID); err != nil {
+		h.cluster.LogRPCError("[PeerChat] Failed to persist task result for %s: %v", taskID, err)
+	} else {
+		h.cluster.LogRPCInfo("[PeerChat] Task result persisted for %s (will be recovered by A polling)", taskID)
+	}
+}
+
+// deleteResult H4: 清理任务结果（callback 成功时调用）
+func (h *PeerChatHandler) deleteResult(taskID string) {
+	if h.resultStore == nil {
+		return
+	}
+	if err := h.resultStore.Delete(taskID); err != nil {
+		h.cluster.LogRPCError("[PeerChat] Failed to delete task result for %s: %v", taskID, err)
+	}
 }
 
 // parsePayload parses the incoming payload into PeerChatPayload

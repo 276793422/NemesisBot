@@ -169,6 +169,11 @@ func (tm *TaskManager) GetTask(taskID string) (*Task, error) {
 	return tm.store.Get(taskID)
 }
 
+// ListPendingTasks 获取所有 pending 状态的任务（H4: recoveryLoop 使用）
+func (tm *TaskManager) ListPendingTasks() ([]*Task, error) {
+	return tm.store.ListByStatus(TaskPending)
+}
+
 // CompleteCallback 实现 handlers.TaskCompleter 接口
 // 将基本类型的回调参数转换为 TaskResult 后调用 CompleteTask
 func (tm *TaskManager) CompleteCallback(taskID, status, response, errMsg string) error {
@@ -198,7 +203,7 @@ func (tm *TaskManager) cleanupLoop() {
 	}
 }
 
-// cleanupCompleted 清理已完成和已失败的任务记录
+// cleanupCompleted 清理已完成和已失败的任务记录，同时兜底超时 pending 任务
 func (tm *TaskManager) cleanupCompleted() {
 	statuses := []TaskStatus{TaskCompleted, TaskFailed, TaskCancelled}
 	for _, status := range statuses {
@@ -208,6 +213,18 @@ func (tm *TaskManager) cleanupCompleted() {
 			if task.CompletedAt != nil && time.Since(*task.CompletedAt) > 30*time.Minute {
 				tm.store.Delete(task.ID)
 			}
+		}
+	}
+
+	// H4: 兜底 — pending 超过 24h 的任务标记为 failed
+	pendingTasks, _ := tm.store.ListByStatus(TaskPending)
+	for _, task := range pendingTasks {
+		if time.Since(task.CreatedAt) > 24*time.Hour {
+			tm.CompleteTask(task.ID, &TaskResult{
+				TaskID: task.ID,
+				Status: "error",
+				Error:  "task timed out: no response received within 24 hours",
+			})
 		}
 	}
 }

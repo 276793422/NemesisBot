@@ -54,7 +54,7 @@ type TCPConn struct {
 
 	// Synchronization
 	wg sync.WaitGroup
-	mu sync.Mutex
+	mu sync.RWMutex
 }
 
 // TCPConnConfig contains configuration for creating a new TCPConn
@@ -250,21 +250,29 @@ func (tc *TCPConn) idleMonitor() {
 
 // Send sends a message through the connection
 func (tc *TCPConn) Send(msg *RPCMessage) error {
-	if tc.closed.Load() {
+	tc.mu.RLock()
+	if tc.closed.Load() || tc.sendChan == nil {
+		tc.mu.RUnlock()
 		return ErrConnClosed
 	}
 
 	// Marshal to JSON
 	data, err := msg.Bytes()
 	if err != nil {
+		tc.mu.RUnlock()
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
 	// Send to write goroutine (non-blocking with timeout)
 	select {
 	case tc.sendChan <- data:
+		tc.mu.RUnlock()
 		return nil
+	case <-tc.closeChan:
+		tc.mu.RUnlock()
+		return ErrConnClosed
 	case <-time.After(tc.sendTimeout):
+		tc.mu.RUnlock()
 		return ErrSendTimeout
 	}
 }
@@ -296,7 +304,7 @@ func (tc *TCPConn) Close() error {
 		tc.conn.Close()
 	}
 
-	// Wait for goroutines to finish
+	// Wait for goroutines to finish (including readLoop)
 	done := make(chan struct{})
 	go func() {
 		tc.wg.Wait()
@@ -306,8 +314,12 @@ func (tc *TCPConn) Close() error {
 	// Wait with timeout
 	select {
 	case <-done:
+		// readLoop has exited, safe to close recvChan
+		close(tc.recvChan)
 		return nil
 	case <-time.After(5 * time.Second):
+		// Timeout — close recvChan anyway to prevent consumer goroutine leaks
+		close(tc.recvChan)
 		return errors.New("timeout waiting for connection to close")
 	}
 }

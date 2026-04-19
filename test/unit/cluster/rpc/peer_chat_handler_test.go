@@ -59,6 +59,7 @@ func (m *mockClusterForPeerChat) CallWithContext(ctx context.Context, peerID, ac
 	m.callbackData = payload
 	return []byte(`{"status":"received"}`), nil
 }
+func (m *mockClusterForPeerChat) GetTaskResultStorer() clusterrpc.TaskResultStorer { return nil }
 
 // TestNewPeerChatHandler tests the creation of a new PeerChatHandler
 func TestNewPeerChatHandler(t *testing.T) {

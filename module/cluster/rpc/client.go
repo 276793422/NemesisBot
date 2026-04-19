@@ -49,6 +49,14 @@ type Cluster interface {
 	GetPeer(peerID string) (interface{}, error)                  // Get peer directly
 	GetLocalNetworkInterfaces() ([]LocalNetworkInterface, error) // Get local network interfaces
 	CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) // RPC call
+	GetTaskResultStorer() TaskResultStorer                       // H4: B-side task result persistence
+}
+
+// TaskResultStorer B 端任务结果持久化接口（避免循环依赖，在 rpc 包中定义）
+type TaskResultStorer interface {
+	SetRunning(taskID, sourceNode string)
+	SetResult(taskID, resultStatus, response, errMsg, sourceNode string) error
+	Delete(taskID string) error
 }
 
 // LocalNetworkInterface represents a local network interface (for RPC interface)
@@ -540,13 +548,13 @@ func (c *Client) selectBestAddress(addresses []string) string {
 	return addresses[0]
 }
 
-// extractIP extracts IP address from "IP:Port" format
+// extractIP extracts IP address from "IP:Port" or "[IPv6]:Port" format
 func extractIP(addr string) string {
-	parts := strings.Split(addr, ":")
-	if len(parts) >= 1 {
-		return parts[0]
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
 	}
-	return ""
+	return host
 }
 
 // isSameSubnet checks if two IPs are in the same subnet given a mask

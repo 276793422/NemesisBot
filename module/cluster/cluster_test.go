@@ -1022,3 +1022,250 @@ func TestNodeStatus_Constants(t *testing.T) {
 		t.Errorf("Expected StatusUnknown 'unknown', got %s", StatusUnknown)
 	}
 }
+
+// --- H4 Recovery Tests ---
+
+// TestCluster_GetTaskResultStore tests the TaskResultStore getter
+func TestCluster_GetTaskResultStore(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	store := cluster.GetTaskResultStore()
+	if store == nil {
+		t.Error("Expected non-nil TaskResultStore")
+	}
+}
+
+// TestCluster_PollStalePendingTasks_NoTaskManager tests poll with nil taskManager
+func TestCluster_PollStalePendingTasks_NoTaskManager(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	// Should not panic with nil taskManager
+	cluster.pollStalePendingTasks()
+}
+
+// TestCluster_PollStalePendingTasks_TooNew tests that recent tasks are skipped
+func TestCluster_PollStalePendingTasks_TooNew(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	// Set up taskManager manually (without full Start)
+	tm := NewTaskManager(30 * time.Second)
+	cluster.taskManager = tm
+
+	// Submit a task that's only 30 seconds old
+	tm.Submit(&Task{
+		ID:        "task-recent",
+		Status:    TaskPending,
+		PeerID:    "peer-1",
+		CreatedAt: time.Now().Add(-30 * time.Second),
+	})
+
+	// pollStalePendingTasks should skip it (too new)
+	cluster.pollStalePendingTasks()
+
+	task, _ := tm.GetTask("task-recent")
+	if task.Status != TaskPending {
+		t.Errorf("Recent task should still be pending, got %s", task.Status)
+	}
+}
+
+// TestCluster_PollStalePendingTasks_24hTimeout tests the 24h fallback timeout
+func TestCluster_PollStalePendingTasks_24hTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	tm := NewTaskManager(30 * time.Second)
+	var completedTaskIDs []string
+	tm.SetOnComplete(func(taskID string) {
+		completedTaskIDs = append(completedTaskIDs, taskID)
+	})
+	cluster.taskManager = tm
+
+	// Submit a task that's 25 hours old (should be timed out)
+	tm.Submit(&Task{
+		ID:        "task-old",
+		Status:    TaskPending,
+		PeerID:    "peer-1",
+		CreatedAt: time.Now().Add(-25 * time.Hour),
+	})
+
+	cluster.pollStalePendingTasks()
+
+	task, _ := tm.GetTask("task-old")
+	if task.Status != TaskFailed {
+		t.Errorf("Old task should be failed, got %s", task.Status)
+	}
+	if task.Error == "" {
+		t.Error("Expected error message for timed out task")
+	}
+}
+
+// TestCluster_PollStalePendingTasks_StaleButRPCUnavailable tests stale task when B is unreachable
+func TestCluster_PollStalePendingTasks_StaleButRPCUnavailable(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	tm := NewTaskManager(30 * time.Second)
+	cluster.taskManager = tm
+
+	// Submit a task that's 5 minutes old (stale enough to poll)
+	tm.Submit(&Task{
+		ID:        "task-stale",
+		Status:    TaskPending,
+		PeerID:    "peer-1",
+		CreatedAt: time.Now().Add(-5 * time.Minute),
+	})
+
+	// RPC client is nil, so CallWithContext will fail
+	// pollStalePendingTasks should handle this gracefully
+	cluster.pollStalePendingTasks()
+
+	// Task should still be pending (RPC failed, will retry next cycle)
+	task, _ := tm.GetTask("task-stale")
+	if task.Status != TaskPending {
+		t.Errorf("Task should still be pending when RPC fails, got %s", task.Status)
+	}
+}
+
+// TestCluster_RecoveryLoop_StopsOnStopCh tests that recoveryLoop exits cleanly
+func TestCluster_RecoveryLoop_StopsOnStopCh(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	// Start recoveryLoop
+	cluster.wg.Add(1)
+	go cluster.recoveryLoop()
+
+	// Stop it
+	close(cluster.stopCh)
+	cluster.wg.Wait()
+	// Should complete without hanging
+}
+
+// TestCluster_QueryTaskResultHandler tests the query_task_result RPC handler
+func TestCluster_QueryTaskResultHandler(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	// Set a result
+	cluster.resultStore.SetResult("task-1", "success", "hello", "", "node-A")
+
+	// Simulate query handler (replicate the handler logic directly)
+	taskID := "task-1"
+	entry := cluster.resultStore.Get(taskID)
+	if entry == nil {
+		t.Fatal("Expected entry")
+	}
+	if entry.Status != "done" {
+		t.Errorf("Expected status 'done', got %s", entry.Status)
+	}
+	if entry.Response != "hello" {
+		t.Errorf("Expected response 'hello', got %s", entry.Response)
+	}
+}
+
+// TestCluster_ConfirmTaskDeliveryHandler tests the confirm_task_delivery RPC handler
+func TestCluster_ConfirmTaskDeliveryHandler(t *testing.T) {
+	tempDir := t.TempDir()
+	cluster, err := NewCluster(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create cluster: %v", err)
+	}
+	t.Cleanup(func() {
+		if cluster.logger != nil {
+			cluster.logger.Close()
+		}
+	})
+
+	// Set a result
+	cluster.resultStore.SetResult("task-1", "success", "hello", "", "node-A")
+
+	// Simulate confirm handler
+	cluster.resultStore.Delete("task-1")
+
+	// Should be gone
+	entry := cluster.resultStore.Get("task-1")
+	if entry != nil {
+		t.Error("Expected nil after confirm_delivery")
+	}
+}
+
+// TestStringValue tests the stringValue helper
+func TestStringValue(t *testing.T) {
+	tests := []struct {
+		input    interface{}
+		expected string
+	}{
+		{nil, ""},
+		{"hello", "hello"},
+		{42, ""},
+		{true, ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		result := stringValue(tt.input)
+		if result != tt.expected {
+			t.Errorf("stringValue(%v) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+

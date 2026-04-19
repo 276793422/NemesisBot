@@ -35,11 +35,11 @@ type ClusterCallbacks interface {
 // Discovery handles UDP broadcast discovery
 // Discovery manages UDP-based node discovery in the cluster.
 //
-// Security note: UDP broadcast has no authentication — any process on the LAN can send
-// forged announce/bye messages. This is acceptable for the trusted-LAN design target.
-// RPC connections (TCP) are protected by token authentication (see rpc/server.go SetAuthToken).
-// If deploying in untrusted networks, add HMAC signing to DiscoveryMessage (shared secret from peers.toml).
-// This is a known limitation, NOT a bug.
+// Security: UDP broadcasts are encrypted with AES-256-GCM using a key derived
+// from the cluster's RPCAuthToken (via SHA-256). Nodes without the token cannot
+// decrypt or forge discovery messages. When no token is configured, broadcasts
+// are plaintext (backward compatible). RPC connections (TCP) are protected by
+// token authentication (see rpc/server.go SetAuthToken).
 type Discovery struct {
 	cluster           ClusterCallbacks
 	listener          *UDPListener
@@ -49,9 +49,10 @@ type Discovery struct {
 	stopCh            chan struct{}
 }
 
-// NewDiscovery creates a new discovery instance
-func NewDiscovery(port int, cluster ClusterCallbacks) (*Discovery, error) {
-	listener, err := NewUDPListener(port)
+// NewDiscovery creates a new discovery instance.
+// encKey is the AES-256 key for broadcast encryption; pass nil to disable encryption.
+func NewDiscovery(port int, cluster ClusterCallbacks, encKey []byte) (*Discovery, error) {
+	listener, err := NewUDPListener(port, encKey)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +87,9 @@ func (d *Discovery) Start() error {
 
 	// Start listener
 	if err := d.listener.Start(); err != nil {
+		d.mu.Lock()
+		d.running = false
+		d.mu.Unlock()
 		return fmt.Errorf("failed to start listener: %w", err)
 	}
 

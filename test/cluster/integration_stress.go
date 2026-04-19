@@ -515,3 +515,8 @@ func (m *mockCluster) GetPeer(peerID string) (interface{}, error)  { return nil,
 func (m *mockCluster) GetLocalNetworkInterfaces() ([]rpc.LocalNetworkInterface, error) {
 	return nil, nil
 }
+func (m *mockCluster) GetActionsSchema() []interface{}          { return nil }
+func (m *mockCluster) CallWithContext(ctx context.Context, peerID, action string, payload map[string]interface{}) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (m *mockCluster) GetTaskResultStorer() rpc.TaskResultStorer { return nil }

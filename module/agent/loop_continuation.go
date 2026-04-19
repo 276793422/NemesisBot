@@ -153,7 +153,23 @@ func (al *AgentLoop) handleClusterContinuation(ctx context.Context, taskID strin
 }
 
 // loadContinuation 加载续行快照（内存优先，磁盘回退）
+// 增加重试机制：回调可能在 saveContinuation 之前到达（H3 竞态），
+// 重试 2 次以等待快照保存完成。
 func (al *AgentLoop) loadContinuation(taskID string) *continuationData {
+	// 尝试加载，最多 3 次（初始 + 2 次重试），每次间隔 100ms
+	for attempt := 0; attempt < 3; attempt++ {
+		if data := al.tryLoadContinuation(taskID); data != nil {
+			return data
+		}
+		if attempt < 2 {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+// tryLoadContinuation 单次尝试加载续行快照
+func (al *AgentLoop) tryLoadContinuation(taskID string) *continuationData {
 	// 先查内存
 	al.contMu.RLock()
 	data, exists := al.continuations[taskID]
