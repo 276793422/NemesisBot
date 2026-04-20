@@ -317,6 +317,11 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	}
 }
 
+// GetCluster returns the cluster instance if available, nil otherwise.
+func (al *AgentLoop) GetCluster() *cluster.Cluster {
+	return al.cluster
+}
+
 func (al *AgentLoop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {
 	return al.ProcessDirectWithChannel(ctx, content, sessionKey, "cli", "direct")
 }

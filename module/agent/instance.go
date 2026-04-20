@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/276793422/NemesisBot/module/config"
+	"github.com/276793422/NemesisBot/module/forge"
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
 	"github.com/276793422/NemesisBot/module/providers"
@@ -108,6 +109,20 @@ func NewAgentInstance(
 			if err := pluginMgr.Register(securityPlugin); err != nil {
 				os.Stderr.WriteString(fmt.Sprintf("Warning: Failed to register security plugin: %v\n", err))
 			}
+		}
+	}
+
+	// Initialize and register Forge experience collection plugin if enabled
+	if cfg.Forge != nil && cfg.Forge.Enabled {
+		// Create a lightweight collector for plugin registration
+		forgeDir := filepath.Join(workspace, "forge")
+		forgeCfg := forge.DefaultForgeConfig()
+		forgeStore := forge.NewExperienceStore(forgeDir, forgeCfg)
+		forgeCollector := forge.NewCollector(forgeStore, forgeCfg)
+		forgePlugin := forge.NewForgePlugin(forgeCollector)
+
+		if err := pluginMgr.Register(forgePlugin); err != nil {
+			os.Stderr.WriteString(fmt.Sprintf("Warning: Failed to register Forge plugin: %v\n", err))
 		}
 	}
 

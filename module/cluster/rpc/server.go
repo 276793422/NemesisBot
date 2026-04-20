@@ -5,6 +5,7 @@
 package rpc
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"strings"
@@ -163,6 +164,10 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConnection(netConn net.Conn) {
 	remoteAddr := netConn.RemoteAddr().String()
 
+	// Wrap in bufio.Reader so auth token reading doesn't consume frame data.
+	// This reader is reused by FrameReader inside TCPConn.readLoop.
+	bufReader := bufio.NewReaderSize(netConn, 4096)
+
 	// Authentication phase (if token is configured)
 	s.mu.RLock()
 	authToken := s.authToken
@@ -172,10 +177,9 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		// Set read deadline for auth
 		netConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-		// Read auth token from client
-		buf := make([]byte, 1024)
-		n, err := netConn.Read(buf)
-		if err != nil || n == 0 {
+		// Read auth token line-by-line to avoid consuming frame data
+		tokenLine, err := bufReader.ReadString('\n')
+		if err != nil {
 			s.cluster.LogRPCError("Failed to read auth token from %s: %v", remoteAddr, err)
 			netConn.Close()
 			return
@@ -185,7 +189,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		netConn.SetReadDeadline(time.Time{})
 
 		// Validate token
-		token := strings.TrimSpace(string(buf[:n]))
+		token := strings.TrimSpace(tokenLine)
 		if token != authToken {
 			s.cluster.LogRPCError("Unauthorized connection from %s (invalid token)", remoteAddr)
 			netConn.Close()
@@ -195,7 +199,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		s.cluster.LogRPCInfo("Authenticated connection from %s", remoteAddr)
 	}
 
-	// Create TCPConn wrapper
+	// Create TCPConn wrapper, passing the same bufio.Reader so no data is lost
 	config := &transport.TCPConnConfig{
 		NodeID:            "", // Will be set when we know the peer
 		Address:           remoteAddr,
@@ -204,6 +208,7 @@ func (s *Server) handleConnection(netConn net.Conn) {
 		SendTimeout:       s.sendTimeout,
 		IdleTimeout:       s.idleTimeout,
 		HeartbeatInterval: 0,
+		BufReader:         bufReader,
 	}
 
 	tc := transport.NewTCPConn(netConn, config)

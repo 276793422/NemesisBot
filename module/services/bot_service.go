@@ -11,9 +11,11 @@ import (
 	"github.com/276793422/NemesisBot/module/agent"
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/channels"
+	"github.com/276793422/NemesisBot/module/cluster/handlers"
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/cron"
 	"github.com/276793422/NemesisBot/module/devices"
+	"github.com/276793422/NemesisBot/module/forge"
 	"github.com/276793422/NemesisBot/module/health"
 	"github.com/276793422/NemesisBot/module/heartbeat"
 	"github.com/276793422/NemesisBot/module/logger"
@@ -43,6 +45,7 @@ type BotService struct {
 	deviceSvc    *devices.Service
 	healthSrv    *health.Server
 	stateMgr     *state.Manager
+	forgeSvc     *forge.Forge
 
 	// Context management
 	ctx    context.Context
@@ -229,8 +232,18 @@ func (s *BotService) GetComponents() map[string]interface{} {
 	if s.channelMgr != nil {
 		components["channelMgr"] = s.channelMgr
 	}
+	if s.forgeSvc != nil {
+		components["forge"] = s.forgeSvc
+	}
 
 	return components
+}
+
+// GetForge returns the Forge instance if available.
+func (s *BotService) GetForge() *forge.Forge {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.forgeSvc
 }
 
 // Internal methods
@@ -346,6 +359,45 @@ func (s *BotService) initComponents() error {
 	// Create health server
 	s.healthSrv = health.NewServer(cfg.Gateway.Host, cfg.Gateway.Port)
 
+	// Initialize Forge self-learning module
+	if cfg.Forge != nil && cfg.Forge.Enabled {
+		forgeInstance, err := forge.NewForge(s.workspace, nil)
+		if err != nil {
+			logger.WarnCF("bot_service", "Forge init failed", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			forgeInstance.SetProvider(s.provider)
+			s.forgeSvc = forgeInstance
+
+			// Register Forge tools with agent loop
+			forgeTools := forge.NewForgeTools(forgeInstance)
+			for _, tool := range forgeTools {
+				s.agentLoop.RegisterTool(tool)
+			}
+
+			// Phase 4: Connect Forge to Cluster for cross-node sharing
+			if cl := s.agentLoop.GetCluster(); cl != nil {
+				bridge := forge.NewClusterForgeBridge(cl)
+				forgeInstance.SetBridge(bridge)
+
+				// Register Forge RPC handlers with the cluster
+				registrar := func(action string, handler func(payload map[string]interface{}) (map[string]interface{}, error)) {
+					if err := cl.RegisterRPCHandler(action, handler); err != nil {
+						logger.WarnCF("bot_service", "Failed to register forge RPC handler", map[string]interface{}{
+							"action": action,
+							"error":  err.Error(),
+						})
+					}
+				}
+				syncer := forgeInstance.GetSyncer()
+				handlers.RegisterForgeHandlers(cl.GetLogger(), syncer, cl.GetNodeID, registrar)
+			}
+
+			logger.InfoC("bot_service", "Forge module initialized")
+		}
+	}
+
 	logger.InfoC("bot_service", "Components initialized")
 
 	return nil
@@ -409,11 +461,20 @@ func (s *BotService) startServices() error {
 		}
 	}
 
+	// Start Forge self-learning module
+	if s.forgeSvc != nil {
+		s.forgeSvc.Start()
+		logger.InfoC("bot_service", "Forge service started")
+	}
+
 	return nil
 }
 
 func (s *BotService) stopAll() {
 	// Stop in reverse order
+	if s.forgeSvc != nil {
+		s.forgeSvc.Stop()
+	}
 	if s.healthSrv != nil {
 		s.healthSrv.Stop(s.ctx)
 	}

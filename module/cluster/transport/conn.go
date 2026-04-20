@@ -5,6 +5,7 @@
 package transport
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,7 +51,8 @@ type TCPConn struct {
 	sendTimeout       time.Duration
 	idleTimeout       time.Duration
 	heartbeatInterval time.Duration
-	authToken         string // RPC authentication token
+	authToken         string        // RPC authentication token
+	bufReader         *bufio.Reader // Optional pre-created buffered reader
 
 	// Synchronization
 	wg sync.WaitGroup
@@ -66,7 +68,8 @@ type TCPConnConfig struct {
 	SendTimeout       time.Duration
 	IdleTimeout       time.Duration
 	HeartbeatInterval time.Duration
-	AuthToken         string // RPC authentication token
+	AuthToken         string       // RPC authentication token
+	BufReader         *bufio.Reader // Optional pre-created buffered reader (reused by FrameReader)
 }
 
 // DefaultTCPConnConfig returns the default configuration
@@ -103,6 +106,7 @@ func NewTCPConn(conn net.Conn, config *TCPConnConfig) *TCPConn {
 		idleTimeout:       config.IdleTimeout,
 		heartbeatInterval: config.HeartbeatInterval,
 		authToken:         config.AuthToken, // Save auth token
+		bufReader:         config.BufReader, // Save pre-created reader
 	}
 
 	tc.lastUsed.Store(time.Now())
@@ -151,7 +155,14 @@ func (tc *TCPConn) Start() {
 func (tc *TCPConn) readLoop() {
 	defer tc.wg.Done()
 
-	fr := NewFrameReader(tc.conn)
+	// Use pre-created bufio.Reader if available (avoids data loss when
+	// server reads auth token before handing off to TCPConn).
+	var fr *FrameReader
+	if tc.bufReader != nil {
+		fr = NewFrameReaderWithBufio(tc.bufReader)
+	} else {
+		fr = NewFrameReader(tc.conn)
+	}
 
 	for {
 		// Check if closed

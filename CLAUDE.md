@@ -237,6 +237,53 @@ cfg := &channels.RPCChannelConfig{
 
 ---
 
+### Forge 自学习模块（module/forge/）
+
+**概述**：Forge 是系统级自学习框架，基于 Read → Execute → Reflect → Write 核心循环。与 Cluster 并列，随 BotService 启停。
+
+**子系统**：
+- **Collector**（collector.go）：通过 Plugin 接口异步采集工具调用经验，去重 + 脱敏后 JSONL 持久化
+- **Reflector**（reflector.go + reflector_llm.go）：定时反思引擎，统计级（纯代码）+ 语义级（LLM）两级分析，支持合并远端报告（Phase 4）
+- **Factory**（tools.go）：forge_create/update/list/evaluate/build_mcp/share 七个工具，生成 Skill/脚本/MCP 产物
+- **Registry**（registry.go）：JSON 索引，追踪产物版本、状态、使用率
+- **Syncer**（syncer.go）：Phase 4 集群学习引擎，跨节点共享反思报告
+- **Sanitizer**（sanitizer.go）：隐私过滤器，共享前清理敏感信息（API key、路径、公网 IP）
+- **Bridge**（bridge.go）：ClusterForgeBridge 实现，连接 Forge 与 Cluster（避免循环依赖）
+
+**配置体系**：
+- 主开关：`config.json` 的 `forge.enabled`（默认 false）
+- 运行参数：`workspace/forge/forge.json`（采集间隔、反思间隔、预算等）
+
+**CLI 命令**：
+```bash
+nemesisbot forge status    # 查看状态
+nemesisbot forge enable    # 启用
+nemesisbot forge reflect   # 手动触发反思
+nemesisbot forge list      # 列出产物
+nemesisbot forge disable   # 禁用
+```
+
+**Agent 工具**：forge_reflect、forge_create、forge_update、forge_list、forge_evaluate、forge_build_mcp、forge_share
+
+**工作区目录**：`workspace/forge/` 下有 experiences/、reflections/（含 remote/ 子目录）、skills/、scripts/、mcp/
+
+**Phase 4 集群学习**：
+- 反思完成后自动通过 RPC 共享给在线节点（需集群已启用）
+- 远端报告存储在 `reflections/remote/`，不与本地报告混合
+- 共享前用 Sanitizer 过滤：敏感字段替换为 `[REDACTED]`，路径脱敏，公网 IP 替换为 `[IP]`
+- RPC Handler（`module/cluster/handlers/forge.go`）：`forge_share`（接收）+ `forge_get_reflections`（查询）
+- `ClusterForgeBridge` 接口解耦：Forge 定义接口，Cluster 侧通过 bridge.go 提供实现
+
+**关键集成点**：
+- ForgePlugin 注册到每个 AgentInstance 的 PluginManager（module/agent/instance.go）
+- Forge 工具注册到 AgentLoop（module/services/bot_service.go）
+- Forge 生命周期随 BotService（initComponents → startServices → stopAll）
+- 生成的 Skill 以 `-forge` 后缀复制到 `workspace/skills/`，由 SkillsLoader 加载
+- Phase 4: BotService 在 initComponents 中注入 ClusterForgeBridge + 注册 Forge RPC handlers
+- Phase 4: AgentLoop.GetCluster() 暴露集群实例给 BotService
+
+---
+
 ## 关键模式和约定
 
 ### 通道 Correlation ID 模式
@@ -508,6 +555,7 @@ nemesisbot.exe --local gateway
 - `module/cluster/rpc/` - 集群通信的 RPC 客户端/服务器
 - `module/security/` - 安全中间件和 ABAC
 - `module/security/scanner/` - 病毒扫描引擎（ScanChain、ClamAV）
+- `module/forge/` - 自学习框架（Forge: Collector + Reflector + Factory + Registry + Syncer + Sanitizer + Bridge）
 - `module/desktop/systray/` - 系统托盘（gateway 模式自动启用）
 - `module/services/` - 服务管理器（BotService 生命周期）
 

@@ -101,6 +101,13 @@ func NewFrameReader(r io.Reader) *FrameReader {
 	}
 }
 
+// NewFrameReaderWithBufio creates a frame reader from an existing bufio.Reader.
+// This is used when a bufio.Reader has already read some data (e.g., auth token)
+// and must be reused to avoid data loss.
+func NewFrameReaderWithBufio(r *bufio.Reader) *FrameReader {
+	return &FrameReader{reader: r}
+}
+
 // ReadFrame reads a single frame from the reader
 func (fr *FrameReader) ReadFrame() ([]byte, error) {
 	return DecodeFrame(fr.reader)

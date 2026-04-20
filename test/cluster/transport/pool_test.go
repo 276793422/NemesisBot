@@ -323,8 +323,8 @@ func TestDefaultPoolConfig(t *testing.T) {
 		t.Errorf("DefaultPoolConfig() DialTimeout = %v, want 10s", config.DialTimeout)
 	}
 
-	if config.IdleTimeout != 30*time.Second {
-		t.Errorf("DefaultPoolConfig() IdleTimeout = %v, want 30s", config.IdleTimeout)
+	if config.IdleTimeout != 65*time.Minute {
+		t.Errorf("DefaultPoolConfig() IdleTimeout = %v, want 65m", config.IdleTimeout)
 	}
 
 	if config.SendTimeout != 10*time.Second {

@@ -51,6 +51,8 @@ func Dispatch() {
 		CmdModel()
 	case "skills":
 		CmdSkills()
+	case "forge":
+		CmdForge()
 	case "version", "--version", "-v":
 		PrintVersion()
 	case "help", "--help", "-h":
@@ -83,6 +85,7 @@ func PrintHelp() {
 	fmt.Println("  log         Manage LLM request logging")
 	fmt.Println("  migrate     Migrate from OpenClaw to NemesisBot")
 	fmt.Println("  skills      Manage skills (install, list, remove)")
+	fmt.Println("  forge       Manage self-learning module (status, reflect, list, evaluate)")
 	fmt.Println("  version     Show version information")
 	fmt.Println()
 	fmt.Println("Quick Start:")

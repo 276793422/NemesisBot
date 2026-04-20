@@ -169,6 +169,9 @@
   "skills": {
     "enabled": true
   },
+  "forge": {
+    "enabled": false
+  },
   "mcp": {
     "enabled": false
   }

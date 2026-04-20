@@ -198,6 +198,7 @@ type Config struct {
 	Logging   *LoggingConfig      `json:"logging,omitempty"`
 	Security  *SecurityFlagConfig `json:"security,omitempty"`
 	Skills    *SkillsConfig       `json:"skills,omitempty"`
+	Forge     *ForgeFlagConfig    `json:"forge,omitempty"`
 	mu        sync.RWMutex
 }
 
@@ -565,6 +566,11 @@ type SecurityFlagConfig struct {
 	Enabled bool `json:"enabled" env:"NEMESISBOT_SECURITY_ENABLED"`
 }
 
+// ForgeFlagConfig is a simple flag in main config to enable/disable the Forge self-learning module
+type ForgeFlagConfig struct {
+	Enabled bool `json:"enabled" env:"NEMESISBOT_FORGE_ENABLED"`
+}
+
 // SkillsConfig holds the skills enable flag in main config.json.
 // Detailed skills configuration is in a separate config.skills.json file.
 type SkillsConfig struct {
@@ -774,6 +780,9 @@ func DefaultConfig() *Config {
 			},
 		},
 		Security: &SecurityFlagConfig{
+			Enabled: false, // Default disabled for backward compatibility
+		},
+		Forge: &ForgeFlagConfig{
 			Enabled: false, // Default disabled for backward compatibility
 		},
 	}
