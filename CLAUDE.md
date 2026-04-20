@@ -281,6 +281,19 @@ nemesisbot forge disable   # 禁用
 - 生成的 Skill 以 `-forge` 后缀复制到 `workspace/skills/`，由 SkillsLoader 加载
 - Phase 4: BotService 在 initComponents 中注入 ClusterForgeBridge + 注册 Forge RPC handlers
 - Phase 4: AgentLoop.GetCluster() 暴露集群实例给 BotService
+- Phase 6: 闭环学习（默认关闭，需 `nemesisbot forge learning enable`）
+  - `pattern.go`：4 种模式检测器（tool_chain/error_recovery/efficiency_issue/success_template），纯代码零 Token
+  - `learning_engine.go`：LearningEngine.RunCycle() — 提取模式→生成行动→迭代精炼→部署→保存周期
+  - `monitor.go`：DeploymentMonitor — Artifact.ToolSignature 子序列匹配 + 效果评分 + 自动降级（7 天冷却期）
+  - `cycle_store.go`：周期 JSONL 持久化（只存摘要，不存 Skill 草稿）
+  - `forge.go`：CreateSkill() 共享方法（forge_create 工具和 LearningEngine 共用）
+  - Reflector Stage 1.7：3 分钟子超时，失败不阻塞后续 Stage 2-4
+  - 迭代精炼：Skill 生成→Pipeline 验证→失败诊断反馈→LLM 重生成（最多 3 轮）
+  - 效果评分：0.4×rounds + 0.4×success + 0.2×duration，样本量门槛 5
+  - 连续 3 轮 "observing" 自动升级为 "negative" 触发降级
+  - BotService 组装：LearningEngine 注入 Forge→Reflector，provider 通过 SetProvider 级联
+  - CLI：`nemesisbot forge learning status/enable/disable/history`
+  - Agent 工具：`forge_learning_status`
 
 ---
 

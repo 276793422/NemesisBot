@@ -421,6 +421,18 @@ func (s *BotService) initComponents() error {
 		}
 	}
 
+	// Phase 6: Wire LearningEngine to Reflector (if learning enabled)
+	if s.forgeSvc != nil && s.forgeSvc.GetConfig().Learning.Enabled {
+		le := s.forgeSvc.GetLearningEngine()
+		if le != nil {
+			// Inject parent Forge for CreateSkill shared method
+			le.SetForge(s.forgeSvc)
+			// Inject LearningEngine into Reflector (post-injection pattern)
+			s.forgeSvc.GetReflector().SetLearningEngine(le)
+			logger.InfoC("bot_service", "Forge LearningEngine wired")
+		}
+	}
+
 	// Inject observer manager into AgentLoop
 	if observerMgr.HasObservers() {
 		s.agentLoop.SetObserverManager(observerMgr)

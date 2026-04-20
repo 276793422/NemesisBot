@@ -15,12 +15,13 @@ import (
 // Reflector analyzes experience data to generate insights and improvement suggestions.
 // It has two levels: statistical (pure code, zero tokens) and semantic (LLM-based).
 type Reflector struct {
-	forgeDir   string
-	store      *ExperienceStore
-	registry   *Registry
-	config     *ForgeConfig
-	provider   providers.LLMProvider
-	traceStore *TraceStore // Phase 5: for conversation-level analysis
+	forgeDir      string
+	store         *ExperienceStore
+	registry      *Registry
+	config        *ForgeConfig
+	provider      providers.LLMProvider
+	traceStore    *TraceStore      // Phase 5: for conversation-level analysis
+	learningEngine *LearningEngine // Phase 6: for closed-loop learning
 }
 
 // NewReflector creates a new reflection engine.
@@ -62,15 +63,29 @@ func (r *Reflector) Reflect(ctx context.Context, period string, focus string) (s
 		traceStats = r.analyzeTraces(since)
 	}
 
+	// Stage 1.7: Closed-loop learning (Phase 6)
+	var cycle *LearningCycle
+	if r.learningEngine != nil && r.config.Learning.Enabled {
+		var traces []*ConversationTrace
+		if r.traceStore != nil {
+			traces, _ = r.traceStore.ReadTraces(since)
+		}
+		// Use a sub-context with 3 minute timeout to isolate failures
+		learnCtx, learnCancel := context.WithTimeout(ctx, 3*time.Minute)
+		cycle = r.learningEngine.RunCycle(learnCtx, traces, traceStats, stats)
+		learnCancel()
+	}
+
 	// Stage 2: Get existing artifacts for coverage analysis
 	artifacts := r.registry.ListAll()
 
 	// Stage 3: Build report
 	report := r.buildReport(stats, artifacts, period, focus, traceStats)
+	report.LearningCycle = cycle
 
 	// Stage 4: Semantic analysis (if LLM available and enabled)
 	if r.config.Reflection.UseLLM && r.provider != nil {
-		llmInsights, err := semanticAnalysis(ctx, r.provider, stats, artifacts, traceStats, r.config)
+		llmInsights, err := semanticAnalysis(ctx, r.provider, stats, artifacts, traceStats, cycle, r.config)
 		if err == nil {
 			report.LLMInsights = llmInsights
 		}
@@ -197,7 +212,8 @@ type ReflectionReport struct {
 	Stats       *ReflectionStats
 	Artifacts   []Artifact
 	LLMInsights string
-	TraceStats  *TraceStats // Phase 5: conversation-level insights
+	TraceStats  *TraceStats     // Phase 5: conversation-level insights
+	LearningCycle *LearningCycle `json:"-"` // Phase 6: not serialized, for report generation only
 }
 
 // buildReport constructs the reflection report.
@@ -627,6 +643,11 @@ func extractToolChain(steps []ToolStep) string {
 // SetTraceStore injects a trace store for conversation-level analysis.
 func (r *Reflector) SetTraceStore(store *TraceStore) {
 	r.traceStore = store
+}
+
+// SetLearningEngine injects the Phase 6 learning engine (post-injection pattern).
+func (r *Reflector) SetLearningEngine(engine *LearningEngine) {
+	r.learningEngine = engine
 }
 
 // AnalyzeTracesForTest exposes analyzeTraces for testing.

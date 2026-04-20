@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 // It consists of four subsystems: Collector, Reflector, Factory, and Registry.
 // Phase 4 adds Syncer for cluster learning (cross-node reflection sharing).
 // Phase 5 adds TraceCollector for conversation-level trace collection.
+// Phase 6 adds LearningEngine for closed-loop self-learning.
 type Forge struct {
 	workspace      string
 	config         *ForgeConfig
@@ -31,8 +33,11 @@ type Forge struct {
 	mcpInstaller   *MCPInstaller
 	exporter       *Exporter
 	syncer         *Syncer
-	traceCollector *TraceCollector // Phase 5
-	traceStore     *TraceStore     // Phase 5
+	traceCollector *TraceCollector   // Phase 5
+	traceStore     *TraceStore       // Phase 5
+	learningEngine *LearningEngine   // Phase 6
+	deploymentMonitor *DeploymentMonitor // Phase 6
+	cycleStore     *CycleStore       // Phase 6
 
 	provider providers.LLMProvider
 	stopCh   chan struct{}
@@ -60,6 +65,8 @@ func NewForge(workspace string, pluginMgr *plugin.Manager) (*Forge, error) {
 		filepath.Join(forgeDir, "scripts"),
 		filepath.Join(forgeDir, "mcp"),
 		filepath.Join(forgeDir, "traces"),
+		filepath.Join(forgeDir, "learning"),
+		filepath.Join(workspace, "prompts"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -100,20 +107,39 @@ func NewForge(workspace string, pluginMgr *plugin.Manager) (*Forge, error) {
 		traceCollector = NewTraceCollector(traceStore, cfg)
 	}
 
+	// Phase 6: Closed-loop learning components
+	var learningEngine *LearningEngine
+	var deploymentMonitor *DeploymentMonitor
+	var cycleStore *CycleStore
+	if cfg.Learning.Enabled {
+		// Auto-enable trace if learning is enabled (cascade)
+		if !cfg.Trace.Enabled {
+			cfg.Trace.Enabled = true
+			traceStore = NewTraceStore(forgeDir, cfg)
+			traceCollector = NewTraceCollector(traceStore, cfg)
+		}
+		cycleStore = NewCycleStore(forgeDir, cfg)
+		deploymentMonitor = NewDeploymentMonitor(traceStore, registry, cfg)
+		learningEngine = NewLearningEngine(forgeDir, registry, traceStore, pipeline, cycleStore, deploymentMonitor, cfg)
+	}
+
 	f := &Forge{
-		workspace:      workspace,
-		config:         cfg,
-		collector:      collector,
-		reflector:      reflector,
-		registry:       registry,
-		store:          store,
-		pipeline:       pipeline,
-		mcpInstaller:   mcpInstaller,
-		exporter:       exporter,
-		syncer:         syncer,
-		traceCollector: traceCollector,
-		traceStore:     traceStore,
-		stopCh:         make(chan struct{}),
+		workspace:         workspace,
+		config:            cfg,
+		collector:         collector,
+		reflector:         reflector,
+		registry:          registry,
+		store:             store,
+		pipeline:          pipeline,
+		mcpInstaller:      mcpInstaller,
+		exporter:          exporter,
+		syncer:            syncer,
+		traceCollector:    traceCollector,
+		traceStore:        traceStore,
+		learningEngine:    learningEngine,
+		deploymentMonitor: deploymentMonitor,
+		cycleStore:        cycleStore,
+		stopCh:            make(chan struct{}),
 	}
 
 	// Register the ForgePlugin with the plugin manager
@@ -136,6 +162,9 @@ func (f *Forge) SetProvider(provider providers.LLMProvider) {
 	f.provider = provider
 	f.reflector.SetProvider(provider)
 	f.pipeline.SetProvider(provider)
+	if f.learningEngine != nil {
+		f.learningEngine.SetProvider(provider)
+	}
 }
 
 // SetBridge injects the cluster bridge for cross-node reflection sharing (Phase 4).
@@ -247,6 +276,88 @@ func (f *Forge) GetTraceStore() *TraceStore {
 	return f.traceStore
 }
 
+// GetLearningEngine returns the Phase 6 learning engine.
+func (f *Forge) GetLearningEngine() *LearningEngine {
+	return f.learningEngine
+}
+
+// GetDeploymentMonitor returns the Phase 6 deployment monitor.
+func (f *Forge) GetDeploymentMonitor() *DeploymentMonitor {
+	return f.deploymentMonitor
+}
+
+// GetCycleStore returns the Phase 6 cycle store.
+func (f *Forge) GetCycleStore() *CycleStore {
+	return f.cycleStore
+}
+
+// CreateSkill creates and registers a Skill artifact. This is a shared method
+// used by both the forge_create tool and the LearningEngine to avoid code duplication.
+func (f *Forge) CreateSkill(ctx context.Context, name, content, description string, toolSignature []string) (Artifact, error) {
+	forgeDir := f.GetWorkspace()
+	artifactPath := filepath.Join(forgeDir, "skills", name, "SKILL.md")
+
+	// Auto-generate frontmatter if missing
+	if !strings.Contains(content, "---") {
+		content = fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s", name, description, content)
+	}
+
+	// Create directory
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0755); err != nil {
+		return Artifact{}, fmt.Errorf("create dir failed: %w", err)
+	}
+
+	// Write content
+	if err := os.WriteFile(artifactPath, []byte(content), 0644); err != nil {
+		return Artifact{}, fmt.Errorf("write file failed: %w", err)
+	}
+
+	// Register in registry
+	artifactID := fmt.Sprintf("skill-%s", name)
+	artifact := Artifact{
+		ID:            artifactID,
+		Type:          ArtifactSkill,
+		Name:          name,
+		Version:       "1.0",
+		Status:        ArtifactStatus(f.config.Artifacts.DefaultStatus),
+		Path:          artifactPath,
+		ToolSignature: toolSignature,
+		Evolution: []Evolution{
+			{
+				Version: "1.0",
+				Date:    time.Now().UTC(),
+				Change:  fmt.Sprintf("初始创建: %s", description),
+			},
+		},
+	}
+
+	if err := f.registry.Add(artifact); err != nil {
+		return Artifact{}, fmt.Errorf("registry add failed: %w", err)
+	}
+
+	// Copy to workspace/skills/ with -forge suffix
+	workspaceSkills := filepath.Join(f.workspace, "skills", name+"-forge")
+	if err := os.MkdirAll(workspaceSkills, 0755); err == nil {
+		os.WriteFile(filepath.Join(workspaceSkills, "SKILL.md"), []byte(content), 0644)
+	}
+
+	// Auto-validate if configured
+	if f.config.Validation.AutoValidate && f.pipeline != nil {
+		validation := f.pipeline.RunFromContent(ctx, &artifact, content)
+		newStatus := f.pipeline.DetermineStatus(validation)
+		f.registry.Update(artifactID, func(a *Artifact) {
+			a.Validation = validation
+			a.Status = newStatus
+		})
+		// Refresh artifact with updated status
+		if updated, found := f.registry.Get(artifactID); found {
+			artifact = updated
+		}
+	}
+
+	return artifact, nil
+}
+
 // ReceiveReflection receives a remote reflection report (used by RPC handler).
 func (f *Forge) ReceiveReflection(payload map[string]interface{}) error {
 	if f.syncer == nil {
@@ -340,6 +451,38 @@ func (f *Forge) runCleanup() {
 					})
 				}
 			}
+			// Phase 6: learning cycle cleanup
+			if f.cycleStore != nil && f.config.Storage.MaxReportAgeDays > 0 {
+				if err := f.cycleStore.Cleanup(f.config.Storage.MaxReportAgeDays); err != nil {
+					logger.ErrorCF("forge", "Cycle cleanup failed", map[string]interface{}{
+						"error": err.Error(),
+					})
+				}
+			}
+			// Phase 6: cleanup old prompt suggestions (7 days)
+			f.cleanupPromptSuggestions(7)
+		}
+	}
+}
+
+// cleanupPromptSuggestions removes prompt suggestion files older than maxAgeDays.
+func (f *Forge) cleanupPromptSuggestions(maxAgeDays int) {
+	promptsDir := filepath.Join(f.workspace, "prompts")
+	entries, err := os.ReadDir(promptsDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_suggestion.md") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			os.Remove(filepath.Join(promptsDir, entry.Name()))
 		}
 	}
 }

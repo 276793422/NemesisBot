@@ -85,6 +85,11 @@ func FormatReport(report *ReflectionReport) string {
 		sb.WriteString(formatTraceInsights(report.TraceStats))
 	}
 
+	// Phase 6: Closed-loop learning state
+	if report.LearningCycle != nil {
+		sb.WriteString(formatLearningInsights(report.LearningCycle))
+	}
+
 	return sb.String()
 }
 
@@ -148,4 +153,62 @@ func formatTraceInsights(ts *TraceStats) string {
 	}
 
 	return sb.String()
+}
+
+// formatLearningInsights generates the Phase 6 closed-loop learning section.
+func formatLearningInsights(cycle *LearningCycle) string {
+	var sb strings.Builder
+
+	sb.WriteString("## 闭环学习状态（Phase 6）\n\n")
+
+	// Detected patterns
+	if len(cycle.PatternSummary) > 0 {
+		sb.WriteString("### 检测到的模式\n\n")
+		sb.WriteString("| 类型 | 指纹 | 频次 | 置信度 |\n")
+		sb.WriteString("|------|------|------|--------|\n")
+		for _, p := range cycle.PatternSummary {
+			sb.WriteString(fmt.Sprintf("| %s | %s | %d | %.2f |\n",
+				p.Type, p.Fingerprint[:12], p.Frequency, p.Confidence))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Learning actions
+	if len(cycle.ActionSummary) > 0 {
+		sb.WriteString("### 学习行动\n\n")
+		sb.WriteString("| 行动类型 | 优先级 | 状态 | 产物 |\n")
+		sb.WriteString("|----------|--------|------|------|\n")
+		for _, a := range cycle.ActionSummary {
+			artifactDisplay := a.ArtifactID
+			if artifactDisplay == "" {
+				artifactDisplay = "-"
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
+				a.Type, a.Priority, a.Status, artifactDisplay))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Previous deployment feedback
+	if len(cycle.PreviousOutcomes) > 0 {
+		sb.WriteString("### 上一轮反馈\n\n")
+		sb.WriteString("| 产物 | 判定 | 改善分数 | 样本数 |\n")
+		sb.WriteString("|------|------|----------|--------|\n")
+		for _, o := range cycle.PreviousOutcomes {
+			sb.WriteString(fmt.Sprintf("| %s | %s | %+.2f | %d |\n",
+				o.ArtifactID, o.Verdict, o.ImprovementScore, o.SampleSize))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Summary stats
+	sb.WriteString(fmt.Sprintf("**统计**: %d 模式, %d 行动创建, %d 已执行, %d 已跳过\n",
+		cycle.PatternsFound, cycle.ActionsCreated, cycle.ActionsExecuted, cycle.ActionsSkipped))
+
+	return sb.String()
+}
+
+// FormatLearningInsightsForTest exposes formatLearningInsights for testing.
+func FormatLearningInsightsForTest(cycle *LearningCycle) string {
+	return formatLearningInsights(cycle)
 }

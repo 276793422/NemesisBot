@@ -482,11 +482,11 @@ func TestForgeToolsCountWithShare(t *testing.T) {
 	f, _ := forge.NewForge(workspace, nil)
 	ftools := forge.NewForgeTools(f)
 
-	if len(ftools) != 7 {
-		t.Fatalf("Expected 7 tools (including forge_share), got %d", len(ftools))
+	if len(ftools) != 8 {
+		t.Fatalf("Expected 8 tools (including forge_share), got %d", len(ftools))
 	}
 
-	expectedNames := []string{"forge_reflect", "forge_create", "forge_update", "forge_list", "forge_evaluate", "forge_build_mcp", "forge_share"}
+	expectedNames := []string{"forge_reflect", "forge_create", "forge_update", "forge_list", "forge_evaluate", "forge_build_mcp", "forge_share", "forge_learning_status"}
 	for i, expected := range expectedNames {
 		if ftools[i].Name() != expected {
 			t.Errorf("Tool %d: expected name '%s', got '%s'", i, expected, ftools[i].Name())

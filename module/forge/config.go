@@ -15,6 +15,7 @@ type ForgeConfig struct {
 	Artifacts  ArtifactsConfig  `json:"artifacts"`
 	Validation ValidationConfig `json:"validation"`
 	Trace      TraceConfig      `json:"trace"`
+	Learning   LearningConfig   `json:"learning"` // Phase 6: closed-loop learning
 }
 
 // CollectionConfig controls experience collection behavior.
@@ -63,6 +64,20 @@ type TraceConfig struct {
 	Enabled              bool `json:"enabled"`
 	MaxTraceAgeDays      int  `json:"max_trace_age_days"`
 	MinTracesForAnalysis int  `json:"min_traces_for_analysis"`
+}
+
+// LearningConfig controls closed-loop self-learning (Phase 6).
+type LearningConfig struct {
+	Enabled             bool    `json:"enabled"`
+	MinPatternFrequency int     `json:"min_pattern_frequency"`      // minimum occurrences to qualify as pattern (default 5)
+	HighConfThreshold   float64 `json:"high_confidence_threshold"`  // auto-generate threshold (default 0.8)
+	MaxAutoCreates      int     `json:"max_auto_creates_per_cycle"` // max auto-creates per cycle (default 3)
+	MaxRefineRounds     int     `json:"max_refine_rounds"`          // max refine iterations (default 3)
+	MinOutcomeSamples   int     `json:"min_outcome_samples"`        // min samples for evaluation (default 5)
+	MonitorWindowDays   int     `json:"monitor_window_days"`        // observation window in days (default 7)
+	DegradeThreshold    float64 `json:"deprecation_threshold"`      // deprecation threshold (default -0.2)
+	DegradeCooldownDays int     `json:"deprecate_cooldown_days"`    // cooldown before re-deprecating (default 7)
+	LLMBudgetTokens     int     `json:"llm_budget_tokens"`          // token budget for Skill draft generation (default 2000)
 }
 
 // Duration wraps time.Duration for JSON serialization.
@@ -125,6 +140,18 @@ func DefaultForgeConfig() *ForgeConfig {
 			Enabled:              true,
 			MaxTraceAgeDays:      30,
 			MinTracesForAnalysis: 5,
+		},
+		Learning: LearningConfig{
+			Enabled:             false,
+			MinPatternFrequency: 5,
+			HighConfThreshold:   0.8,
+			MaxAutoCreates:      3,
+			MaxRefineRounds:     3,
+			MinOutcomeSamples:   5,
+			MonitorWindowDays:   7,
+			DegradeThreshold:    -0.2,
+			DegradeCooldownDays: 7,
+			LLMBudgetTokens:     2000,
 		},
 	}
 }

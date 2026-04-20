@@ -10,7 +10,7 @@ import (
 )
 
 // semanticAnalysis uses LLM to generate deeper insights from statistical data.
-func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats *ReflectionStats, artifacts []Artifact, traceStats *TraceStats, config *ForgeConfig) (string, error) {
+func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats *ReflectionStats, artifacts []Artifact, traceStats *TraceStats, cycle *LearningCycle, config *ForgeConfig) (string, error) {
 	// Build context for LLM
 	var sb strings.Builder
 	sb.WriteString("Analyze the following tool usage data from an AI agent system and provide insights:\n\n")
@@ -72,6 +72,33 @@ func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats
 			sb.WriteString("\n### Session Signals\n")
 			for sigType, count := range traceStats.SignalSummary {
 				sb.WriteString(fmt.Sprintf("- %s: %d occurrences\n", sigType, count))
+			}
+		}
+	}
+
+	// Phase 6: Closed-loop learning state
+	if cycle != nil {
+		sb.WriteString("\n## Closed-Loop Learning State (Phase 6)\n")
+		sb.WriteString(fmt.Sprintf("- Patterns detected: %d\n", cycle.PatternsFound))
+		sb.WriteString(fmt.Sprintf("- Actions created: %d (executed: %d, skipped: %d)\n",
+			cycle.ActionsCreated, cycle.ActionsExecuted, cycle.ActionsSkipped))
+		if len(cycle.PreviousOutcomes) > 0 {
+			sb.WriteString("\n### Previous Deployment Feedback\n")
+			for _, o := range cycle.PreviousOutcomes {
+				sb.WriteString(fmt.Sprintf("- Artifact %s: verdict=%s, improvement=%.3f, samples=%d\n",
+					o.ArtifactID, o.Verdict, o.ImprovementScore, o.SampleSize))
+			}
+		}
+		if len(cycle.PatternSummary) > 0 {
+			sb.WriteString("\n### Detected Patterns\n")
+			for _, p := range cycle.PatternSummary {
+				sb.WriteString(fmt.Sprintf("- [%s] freq=%d, conf=%.2f\n", p.Type, p.Frequency, p.Confidence))
+			}
+		}
+		if len(cycle.ActionSummary) > 0 {
+			sb.WriteString("\n### Learning Actions\n")
+			for _, a := range cycle.ActionSummary {
+				sb.WriteString(fmt.Sprintf("- [%s] %s: status=%s\n", a.Priority, a.Type, a.Status))
 			}
 		}
 	}

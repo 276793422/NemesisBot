@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/forge"
@@ -32,6 +33,8 @@ func CmdForge() {
 		cmdForgeDisable()
 	case "export":
 		cmdForgeExport()
+	case "learning":
+		cmdForgeLearning()
 	default:
 		fmt.Printf("Unknown forge command: %s\n", subcommand)
 		ForgeHelp()
@@ -47,6 +50,10 @@ func ForgeHelp() {
 	fmt.Println("  enable                 Enable Forge module")
 	fmt.Println("  disable                Disable Forge module")
 	fmt.Println("  export [artifact-id]   Export artifact(s) to workspace/forge/exports/")
+	fmt.Println("  learning               Show closed-loop learning status (Phase 6)")
+	fmt.Println("  learning enable        Enable closed-loop learning")
+	fmt.Println("  learning disable       Disable closed-loop learning")
+	fmt.Println("  learning history       Show recent learning cycles")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  nemesisbot forge status              # View Forge status")
@@ -111,6 +118,8 @@ func cmdForgeStatus() {
 	fmt.Printf("    Min experiences:        %d\n", forgeCfg.Reflection.MinExperiences)
 	fmt.Printf("    LLM semantic analysis:  %v\n", forgeCfg.Reflection.UseLLM)
 	fmt.Printf("    Default artifact status: %s\n", forgeCfg.Artifacts.DefaultStatus)
+	fmt.Printf("    Trace collection:       %v\n", forgeCfg.Trace.Enabled)
+	fmt.Printf("    Learning (closed-loop): %v\n", forgeCfg.Learning.Enabled)
 
 	// Show registry stats
 	registry := forge.NewRegistry(registryPath)
@@ -215,9 +224,11 @@ func cmdForgeEnable() {
 	}
 
 	// Create directory structure
-	for _, subDir := range []string{"experiences", "reflections", "skills", "scripts", "mcp"} {
+	for _, subDir := range []string{"experiences", "reflections", "skills", "scripts", "mcp", "traces", "learning"} {
 		os.MkdirAll(filepath.Join(forgeDir, subDir), 0755)
 	}
+	// Create prompts directory
+	os.MkdirAll(filepath.Join(workspace, "prompts"), 0755)
 
 	fmt.Println("Forge self-learning module enabled.")
 	fmt.Println("\nRestart agent/gateway to apply changes.")
@@ -280,4 +291,102 @@ func cmdForgeExport() {
 		os.Exit(1)
 	}
 	fmt.Printf("Exported %d artifact(s) to %s\n", count, targetDir)
+}
+
+func cmdForgeLearning() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	workspace := cfg.WorkspacePath()
+	forgeDir := filepath.Join(workspace, "forge")
+	forgeConfigPath := filepath.Join(forgeDir, "forge.json")
+
+	forgeCfg, err := forge.LoadForgeConfig(forgeConfigPath)
+	if err != nil {
+		forgeCfg = forge.DefaultForgeConfig()
+	}
+
+	// Handle sub-commands
+	if len(os.Args) >= 4 {
+		action := os.Args[3]
+		switch action {
+		case "enable":
+			forgeCfg.Learning.Enabled = true
+			// Auto-enable trace
+			forgeCfg.Trace.Enabled = true
+			if err := forge.SaveForgeConfig(forgeConfigPath, forgeCfg); err != nil {
+				fmt.Printf("Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Closed-loop learning enabled. Trace collection also enabled.")
+			fmt.Println("Restart agent/gateway to apply changes.")
+			return
+		case "disable":
+			forgeCfg.Learning.Enabled = false
+			if err := forge.SaveForgeConfig(forgeConfigPath, forgeCfg); err != nil {
+				fmt.Printf("Error saving config: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Closed-loop learning disabled.")
+			fmt.Println("Restart agent/gateway to apply changes.")
+			return
+		case "history":
+			showLearningHistory(forgeDir)
+			return
+		}
+	}
+
+	// Default: show status
+	fmt.Println("\n=== Forge Closed-Loop Learning (Phase 6) ===")
+	fmt.Println()
+
+	learningStatus := "disabled"
+	if forgeCfg.Learning.Enabled {
+		learningStatus = "enabled"
+	}
+	fmt.Printf("  Status: %s\n\n", learningStatus)
+
+	fmt.Println("  Configuration:")
+	fmt.Printf("    Min pattern frequency:    %d\n", forgeCfg.Learning.MinPatternFrequency)
+	fmt.Printf("    High confidence threshold: %.2f\n", forgeCfg.Learning.HighConfThreshold)
+	fmt.Printf("    Max auto creates/cycle:   %d\n", forgeCfg.Learning.MaxAutoCreates)
+	fmt.Printf("    Max refine rounds:        %d\n", forgeCfg.Learning.MaxRefineRounds)
+	fmt.Printf("    Min outcome samples:      %d\n", forgeCfg.Learning.MinOutcomeSamples)
+	fmt.Printf("    Monitor window (days):    %d\n", forgeCfg.Learning.MonitorWindowDays)
+	fmt.Printf("    Degrade threshold:        %.2f\n", forgeCfg.Learning.DegradeThreshold)
+	fmt.Printf("    Degrade cooldown (days):  %d\n", forgeCfg.Learning.DegradeCooldownDays)
+	fmt.Printf("    LLM budget tokens:        %d\n", forgeCfg.Learning.LLMBudgetTokens)
+
+	// Show latest cycle
+	showLearningHistory(forgeDir)
+}
+
+func showLearningHistory(forgeDir string) {
+	learningDir := filepath.Join(forgeDir, "learning")
+	if _, err := os.Stat(learningDir); os.IsNotExist(err) {
+		fmt.Println("\n  No learning cycles recorded yet.")
+		return
+	}
+
+	// Read recent cycles
+	cycleStore := forge.NewCycleStore(forgeDir, nil)
+	cycles, err := cycleStore.ReadCycles(time.Now().UTC().AddDate(0, 0, -30))
+	if err != nil || len(cycles) == 0 {
+		fmt.Println("\n  No learning cycles recorded yet.")
+		return
+	}
+
+	fmt.Printf("\n  Recent learning cycles (%d):\n\n", len(cycles))
+	for _, cycle := range cycles {
+		completed := "running"
+		if cycle.CompletedAt != nil {
+			completed = cycle.CompletedAt.Format("2006-01-02 15:04")
+		}
+		fmt.Printf("    [%s] %s → patterns=%d, actions=%d/%d executed, skipped=%d\n",
+			cycle.ID[:16], completed,
+			cycle.PatternsFound, cycle.ActionsExecuted, cycle.ActionsCreated, cycle.ActionsSkipped)
+	}
 }

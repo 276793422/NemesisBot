@@ -40,6 +40,11 @@ type Artifact struct {
 	UpdatedAt   time.Time      `json:"updated_at"`
 	Evolution   []Evolution    `json:"evolution,omitempty"`
 	Validation  *ArtifactValidation `json:"validation,omitempty"`
+
+	// Phase 6: Closed-loop learning fields
+	ToolSignature              []string  `json:"tool_signature,omitempty"`
+	LastDegradedAt             *time.Time `json:"last_degraded_at,omitempty"`
+	ConsecutiveObservingRounds int        `json:"consecutive_observing_rounds,omitempty"`
 }
 
 // Evolution records a version change for an artifact.

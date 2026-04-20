@@ -22,6 +22,7 @@ func NewForgeTools(f *Forge) []tools.Tool {
 		&forgeEvaluateTool{forge: f},
 		&forgeBuildMCPTool{forge: f},
 		&forgeShareTool{forge: f},
+		&forgeLearningStatusTool{forge: f}, // Phase 6
 	}
 }
 
@@ -163,6 +164,28 @@ func (t *forgeCreateTool) Execute(ctx context.Context, args map[string]interface
 	// Sanitize name
 	name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
 
+	// Use shared CreateSkill method for skill type (Phase 6 dedup)
+	if artifactType == "skill" {
+		artifact, err := t.forge.CreateSkill(ctx, name, content, description, nil)
+		if err != nil {
+			return tools.ErrorResult(fmt.Sprintf("创建失败: %v", err))
+		}
+		status := string(artifact.Status)
+		var validationInfo string
+		if artifact.Validation != nil {
+			validationInfo = fmt.Sprintf("\n- 验证状态: Stage1=%v, Stage2=%v, Stage3=%v",
+				artifact.Validation.Stage1Static != nil && artifact.Validation.Stage1Static.Passed,
+				artifact.Validation.Stage2Functional != nil && artifact.Validation.Stage2Functional.Passed,
+				artifact.Validation.Stage3Quality != nil && artifact.Validation.Stage3Quality.Passed)
+			if artifact.Validation.Stage3Quality != nil {
+				validationInfo += fmt.Sprintf(" (评分: %d)", artifact.Validation.Stage3Quality.Score)
+			}
+		}
+		return tools.NewToolResult(fmt.Sprintf("Forge 产物已创建:\n- 类型: skill\n- 名称: %s\n- 路径: %s\n- 状态: %s\n- ID: %s%s",
+			name, artifact.Path, status, artifact.ID, validationInfo))
+	}
+
+	// Non-skill types: inline creation logic (script/mcp)
 	// Auto-generate frontmatter for Skills if missing
 	if artifactType == "skill" && !strings.Contains(content, "---") {
 		content = fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n\n%s", name, description, content)
@@ -762,6 +785,82 @@ func (t *forgeShareTool) Execute(ctx context.Context, args map[string]interface{
 	}
 
 	return tools.NewToolResult(fmt.Sprintf("反思报告已分享: %s", filepath.Base(reportPath)))
+}
+
+// --- forge_learning_status (Phase 6) ---
+
+type forgeLearningStatusTool struct {
+	forge *Forge
+}
+
+func (t *forgeLearningStatusTool) Name() string {
+	return "forge_learning_status"
+}
+
+func (t *forgeLearningStatusTool) Description() string {
+	return "查看 Forge 闭环学习状态，包括最近学习周期摘要和活跃产物效果。"
+}
+
+func (t *forgeLearningStatusTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{},
+	}
+}
+
+func (t *forgeLearningStatusTool) Execute(ctx context.Context, args map[string]interface{}) *tools.ToolResult {
+	cfg := t.forge.GetConfig()
+	if !cfg.Learning.Enabled {
+		return tools.NewToolResult("Forge 闭环学习未启用。在 forge.json 中设置 learning.enabled = true 以启用。")
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Forge 闭环学习状态\n\n")
+	sb.WriteString(fmt.Sprintf("- 学习引擎: 已启用\n"))
+	sb.WriteString(fmt.Sprintf("- 最小模式频次: %d\n", cfg.Learning.MinPatternFrequency))
+	sb.WriteString(fmt.Sprintf("- 高置信度阈值: %.2f\n", cfg.Learning.HighConfThreshold))
+	sb.WriteString(fmt.Sprintf("- 每轮最大自动创建: %d\n", cfg.Learning.MaxAutoCreates))
+
+	// Latest cycle info
+	le := t.forge.GetLearningEngine()
+	if le != nil {
+		cycle := le.GetLatestCycle()
+		if cycle != nil {
+			sb.WriteString(fmt.Sprintf("\n### 最近学习周期\n"))
+			sb.WriteString(fmt.Sprintf("- ID: %s\n", cycle.ID))
+			sb.WriteString(fmt.Sprintf("- 开始时间: %s\n", cycle.StartedAt.Format("2006-01-02 15:04")))
+			if cycle.CompletedAt != nil {
+				sb.WriteString(fmt.Sprintf("- 完成时间: %s\n", cycle.CompletedAt.Format("2006-01-02 15:04")))
+			}
+			sb.WriteString(fmt.Sprintf("- 检测模式: %d\n", cycle.PatternsFound))
+			sb.WriteString(fmt.Sprintf("- 创建行动: %d\n", cycle.ActionsCreated))
+			sb.WriteString(fmt.Sprintf("- 已执行: %d, 已跳过: %d\n", cycle.ActionsExecuted, cycle.ActionsSkipped))
+		} else {
+			sb.WriteString("\n暂无学习周期记录。\n")
+		}
+	}
+
+	// Active forge skills with effect
+	registry := t.forge.GetRegistry()
+	artifacts := registry.List(ArtifactSkill, StatusActive)
+	forgeSkills := make([]Artifact, 0)
+	for _, a := range artifacts {
+		if len(a.ToolSignature) > 0 {
+			forgeSkills = append(forgeSkills, a)
+		}
+	}
+	if len(forgeSkills) > 0 {
+		sb.WriteString("\n### 活跃学习产物\n\n")
+		sb.WriteString("| ID | 名称 | 工具签名 | 使用次数 | 成功率 |\n")
+		sb.WriteString("|-----|------|----------|----------|--------|\n")
+		for _, a := range forgeSkills {
+			sig := strings.Join(a.ToolSignature, "→")
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %.0f%% |\n",
+				a.ID, a.Name, truncate(sig, 30), a.UsageCount, a.SuccessRate*100))
+		}
+	}
+
+	return tools.NewToolResult(sb.String())
 }
 
 // incrementVersion increments a semver-like version string.

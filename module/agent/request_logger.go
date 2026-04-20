@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -211,7 +212,9 @@ func (rl *RequestLogger) CreateSession() error {
 
 	// Create timestamp directory with random suffix to avoid conflicts
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
-	suffix := fmt.Sprintf("_%x", time.Now().UnixNano()%0xffffff)
+	var suffixBytes [3]byte
+	rand.Read(suffixBytes[:])
+	suffix := fmt.Sprintf("_%x", suffixBytes[:])
 	rl.sessionDir = filepath.Join(rl.baseDir, timestamp+suffix)
 
 	if err := os.MkdirAll(rl.sessionDir, 0700); err != nil {

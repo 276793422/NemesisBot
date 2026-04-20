@@ -237,11 +237,11 @@ func TestForgeToolsCreation(t *testing.T) {
 	forgeInstance, _ := forge.NewForge(workspace, nil)
 	tools := forge.NewForgeTools(forgeInstance)
 
-	if len(tools) != 7 {
-		t.Fatalf("Expected 7 tools, got %d", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("Expected 8 tools, got %d", len(tools))
 	}
 
-	expectedNames := []string{"forge_reflect", "forge_create", "forge_update", "forge_list", "forge_evaluate", "forge_build_mcp", "forge_share"}
+	expectedNames := []string{"forge_reflect", "forge_create", "forge_update", "forge_list", "forge_evaluate", "forge_build_mcp", "forge_share", "forge_learning_status"}
 	for i, expected := range expectedNames {
 		if tools[i].Name() != expected {
 			t.Errorf("Tool %d: expected name '%s', got '%s'", i, expected, tools[i].Name())
