@@ -21,6 +21,7 @@ import (
 	"github.com/276793422/NemesisBot/module/config"
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/observer"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/routing"
 	"github.com/276793422/NemesisBot/module/state"
@@ -46,6 +47,9 @@ type AgentLoop struct {
 	// Phase 2: 续行快照（内存缓存，磁盘持久化由 Cluster.ContinuationStore 管理）
 	continuations map[string]*continuationData // taskID → 续行数据
 	contMu        sync.RWMutex
+
+	// Phase 5: 通用观察者管理器
+	observerMgr *observer.Manager
 }
 
 // sessionBusyState tracks the busy state and queue for a session
@@ -77,7 +81,8 @@ type processOptions struct {
 	EnableSummary   bool           // Whether to trigger summarization
 	SendResponse    bool           // Whether to send response via bus
 	NoHistory       bool           // If true, don't load session history (for heartbeat)
-	RequestLogger   *RequestLogger // Request logger instance
+	RequestLogger   *RequestLogger // Request logger instance (legacy, kept for compat)
+	TraceID         string         // Phase 5: conversation trace ID
 }
 
 func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers.LLMProvider) *AgentLoop {
@@ -320,6 +325,16 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 // GetCluster returns the cluster instance if available, nil otherwise.
 func (al *AgentLoop) GetCluster() *cluster.Cluster {
 	return al.cluster
+}
+
+// SetObserverManager injects the observer manager for Phase 5 event emission.
+func (al *AgentLoop) SetObserverManager(mgr *observer.Manager) {
+	al.observerMgr = mgr
+}
+
+// GetObserverManager returns the observer manager.
+func (al *AgentLoop) GetObserverManager() *observer.Manager {
+	return al.observerMgr
 }
 
 func (al *AgentLoop) ProcessDirect(ctx context.Context, content, sessionKey string) (string, error) {

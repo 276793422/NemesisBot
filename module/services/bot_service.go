@@ -19,6 +19,7 @@ import (
 	"github.com/276793422/NemesisBot/module/health"
 	"github.com/276793422/NemesisBot/module/heartbeat"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/observer"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/state"
 	"github.com/276793422/NemesisBot/module/tools"
@@ -396,6 +397,33 @@ func (s *BotService) initComponents() error {
 
 			logger.InfoC("bot_service", "Forge module initialized")
 		}
+	}
+
+	// Phase 5: Setup Observer Manager for conversation lifecycle events
+	observerMgr := observer.NewManager()
+
+	// Register RequestLogger as Observer (if logging enabled)
+	if cfg.Logging != nil && cfg.Logging.LLM != nil && cfg.Logging.LLM.Enabled {
+		rlObs := agent.NewRequestLoggerObserver(cfg.Logging, s.workspace)
+		observerMgr.Register(rlObs)
+		logger.InfoC("bot_service", "RequestLoggerObserver registered")
+	}
+
+	// Register Forge TraceCollector as Observer (if Forge and trace enabled)
+	if s.forgeSvc != nil && s.forgeSvc.GetConfig().Trace.Enabled {
+		if tc := s.forgeSvc.GetTraceCollector(); tc != nil {
+			observerMgr.Register(tc)
+			// Inject trace store into reflector for conversation-level analysis
+			if ts := s.forgeSvc.GetTraceStore(); ts != nil {
+				s.forgeSvc.GetReflector().SetTraceStore(ts)
+			}
+			logger.InfoC("bot_service", "TraceCollector observer registered")
+		}
+	}
+
+	// Inject observer manager into AgentLoop
+	if observerMgr.HasObservers() {
+		s.agentLoop.SetObserverManager(observerMgr)
 	}
 
 	logger.InfoC("bot_service", "Components initialized")

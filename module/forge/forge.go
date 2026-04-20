@@ -19,17 +19,20 @@ import (
 // Forge is the core self-learning system that runs alongside AgentLoop and Cluster.
 // It consists of four subsystems: Collector, Reflector, Factory, and Registry.
 // Phase 4 adds Syncer for cluster learning (cross-node reflection sharing).
+// Phase 5 adds TraceCollector for conversation-level trace collection.
 type Forge struct {
-	workspace     string
-	config        *ForgeConfig
-	collector     *Collector
-	reflector     *Reflector
-	registry      *Registry
-	store         *ExperienceStore
-	pipeline      *Pipeline
-	mcpInstaller  *MCPInstaller
-	exporter      *Exporter
-	syncer        *Syncer
+	workspace      string
+	config         *ForgeConfig
+	collector      *Collector
+	reflector      *Reflector
+	registry       *Registry
+	store          *ExperienceStore
+	pipeline       *Pipeline
+	mcpInstaller   *MCPInstaller
+	exporter       *Exporter
+	syncer         *Syncer
+	traceCollector *TraceCollector // Phase 5
+	traceStore     *TraceStore     // Phase 5
 
 	provider providers.LLMProvider
 	stopCh   chan struct{}
@@ -56,6 +59,7 @@ func NewForge(workspace string, pluginMgr *plugin.Manager) (*Forge, error) {
 		filepath.Join(forgeDir, "skills"),
 		filepath.Join(forgeDir, "scripts"),
 		filepath.Join(forgeDir, "mcp"),
+		filepath.Join(forgeDir, "traces"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -88,18 +92,28 @@ func NewForge(workspace string, pluginMgr *plugin.Manager) (*Forge, error) {
 	// Create syncer (Phase 4: cluster learning)
 	syncer := NewSyncer(forgeDir, registry, cfg)
 
+	// Create trace store and collector (Phase 5: conversation-level traces)
+	var traceStore *TraceStore
+	var traceCollector *TraceCollector
+	if cfg.Trace.Enabled {
+		traceStore = NewTraceStore(forgeDir, cfg)
+		traceCollector = NewTraceCollector(traceStore, cfg)
+	}
+
 	f := &Forge{
-		workspace:    workspace,
-		config:       cfg,
-		collector:    collector,
-		reflector:    reflector,
-		registry:     registry,
-		store:        store,
-		pipeline:     pipeline,
-		mcpInstaller: mcpInstaller,
-		exporter:     exporter,
-		syncer:       syncer,
-		stopCh:       make(chan struct{}),
+		workspace:      workspace,
+		config:         cfg,
+		collector:      collector,
+		reflector:      reflector,
+		registry:       registry,
+		store:          store,
+		pipeline:       pipeline,
+		mcpInstaller:   mcpInstaller,
+		exporter:       exporter,
+		syncer:         syncer,
+		traceCollector: traceCollector,
+		traceStore:     traceStore,
+		stopCh:         make(chan struct{}),
 	}
 
 	// Register the ForgePlugin with the plugin manager
@@ -223,6 +237,16 @@ func (f *Forge) GetSyncer() *Syncer {
 	return f.syncer
 }
 
+// GetTraceCollector returns the trace collector for Phase 5 conversation-level analysis.
+func (f *Forge) GetTraceCollector() *TraceCollector {
+	return f.traceCollector
+}
+
+// GetTraceStore returns the trace store.
+func (f *Forge) GetTraceStore() *TraceStore {
+	return f.traceStore
+}
+
 // ReceiveReflection receives a remote reflection report (used by RPC handler).
 func (f *Forge) ReceiveReflection(payload map[string]interface{}) error {
 	if f.syncer == nil {
@@ -262,6 +286,7 @@ func (f *Forge) runReflector() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 			reportPath, err := f.reflector.Reflect(ctx, "today", "all")
+			cancel()
 			if err != nil {
 				logger.ErrorCF("forge", "Reflection failed", map[string]interface{}{
 					"error": err.Error(),
@@ -281,7 +306,6 @@ func (f *Forge) runReflector() {
 					shareCancel()
 				}
 			}
-			cancel()
 		}
 	}
 }
@@ -307,6 +331,14 @@ func (f *Forge) runCleanup() {
 				logger.ErrorCF("forge", "Report cleanup failed", map[string]interface{}{
 					"error": err.Error(),
 				})
+			}
+			// Phase 5: trace cleanup
+			if f.traceStore != nil && f.config.Trace.MaxTraceAgeDays > 0 {
+				if err := f.traceStore.Cleanup(f.config.Trace.MaxTraceAgeDays); err != nil {
+					logger.ErrorCF("forge", "Trace cleanup failed", map[string]interface{}{
+						"error": err.Error(),
+					})
+				}
 			}
 		}
 	}

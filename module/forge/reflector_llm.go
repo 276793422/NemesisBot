@@ -10,7 +10,7 @@ import (
 )
 
 // semanticAnalysis uses LLM to generate deeper insights from statistical data.
-func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats *ReflectionStats, artifacts []Artifact, config *ForgeConfig) (string, error) {
+func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats *ReflectionStats, artifacts []Artifact, traceStats *TraceStats, config *ForgeConfig) (string, error) {
 	// Build context for LLM
 	var sb strings.Builder
 	sb.WriteString("Analyze the following tool usage data from an AI agent system and provide insights:\n\n")
@@ -46,6 +46,34 @@ func semanticAnalysis(ctx context.Context, provider providers.LLMProvider, stats
 	for _, a := range artifacts {
 		sb.WriteString(fmt.Sprintf("- [%s] %s v%s (%s, %d uses, %.0f%% success)\n",
 			a.Type, a.Name, a.Version, a.Status, a.UsageCount, a.SuccessRate*100))
+	}
+
+	// Phase 5: Conversation-level trace insights
+	if traceStats != nil {
+		sb.WriteString("\n## Conversation-Level Trace Insights\n")
+		sb.WriteString(fmt.Sprintf("- Total conversations: %d\n", traceStats.TotalTraces))
+		sb.WriteString(fmt.Sprintf("- Average LLM rounds per conversation: %.1f\n", traceStats.AvgRounds))
+		sb.WriteString(fmt.Sprintf("- Efficiency score: %.2f (tool steps per round)\n", traceStats.EfficiencyScore))
+		if len(traceStats.ToolChainPatterns) > 0 {
+			sb.WriteString("\n### Top Tool Chains\n")
+			for _, p := range traceStats.ToolChainPatterns {
+				sb.WriteString(fmt.Sprintf("- %s: %d uses, %.1f avg rounds, %.0f%% success\n",
+					p.Chain, p.Count, p.AvgRounds, p.SuccessRate*100))
+			}
+		}
+		if len(traceStats.RetryPatterns) > 0 {
+			sb.WriteString("\n### Retry Patterns\n")
+			for _, p := range traceStats.RetryPatterns {
+				sb.WriteString(fmt.Sprintf("- %s: %d calls, %.0f%% success rate\n",
+					p.ToolName, p.RetryCount, p.SuccessRate*100))
+			}
+		}
+		if len(traceStats.SignalSummary) > 0 {
+			sb.WriteString("\n### Session Signals\n")
+			for sigType, count := range traceStats.SignalSummary {
+				sb.WriteString(fmt.Sprintf("- %s: %d occurrences\n", sigType, count))
+			}
+		}
 	}
 
 	sb.WriteString("\nPlease provide:\n")

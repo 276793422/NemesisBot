@@ -14,6 +14,7 @@ type ForgeConfig struct {
 	Reflection ReflectionConfig `json:"reflection"`
 	Artifacts  ArtifactsConfig  `json:"artifacts"`
 	Validation ValidationConfig `json:"validation"`
+	Trace      TraceConfig      `json:"trace"`
 }
 
 // CollectionConfig controls experience collection behavior.
@@ -55,6 +56,13 @@ type ValidationConfig struct {
 	MinQualityScore int      `json:"min_quality_score"`
 	LLMMaxTokens    int      `json:"llm_max_tokens"`
 	Timeout         Duration `json:"timeout"`
+}
+
+// TraceConfig controls conversation-level trace collection (Phase 5).
+type TraceConfig struct {
+	Enabled              bool `json:"enabled"`
+	MaxTraceAgeDays      int  `json:"max_trace_age_days"`
+	MinTracesForAnalysis int  `json:"min_traces_for_analysis"`
 }
 
 // Duration wraps time.Duration for JSON serialization.
@@ -112,6 +120,11 @@ func DefaultForgeConfig() *ForgeConfig {
 			MinQualityScore: 60,
 			LLMMaxTokens:    2000,
 			Timeout:         Duration{60 * time.Second},
+		},
+		Trace: TraceConfig{
+			Enabled:              true,
+			MaxTraceAgeDays:      30,
+			MinTracesForAnalysis: 5,
 		},
 	}
 }

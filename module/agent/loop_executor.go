@@ -14,6 +14,7 @@ import (
 	"github.com/276793422/NemesisBot/module/bus"
 	"github.com/276793422/NemesisBot/module/constants"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/observer"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/tools"
 	"github.com/276793422/NemesisBot/module/utils"
@@ -21,27 +22,48 @@ import (
 
 // runAgentLoop is the core message processing logic.
 func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opts processOptions) (string, error) {
-	// Initialize request logger if enabled
+	// Phase 5: Generate TraceID and emit conversation_start event
+	traceID := fmt.Sprintf("%s-%d", opts.SessionKey, time.Now().UnixNano())
+	opts.TraceID = traceID
+	conversationStartTime := time.Now()
+
+	if al.observerMgr != nil && al.observerMgr.HasObservers() {
+		al.observerMgr.EmitSync(ctx, observer.ConversationEvent{
+			Type:      observer.EventConversationStart,
+			TraceID:   traceID,
+			Timestamp: time.Now(),
+			Data: &observer.ConversationStartData{
+				SessionKey: opts.SessionKey,
+				Channel:    opts.Channel,
+				ChatID:     opts.ChatID,
+				SenderID:   "user",
+				Content:    opts.UserMessage,
+			},
+		})
+	}
+
+	// Legacy: Initialize request logger if enabled (backward compat when no observer)
 	var reqLogger *RequestLogger
-	if al.cfg.Logging != nil && al.cfg.Logging.LLM != nil && al.cfg.Logging.LLM.Enabled {
-		workspace := al.cfg.WorkspacePath()
-		reqLogger = NewRequestLogger(al.cfg.Logging, workspace)
-		if reqLogger.IsEnabled() {
-			if err := reqLogger.CreateSession(); err != nil {
-				logger.WarnC("request_logger", fmt.Sprintf("Failed to create logging session: %v", err))
-			} else {
-				// Log user request
-				reqLogger.LogUserRequest(UserRequestInfo{
-					Timestamp: time.Now(),
-					Channel:   opts.Channel,
-					SenderID:  "user", // Could be extracted from msg if needed
-					ChatID:    opts.ChatID,
-					Content:   opts.UserMessage,
-				})
+	if al.observerMgr == nil || !al.observerMgr.HasObservers() {
+		if al.cfg.Logging != nil && al.cfg.Logging.LLM != nil && al.cfg.Logging.LLM.Enabled {
+			workspace := al.cfg.WorkspacePath()
+			reqLogger = NewRequestLogger(al.cfg.Logging, workspace)
+			if reqLogger.IsEnabled() {
+				if err := reqLogger.CreateSession(); err != nil {
+					logger.WarnC("request_logger", fmt.Sprintf("Failed to create logging session: %v", err))
+				} else {
+					reqLogger.LogUserRequest(UserRequestInfo{
+						Timestamp: time.Now(),
+						Channel:   opts.Channel,
+						SenderID:  "user",
+						ChatID:    opts.ChatID,
+						Content:   opts.UserMessage,
+					})
+				}
 			}
 		}
+		opts.RequestLogger = reqLogger
 	}
-	opts.RequestLogger = reqLogger
 
 	// 0. Record last channel for heartbeat notifications (skip internal channels)
 	if opts.Channel != "" && opts.ChatID != "" {
@@ -84,7 +106,24 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 	// 4. Run LLM iteration loop
 	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
 	if err != nil {
-		// Log error and close logger before returning
+		// Emit conversation_end event (error path)
+		if al.observerMgr != nil && al.observerMgr.HasObservers() {
+			al.observerMgr.EmitSync(ctx, observer.ConversationEvent{
+				Type:      observer.EventConversationEnd,
+				TraceID:   opts.TraceID,
+				Timestamp: time.Now(),
+				Data: &observer.ConversationEndData{
+					SessionKey:    opts.SessionKey,
+					Channel:       opts.Channel,
+					ChatID:        opts.ChatID,
+					TotalRounds:   iteration,
+					TotalDuration: time.Since(conversationStartTime),
+					Content:       fmt.Sprintf("Error: %s", err.Error()),
+					Error:         err,
+				},
+			})
+		}
+		// Legacy: close logger on error
 		if reqLogger != nil && reqLogger.IsEnabled() {
 			totalDuration := time.Since(reqLogger.startTime)
 			reqLogger.LogFinalResponse(FinalResponseInfo{
@@ -137,6 +176,22 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, agent *AgentInstance, opt
 		})
 
 	// 10. Log final response to request logger and close
+	if al.observerMgr != nil && al.observerMgr.HasObservers() {
+		al.observerMgr.EmitSync(ctx, observer.ConversationEvent{
+			Type:      observer.EventConversationEnd,
+			TraceID:   opts.TraceID,
+			Timestamp: time.Now(),
+			Data: &observer.ConversationEndData{
+				SessionKey:    opts.SessionKey,
+				Channel:       opts.Channel,
+				ChatID:        opts.ChatID,
+				TotalRounds:   iteration,
+				TotalDuration: time.Since(conversationStartTime),
+				Content:       finalContent,
+			},
+		})
+	}
+	// Legacy: close logger when no observer manager
 	if reqLogger != nil && reqLogger.IsEnabled() {
 		totalDuration := time.Since(reqLogger.startTime)
 		reqLogger.LogFinalResponse(FinalResponseInfo{
@@ -207,7 +262,24 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 			})
 
 		// Log LLM request to request logger with enhanced information
-		if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
+		if al.observerMgr != nil && al.observerMgr.HasObservers() {
+			al.observerMgr.Emit(ctx, observer.ConversationEvent{
+				Type:      observer.EventLLMRequest,
+				TraceID:   opts.TraceID,
+				Timestamp: time.Now(),
+				Data: &observer.LLMRequestData{
+					Round:        iteration,
+					Model:        agent.Model,
+					ProviderName: agent.ProviderMeta.Name,
+					APIKey:       agent.ProviderMeta.APIKey,
+					APIBase:      agent.ProviderMeta.APIBase,
+					HTTPHeaders:  httpHeaders,
+					FullConfig:   fullConfig,
+					Messages:     messages,
+					Tools:        providerToolDefs,
+				},
+			})
+		} else if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
 			opts.RequestLogger.LogLLMRequest(LLMRequestInfo{
 				Round:        iteration,
 				Timestamp:    time.Now(),
@@ -308,7 +380,22 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 		}
 
 		// Log LLM response to request logger
-		if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
+		if al.observerMgr != nil && al.observerMgr.HasObservers() {
+			duration := time.Since(roundStartTime)
+			al.observerMgr.Emit(ctx, observer.ConversationEvent{
+				Type:      observer.EventLLMResponse,
+				TraceID:   opts.TraceID,
+				Timestamp: time.Now(),
+				Data: &observer.LLMResponseData{
+					Round:        iteration,
+					Duration:     duration,
+					Content:      response.Content,
+					ToolCalls:    response.ToolCalls,
+					Usage:        response.Usage,
+					FinishReason: response.FinishReason,
+				},
+			})
+		} else if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
 			duration := time.Since(roundStartTime)
 			opts.RequestLogger.LogLLMResponse(LLMResponseInfo{
 				Round:        iteration,
@@ -369,7 +456,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 
 		// Execute tool calls
-		for _, tc := range response.ToolCalls {
+		for chainPos, tc := range response.ToolCalls {
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
 			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
@@ -400,8 +487,27 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 			toolResult := agent.Tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID, asyncCallback)
 			toolDuration := time.Since(toolStartTime)
 
-			// Record tool execution for local operations log
-			if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
+			// Record tool execution via observer or legacy logger
+			if al.observerMgr != nil && al.observerMgr.HasObservers() {
+				errMsg := ""
+				if toolResult.Err != nil {
+					errMsg = toolResult.Err.Error()
+				}
+				al.observerMgr.Emit(ctx, observer.ConversationEvent{
+					Type:      observer.EventToolCall,
+					TraceID:   opts.TraceID,
+					Timestamp: time.Now(),
+					Data: &observer.ToolCallData{
+						ToolName:  tc.Name,
+						Arguments: tc.Arguments,
+						Success:   toolResult.Err == nil,
+						Duration:  toolDuration,
+						Error:     errMsg,
+						LLMRound:  iteration,
+						ChainPos:  chainPos,
+					},
+				})
+			} else if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() {
 				op := Operation{
 					Type:      "tool_call",
 					Name:      tc.Name,
@@ -457,13 +563,15 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, agent *AgentInstance, 
 			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
 		}
 
-		// Log local operations for this round
-		if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() && len(localOperations[iteration]) > 0 {
-			opts.RequestLogger.LogLocalOperations(LocalOperationInfo{
-				Round:      iteration,
-				Timestamp:  time.Now(),
-				Operations: localOperations[iteration],
-			})
+		// Log local operations for this round (legacy path only)
+		if al.observerMgr == nil || !al.observerMgr.HasObservers() {
+			if opts.RequestLogger != nil && opts.RequestLogger.IsEnabled() && len(localOperations[iteration]) > 0 {
+				opts.RequestLogger.LogLocalOperations(LocalOperationInfo{
+					Round:      iteration,
+					Timestamp:  time.Now(),
+					Operations: localOperations[iteration],
+				})
+			}
 		}
 	}
 

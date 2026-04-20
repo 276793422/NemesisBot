@@ -15,11 +15,12 @@ import (
 // Reflector analyzes experience data to generate insights and improvement suggestions.
 // It has two levels: statistical (pure code, zero tokens) and semantic (LLM-based).
 type Reflector struct {
-	forgeDir string
-	store    *ExperienceStore
-	registry *Registry
-	config   *ForgeConfig
-	provider providers.LLMProvider
+	forgeDir   string
+	store      *ExperienceStore
+	registry   *Registry
+	config     *ForgeConfig
+	provider   providers.LLMProvider
+	traceStore *TraceStore // Phase 5: for conversation-level analysis
 }
 
 // NewReflector creates a new reflection engine.
@@ -55,15 +56,21 @@ func (r *Reflector) Reflect(ctx context.Context, period string, focus string) (s
 	// Stage 1: Statistical analysis
 	stats := r.statisticalAnalysis(records)
 
+	// Stage 1.5: Conversation-level trace analysis (Phase 5)
+	var traceStats *TraceStats
+	if r.traceStore != nil {
+		traceStats = r.analyzeTraces(since)
+	}
+
 	// Stage 2: Get existing artifacts for coverage analysis
 	artifacts := r.registry.ListAll()
 
 	// Stage 3: Build report
-	report := r.buildReport(stats, artifacts, period, focus)
+	report := r.buildReport(stats, artifacts, period, focus, traceStats)
 
 	// Stage 4: Semantic analysis (if LLM available and enabled)
 	if r.config.Reflection.UseLLM && r.provider != nil {
-		llmInsights, err := semanticAnalysis(ctx, r.provider, stats, artifacts, r.config)
+		llmInsights, err := semanticAnalysis(ctx, r.provider, stats, artifacts, traceStats, r.config)
 		if err == nil {
 			report.LLMInsights = llmInsights
 		}
@@ -190,16 +197,18 @@ type ReflectionReport struct {
 	Stats       *ReflectionStats
 	Artifacts   []Artifact
 	LLMInsights string
+	TraceStats  *TraceStats // Phase 5: conversation-level insights
 }
 
 // buildReport constructs the reflection report.
-func (r *Reflector) buildReport(stats *ReflectionStats, artifacts []Artifact, period, focus string) *ReflectionReport {
+func (r *Reflector) buildReport(stats *ReflectionStats, artifacts []Artifact, period, focus string, traceStats *TraceStats) *ReflectionReport {
 	return &ReflectionReport{
-		Date:      time.Now().UTC().Format("2006-01-02"),
-		Period:    period,
-		Focus:     focus,
-		Stats:     stats,
-		Artifacts: artifacts,
+		Date:       time.Now().UTC().Format("2006-01-02"),
+		Period:     period,
+		Focus:      focus,
+		Stats:      stats,
+		Artifacts:  artifacts,
+		TraceStats: traceStats,
 	}
 }
 
@@ -431,4 +440,196 @@ func (r *Reflector) extractToolPatternsFromReport(reportPath string) map[string]
 	}
 
 	return freq
+}
+
+// --- Phase 5: Conversation-level trace analysis ---
+
+// TraceStats holds conversation-level statistical analysis results.
+type TraceStats struct {
+	TotalTraces       int
+	AvgRounds         float64
+	AvgDurationMs     int64
+	ToolChainPatterns []*ToolChainPattern
+	RetryPatterns     []*RetryPattern
+	EfficiencyScore   float64 // 0-1, higher is better
+	SignalSummary     map[string]int
+}
+
+// ToolChainPattern represents a frequently occurring tool call sequence.
+type ToolChainPattern struct {
+	Chain       string  // "read_file→edit_file→exec"
+	Count       int
+	AvgRounds   float64
+	SuccessRate float64
+}
+
+// RetryPattern represents a tool that was retried after failure.
+type RetryPattern struct {
+	ToolName    string
+	RetryCount  int
+	SuccessRate float64 // success rate after retry
+}
+
+// traceStore is an interface for reading traces, injected into Reflector for testability.
+type traceReader interface {
+	ReadTraces(since time.Time) ([]*ConversationTrace, error)
+}
+
+// analyzeTraces performs pure-code analysis on conversation traces.
+func (r *Reflector) analyzeTraces(since time.Time) *TraceStats {
+	// Use injected trace store if available
+	if r.traceStore == nil {
+		return nil
+	}
+
+	traces, err := r.traceStore.ReadTraces(since)
+	if err != nil || len(traces) == 0 {
+		return nil
+	}
+
+	stats := &TraceStats{
+		TotalTraces:   len(traces),
+		SignalSummary: make(map[string]int),
+	}
+
+	var totalRounds float64
+	var totalDuration int64
+	var totalSteps int
+	var totalTokens int
+
+	// Track tool chains and retry patterns
+	chainCounts := make(map[string]*chainStats)
+	toolRetries := make(map[string]*retryStats)
+
+	for _, t := range traces {
+		totalRounds += float64(t.TotalRounds)
+		totalDuration += t.DurationMs
+		totalSteps += len(t.ToolSteps)
+		totalTokens += t.TokensUsed
+
+		// Extract tool chain per trace
+		chain := extractToolChain(t.ToolSteps)
+		if chain != "" {
+			if cs, ok := chainCounts[chain]; ok {
+				cs.count++
+				cs.totalRounds += float64(t.TotalRounds)
+				if len(t.Signals) == 0 {
+					cs.successes++
+				}
+			} else {
+				chainCounts[chain] = &chainStats{
+					count:       1,
+					totalRounds: float64(t.TotalRounds),
+					successes:   0,
+				}
+				if len(t.Signals) == 0 {
+					chainCounts[chain].successes = 1
+				}
+			}
+		}
+
+		// Aggregate signals
+		for _, sig := range t.Signals {
+			stats.SignalSummary[sig.Type]++
+		}
+
+		// Track retry patterns per tool
+		for _, step := range t.ToolSteps {
+			if rs, ok := toolRetries[step.ToolName]; ok {
+				rs.totalCalls++
+				if step.Success {
+					rs.successes++
+				}
+			} else {
+				rs := &retryStats{totalCalls: 1}
+				if step.Success {
+					rs.successes = 1
+				}
+				toolRetries[step.ToolName] = rs
+			}
+		}
+	}
+
+	stats.AvgRounds = totalRounds / float64(len(traces))
+	stats.AvgDurationMs = totalDuration / int64(len(traces))
+
+	// Efficiency: ratio of tool steps to rounds (lower rounds per step = more efficient)
+	if totalSteps > 0 && totalRounds > 0 {
+		stats.EfficiencyScore = float64(totalSteps) / totalRounds
+		if stats.EfficiencyScore > 1.0 {
+			stats.EfficiencyScore = 1.0
+		}
+	}
+
+	// Build top tool chain patterns
+	chains := make([]*ToolChainPattern, 0, len(chainCounts))
+	for chain, cs := range chainCounts {
+		avgR := cs.totalRounds / float64(cs.count)
+		sr := float64(cs.successes) / float64(cs.count)
+		chains = append(chains, &ToolChainPattern{
+			Chain:       chain,
+			Count:       cs.count,
+			AvgRounds:   avgR,
+			SuccessRate: sr,
+		})
+	}
+	sort.Slice(chains, func(i, j int) bool {
+		return chains[i].Count > chains[j].Count
+	})
+	if len(chains) > 5 {
+		chains = chains[:5]
+	}
+	stats.ToolChainPatterns = chains
+
+	// Build retry patterns for tools that appear in retry signals
+	for tool, rs := range toolRetries {
+		if rs.totalCalls >= 2 && stats.SignalSummary["retry"] > 0 {
+			stats.RetryPatterns = append(stats.RetryPatterns, &RetryPattern{
+				ToolName:    tool,
+				RetryCount:  rs.totalCalls,
+				SuccessRate: float64(rs.successes) / float64(rs.totalCalls),
+			})
+		}
+	}
+	sort.Slice(stats.RetryPatterns, func(i, j int) bool {
+		return stats.RetryPatterns[i].RetryCount > stats.RetryPatterns[j].RetryCount
+	})
+	if len(stats.RetryPatterns) > 5 {
+		stats.RetryPatterns = stats.RetryPatterns[:5]
+	}
+
+	return stats
+}
+
+type chainStats struct {
+	count       int
+	totalRounds float64
+	successes   int
+}
+
+type retryStats struct {
+	totalCalls int
+	successes  int
+}
+
+// extractToolChain builds a "tool1→tool2→tool3" string from tool steps.
+func extractToolChain(steps []ToolStep) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(steps))
+	for _, s := range steps {
+		names = append(names, s.ToolName)
+	}
+	return strings.Join(names, "→")
+}
+
+// SetTraceStore injects a trace store for conversation-level analysis.
+func (r *Reflector) SetTraceStore(store *TraceStore) {
+	r.traceStore = store
+}
+
+// AnalyzeTracesForTest exposes analyzeTraces for testing.
+func (r *Reflector) AnalyzeTracesForTest(since time.Time) *TraceStats {
+	return r.analyzeTraces(since)
 }
