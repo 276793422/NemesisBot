@@ -110,3 +110,37 @@ func isPrivateIP(ip string) bool {
 
 	return false
 }
+
+// NewReportSanitizerForTest creates a ReportSanitizer with the given config for testing.
+func NewReportSanitizerForTest(config *ForgeConfig) *ReportSanitizer {
+	return NewReportSanitizer(config)
+}
+
+// SanitizeReportForTest exposes SanitizeReport as a package-level function for testing.
+func SanitizeReportForTest(config *ForgeConfig, content string) string {
+	s := NewReportSanitizer(config)
+	return s.SanitizeReport(content)
+}
+
+// RedactSensitiveValuesForTest exposes redactSensitiveValues for testing.
+func RedactSensitiveValuesForTest(config *ForgeConfig, content string) string {
+	s := NewReportSanitizer(config)
+	return s.redactSensitiveValues(content)
+}
+
+// CleanPathsForTest exposes cleanPaths for testing.
+func CleanPathsForTest(content string) string {
+	s := &ReportSanitizer{}
+	return s.cleanPaths(content)
+}
+
+// CleanPublicIPsForTest exposes cleanPublicIPs for testing.
+func CleanPublicIPsForTest(content string) string {
+	s := &ReportSanitizer{}
+	return s.cleanPublicIPs(content)
+}
+
+// IsPrivateIPForTest exposes isPrivateIP for testing.
+func IsPrivateIPForTest(ip string) bool {
+	return isPrivateIP(ip)
+}

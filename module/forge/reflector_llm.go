@@ -158,3 +158,8 @@ func ExtractJSONFromResponse(response string) (map[string]interface{}, error) {
 	}
 	return nil, fmt.Errorf("no JSON found in response")
 }
+
+// SemanticAnalysisForTest exposes semanticAnalysis for testing.
+func SemanticAnalysisForTest(ctx context.Context, provider providers.LLMProvider, stats *ReflectionStats, artifacts []Artifact, traceStats *TraceStats, cycle *LearningCycle, config *ForgeConfig) (string, error) {
+	return semanticAnalysis(ctx, provider, stats, artifacts, traceStats, cycle, config)
+}

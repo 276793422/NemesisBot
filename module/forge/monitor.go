@@ -286,3 +286,8 @@ func outcomeIsDirectNegative(artifact *Artifact) bool {
 func MatchesToolSignatureForTest(trace *ConversationTrace, signature []string) bool {
 	return matchesToolSignature(trace, signature)
 }
+
+// ClassifyVerdictForTest exposes classifyVerdict for testing.
+func (dm *DeploymentMonitor) ClassifyVerdictForTest(improvementScore float64, artifact *Artifact) string {
+	return dm.classifyVerdict(improvementScore, artifact)
+}

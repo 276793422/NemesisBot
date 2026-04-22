@@ -875,6 +875,11 @@ func incrementVersion(v string) string {
 	return strings.Join(parts, ".")
 }
 
+// IncrementVersionForTest exposes incrementVersion for testing.
+func IncrementVersionForTest(v string) string {
+	return incrementVersion(v)
+}
+
 // SaveVersionSnapshot saves a version backup of the artifact file.
 func SaveVersionSnapshot(artifactPath, version string) error {
 	versionsDir := filepath.Join(filepath.Dir(artifactPath), ".versions")

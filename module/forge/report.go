@@ -212,3 +212,8 @@ func formatLearningInsights(cycle *LearningCycle) string {
 func FormatLearningInsightsForTest(cycle *LearningCycle) string {
 	return formatLearningInsights(cycle)
 }
+
+// FormatTraceInsightsForTest exposes formatTraceInsights for testing.
+func FormatTraceInsightsForTest(ts *TraceStats) string {
+	return formatTraceInsights(ts)
+}
