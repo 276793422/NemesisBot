@@ -100,14 +100,16 @@ func TestRegistryManagerBasic(t *testing.T) {
 			t.Fatalf("SearchAll failed: %v", err)
 		}
 
-		if len(results) != 3 {
-			t.Errorf("Expected 3 results, got %d", len(results))
+		if len(results) != 2 {
+			t.Errorf("Expected 2 registries with results, got %d", len(results))
 		}
 
-		// Check that results are sorted by score
-		for i := 0; i < len(results)-1; i++ {
-			if results[i].Score < results[i+1].Score {
-				t.Errorf("Results not sorted by score: %.2f < %.2f", results[i].Score, results[i+1].Score)
+		// Check that results within each registry are sorted by score
+		for _, rs := range results {
+			for i := 0; i < len(rs.Results)-1; i++ {
+				if rs.Results[i].Score < rs.Results[i+1].Score {
+					t.Errorf("Results not sorted by score in registry %s: %.2f < %.2f", rs.RegistryName, rs.Results[i].Score, rs.Results[i+1].Score)
+				}
 			}
 		}
 	})

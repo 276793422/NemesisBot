@@ -104,12 +104,14 @@ func TestRegistryManager(t *testing.T) {
 			return
 		}
 
-		t.Logf("Found %d skills matching 'weather'", len(results))
-		for i, result := range results {
+		t.Logf("Found %d registry results matching 'weather'", len(results))
+		for i, rs := range results {
 			if i >= 3 { // Only log first 3
 				break
 			}
-			t.Logf("  %d. %s (%s) - %.2f", i+1, result.DisplayName, result.RegistryName, result.Score)
+			for _, r := range rs.Results {
+				t.Logf("  - %s (%s) - %.2f", r.DisplayName, r.RegistryName, r.Score)
+			}
 		}
 	})
 }

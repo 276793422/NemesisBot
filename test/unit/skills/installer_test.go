@@ -84,12 +84,17 @@ func TestSkillInstallerSearchAll(t *testing.T) {
 		t.Fatalf("SearchAll failed: %v", err)
 	}
 
+	// Results are []RegistrySearchResult, each containing Results []SearchResult
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Errorf("Expected 1 registry result, got %d", len(results))
 	}
 
-	if results[0].Slug != "test-skill" {
-		t.Errorf("Expected slug 'test-skill', got '%s'", results[0].Slug)
+	if len(results[0].Results) == 0 {
+		t.Fatal("Expected at least one search result within registry")
+	}
+
+	if results[0].Results[0].Slug != "test-skill" {
+		t.Errorf("Expected slug 'test-skill', got '%s'", results[0].Results[0].Slug)
 	}
 }
 

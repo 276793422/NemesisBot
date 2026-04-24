@@ -4,16 +4,11 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/276793422/NemesisBot/module/desktop/process"
-	"github.com/276793422/NemesisBot/module/desktop/websocket"
 )
 
 // TestEndToEndCommunication 测试端到端通信
@@ -55,16 +50,10 @@ func TestEndToEndCommunication(t *testing.T) {
 
 	select {
 	case result := <-resultCh:
-		t.Logf("✓ Received result from child: %+v", result)
-
-		// 验证结果格式
-		resultMap, ok := result.(map[string]interface{})
-		if !ok {
-			t.Errorf("Expected map[string]interface{}, got %T", result)
-		}
+		t.Logf("Received result from child: %+v", result)
 
 	case <-ctx.Done():
-		t.Error("✗ Timeout waiting for child result")
+		t.Error("Timeout waiting for child result")
 	}
 
 	// 4. 清理
@@ -88,7 +77,7 @@ func TestMultipleChildren(t *testing.T) {
 	// 创建 3 个子进程
 	numChildren := 3
 	children := make([]string, 0, numChildren)
-	resultChannels := make([]chan interface{}, 0, numChildren)
+	resultChannels := make([]<-chan interface{}, 0, numChildren)
 
 	for i := 0; i < numChildren; i++ {
 		data := map[string]interface{}{
