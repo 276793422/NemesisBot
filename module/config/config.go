@@ -1074,6 +1074,38 @@ type SecurityConfig struct {
 	NetworkRules          *NetworkSecurityRules   `json:"network_rules,omitempty"`
 	HardwareRules         *HardwareSecurityRules  `json:"hardware_rules,omitempty"`
 	RegistryRules         *RegistrySecurityRules  `json:"registry_rules,omitempty"`
+	Layers                *SecurityLayersConfig   `json:"layers,omitempty"`
+}
+
+// SecurityLayersConfig configures individual security layers
+type SecurityLayersConfig struct {
+	Injection    *SecurityLayerConfig `json:"injection,omitempty"`
+	CommandGuard *SecurityLayerConfig `json:"command_guard,omitempty"`
+	DLP          *DLPLayerConfig      `json:"dlp,omitempty"`
+	SSRF         *SecurityLayerConfig `json:"ssrf,omitempty"`
+	Credential   *SecurityLayerConfig `json:"credential,omitempty"`
+	Signature    *SignatureLayerConfig `json:"signature,omitempty"`
+	AuditChain   *SecurityLayerConfig `json:"audit_chain,omitempty"`
+}
+
+// SecurityLayerConfig is a generic layer enable/disable config
+type SecurityLayerConfig struct {
+	Enabled  bool `json:"enabled"`
+	// Layer-specific options can be added via extensions
+	Extra    map[string]interface{} `json:"extra,omitempty"`
+}
+
+// DLPLayerConfig configures the DLP (Data Loss Prevention) layer
+type DLPLayerConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Rules    []string `json:"rules,omitempty"`    // enabled rule names, empty = all
+	Action   string   `json:"action,omitempty"`   // "block", "redact", "warn"
+}
+
+// SignatureLayerConfig configures skill signature verification
+type SignatureLayerConfig struct {
+	Enabled bool `json:"enabled"`
+	Strict  bool `json:"strict"` // if true, unsigned skills are rejected
 }
 
 // SecurityRule defines a single security rule with pattern and action

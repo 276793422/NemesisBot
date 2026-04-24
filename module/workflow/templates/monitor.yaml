@@ -1,0 +1,24 @@
+name: monitor
+description: "监控：定时检查→异常检测→通知"
+version: "1.0"
+triggers:
+  - type: cron
+    config: { schedule: "*/5 * * * *" }
+nodes:
+  - id: check
+    type: http
+    config: { url: "{{monitor_url}}", method: "GET" }
+  - id: evaluate
+    type: condition
+    config: { expression: "{{check.status}} != 200" }
+    depends_on: [check]
+  - id: alert
+    type: transform
+    config: { template: "⚠️ 告警: {{monitor_url}} 返回状态 {{check.status}}" }
+    depends_on: [evaluate]
+edges:
+  - from: check
+    to: evaluate
+  - from: evaluate
+    to: alert
+    condition: "true"

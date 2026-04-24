@@ -1,0 +1,20 @@
+name: coder
+description: "编码辅助：规划→编码→测试→审查"
+version: "1.0"
+nodes:
+  - id: plan
+    type: llm
+    config: { prompt: "为以下需求创建实现计划: {{input}}" }
+  - id: implement
+    type: llm
+    config: { prompt: "根据计划实现代码: {{plan.output}}" }
+    depends_on: [plan]
+  - id: review
+    type: llm
+    config: { prompt: "审查以下代码，指出问题和改进建议: {{implement.output}}" }
+    depends_on: [implement]
+edges:
+  - from: plan
+    to: implement
+  - from: implement
+    to: review

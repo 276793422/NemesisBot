@@ -1,0 +1,20 @@
+name: translator
+description: "翻译：检测→翻译→审校"
+version: "1.0"
+nodes:
+  - id: detect
+    type: llm
+    config: { prompt: "检测以下文本的语言: {{input}}" }
+  - id: translate
+    type: llm
+    config: { prompt: "将以下文本翻译为{{target_language}}: {{input}}" }
+    depends_on: [detect]
+  - id: review
+    type: llm
+    config: { prompt: "审校翻译质量，原文({{detect.output}}): {{input}}\n译文: {{translate.output}}" }
+    depends_on: [translate]
+edges:
+  - from: detect
+    to: translate
+  - from: translate
+    to: review

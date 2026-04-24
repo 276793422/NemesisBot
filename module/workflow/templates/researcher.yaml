@@ -1,0 +1,23 @@
+name: researcher
+description: "深度研究：搜索→抓取→总结→报告"
+version: "1.0"
+triggers:
+  - type: message
+    config: { pattern: "^研究:" }
+nodes:
+  - id: extract_query
+    type: transform
+    config: { template: "{{input | trim_prefix \"研究:\"}}" }
+  - id: summarize
+    type: llm
+    config: { prompt: "总结以下研究结果: {{extract_query.output}}" }
+    depends_on: [extract_query]
+  - id: report
+    type: transform
+    config: { template: "# 研究报告\n\n## 主题\n{{extract_query.output}}\n\n## 摘要\n{{summarize.output}}\n\n生成时间: {{date}}" }
+    depends_on: [summarize]
+edges:
+  - from: extract_query
+    to: summarize
+  - from: summarize
+    to: report

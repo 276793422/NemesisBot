@@ -1,0 +1,21 @@
+name: collector
+description: "信息采集：多源搜索→去重→结构化"
+version: "1.0"
+nodes:
+  - id: search_sources
+    type: parallel
+    config:
+      nodes:
+        - id: source1
+          type: http
+          config: { url: "{{source1_url}}", method: "GET" }
+        - id: source2
+          type: http
+          config: { url: "{{source2_url}}", method: "GET" }
+  - id: merge
+    type: transform
+    config: { template: "合并结果:\n来源1: {{source1.output}}\n来源2: {{source2.output}}" }
+    depends_on: [search_sources]
+edges:
+  - from: search_sources
+    to: merge

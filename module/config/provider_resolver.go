@@ -186,6 +186,12 @@ func inferProviderFromModel(model string) string {
 		return "nvidia"
 	case strings.Contains(modelLower, "deepseek"):
 		return "deepseek"
+	case strings.Contains(modelLower, "mistral") || strings.Contains(modelLower, "mixtral") || strings.Contains(modelLower, "codestral"):
+		return "mistral"
+	case strings.Contains(modelLower, "command") || strings.Contains(modelLower, "cohere"):
+		return "cohere"
+	case strings.Contains(modelLower, "sonar") || strings.Contains(modelLower, "perplexity"):
+		return "perplexity"
 	default:
 		return ""
 	}
@@ -212,6 +218,20 @@ func inferDefaultModel(provider string) string {
 		return "moonshot-v1-8k"
 	case "deepseek":
 		return "deepseek-chat"
+	case "mistral":
+		return "mistral-large-latest"
+	case "cohere":
+		return "command-r-plus"
+	case "perplexity":
+		return "sonar"
+	case "together":
+		return "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+	case "fireworks":
+		return "accounts/fireworks/models/llama-v3p3-70b-instruct"
+	case "cerebras":
+		return "llama-3.3-70b"
+	case "sambanova":
+		return "Meta-Llama-3.3-70B-Instruct"
 	default:
 		return ""
 	}
@@ -242,6 +262,20 @@ func getDefaultAPIBase(providerName string) string {
 		return "https://router.shengsuanyun.com/api/v1"
 	case "deepseek":
 		return "https://api.deepseek.com/v1"
+	case "mistral":
+		return "https://api.mistral.ai/v1"
+	case "cohere":
+		return "https://api.cohere.ai/v2"
+	case "perplexity":
+		return "https://api.perplexity.ai/v1"
+	case "together":
+		return "https://api.together.xyz/v1"
+	case "fireworks":
+		return "https://api.fireworks.ai/inference/v1"
+	case "cerebras":
+		return "https://api.cerebras.ai/v1"
+	case "sambanova":
+		return "https://api.sambanova.ai/v1"
 	case "github_copilot":
 		return "localhost:4321"
 	default:

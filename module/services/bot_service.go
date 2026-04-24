@@ -304,6 +304,9 @@ func (s *BotService) initComponents() error {
 		return err
 	}
 
+	// --- Phase 1: Sequential core setup ---
+	// These components have inter-dependencies and must be created in order.
+
 	// Create provider
 	provider, err := providers.CreateProvider(cfg)
 	if err != nil {
@@ -314,22 +317,75 @@ func (s *BotService) initComponents() error {
 	// Create message bus
 	s.msgBus = bus.NewMessageBus()
 
-	// Create agent loop
-	s.agentLoop = agent.NewAgentLoop(cfg, s.msgBus, provider)
-
-	// Create channel manager
-	s.channelMgr, err = channels.NewManager(cfg, s.msgBus)
-	if err != nil {
-		return fmt.Errorf("failed to create channel manager: %w", err)
+	// Create agent loop and channel manager in parallel (both depend on msgBus+provider but not each other)
+	if err := parallelInit(s.ctx,
+		func() error {
+			s.agentLoop = agent.NewAgentLoop(cfg, s.msgBus, provider)
+			return nil
+		},
+		func() error {
+			var mgrErr error
+			s.channelMgr, mgrErr = channels.NewManager(cfg, s.msgBus)
+			if mgrErr != nil {
+				return fmt.Errorf("failed to create channel manager: %w", mgrErr)
+			}
+			return nil
+		},
+	); err != nil {
+		return err
 	}
 
-	// Inject channel manager into agent loop
+	// Wire agent loop <-> channel manager
 	s.agentLoop.SetChannelManager(s.channelMgr)
 
+	// --- Phase 2: Parallel independent service creation ---
+	// These services have no inter-dependencies and can be initialized concurrently.
+	//
+	// Group A: Services that only need cfg values and workspace string.
+	// Group B: deviceSvc depends on stateMgr, so they are chained.
+	//
+	// We run Group A members and Group B chain in parallel.
+	var cronSvc *cron.CronService
+	var heartbeatSvc *heartbeat.HeartbeatService
+	var stateMgr *state.Manager
+	var healthSrv *health.Server
+
+	if err := parallelInit(s.ctx,
+		// Cron service
+		func() error {
+			cronStorePath := filepath.Join(s.workspace, "cron", "jobs.json")
+			cronSvc = cron.NewCronService(cronStorePath, nil)
+			return nil
+		},
+		// Heartbeat service
+		func() error {
+			heartbeatSvc = heartbeat.NewHeartbeatService(
+				s.workspace,
+				cfg.Heartbeat.Interval,
+				cfg.Heartbeat.Enabled,
+			)
+			return nil
+		},
+		// State manager + device service (chained dependency)
+		func() error {
+			stateMgr = state.NewManager(s.workspace)
+			return nil
+		},
+		// Health server
+		func() error {
+			healthSrv = health.NewServer(cfg.Gateway.Host, cfg.Gateway.Port)
+			return nil
+		},
+	); err != nil {
+		return err
+	}
+
+	// --- Phase 3: Wire up service dependencies (sequential) ---
+	// These steps depend on the services created in Phase 2.
+
 	// Setup cron tool
-	cronStorePath := filepath.Join(s.workspace, "cron", "jobs.json")
-	s.cronSvc = cron.NewCronService(cronStorePath, nil)
-	cronTool := tools.NewCronTool(s.cronSvc, s.agentLoop, s.msgBus, s.workspace,
+	s.cronSvc = cronSvc
+	cronTool := tools.NewCronTool(cronSvc, s.agentLoop, s.msgBus, s.workspace,
 		cfg.Agents.Defaults.RestrictToWorkspace,
 		time.Duration(cfg.Tools.Cron.ExecTimeoutMinutes)*time.Minute, cfg)
 	s.agentLoop.RegisterTool(cronTool)
@@ -338,28 +394,23 @@ func (s *BotService) initComponents() error {
 		return result, nil
 	})
 
-	// Create heartbeat service
-	s.heartbeatSvc = heartbeat.NewHeartbeatService(
-		s.workspace,
-		cfg.Heartbeat.Interval,
-		cfg.Heartbeat.Enabled,
-	)
+	// Wire heartbeat service
+	s.heartbeatSvc = heartbeatSvc
 	s.heartbeatSvc.SetBus(s.msgBus)
 	s.heartbeatSvc.SetHandler(s.createHeartbeatHandler(cfg))
 
-	// Create state manager
-	s.stateMgr = state.NewManager(s.workspace)
-
-	// Create device service
+	// Wire state manager and device service
+	s.stateMgr = stateMgr
 	s.deviceSvc = devices.NewService(devices.Config{
 		Enabled:    cfg.Devices.Enabled,
 		MonitorUSB: cfg.Devices.MonitorUSB,
-	}, s.stateMgr)
+	}, stateMgr)
 	s.deviceSvc.SetBus(s.msgBus)
 
-	// Create health server
-	s.healthSrv = health.NewServer(cfg.Gateway.Host, cfg.Gateway.Port)
+	// Wire health server
+	s.healthSrv = healthSrv
 
+	// --- Phase 4: Forge and Observer setup (depends on agentLoop + provider) ---
 	// Initialize Forge self-learning module
 	if cfg.Forge != nil && cfg.Forge.Enabled {
 		forgeInstance, err := forge.NewForge(s.workspace, nil)

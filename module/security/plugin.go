@@ -18,7 +18,13 @@ import (
 	"github.com/276793422/NemesisBot/module/path"
 	"github.com/276793422/NemesisBot/module/plugin"
 	"github.com/276793422/NemesisBot/module/security/approval"
+	"github.com/276793422/NemesisBot/module/security/command"
+	"github.com/276793422/NemesisBot/module/security/credential"
+	"github.com/276793422/NemesisBot/module/security/dlp"
+	"github.com/276793422/NemesisBot/module/security/injection"
+	"github.com/276793422/NemesisBot/module/security/integrity"
 	"github.com/276793422/NemesisBot/module/security/scanner"
+	"github.com/276793422/NemesisBot/module/security/ssrf"
 )
 
 // globalScannerChain is the shared scanner chain instance.
@@ -33,6 +39,15 @@ type SecurityPlugin struct {
 	auditor     *SecurityAuditor
 	approvalMgr approval.ApprovalManager
 	scanChain   *scanner.ScanChain
+
+	// Security layers
+	injectionDetector *injection.Detector
+	commandGuard      *command.Guard
+	credentialScanner *credential.Scanner
+	dlpEngine         *dlp.DLPEngine
+	ssrfGuard         *ssrf.Guard
+	auditChain        *integrity.AuditChain
+
 	enabled     bool
 	configPath  string
 	mu          sync.RWMutex
@@ -109,6 +124,9 @@ func (p *SecurityPlugin) Init(pluginConfig map[string]interface{}) error {
 
 	// Initialize scanner chain (independent of security enabled flag)
 	p.initScannerChain()
+
+	// Initialize security layers
+	p.initSecurityLayers(securityCfg)
 
 	return nil
 }
@@ -202,6 +220,15 @@ func (p *SecurityPlugin) registerRules(cfg *config.SecurityConfig) {
 }
 
 // Execute implements the plugin interface for security checks
+// Security layers are applied in order:
+// 1. InjectionDetector - intercept malicious input
+// 2. CommandGuard - check dangerous commands
+// 3. Auditor (ABAC) - attribute-based access control
+// 4. CredentialScanner - detect leaked credentials
+// 5. DLP - scan sensitive data
+// 6. SSRFGuard - validate URLs for network operations
+// 7. ScanChain - virus scanning
+// 8. AuditChain - Merkle integrity audit log
 func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInvocation) (bool, error, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -221,7 +248,39 @@ func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInv
 	// Determine target from args
 	target := p.extractTarget(invocation.ToolName, invocation.Args)
 
-	// Create operation request
+	// Layer 1: Injection Detection
+	if p.injectionDetector != nil {
+		result, err := p.injectionDetector.AnalyzeToolInput(ctx, invocation.ToolName, invocation.Args)
+		if err != nil {
+			logger.WarnCF("security", "Injection detection error", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else if result.IsInjection {
+			logger.WarnCF("security", "Injection detected", map[string]interface{}{
+				"tool": invocation.ToolName,
+				"score": fmt.Sprintf("%.2f", result.Score),
+				"level": result.Level,
+				"patterns": len(result.MatchedPatterns),
+			})
+			return false, fmt.Errorf("operation blocked: potential prompt injection detected (score: %.2f, level: %s)", result.Score, result.Level), false
+		}
+	}
+
+	// Layer 2: Command Guard
+	if p.commandGuard != nil && (opType == OpProcessExec || opType == OpProcessSpawn) {
+		if target != "" {
+			if err := p.commandGuard.Check(ctx, target); err != nil {
+				logger.WarnCF("security", "Dangerous command blocked", map[string]interface{}{
+					"tool":    invocation.ToolName,
+					"command": target,
+					"error":   err.Error(),
+				})
+				return false, fmt.Errorf("operation blocked by command guard: %w", err), false
+			}
+		}
+	}
+
+	// Layer 3: ABAC (existing auditor)
 	req := &OperationRequest{
 		Type:        opType,
 		DangerLevel: GetDangerLevel(opType),
@@ -231,7 +290,6 @@ func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInv
 		Context:     invocation.Metadata,
 	}
 
-	// Request permission
 	allowed, err, _ := p.auditor.RequestPermission(ctx, req)
 	if !allowed {
 		if err != nil {
@@ -240,7 +298,62 @@ func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInv
 		return false, fmt.Errorf("operation denied by security policy"), false
 	}
 
-	// After ABAC passes, run scanner chain for file-related operations
+	// Layer 4: Credential Scanner (scan tool arguments for leaked credentials)
+	if p.credentialScanner != nil {
+		for _, v := range invocation.Args {
+			if strVal, ok := v.(string); ok && len(strVal) > 10 {
+				result, scanErr := p.credentialScanner.ScanContent(ctx, strVal)
+				if scanErr != nil {
+					logger.WarnCF("security", "Credential scan error", map[string]interface{}{
+						"error": scanErr.Error(),
+					})
+					continue
+				}
+				if result.HasMatches && result.Action == "block" {
+					logger.WarnCF("security", "Credential leak detected in input", map[string]interface{}{
+						"tool":     invocation.ToolName,
+						"matches":  len(result.Matches),
+						"summary":  result.Summary,
+					})
+					return false, fmt.Errorf("operation blocked: potential credential leak detected in input (%s)", result.Summary), false
+				}
+			}
+		}
+	}
+
+	// Layer 5: DLP (Data Loss Prevention)
+	if p.dlpEngine != nil {
+		dlpResult, dlpErr := p.dlpEngine.ScanToolInput(ctx, invocation.ToolName, invocation.Args)
+		if dlpErr != nil {
+			logger.WarnCF("security", "DLP scan error", map[string]interface{}{
+				"error": dlpErr.Error(),
+			})
+		} else if dlpResult.HasMatches && dlpResult.Action == "block" {
+			logger.WarnCF("security", "Sensitive data detected by DLP", map[string]interface{}{
+				"tool":    invocation.ToolName,
+				"matches": len(dlpResult.Matches),
+				"summary": dlpResult.Summary,
+			})
+			return false, fmt.Errorf("operation blocked by DLP: sensitive data detected (%s)", dlpResult.Summary), false
+		}
+	}
+
+	// Layer 6: SSRF Guard (for network operations)
+	if p.ssrfGuard != nil {
+		urlTarget := p.extractURL(invocation.ToolName, invocation.Args)
+		if urlTarget != "" {
+			if err := p.ssrfGuard.ValidateURL(ctx, urlTarget); err != nil {
+				logger.WarnCF("security", "SSRF protection triggered", map[string]interface{}{
+					"tool": invocation.ToolName,
+					"url":  urlTarget,
+					"error": err.Error(),
+				})
+				return false, fmt.Errorf("operation blocked by SSRF guard: %w", err), false
+			}
+		}
+	}
+
+	// Layer 7: Virus Scanner (existing scan chain)
 	if p.scanChain != nil {
 		clean, scanErr := p.scanChain.ScanToolInvocation(ctx, invocation.ToolName, invocation.Args)
 		if !clean {
@@ -248,6 +361,25 @@ func (p *SecurityPlugin) Execute(ctx context.Context, invocation *plugin.ToolInv
 				return false, scanErr, false
 			}
 			return false, fmt.Errorf("operation blocked by virus scanner"), false
+		}
+	}
+
+	// Layer 8: Audit Chain (record approved operation)
+	if p.auditChain != nil {
+		event := &integrity.AuditEvent{
+			Timestamp: time.Now(),
+			Operation: string(opType),
+			ToolName:  invocation.ToolName,
+			User:      invocation.User,
+			Source:    invocation.Source,
+			Target:    target,
+			Decision:  "allowed",
+			Reason:    "passed all security layers",
+		}
+		if appendErr := p.auditChain.Append(ctx, event); appendErr != nil {
+			logger.WarnCF("security", "Failed to append to audit chain", map[string]interface{}{
+				"error": appendErr.Error(),
+			})
 		}
 	}
 
@@ -398,6 +530,16 @@ func (p *SecurityPlugin) Cleanup() error {
 		p.scanChain = nil
 	}
 
+	// Close audit chain
+	if p.auditChain != nil {
+		if err := p.auditChain.Close(); err != nil {
+			logger.ErrorCF("security", "Failed to close audit chain", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
+		p.auditChain = nil
+	}
+
 	return nil
 }
 
@@ -535,4 +677,154 @@ func (p *SecurityPlugin) initApprovalManager(cfg *config.SecurityConfig) error {
 
 	logger.InfoC("security", "Approval manager initialized and started")
 	return nil
+}
+
+// initSecurityLayers initializes all security layers based on configuration
+func (p *SecurityPlugin) initSecurityLayers(cfg *config.SecurityConfig) {
+	if cfg.Layers == nil {
+		return
+	}
+
+	// Layer 1: Injection Detector
+	if cfg.Layers.Injection != nil && cfg.Layers.Injection.Enabled {
+		threshold := 0.7
+		if val, ok := cfg.Layers.Injection.Extra["threshold"].(float64); ok {
+			threshold = val
+		}
+		p.injectionDetector = injection.NewDetector(injection.Config{
+			Enabled:       true,
+			Threshold:     threshold,
+			MaxInputLength: 100000,
+		})
+		logger.InfoC("security", "Injection detector initialized")
+	}
+
+	// Layer 2: Command Guard
+	if cfg.Layers.CommandGuard != nil && cfg.Layers.CommandGuard.Enabled {
+		guard, err := command.NewGuard(command.Config{Enabled: true})
+		if err != nil {
+			logger.ErrorCF("security", "Failed to initialize command guard", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			p.commandGuard = guard
+			logger.InfoC("security", "Command guard initialized")
+		}
+	}
+
+	// Layer 4: Credential Scanner
+	if cfg.Layers.Credential != nil && cfg.Layers.Credential.Enabled {
+		scanner, err := credential.NewScanner(&credential.Config{Enabled: true, Action: "block"})
+		if err != nil {
+			logger.ErrorCF("security", "Failed to initialize credential scanner", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			p.credentialScanner = scanner
+			logger.InfoC("security", "Credential scanner initialized")
+		}
+	}
+
+	// Layer 5: DLP Engine
+	if cfg.Layers.DLP != nil && cfg.Layers.DLP.Enabled {
+		dlpCfg := dlp.Config{
+			Enabled: true,
+			ActionOnMatch: cfg.Layers.DLP.Action,
+		}
+		if len(cfg.Layers.DLP.Rules) > 0 {
+			dlpCfg.EnabledRules = cfg.Layers.DLP.Rules
+		}
+		if dlpCfg.ActionOnMatch == "" {
+			dlpCfg.ActionOnMatch = "block"
+		}
+		p.dlpEngine = dlp.NewDLPEngine(dlpCfg)
+		logger.InfoC("security", "DLP engine initialized")
+	}
+
+	// Layer 6: SSRF Guard
+	if cfg.Layers.SSRF != nil && cfg.Layers.SSRF.Enabled {
+		ssrfCfg := ssrf.DefaultConfig()
+		ssrfCfg.Enabled = true
+		guard, err := ssrf.NewGuard(ssrfCfg)
+		if err != nil {
+			logger.ErrorCF("security", "Failed to initialize SSRF guard", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			p.ssrfGuard = guard
+			logger.InfoC("security", "SSRF guard initialized")
+		}
+	}
+
+	// Layer 8: Audit Chain
+	if cfg.Layers.AuditChain != nil && cfg.Layers.AuditChain.Enabled {
+		auditDir := filepath.Join(path.DefaultPathManager().Workspace(), "security", "audit_chain")
+		chain, err := integrity.NewAuditChain(integrity.AuditChainConfig{
+			Enabled:       true,
+			StoragePath:   auditDir,
+			MaxFileSize:   50 * 1024 * 1024, // 50MB
+			VerifyOnLoad:  false,
+		})
+		if err != nil {
+			logger.ErrorCF("security", "Failed to initialize audit chain", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			p.auditChain = chain
+			logger.InfoC("security", "Audit chain initialized")
+		}
+	}
+}
+
+// extractURL extracts URL from tool arguments for SSRF checking
+func (p *SecurityPlugin) extractURL(toolName string, args map[string]interface{}) string {
+	switch toolName {
+	case "download", "upload", "http_request", "web_request":
+		if url, ok := args["url"].(string); ok {
+			return url
+		}
+	}
+	return ""
+}
+
+// GetInjectionDetector returns the injection detector (for testing)
+func (p *SecurityPlugin) GetInjectionDetector() *injection.Detector {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.injectionDetector
+}
+
+// GetCommandGuard returns the command guard (for testing)
+func (p *SecurityPlugin) GetCommandGuard() *command.Guard {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.commandGuard
+}
+
+// GetCredentialScanner returns the credential scanner (for testing)
+func (p *SecurityPlugin) GetCredentialScanner() *credential.Scanner {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.credentialScanner
+}
+
+// GetDLPEngine returns the DLP engine (for testing)
+func (p *SecurityPlugin) GetDLPEngine() *dlp.DLPEngine {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dlpEngine
+}
+
+// GetSSRFGuard returns the SSRF guard (for testing)
+func (p *SecurityPlugin) GetSSRFGuard() *ssrf.Guard {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.ssrfGuard
+}
+
+// GetAuditChain returns the audit chain (for testing)
+func (p *SecurityPlugin) GetAuditChain() *integrity.AuditChain {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.auditChain
 }

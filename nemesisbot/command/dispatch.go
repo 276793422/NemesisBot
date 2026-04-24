@@ -53,6 +53,8 @@ func Dispatch() {
 		CmdSkills()
 	case "forge":
 		CmdForge()
+	case "workflow":
+		CmdWorkflow()
 	case "version", "--version", "-v":
 		PrintVersion()
 	case "help", "--help", "-h":
@@ -86,6 +88,7 @@ func PrintHelp() {
 	fmt.Println("  migrate     Migrate from OpenClaw to NemesisBot")
 	fmt.Println("  skills      Manage skills (install, list, remove)")
 	fmt.Println("  forge       Manage self-learning module (status, reflect, list, evaluate)")
+	fmt.Println("  workflow    Manage DAG workflows (list, run, status, template)")
 	fmt.Println("  version     Show version information")
 	fmt.Println()
 	fmt.Println("Quick Start:")
