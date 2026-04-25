@@ -137,8 +137,11 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Vector.Backend != "local" {
 		t.Errorf("DefaultConfig Vector.Backend = %q, want %q", cfg.Vector.Backend, "local")
 	}
-	if cfg.Vector.EmbeddingModel != "local" {
-		t.Errorf("DefaultConfig Vector.EmbeddingModel = %q, want %q", cfg.Vector.EmbeddingModel, "local")
+	if cfg.Vector.EmbeddingTier != "auto" {
+		t.Errorf("DefaultConfig Vector.EmbeddingTier = %q, want %q", cfg.Vector.EmbeddingTier, "auto")
+	}
+	if cfg.Vector.LocalDim != 256 {
+		t.Errorf("DefaultConfig Vector.LocalDim = %d, want 256", cfg.Vector.LocalDim)
 	}
 	if cfg.Vector.MaxResults != 5 {
 		t.Errorf("DefaultConfig Vector.MaxResults = %d, want 5", cfg.Vector.MaxResults)

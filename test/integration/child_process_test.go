@@ -50,7 +50,9 @@ func TestChildProcessCreation(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// 检查进程是否还在运行
-	if child.Cmd.Process.Signal(os.Signal(nil)) != nil {
+	// NOTE: Process.Signal(os.Signal(nil)) 不支持 Windows，
+	// 使用 executor.IsProcessAlive() 代替（基于 Done channel 检测）
+	if !executor.IsProcessAlive(child) {
 		t.Error("Child process has exited")
 	}
 }

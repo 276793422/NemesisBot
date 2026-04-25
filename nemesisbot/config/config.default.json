@@ -172,6 +172,9 @@
   "forge": {
     "enabled": false
   },
+  "memory": {
+    "enabled": false
+  },
   "mcp": {
     "enabled": false
   }

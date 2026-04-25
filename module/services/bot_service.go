@@ -19,6 +19,7 @@ import (
 	"github.com/276793422/NemesisBot/module/health"
 	"github.com/276793422/NemesisBot/module/heartbeat"
 	"github.com/276793422/NemesisBot/module/logger"
+	"github.com/276793422/NemesisBot/module/memory"
 	"github.com/276793422/NemesisBot/module/observer"
 	"github.com/276793422/NemesisBot/module/providers"
 	"github.com/276793422/NemesisBot/module/state"
@@ -47,6 +48,7 @@ type BotService struct {
 	healthSrv    *health.Server
 	stateMgr     *state.Manager
 	forgeSvc     *forge.Forge
+	memoryMgr    *memory.Manager
 
 	// Context management
 	ctx    context.Context
@@ -235,6 +237,9 @@ func (s *BotService) GetComponents() map[string]interface{} {
 	}
 	if s.forgeSvc != nil {
 		components["forge"] = s.forgeSvc
+	}
+	if s.memoryMgr != nil {
+		components["memory"] = s.memoryMgr
 	}
 
 	return components
@@ -450,6 +455,27 @@ func (s *BotService) initComponents() error {
 		}
 	}
 
+	// --- Phase 4.5: Memory Manager setup (depends on provider for API embedding tier) ---
+	if cfg.Memory != nil && cfg.Memory.Enabled {
+		memCfg := memory.DefaultConfig()
+		memMgr, err := memory.NewManager(memCfg, s.workspace)
+		if err != nil {
+			logger.WarnCF("bot_service", "Memory Manager init failed", map[string]interface{}{
+				"error": err.Error(),
+			})
+		} else {
+			s.memoryMgr = memMgr
+
+			// Register memory tools with agent loop
+			memTools := memory.NewMemoryTools(memMgr)
+			for _, tool := range memTools {
+				s.agentLoop.RegisterTool(tool)
+			}
+
+			logger.InfoC("bot_service", "Memory Manager initialized")
+		}
+	}
+
 	// Phase 5: Setup Observer Manager for conversation lifecycle events
 	observerMgr := observer.NewManager()
 
@@ -563,6 +589,9 @@ func (s *BotService) startServices() error {
 
 func (s *BotService) stopAll() {
 	// Stop in reverse order
+	if s.memoryMgr != nil {
+		s.memoryMgr.Close()
+	}
 	if s.forgeSvc != nil {
 		s.forgeSvc.Stop()
 	}

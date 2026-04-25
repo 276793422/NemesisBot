@@ -4,6 +4,7 @@ package process
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -39,12 +40,28 @@ type ReadCloser struct {
 
 // Close 关闭写入器
 func (w *WriteCloser) Close() error {
-	return w.writer.Close()
+	if w.writer != nil {
+		return w.writer.Close()
+	}
+	return nil
 }
 
 // Close 关闭读取器
 func (r *ReadCloser) Close() error {
-	return r.reader.Close()
+	if r.reader != nil {
+		return r.reader.Close()
+	}
+	return nil
+}
+
+// NewReadCloser creates a ReadCloser wrapping an io.Reader.
+func NewReadCloser(r io.Reader) *ReadCloser {
+	return &ReadCloser{Decoder: json.NewDecoder(r)}
+}
+
+// NewWriteCloser creates a WriteCloser wrapping an io.Writer.
+func NewWriteCloser(w io.Writer) *WriteCloser {
+	return &WriteCloser{Encoder: json.NewEncoder(w)}
 }
 
 // ProcessStatus 进程状态

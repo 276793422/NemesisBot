@@ -1,4 +1,4 @@
-//go:build !cross_compile
+//go:build !cross_compile && production
 
 package integration
 

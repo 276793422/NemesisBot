@@ -14,6 +14,10 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/276793422/NemesisBot/module/memory/episodic"
+	"github.com/276793422/NemesisBot/module/memory/graph"
+	"github.com/276793422/NemesisBot/module/memory/vector"
 )
 
 // --------------------------------------------------------------------------
@@ -23,11 +27,14 @@ import (
 // Manager coordinates all memory storage backends and provides a high-level
 // API for storing and retrieving memories.
 type Manager struct {
-	cfg       *Config
-	workspace string
-	store     Store
-	enabled   bool
-	mu        sync.RWMutex
+	cfg           *Config
+	workspace     string
+	store         Store
+	vectorStore   *vector.VectorStore
+	episodicStore *episodic.Store
+	graphStore    *graph.Store
+	enabled       bool
+	mu            sync.RWMutex
 }
 
 // NewManager creates a new memory Manager. It initialises the appropriate
@@ -59,6 +66,35 @@ func NewManager(cfg *Config, workspace string) (*Manager, error) {
 		return nil, fmt.Errorf("memory: init local store: %w", err)
 	}
 	m.store = store
+
+	// Initialize vector store if chromem backend is enabled.
+	if cfg.Vector.Enabled && cfg.Vector.Backend == "chromem" {
+		if err := m.initVectorStore(nil); err != nil {
+			return nil, fmt.Errorf("memory: init vector store: %w", err)
+		}
+	}
+
+	// Initialize episodic store.
+	episodicDir := filepath.Join(storageDir, "episodic")
+	epStore, err := episodic.NewStore(episodic.Config{
+		StoragePath:           episodicDir,
+		MaxEpisodesPerSession: 100,
+		RetentionDays:         90,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: init episodic store: %w", err)
+	}
+	m.episodicStore = epStore
+
+	// Initialize graph store.
+	graphDir := filepath.Join(storageDir, "graph")
+	gStore, err := graph.NewStore(graph.Config{
+		StoragePath: graphDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: init graph store: %w", err)
+	}
+	m.graphStore = gStore
 
 	return m, nil
 }
@@ -141,7 +177,15 @@ func (m *Manager) QuerySemantic(ctx context.Context, query string, limit int) (*
 			limit = 5
 		}
 	}
-	// Search across all types (nil means no filter).
+	// Use vector store for semantic search when available.
+	if m.vectorStore != nil {
+		result, err := m.vectorStore.Query(ctx, query, limit, nil)
+		if err != nil {
+			return &SearchResult{Query: query}, err
+		}
+		return vectorResultToSearchResult(result), nil
+	}
+	// Fallback: keyword-frequency scoring over local store.
 	return m.store.Query(ctx, query, limit, nil)
 }
 
@@ -175,10 +219,177 @@ func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.enabled = false
+	var errs []error
+	if m.vectorStore != nil {
+		if err := m.vectorStore.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if m.episodicStore != nil {
+		if err := m.episodicStore.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if m.graphStore != nil {
+		if err := m.graphStore.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if m.store != nil {
-		return m.store.Close()
+		if err := m.store.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("memory close: %v", errs)
 	}
 	return nil
+}
+
+// GetEpisodicStore returns the episodic memory store (StoreProvider interface).
+func (m *Manager) GetEpisodicStore() EpisodicStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.episodicStore
+}
+
+// GetGraphStore returns the knowledge graph store (StoreProvider interface).
+func (m *Manager) GetGraphStore() GraphStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.graphStore
+}
+
+// initVectorStore creates and initializes the vector store.
+func (m *Manager) initVectorStore(provider vector.EmbeddingProvider) error {
+	vcfg := m.cfg.Vector
+	if vcfg.StoragePath == "" {
+		vcfg.StoragePath = filepath.Join(m.workspace, "memory", "vector", "vector_store.jsonl")
+	}
+	storeCfg := vector.StoreConfig{
+		EmbeddingTier:       vcfg.EmbeddingTier,
+		LocalDim:            vcfg.LocalDim,
+		PluginPath:          vcfg.PluginPath,
+		PluginModelPath:     vcfg.PluginModelPath,
+		APIModel:            vcfg.APIModel,
+		MaxResults:          vcfg.MaxResults,
+		SimilarityThreshold: vcfg.SimilarityThreshold,
+		StoragePath:         vcfg.StoragePath,
+	}
+	vs, err := vector.NewVectorStore(storeCfg, provider)
+	if err != nil {
+		return err
+	}
+	m.vectorStore = vs
+	m.store = &vectorStoreAdapter{vs: vs}
+	return nil
+}
+
+// SetVectorStore allows external initialization of the vector store (e.g. from bot_service).
+func (m *Manager) SetVectorStore(provider vector.EmbeddingProvider) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.initVectorStore(provider)
+}
+
+// --------------------------------------------------------------------------
+// vectorStoreAdapter — adapts vector.VectorStore to memory.Store
+// --------------------------------------------------------------------------
+
+// vectorStoreAdapter wraps a vector.VectorStore and implements the memory.Store interface.
+type vectorStoreAdapter struct {
+	vs *vector.VectorStore
+}
+
+func (a *vectorStoreAdapter) Store(ctx context.Context, entry *Entry) error {
+	ve := entryToVectorEntry(entry)
+	return a.vs.StoreEntry(ctx, &ve)
+}
+
+func (a *vectorStoreAdapter) Query(ctx context.Context, query string, limit int, types []MemoryType) (*SearchResult, error) {
+	var typeFilter []string
+	for _, t := range types {
+		typeFilter = append(typeFilter, t.String())
+	}
+	result, err := a.vs.Query(ctx, query, limit, typeFilter)
+	if err != nil {
+		return nil, err
+	}
+	return vectorResultToSearchResult(result), nil
+}
+
+func (a *vectorStoreAdapter) Get(ctx context.Context, id string) (*Entry, error) {
+	ve, err := a.vs.GetByID(ctx, id)
+	if err != nil || ve == nil {
+		return nil, nil
+	}
+	e := vectorEntryToEntry(ve)
+	return &e, nil
+}
+
+func (a *vectorStoreAdapter) Delete(ctx context.Context, id string) error {
+	return a.vs.DeleteEntry(ctx, id)
+}
+
+func (a *vectorStoreAdapter) List(ctx context.Context, types []MemoryType, offset, limit int) (*SearchResult, error) {
+	var typeFilter []string
+	for _, t := range types {
+		typeFilter = append(typeFilter, t.String())
+	}
+	result, err := a.vs.ListEntries(typeFilter, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	return vectorResultToSearchResult(result), nil
+}
+
+func (a *vectorStoreAdapter) Close() error {
+	return a.vs.Close()
+}
+
+// Ensure vectorStoreAdapter satisfies Store at compile time.
+var _ Store = (*vectorStoreAdapter)(nil)
+
+// --------------------------------------------------------------------------
+// Conversion helpers between memory and vector types
+// --------------------------------------------------------------------------
+
+func entryToVectorEntry(e *Entry) vector.Entry {
+	return vector.Entry{
+		ID:        e.ID,
+		Type:      e.Type.String(),
+		Content:   e.Content,
+		Metadata:  e.Metadata,
+		Tags:      e.Tags,
+		Score:     e.Score,
+		CreatedAt: e.CreatedAt,
+		UpdatedAt: e.UpdatedAt,
+	}
+}
+
+func vectorEntryToEntry(ve *vector.Entry) Entry {
+	return Entry{
+		ID:        ve.ID,
+		Type:      ParseMemoryType(ve.Type),
+		Content:   ve.Content,
+		Metadata:  ve.Metadata,
+		Tags:      ve.Tags,
+		Score:     ve.Score,
+		CreatedAt: ve.CreatedAt,
+		UpdatedAt: ve.UpdatedAt,
+	}
+}
+
+func vectorResultToSearchResult(r *vector.QueryResult) *SearchResult {
+	entries := make([]Entry, len(r.Entries))
+	for i, ve := range r.Entries {
+		entries[i] = vectorEntryToEntry(&ve)
+	}
+	return &SearchResult{
+		Entries: entries,
+		Total:   r.Total,
+		Query:   r.Query,
+	}
 }
 
 // --------------------------------------------------------------------------
