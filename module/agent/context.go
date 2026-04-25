@@ -35,9 +35,12 @@ func NewContextBuilder(workspace string) *ContextBuilder {
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "workspace", "skills")
 	builtinSkillsDir := "" // Reserved for embedded skills in the future
 
+	sl := skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir)
+	sl.EnableSecurity()
+
 	return &ContextBuilder{
 		workspace:    workspace,
-		skillsLoader: skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
+		skillsLoader: sl,
 		memory:       NewMemoryStore(workspace),
 	}
 }

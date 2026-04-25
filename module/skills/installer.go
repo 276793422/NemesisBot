@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/276793422/NemesisBot/module/utils"
@@ -27,9 +28,11 @@ type SkillOrigin struct {
 }
 
 type SkillInstaller struct {
-	workspace       string
-	registryManager *RegistryManager
-	githubBaseURL   string // Base URL for GitHub raw content, defaults to https://raw.githubusercontent.com
+	workspace           string
+	registryManager     *RegistryManager
+	githubBaseURL       string // Base URL for GitHub raw content, defaults to https://raw.githubusercontent.com
+	lastSecurityCheck   *SecurityCheckResult
+	mu                  sync.Mutex
 }
 
 type AvailableSkill struct {
@@ -138,6 +141,29 @@ func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) er
 		return fmt.Errorf("failed to write skill file: %w", err)
 	}
 
+	// Security check on installed content
+	skillName := filepath.Base(repo)
+	checkResult := SecurityCheck(string(body), skillName, nil)
+	si.setLastSecurityCheck(checkResult)
+
+	if checkResult.Blocked {
+		os.RemoveAll(skillDir)
+		return fmt.Errorf("skill '%s' blocked by security check: %s", skillName, checkResult.BlockReason)
+	}
+
+	if !checkResult.LintResult.Passed {
+		slog.Warn("skill has security warnings",
+			"skill", skillName,
+			"lint_score", checkResult.LintResult.Score,
+			"issues", len(checkResult.LintResult.Issues))
+	}
+
+	if checkResult.QualityScore != nil && checkResult.QualityScore.Overall < 40 {
+		slog.Warn("skill has low quality score",
+			"skill", skillName,
+			"quality_score", checkResult.QualityScore.Overall)
+	}
+
 	return nil
 }
 
@@ -183,6 +209,25 @@ func (si *SkillInstaller) InstallFromRegistry(ctx context.Context, registryName,
 
 	if result.IsSuspicious {
 		fmt.Printf("⚠️  Warning: Skill '%s' is marked as suspicious\n", slug)
+	}
+
+	// Security check on installed content
+	skillFilePath := filepath.Join(skillDir, "SKILL.md")
+	if content, err := os.ReadFile(skillFilePath); err == nil {
+		checkResult := SecurityCheck(string(content), slug, nil)
+		si.setLastSecurityCheck(checkResult)
+
+		if checkResult.Blocked {
+			os.RemoveAll(skillDir)
+			return fmt.Errorf("skill '%s' blocked by security check: %s", slug, checkResult.BlockReason)
+		}
+		if !checkResult.LintResult.Passed {
+			fmt.Printf("⚠️  Security warnings (score: %.0f/100, %d issues)\n",
+				checkResult.LintResult.Score, len(checkResult.LintResult.Issues))
+		}
+		if checkResult.QualityScore != nil {
+			fmt.Printf("   Quality score: %.0f/100\n", checkResult.QualityScore.Overall)
+		}
 	}
 
 	fmt.Printf("✓ Skill '%s' (version %s) installed successfully\n", slug, result.Version)
@@ -317,4 +362,18 @@ func (si *SkillInstaller) GetOriginTracking(skillName string) (*SkillOrigin, err
 	}
 
 	return &origin, nil
+}
+
+// LastSecurityCheck returns the security check result from the most recent install.
+func (si *SkillInstaller) LastSecurityCheck() *SecurityCheckResult {
+	si.mu.Lock()
+	defer si.mu.Unlock()
+	return si.lastSecurityCheck
+}
+
+// setLastSecurityCheck stores the security check result from the most recent install.
+func (si *SkillInstaller) setLastSecurityCheck(result *SecurityCheckResult) {
+	si.mu.Lock()
+	defer si.mu.Unlock()
+	si.lastSecurityCheck = result
 }

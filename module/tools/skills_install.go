@@ -130,5 +130,21 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]interfac
 		return ErrorResult(fmt.Sprintf("failed to install skill '%s': %v", slug, err))
 	}
 
-	return NewToolResult(fmt.Sprintf("✓ Skill '%s' installed successfully from registry '%s'", slug, targetRegistry))
+	// Build result message with security info
+	msg := fmt.Sprintf("Skill '%s' installed successfully from registry '%s'", slug, targetRegistry)
+	if check := t.installer.LastSecurityCheck(); check != nil {
+		if check.LintResult != nil {
+			msg += fmt.Sprintf("\nSecurity: %.0f/100", check.LintResult.Score)
+		}
+		if check.QualityScore != nil {
+			msg += fmt.Sprintf("\nQuality: %.0f/100 (Security: %.0f, Completeness: %.0f, Clarity: %.0f, Testing: %.0f)",
+				check.QualityScore.Overall,
+				check.QualityScore.Security.Score,
+				check.QualityScore.Completeness.Score,
+				check.QualityScore.Clarity.Score,
+				check.QualityScore.Testing.Score)
+		}
+	}
+
+	return NewToolResult(msg)
 }

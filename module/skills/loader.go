@@ -29,10 +29,12 @@ type SkillMetadata struct {
 }
 
 type SkillInfo struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Source      string `json:"source"`
-	Description string `json:"description"`
+	Name        string  `json:"name"`
+	Path        string  `json:"path"`
+	Source      string  `json:"source"`
+	Description string  `json:"description"`
+	LintScore   float64 `json:"lint_score,omitempty"`
+	HasWarnings bool    `json:"has_warnings,omitempty"`
 }
 
 func (info SkillInfo) validate() error {
@@ -61,6 +63,8 @@ type SkillsLoader struct {
 	workspaceSkills string // workspace skills (项目级别)
 	globalSkills    string // 全局 skills (~/.nemesisbot/skills)
 	builtinSkills   string // 内置 skills
+	enableSecurity  bool
+	linter          *Linter
 }
 
 func NewSkillsLoader(workspace string, globalSkills string, builtinSkills string) *SkillsLoader {
@@ -70,6 +74,12 @@ func NewSkillsLoader(workspace string, globalSkills string, builtinSkills string
 		globalSkills:    globalSkills, // ~/.nemesisbot/skills
 		builtinSkills:   builtinSkills,
 	}
+}
+
+// EnableSecurity enables security scanning during skill listing.
+func (sl *SkillsLoader) EnableSecurity() {
+	sl.enableSecurity = true
+	sl.linter = NewLinter()
 }
 
 func (sl *SkillsLoader) ListSkills() []SkillInfo {
@@ -95,6 +105,7 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 							slog.Warn("invalid skill from workspace", "name", info.Name, "error", err)
 							continue
 						}
+						sl.scanSkillSecurity(&info, skillFile)
 						skills = append(skills, info)
 					}
 				}
@@ -135,6 +146,7 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 							slog.Warn("invalid skill from global", "name", info.Name, "error", err)
 							continue
 						}
+						sl.scanSkillSecurity(&info, skillFile)
 						skills = append(skills, info)
 					}
 				}
@@ -174,6 +186,7 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 							slog.Warn("invalid skill from builtin", "name", info.Name, "error", err)
 							continue
 						}
+						sl.scanSkillSecurity(&info, skillFile)
 						skills = append(skills, info)
 					}
 				}
@@ -182,6 +195,18 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 	}
 
 	return skills
+}
+
+// scanSkillSecurity runs lint on the skill content if security scanning is enabled.
+func (sl *SkillsLoader) scanSkillSecurity(info *SkillInfo, skillFile string) {
+	if !sl.enableSecurity || sl.linter == nil {
+		return
+	}
+	if content, err := os.ReadFile(skillFile); err == nil {
+		lintResult := sl.linter.Lint(string(content), info.Name)
+		info.LintScore = lintResult.Score
+		info.HasWarnings = !lintResult.Passed
+	}
 }
 
 func (sl *SkillsLoader) LoadSkill(name string) (string, bool) {
@@ -246,6 +271,9 @@ func (sl *SkillsLoader) BuildSkillsSummary() string {
 		lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapedDesc))
 		lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapedPath))
 		lines = append(lines, fmt.Sprintf("    <source>%s</source>", s.Source))
+		if sl.enableSecurity && (s.LintScore > 0 || s.HasWarnings) {
+			lines = append(lines, fmt.Sprintf("    <security_score>%.0f</security_score>", s.LintScore))
+		}
 		lines = append(lines, "  </skill>")
 	}
 	lines = append(lines, "</skills>")
