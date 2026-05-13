@@ -1,0 +1,14 @@
+{
+  "name": "nemesisbot-js-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0",
+    "jsdom": "^26.0.0"
+  }
+}

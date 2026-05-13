@@ -1,0 +1,26 @@
+[package]
+name = "nemesis-forge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-plugin = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+mockall = { workspace = true }
+tempfile = "3"
+filetime = "0.2"

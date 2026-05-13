@@ -1,0 +1,17 @@
+[package]
+name = "cluster-test"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cluster-test"
+path = "src/main.rs"
+
+[dependencies]
+nemesis-cluster = { workspace = true }
+nemesis-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }

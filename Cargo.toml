@@ -1,0 +1,149 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nemesis-types",
+    "crates/nemesis-bus",
+    "crates/nemesis-config",
+    "crates/nemesis-observer",
+    "crates/nemesis-security",
+    "crates/nemesis-providers",
+    "crates/nemesis-tools",
+    "crates/nemesis-memory",
+    "crates/nemesis-workflow",
+    "crates/nemesis-skills",
+    "crates/nemesis-mcp",
+    "crates/nemesis-agent",
+    "crates/nemesis-channels",
+    "crates/nemesis-forge",
+    "crates/nemesis-cluster",
+    "crates/nemesis-services",
+    "crates/nemesis-desktop",
+    "crates/nemesis-web",
+    "crates/nemesis-auth",
+    "crates/nemesis-cron",
+    "crates/nemesis-devices",
+    "crates/nemesis-health",
+    "crates/nemesis-heartbeat",
+    "crates/nemesis-http-pool",
+    "crates/nemesis-logger",
+    "crates/nemesis-migrate",
+    "crates/nemesis-path",
+    "crates/nemesis-plugin",
+    "crates/nemesis-routing",
+    "crates/nemesis-session",
+    "crates/nemesis-state",
+    "crates/nemesis-utils",
+    "crates/nemesis-voice",
+    "crates/nemesis-ui",
+    "nemesisbot",
+    "test-tools/ai-server",
+    "test-tools/mcp-server",
+    "test-tools/integration-test",
+    "test-tools/cluster-test",
+    "test-tools/test-harness",
+    "test-tools/e2e-tests",
+    "test-tools/http-test-server",
+    "test-tools/websocket-client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/nemesisbot/nemesisbot"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+async-stream = "0.3"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Concurrency
+dashmap = "6"
+parking_lot = "0.12"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Regex
+regex = "1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream", "blocking", "multipart"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+
+# WebSocket
+tokio-tungstenite = "0.26"
+
+# Crypto
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+aes-gcm = "0.10"
+rand = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive", "string"] }
+
+# FFI
+libloading = "0.8"
+
+# Testing
+mockall = "0.13"
+tokio-test = "0.4"
+
+# Internal crates
+nemesis-types = { path = "crates/nemesis-types" }
+nemesis-bus = { path = "crates/nemesis-bus" }
+nemesis-config = { path = "crates/nemesis-config" }
+nemesis-observer = { path = "crates/nemesis-observer" }
+nemesis-security = { path = "crates/nemesis-security" }
+nemesis-providers = { path = "crates/nemesis-providers" }
+nemesis-tools = { path = "crates/nemesis-tools" }
+nemesis-memory = { path = "crates/nemesis-memory" }
+nemesis-workflow = { path = "crates/nemesis-workflow" }
+nemesis-skills = { path = "crates/nemesis-skills" }
+nemesis-mcp = { path = "crates/nemesis-mcp" }
+nemesis-agent = { path = "crates/nemesis-agent" }
+nemesis-channels = { path = "crates/nemesis-channels" }
+nemesis-forge = { path = "crates/nemesis-forge" }
+nemesis-cluster = { path = "crates/nemesis-cluster" }
+nemesis-services = { path = "crates/nemesis-services" }
+nemesis-desktop = { path = "crates/nemesis-desktop" }
+nemesis-web = { path = "crates/nemesis-web" }
+nemesis-auth = { path = "crates/nemesis-auth" }
+nemesis-cron = { path = "crates/nemesis-cron" }
+nemesis-devices = { path = "crates/nemesis-devices" }
+nemesis-health = { path = "crates/nemesis-health" }
+nemesis-heartbeat = { path = "crates/nemesis-heartbeat" }
+nemesis-http-pool = { path = "crates/nemesis-http-pool" }
+nemesis-logger = { path = "crates/nemesis-logger" }
+nemesis-migrate = { path = "crates/nemesis-migrate" }
+nemesis-path = { path = "crates/nemesis-path" }
+nemesis-plugin = { path = "crates/nemesis-plugin" }
+nemesis-routing = { path = "crates/nemesis-routing" }
+nemesis-session = { path = "crates/nemesis-session" }
+nemesis-state = { path = "crates/nemesis-state" }
+nemesis-utils = { path = "crates/nemesis-utils" }
+nemesis-voice = { path = "crates/nemesis-voice" }
+nemesis-ui = { path = "crates/nemesis-ui" }

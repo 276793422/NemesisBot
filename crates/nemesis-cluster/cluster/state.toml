@@ -1,0 +1,17 @@
+discovered = []
+last_sync = "2026-05-13T15:39:28.218478400+00:00"
+
+[cluster]
+id = "auto-discovered"
+auto_discovery = true
+last_updated = "2026-05-13T15:39:28.218477500+00:00"
+rpc_auth_token = ""
+
+[local_node]
+id = "local-node-001"
+name = "Bot local-no"
+address = "127.0.0.1:9000"
+role = "worker"
+category = "general"
+tags = []
+capabilities = []

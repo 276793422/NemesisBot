@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NemesisBot Web Chat</title>
+    <link rel="stylesheet" href="/chat/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 登录界面 -->
+        <div id="login-screen" class="screen">
+            <div class="login-container">
+                <div class="login-box">
+                    <h1>NemesisBot</h1>
+                    <p class="login-subtitle">请输入访问密钥</p>
+                    <div class="login-form">
+                        <input
+                            id="auth-token-input"
+                            type="password"
+                            placeholder="访问密钥"
+                            autocomplete="off"
+                        >
+                        <div class="login-options">
+                            <label class="checkbox-label">
+                                <input id="remember-me" type="checkbox" checked>
+                                <span>记住我</span>
+                            </label>
+                        </div>
+                        <button id="login-button">登录</button>
+                        <p id="login-error" class="error-message"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 聊天界面 -->
+        <div id="chat-screen" class="screen" style="display: none;">
+            <header>
+                <h1>NemesisBot</h1>
+                <div id="connection-status">
+                    <span class="status-dot connecting"></span>
+                    <span class="status-text">连接中...</span>
+                </div>
+                <button id="logout-button" class="logout-button" title="注销">退出</button>
+            </header>
+
+            <!-- 消息列表 -->
+            <div id="messages-container">
+                <!-- 消息会动态插入到这里 -->
+            </div>
+
+            <!-- 输入区域 -->
+            <div id="input-area">
+                <textarea id="message-input"
+                          placeholder="输入消息... (Ctrl+Enter 发送)"
+                          rows="1"></textarea>
+                <button id="send-button" disabled>发送</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load app.js first to establish WebSocket connection immediately -->
+    <script src="/chat/app.js"></script>
+    <!-- Load external libraries asynchronously (don't block WebSocket) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js" defer></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+</body>
+</html>

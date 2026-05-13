@@ -1,0 +1,29 @@
+[package]
+name = "plugin-ui"
+version = "0.1.0"
+edition = "2021"
+description = "NemesisBot UI plugin — pure WebView2 window DLL (no business logic)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate target).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# WebView engine (same as Tauri's underlying library)
+wry = "0.51"
+tao = "0.33"
+
+# Native window handle access (HWND on Windows)
+raw-window-handle = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+log = "0.4"
+
+# Build: cd plugins/plugin-ui && cargo build --release
+# Output: target/release/plugin-ui.dll (or .so/.dylib on other platforms)

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NemesisBot</title>
+  <link rel="stylesheet" href="/css/theme.css">
+  <link rel="stylesheet" href="/css/layout.css">
+  <link rel="stylesheet" href="/css/components.css">
+</head>
+<body x-data="app()" :data-theme="$store.app.theme">
+
+  <!-- ===== Auth Overlay ===== -->
+  <div x-show="!$store.app.authenticated" x-transition class="auth-overlay">
+    <div class="auth-card">
+      <h1>Nemesis<span class="brand-dot">Bot</span></h1>
+      <p class="auth-subtitle">请输入访问密钥以继续</p>
+      <div class="auth-form">
+        <input
+          class="form-input"
+          type="password"
+          placeholder="访问密钥"
+          autocomplete="off"
+          x-model="loginToken"
+          @keydown="handleAuthInput($event)"
+          :disabled="loginLoading"
+          x-ref="tokenInput"
+        >
+        <label class="auth-remember">
+          <input type="checkbox" x-model="loginRemember">
+          <span>记住我</span>
+        </label>
+        <button class="btn btn-primary btn-lg" @click="handleLogin()" :disabled="loginLoading">
+          <span x-show="!loginLoading">登录</span>
+          <span x-show="loginLoading">
+            <span class="spinner" style="width:16px;height:16px;border-width:2px;"></span>
+            连接中...
+          </span>
+        </button>
+        <p class="auth-error" x-text="loginError" x-show="loginError"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Main Layout ===== -->
+  <div x-show="$store.app.authenticated" x-transition class="app-layout"
+       :class="{ 'focus-mode': $store.app.focusMode }">
+
+    <!-- Mobile Overlay -->
+    <div class="mobile-overlay" :class="{ show: showMobileSidebar }" @click="toggleMobileSidebar()"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed, 'mobile-open': showMobileSidebar }">
+      <!-- Header -->
+      <div class="sidebar-header">
+        <div class="sidebar-logo">
+          <h1>NemesisBot</h1>
+        </div>
+      </div>
+
+      <!-- Connection Status -->
+      <div class="sidebar-status">
+        <span class="status-dot" :class="$store.app.connected ? 'connected' : 'disconnected'"></span>
+        <span x-text="$store.app.connected ? '已连接' : '未连接'"></span>
+      </div>
+
+      <!-- Navigation -->
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">主要</div>
+          <a class="nav-item" :class="{ active: page === 'chat' }" @click="navigate('chat')">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </span>
+            <span class="nav-label">聊天</span>
+          </a>
+          <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            </span>
+            <span class="nav-label">概览</span>
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">管理</div>
+          <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            </span>
+            <span class="nav-label">日志</span>
+          </a>
+          <a class="nav-item" :class="{ active: page === 'scanner' }" @click="navigate('scanner')">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </span>
+            <span class="nav-label">扫描器</span>
+          </a>
+          <a class="nav-item" :class="{ active: page === 'settings' }" @click="navigate('settings')">
+            <span class="nav-icon">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            </span>
+            <span class="nav-label">设置</span>
+          </a>
+        </div>
+      </nav>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <a class="nav-item" @click="toggleTheme()">
+          <span class="nav-icon">
+            <svg x-show="$store.app.theme === 'dark'" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg x-show="$store.app.theme === 'light'" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </span>
+          <span class="nav-label" x-text="$store.app.theme === 'dark' ? '浅色模式' : '深色模式'"></span>
+        </a>
+        <a class="nav-item" @click="handleLogout()">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </span>
+          <span class="nav-label">退出</span>
+        </a>
+      </div>
+
+      <!-- Toggle -->
+      <div class="sidebar-toggle" @click="toggleSidebar()">
+        <span x-text="sidebarCollapsed ? '\u00BB' : '\u00AB'"></span>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Mobile Header -->
+      <div class="mobile-header">
+        <button class="hamburger-btn" @click="toggleMobileSidebar()">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <span style="font-weight:600;">NemesisBot</span>
+      </div>
+
+      <!-- Chat Page -->
+      <template x-if="page === 'chat'">
+        <div x-data="chatPage()" class="page-chat" x-init="init()" @destroy="destroy()">
+          <!-- Messages -->
+          <div class="chat-messages" x-ref="chatMessages">
+            <!-- History loading indicator -->
+            <div x-show="_historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
+              <span class="spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;"></span>
+              <span style="vertical-align:middle;"> 加载历史消息...</span>
+            </div>
+
+            <!-- Welcome message -->
+            <div class="message assistant" x-show="messages.length === 0">
+              <div class="message-avatar">NB</div>
+              <div class="message-content">
+                <div class="message-bubble">
+                  <p>你好！我是 NemesisBot。有什么可以帮助你的吗？</p>
+                </div>
+              </div>
+            </div>
+
+            <template x-for="(msg, idx) in messages" :key="idx">
+              <div class="message" :class="msg.role">
+                <div class="message-avatar" x-text="getAvatar(msg.role)"></div>
+                <div class="message-content">
+                  <div class="message-bubble">
+                    <template x-if="msg.role === 'assistant'">
+                      <div class="markdown-body" x-html="renderMarkdown(msg.content)"></div>
+                    </template>
+                    <template x-if="msg.role !== 'assistant'">
+                      <span x-text="msg.content"></span>
+                    </template>
+                  </div>
+                  <div class="message-time" x-text="formatTime(msg.timestamp)"></div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Typing indicator -->
+            <div x-show="streaming" class="message assistant">
+              <div class="message-avatar">NB</div>
+              <div class="message-content">
+                <div class="message-bubble">
+                  <div class="typing-indicator"><span></span><span></span><span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Input -->
+          <div class="chat-input-area">
+            <textarea
+              x-ref="chatInput"
+              placeholder="输入消息... (Ctrl+Enter 发送)"
+              rows="1"
+              x-model="input"
+              @keydown="handleKeydown($event)"
+              @input="handleInput($event)"
+              :disabled="streaming"
+            ></textarea>
+            <button class="btn btn-primary" @click="send()" :disabled="!input.trim() || streaming">
+              发送
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Overview Page -->
+      <template x-if="page === 'overview'">
+        <div x-data="overviewPage()" x-init="init()" @destroy="destroy()" class="page-overview">
+          <div class="page-header">
+            <h2>系统概览</h2>
+          </div>
+          <div class="page-body">
+            <!-- Loading skeleton -->
+            <div x-show="loading" class="stats-grid">
+              <div class="skeleton skeleton-card"></div>
+              <div class="skeleton skeleton-card"></div>
+              <div class="skeleton skeleton-card"></div>
+              <div class="skeleton skeleton-card"></div>
+            </div>
+
+            <!-- Stats -->
+            <div x-show="!loading" class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-label">版本</div>
+                <div class="stat-value" x-text="status.version || '--'"></div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">运行时间</div>
+                <div class="stat-value" x-text="formatUptime(status.uptime_seconds)"></div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">WebSocket 连接</div>
+                <div class="stat-value">
+                  <span class="badge" :class="getConnectionBadgeClass(status.ws_connected)" x-text="getConnectionBadge(status.ws_connected)"></span>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">会话数</div>
+                <div class="stat-value" x-text="status.session_count || 0"></div>
+              </div>
+            </div>
+
+            <!-- Details -->
+            <div x-show="!loading" style="margin-top: var(--space-6);">
+              <div class="card" style="margin-bottom: var(--space-4);">
+                <div class="card-header"><h3>模型</h3></div>
+                <div class="card-body">
+                  <span class="badge badge-info" x-text="status.model || '未配置'"></span>
+                </div>
+              </div>
+
+              <div class="card" style="margin-bottom: var(--space-4);">
+                <div class="card-header"><h3>扫描器</h3></div>
+                <div class="card-body">
+                  <template x-if="status.scanner_status">
+                    <div>
+                      <span class="badge" :class="status.scanner_status.enabled ? 'badge-success' : 'badge-neutral'" x-text="status.scanner_status.enabled ? '已启用' : '未启用'"></span>
+                      <template x-if="status.scanner_status.engines && status.scanner_status.engines.length > 0">
+                        <div style="margin-top: var(--space-2); display: flex; gap: var(--space-2);">
+                          <template x-for="e in status.scanner_status.engines">
+                            <span class="badge badge-info" x-text="e"></span>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <template x-if="!status.scanner_status">
+                    <span class="badge badge-neutral">未知</span>
+                  </template>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-header"><h3>集群</h3></div>
+                <div class="card-body">
+                  <template x-if="status.cluster_status">
+                    <div>
+                      <span class="badge" :class="status.cluster_status.enabled ? 'badge-success' : 'badge-neutral'" x-text="status.cluster_status.enabled ? '已启用' : '未启用'"></span>
+                      <template x-if="status.cluster_status.enabled">
+                        <span style="margin-left: var(--space-2); font-size: var(--text-sm); color: var(--text-muted);" x-text="'节点数: ' + (status.cluster_status.node_count || 0)"></span>
+                      </template>
+                    </div>
+                  </template>
+                  <template x-if="!status.cluster_status">
+                    <span class="badge badge-neutral">未知</span>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Logs Page -->
+      <template x-if="page === 'logs'">
+        <div x-data="logsPage()" x-init="init()" @destroy="destroy()" class="page-logs">
+          <div class="page-header">
+            <h2>日志管理</h2>
+          </div>
+
+          <!-- Toolbar -->
+          <div class="logs-toolbar">
+            <div class="logs-tabs">
+              <template x-for="src in sources" :key="src.id">
+                <button class="logs-tab" :class="{ active: source === src.id }" @click="switchSource(src.id)" x-text="src.label"></button>
+              </template>
+            </div>
+            <select class="form-select" style="width: auto;" x-model="level">
+              <template x-for="lv in levels" :key="lv.id">
+                <option :value="lv.id" x-text="lv.label"></option>
+              </template>
+            </select>
+            <input class="logs-filter" type="text" placeholder="搜索关键词..." x-model="filter">
+            <label style="display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--text-muted); cursor: pointer;">
+              <input type="checkbox" x-model="autoScroll">
+              自动滚动
+            </label>
+            <button class="btn btn-sm btn-ghost" @click="clearLogs()">清除</button>
+          </div>
+
+          <!-- Log entries -->
+          <div class="logs-list" x-ref="logsList">
+            <div x-show="loading" style="padding: var(--space-8); text-align: center;">
+              <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
+              <p style="margin-top: var(--space-4); color: var(--text-muted);">加载日志...</p>
+            </div>
+
+            <template x-for="(entry, idx) in filteredEntries()" :key="idx">
+              <div class="log-entry">
+                <span class="log-level" :class="entry.level ? entry.level.toLowerCase() : ''" x-text="entry.level || ''"></span>
+                <span class="log-time" x-text="formatTime(entry.timestamp)"></span>
+                <span class="log-component" x-text="entry.component || ''"></span>
+                <span class="log-message" x-text="entry.message || ''"></span>
+              </div>
+            </template>
+
+            <div x-show="!loading && entries.length === 0" class="empty-state">
+              <p>暂无日志</p>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Scanner Page -->
+      <template x-if="page === 'scanner'">
+        <div x-data="scannerPage()" x-init="init()" @destroy="destroy()" class="page-scanner">
+          <div class="page-header">
+            <h2>扫描器管理</h2>
+          </div>
+          <div class="page-body">
+            <div x-show="loading" style="text-align: center; padding: var(--space-8);">
+              <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
+            </div>
+
+            <div x-show="!loading && engines.length === 0" class="empty-state">
+              <div class="empty-state-icon">\u{1F6E1}\uFE0F</div>
+              <h3>未检测到扫描引擎</h3>
+              <p>请先配置扫描器引擎后重试</p>
+            </div>
+
+            <div x-show="!loading && engines.length > 0" class="engines-grid">
+              <template x-for="(engine, idx) in engines" :key="idx">
+                <div class="card">
+                  <div class="card-header">
+                    <h3 x-text="engine.name || 'Engine'"></h3>
+                    <span class="badge" :class="getStateBadgeClass(engine.state)" x-text="getStateBadge(engine.state)"></span>
+                  </div>
+                  <div class="card-body">
+                    <template x-if="engine.version">
+                      <p style="font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-2);">
+                        版本: <span x-text="engine.version"></span>
+                      </p>
+                    </template>
+                    <template x-if="engine.description">
+                      <p style="font-size: var(--text-sm); color: var(--text-secondary);" x-text="engine.description"></p>
+                    </template>
+                    <template x-if="!engine.description">
+                      <p style="font-size: var(--text-sm); color: var(--text-muted);">病毒扫描引擎</p>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Settings Page -->
+      <template x-if="page === 'settings'">
+        <div x-data="settingsPage()" x-init="init()" @destroy="destroy()" class="page-settings">
+          <div class="page-header">
+            <h2>设置</h2>
+          </div>
+          <div class="page-body">
+            <div x-show="loading" style="text-align: center; padding: var(--space-8);">
+              <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
+            </div>
+
+            <div x-show="!loading && error" style="text-align: center; padding: var(--space-8); color: var(--error);" x-text="error"></div>
+
+            <div x-show="!loading && !error">
+              <template x-for="(section, sIdx) in Object.keys(config)" :key="sIdx">
+                <div class="settings-section">
+                  <h3 x-text="section"></h3>
+                  <div class="settings-grid">
+                    <template x-for="(key, kIdx) in Object.keys(config[section])" :key="kIdx">
+                      <template x-if="typeof config[section][key] !== 'object'">
+                        <div style="display: contents;">
+                          <div class="settings-key" x-text="key"></div>
+                          <div class="settings-value" x-text="maskValue(key, config[section][key])"></div>
+                        </div>
+                      </template>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <div x-show="!loading && Object.keys(config).length === 0" class="empty-state">
+                <p>暂无配置信息</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </main>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="/js/vendor/marked.min.js" defer></script>
+  <script src="/js/vendor/highlight.min.js" defer></script>
+  <script src="/js/api.js" defer></script>
+  <script src="/js/app.js" defer></script>
+  <script src="/js/pages/chat.js" defer></script>
+  <script src="/js/pages/overview.js" defer></script>
+  <script src="/js/pages/logs.js" defer></script>
+  <script src="/js/pages/scanner.js" defer></script>
+  <script src="/js/pages/settings.js" defer></script>
+  <script src="/js/vendor/alpine.min.js" defer></script>
+</body>
+</html>

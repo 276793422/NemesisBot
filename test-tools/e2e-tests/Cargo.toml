@@ -1,0 +1,17 @@
+[package]
+name = "nemesisbot-tests"
+version.workspace = true
+edition.workspace = true
+
+[[test]]
+name = "e2e_ai_flow"
+path = "e2e_ai_flow.rs"
+
+[[test]]
+name = "integration_pipeline"
+path = "integration_pipeline.rs"
+
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }

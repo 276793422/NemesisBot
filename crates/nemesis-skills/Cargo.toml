@@ -1,0 +1,27 @@
+[package]
+name = "nemesis-skills"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-security = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+parking_lot = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+zip = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3"

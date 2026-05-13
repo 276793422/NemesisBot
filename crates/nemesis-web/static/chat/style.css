@@ -1,0 +1,587 @@
+/* NemesisBot Web Chat - Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+}
+
+body {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 1200px;
+    margin: 0 auto;
+    background: #ffffff;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.2);
+}
+
+/* 头部样式 */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+    font-size: 24px;
+    font-weight: 600;
+}
+
+#connection-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+}
+
+.status-dot.connecting {
+    background: #ffc107;
+}
+
+.status-dot.connected {
+    background: #28a745;
+    animation: none;
+}
+
+.status-dot.disconnected {
+    background: #dc3545;
+    animation: none;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+/* 消息气泡 */
+.message {
+    max-width: 70%;
+    padding: 12px 16px;
+    border-radius: 18px;
+    word-wrap: break-word;
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message.user {
+    background: #007bff;
+    color: white;
+    margin-left: auto;
+    border-bottom-right-radius: 4px;
+}
+
+.message.assistant {
+    background: #f1f0f0;
+    color: #333;
+    margin-right: auto;
+    border-bottom-left-radius: 4px;
+}
+
+.message.system {
+    background: #fff3cd;
+    color: #856404;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 14px;
+    max-width: 90%;
+}
+
+.message.error {
+    background: #f8d7da;
+    color: #721c24;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 14px;
+    max-width: 90%;
+}
+
+.message-time {
+    font-size: 11px;
+    opacity: 0.7;
+    margin-top: 5px;
+    text-align: right;
+}
+
+/* Markdown 样式 */
+.message.assistant h1,
+.message.assistant h2,
+.message.assistant h3,
+.message.assistant h4,
+.message.assistant h5,
+.message.assistant h6 {
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+
+.message.assistant h1 {
+    font-size: 1.5em;
+}
+
+.message.assistant h2 {
+    font-size: 1.3em;
+}
+
+.message.assistant h3 {
+    font-size: 1.1em;
+}
+
+.message.assistant p {
+    margin-bottom: 8px;
+}
+
+.message.assistant p:last-child {
+    margin-bottom: 0;
+}
+
+.message.assistant code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 0.9em;
+}
+
+.message.assistant pre {
+    background: #2d2d2d;
+    color: #f8f8f2;
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 10px 0;
+}
+
+.message.assistant pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+}
+
+.message.assistant ul,
+.message.assistant ol {
+    margin-left: 20px;
+    margin-bottom: 10px;
+}
+
+.message.assistant li {
+    margin-bottom: 4px;
+}
+
+.message.assistant a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+.message.assistant a:hover {
+    text-decoration: underline;
+}
+
+.message.assistant blockquote {
+    border-left: 3px solid #ddd;
+    padding-left: 10px;
+    margin: 10px 0;
+    color: #666;
+}
+
+.message.assistant table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 10px 0;
+}
+
+.message.assistant table th,
+.message.assistant table td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+.message.assistant table th {
+    background: #f5f5f5;
+}
+
+#chat-screen {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* 聊天界面头部 - 继承原有 header 样式 */
+#chat-screen header {
+    flex-shrink: 0;
+}
+
+/* 消息列表容器 - 独立滚动 */
+#messages-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    background: #f5f5f5;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+#messages-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+#messages-container::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+#messages-container::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+#messages-container::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* 消息气泡 */
+
+/* 输入区域 - 固定在底部 */
+#input-area {
+    flex-shrink: 0;
+    display: flex;
+    gap: 10px;
+    padding: 15px 20px;
+    background: white;
+    border-top: 1px solid #e0e0e0;
+    box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+}
+
+#message-input {
+    flex: 1;
+    padding: 12px 16px;
+    border: 2px solid #e0e0e0;
+    border-radius: 24px;
+    font-size: 15px;
+    font-family: inherit;
+    resize: none;
+    min-height: 44px;
+    max-height: 150px;
+    line-height: 1.4;
+    transition: border-color 0.2s;
+}
+
+#message-input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+#message-input::placeholder {
+    color: #999;
+}
+
+#send-button {
+    padding: 12px 24px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 24px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.2s;
+    white-space: nowrap;
+}
+
+#send-button:hover:not(:disabled) {
+    transform: scale(1.05);
+}
+
+#send-button:active:not(:disabled) {
+    transform: scale(0.95);
+}
+
+#send-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 打字指示器 */
+.typing-indicator {
+    display: inline-flex;
+    gap: 4px;
+    padding: 8px 12px;
+}
+
+.typing-indicator span {
+    width: 8px;
+    height: 8px;
+    background: #999;
+    border-radius: 50%;
+    animation: bounce 1.4s infinite ease-in-out;
+}
+
+.typing-indicator span:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.typing-indicator span:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+@keyframes bounce {
+    0%, 80%, 100% {
+        transform: scale(0);
+    }
+    40% {
+        transform: scale(1);
+    }
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    header h1 {
+        font-size: 20px;
+    }
+
+    #connection-status {
+        font-size: 12px;
+    }
+
+    .message {
+        max-width: 85%;
+    }
+
+    #input-area {
+        padding: 12px 15px;
+    }
+
+    #message-input {
+        font-size: 14px;
+    }
+
+    #send-button {
+        padding: 10px 20px;
+        font-size: 14px;
+    }
+}
+
+@media (max-width: 480px) {
+    header {
+        padding: 12px 15px;
+    }
+
+    header h1 {
+        font-size: 18px;
+    }
+
+    #messages-container {
+        padding: 15px;
+    }
+
+    .message {
+        max-width: 90%;
+        padding: 10px 14px;
+    }
+
+    #input-area {
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+    }
+
+    #message-input {
+        width: 100%;
+    }
+
+    #send-button {
+        width: 100%;
+    }
+}
+
+/* ===== 登录界面样式 ===== */
+.screen {
+    width: 100%;
+    height: 100%;
+}
+
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.login-box {
+    background: white;
+    border-radius: 16px;
+    padding: 40px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    text-align: center;
+    min-width: 320px;
+    max-width: 400px;
+    animation: slideIn 0.4s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.login-box h1 {
+    font-size: 28px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.login-subtitle {
+    color: #666;
+    font-size: 14px;
+    margin-bottom: 30px;
+}
+
+.login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+#auth-token-input {
+    width: 100%;
+    padding: 14px 16px;
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+    font-size: 15px;
+    font-family: inherit;
+    transition: border-color 0.2s;
+    text-align: center;
+}
+
+#auth-token-input:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.login-options {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #666;
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #667eea;
+}
+
+#login-button {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.2s;
+}
+
+#login-button:hover:not(:disabled) {
+    transform: scale(1.02);
+}
+
+#login-button:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+#login-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.error-message {
+    color: #dc3545;
+    font-size: 13px;
+    margin: 0;
+    min-height: 18px;
+}
+
+/* 注销按钮样式 */
+.logout-button {
+    padding: 8px 16px;
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.logout-button:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* 登录界面响应式 */
+@media (max-width: 480px) {
+    .login-box {
+        min-width: unset;
+        max-width: 90%;
+        padding: 30px 20px;
+    }
+
+    .login-box h1 {
+        font-size: 24px;
+    }
+}

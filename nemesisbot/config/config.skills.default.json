@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "search_cache": {
+    "enabled": true,
+    "max_size": 50,
+    "ttl_seconds": 300
+  },
+  "max_concurrent_searches": 2,
+  "github_sources": [
+    {
+      "name": "anthropics",
+      "repo": "anthropics/skills",
+      "enabled": true,
+      "branch": "main",
+      "index_type": "github_api",
+      "skill_path_pattern": "skills/{slug}/SKILL.md"
+    },
+    {
+      "name": "openclaw",
+      "repo": "openclaw/skills",
+      "enabled": true,
+      "branch": "main",
+      "index_type": "github_api",
+      "skill_path_pattern": "skills/{author}/{slug}/SKILL.md"
+    }
+  ],
+  "clawhub": {
+    "enabled": true,
+    "base_url": "https://clawhub.ai",
+    "convex_url": "https://wry-manatee-359.convex.cloud",
+    "timeout": 30
+  }
+}

@@ -1,0 +1,117 @@
+# WebSocket Client Configuration
+
+[server]
+# WebSocket server URL
+url = "ws://127.0.0.1:49001/ws"
+# Authentication token (leave empty if no authentication required)
+token = ""
+
+[reconnect]
+# Enable automatic reconnection
+enabled = true
+# Maximum reconnection attempts (0 = infinite)
+max_attempts = 0
+# Initial reconnection delay in seconds
+initial_delay = 1
+# Maximum reconnection delay in seconds
+max_delay = 30
+# Reconnection delay multiplier (exponential backoff)
+delay_multiplier = 2.0
+
+[heartbeat]
+# Enable heartbeat (ping/pong)
+enabled = true
+# Heartbeat interval in seconds
+interval = 30
+# Timeout waiting for pong in seconds
+timeout = 10
+
+[logging]
+# Enable message logging
+enabled = true
+# Log file path (empty = no file logging)
+file = "websocket_client.log"
+# Log level: error, warn, info, debug, trace
+level = "info"
+# Log message content (may be large)
+log_messages = true
+
+[ui]
+# Enable colored output
+color = true
+# Show timestamps
+show_timestamp = true
+# Show message statistics
+show_stats = true
+# Prompt style: simple, detailed
+prompt_style = "simple"
+
+[statistics]
+# Enable statistics tracking
+enabled = true
+# Print statistics interval in seconds (0 = disabled)
+print_interval = 0
+
+# Message processing rules
+[message_rules]
+# Enable message rule processing
+enabled = true
+
+# Individual rules (processed in order, first match wins)
+[[message_rules.rules]]
+# Rule name/identifier
+name = "api-rate-limit"
+# Human-readable description
+description = "API访问量过大，模型繁忙"
+# Pattern to match (supports substring matching, case-insensitive by default)
+pattern = "Error processing message: LLM call failed after retries: API request failed:\nStatus: 429\nBody: {\"error\":{\"code\":\"1305\",\"message\":\"该模型当前访问量过大，请您稍后再试\"}}"
+# Replacement text when pattern matches
+replacement = "【目前我有点忙，要不然你等会再叫我】"
+# Whether this rule is enabled
+enabled = true
+# Case-sensitive matching
+case_sensitive = false
+# Skip displaying this message entirely (instead of replacing)
+skip = false
+
+[[message_rules.rules]]
+# Rule name/identifier
+name = "context-window-exceeded"
+# Human-readable description
+description = "上下文窗口超限，压缩历史重试"
+# Pattern to match
+pattern = "Context window exceeded. Compressing history and retrying..."
+# Replacement text (not used when skip=true)
+replacement = ""
+# Whether this rule is enabled
+enabled = true
+# Case-sensitive matching
+case_sensitive = false
+# Skip displaying this message entirely
+skip = true
+
+[[message_rules.rules]]
+# Rule name/identifier
+name = "prompt-param-missing"
+# Human-readable description
+description = "未正常接收到prompt参数"
+# Pattern to match
+pattern = "Error processing message: LLM call failed after retries: API request failed:\nStatus: 400\nBody: {\"error\":{\"code\":\"1213\",\"message\":\"未正常接收到prompt参数。\"}}"
+# Replacement text
+replacement = "【你说什么，我没听清，可以再说一遍么】"
+# Whether this rule is enabled
+enabled = true
+# Case-sensitive matching
+case_sensitive = false
+# Skip displaying this message (false = replace instead)
+skip = false
+
+# You can add more rules below, for example:
+# [[message_rules.rules]]
+# name = "another-error"
+# description = "处理其他错误"
+# pattern = "Error: something went wrong"
+# replacement = "【发生了一些小问题，请稍后再试】"
+# enabled = true
+# case_sensitive = false
+# skip = false

@@ -1,0 +1,29 @@
+[package]
+name = "nemesis-desktop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-config = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = "0.26"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+
+# Tray icon
+tray-icon = "0.24"
+winit = "0.30"
+image = "0.25"
+
+# DLL loading for plugin-ui
+libloading = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1,0 +1,17 @@
+{
+  "enabled": [],
+  "engines": {
+    "clamav": {
+      "url": "https://www.clamav.net/downloads/production/clamav-1.5.2.win.x64.zip",
+      "clamav_path": "",
+      "address": "127.0.0.1:3310",
+      "scan_on_write": true,
+      "scan_on_download": false,
+      "scan_on_exec": true,
+      "scan_extensions": [],
+      "skip_extensions": [".txt", ".md", ".json", ".yaml", ".yml", ".toml", ".log", ".css", ".html"],
+      "max_file_size": 52428800,
+      "update_interval": "24h"
+    }
+  }
+}

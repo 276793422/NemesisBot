@@ -1,0 +1,13 @@
+[package]
+name = "nemesis-bus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1,0 +1,29 @@
+[package]
+name = "nemesis-tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-skills = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+regex = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+mockall = { workspace = true }
+tempfile = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

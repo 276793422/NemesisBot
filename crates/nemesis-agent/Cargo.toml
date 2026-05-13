@@ -1,0 +1,34 @@
+[package]
+name = "nemesis-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-routing = { workspace = true }
+nemesis-skills = { workspace = true }
+nemesis-memory = { workspace = true }
+nemesis-mcp = { workspace = true }
+nemesis-tools = { workspace = true }
+nemesis-cron = { workspace = true }
+nemesis-forge = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+nemesis-observer = { workspace = true }
+nemesis-security = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+mockall = { workspace = true }
+tempfile = "3"

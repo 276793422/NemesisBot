@@ -1,0 +1,58 @@
+[package]
+name = "nemesisbot"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nemesisbot"
+path = "src/main.rs"
+
+[dependencies]
+nemesis-types = { workspace = true }
+nemesis-config = { workspace = true }
+nemesis-security = { workspace = true }
+nemesis-bus = { workspace = true }
+nemesis-agent = { workspace = true }
+nemesis-channels = { workspace = true }
+nemesis-providers = { workspace = true }
+nemesis-forge = { workspace = true }
+nemesis-skills = { workspace = true }
+nemesis-workflow = { workspace = true }
+nemesis-memory = { workspace = true }
+nemesis-mcp = { workspace = true }
+nemesis-observer = { workspace = true }
+nemesis-tools = { workspace = true }
+nemesis-services = { workspace = true }
+nemesis-migrate = { workspace = true }
+nemesis-auth = { workspace = true }
+nemesis-cluster = { workspace = true }
+nemesis-web = { workspace = true }
+nemesis-health = { workspace = true }
+nemesis-heartbeat = { workspace = true }
+nemesis-cron = { workspace = true }
+nemesis-state = { workspace = true }
+nemesis-desktop = { workspace = true }
+serde_yaml = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+dirs = "5"
+which = "6"
+reqwest = { workspace = true }
+getrandom = "0.2"
+async-trait = { workspace = true }
+rustyline = "15"
+include_dir = "0.7"
+
+[build-dependencies]
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

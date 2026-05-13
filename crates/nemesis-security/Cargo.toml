@@ -1,0 +1,31 @@
+[package]
+name = "nemesis-security"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+url = "2"
+ipnet = "2"
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+zip = "2"
+base64 = "0.22"
+walkdir = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tempfile = "3"

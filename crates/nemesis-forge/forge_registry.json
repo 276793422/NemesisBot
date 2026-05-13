@@ -1,0 +1,19 @@
+[
+  {
+    "id": "8d9fc923-0ee9-483b-a950-25470f1b4770",
+    "name": "time-test",
+    "kind": "Skill",
+    "version": "0.1.0",
+    "status": "Draft",
+    "content": "test content",
+    "tool_signature": [
+      "tool_a"
+    ],
+    "created_at": "2026-05-13T15:39:42.978753900+00:00",
+    "updated_at": "2026-05-13T15:39:42.991671200+00:00",
+    "usage_count": 1,
+    "success_rate": 0.0,
+    "last_degraded_at": null,
+    "consecutive_observing_rounds": 0
+  }
+]
