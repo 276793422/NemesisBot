@@ -16,6 +16,14 @@
 
 ---
 
+## 扯犊子之前（这段是人写的）
+
+当前项目废弃，主要是不想用 Golang 开发了（Golang 太胖了，Rust 瘦一点），此版本为 Golang 项目的最终版本。
+
+未来版本将在 [https://github.com/276793422/NemesisBot_Rust](https://github.com/276793422/NemesisBot_Rust) 仓库更新。
+
+开发语言替换成 Rust ，Rust 第一版完全复刻 Golang 当前状态。
+
 ## 核心特色
 
 ### 🔐 安全保障体系
