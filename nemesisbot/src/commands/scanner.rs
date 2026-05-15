@@ -225,12 +225,14 @@ pub enum ScannerAction {
         /// Engine name
         name: String,
     },
-    /// Enable a scanner engine
+    /// Enable a scanner engine (deprecated: use `scanner <engine> enable`)
+    #[command(hide = true)]
     Enable {
         /// Engine name (e.g., clamav)
         name: String,
     },
-    /// Disable a scanner engine
+    /// Disable a scanner engine (deprecated: use `scanner <engine> disable`)
+    #[command(hide = true)]
     Disable {
         /// Engine name
         name: String,
@@ -257,7 +259,17 @@ pub enum ClamavAction {
         /// Force re-install even if already installed
         #[arg(long)]
         force: bool,
+        /// Override download URL (default: read from config)
+        #[arg(long)]
+        url: Option<String>,
+        /// Installation directory
+        #[arg(long)]
+        dir: Option<String>,
     },
+    /// Enable ClamAV engine (requires installed)
+    Enable,
+    /// Disable ClamAV engine
+    Disable,
     /// Update ClamAV virus database (run freshclam)
     Update,
     /// Test scan a file
@@ -475,86 +487,125 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     let mut cfg = load_scanner_config(security_cfg)?;
 
     if cfg.enabled.is_empty() {
-        println!("No engines enabled. Use 'scanner enable <engine>' first.");
+        println!("No engines enabled. Use 'scanner <engine> enable' first.");
         return Ok(());
     }
 
+    let enabled_set: std::collections::HashSet<&str> =
+        cfg.enabled.iter().map(|s| s.as_str()).collect();
+
+    // Collect all engines (enabled + disabled with config)
+    let mut all_names: Vec<String> = cfg.engines.keys().cloned().collect();
+    // Sort: enabled first, then alphabetically
+    all_names.sort_by(|a, b| {
+        let a_en = enabled_set.contains(a.as_str());
+        let b_en = enabled_set.contains(b.as_str());
+        b_en.cmp(&a_en).then(a.cmp(b))
+    });
+
     println!("\nScanner Engine Status:");
-    println!("{}", "-".repeat(70));
+    println!("{}", "-".repeat(90));
+    println!(
+        "  {:<10} {:<10} {:<12} {:<10} {:<20} {}",
+        "Engine", "Status", "Install", "Database", "Address", "URL"
+    );
+    println!("{}", "-".repeat(90));
 
     let mut changed = false;
+    let mut operational = 0u32;
 
-    for name in &cfg.enabled {
+    for name in &all_names {
         let raw = match cfg.engines.get(name) {
             Some(v) => v,
-            None => {
-                println!("  {:<15}  config missing", name);
-                continue;
-            }
+            None => continue,
         };
 
         let engine_cfg = parse_engine_config(raw);
         let mut state = engine_cfg.state.clone();
+        let is_enabled = enabled_set.contains(name.as_str());
 
         let mut resolved_path = engine_cfg.clamav_path.clone();
         let mut persist_path = String::new();
 
-        if !resolved_path.is_empty() {
-            // Check executable at configured path
-            if check_executables_at_path(&resolved_path) {
-                state.install_status = "installed".to_string();
-                state.install_error = String::new();
+        if is_enabled {
+            if !resolved_path.is_empty() {
+                if check_executables_at_path(&resolved_path) {
+                    state.install_status = "installed".to_string();
+                    state.install_error = String::new();
+                } else {
+                    state.install_status = "failed".to_string();
+                    state.install_error = format!("executable not found at {}", resolved_path);
+                }
             } else {
-                state.install_status = "failed".to_string();
-                state.install_error = format!("executable not found at {}", resolved_path);
+                if let Some(sys_path) = lookup_system_clamav() {
+                    resolved_path = sys_path.clone();
+                    persist_path = sys_path;
+                    state.install_status = "installed".to_string();
+                    state.install_error = String::new();
+                } else if state.install_status.is_empty() {
+                    state.install_status = "pending".to_string();
+                }
             }
-        } else {
-            // Check system PATH
-            if let Some(sys_path) = lookup_system_clamav() {
-                resolved_path = sys_path.clone();
-                persist_path = sys_path;
-                state.install_status = "installed".to_string();
-                state.install_error = String::new();
-            } else if state.install_status.is_empty() {
-                state.install_status = "pending".to_string();
+
+            // Check database status
+            let data_dir = if !engine_cfg.data_dir.is_empty() {
+                engine_cfg.data_dir.clone()
+            } else if !resolved_path.is_empty() {
+                resolved_path.clone()
+            } else {
+                String::new()
+            };
+
+            if !data_dir.is_empty() {
+                let db_file = std::path::Path::new(&data_dir)
+                    .join("database")
+                    .join(DATABASE_FILE);
+                if db_file.exists() {
+                    state.db_status = "ready".to_string();
+                } else {
+                    state.db_status = "missing".to_string();
+                }
+            }
+
+            // Update config
+            if let Some(updated) = marshal_engine_config(raw, &state, &persist_path, "") {
+                cfg.engines.insert(name.clone(), updated);
+                changed = true;
             }
         }
 
-        // Check database status
-        let data_dir = if !engine_cfg.data_dir.is_empty() {
-            engine_cfg.data_dir.clone()
-        } else if !resolved_path.is_empty() {
-            resolved_path.clone()
+        let status_str = if is_enabled { "enabled" } else { "disabled" };
+        let install_str = if state.install_status.is_empty() { "-" } else { &state.install_status };
+        let db_str = if state.db_status.is_empty() { "-" } else { &state.db_status };
+        let addr_str = if engine_cfg.address.is_empty() { "-" } else { &engine_cfg.address };
+        let url_display = if engine_cfg.url.is_empty() {
+            "-".to_string()
+        } else if engine_cfg.url.len() > 40 {
+            format!("{}...", &engine_cfg.url[..37])
         } else {
-            String::new()
+            engine_cfg.url.clone()
         };
 
-        if !data_dir.is_empty() {
-            let db_file = std::path::Path::new(&data_dir)
-                .join("database")
-                .join(DATABASE_FILE);
-            if db_file.exists() {
-                state.db_status = "ready".to_string();
-            } else {
-                state.db_status = "missing".to_string();
-            }
-        }
+        println!(
+            "  {:<10} {:<10} {:<12} {:<10} {:<20} {}",
+            name, status_str, install_str, db_str, addr_str, url_display
+        );
 
-        // Update config
-        if let Some(updated) = marshal_engine_config(raw, &state, &persist_path, "") {
-            cfg.engines.insert(name.clone(), updated);
-            changed = true;
-        }
-
-        // Print status
-        print!("  {:<15}  install={:<10}  db={:<10}", name, state.install_status, state.db_status);
         if !state.install_error.is_empty() {
-            print!("  error={}", state.install_error);
+            println!("             ^-- error: {}", state.install_error);
         }
-        println!();
+
+        if is_enabled && state.install_status == "installed" && state.db_status == "ready" {
+            operational += 1;
+        }
     }
 
-    println!("{}", "-".repeat(70));
+    println!("{}", "-".repeat(90));
+    println!(
+        "{} engine(s), {} operational.",
+        all_names.len(),
+        operational
+    );
 
     // Save if state changed
     if changed {
@@ -564,26 +615,37 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     }
 
     // Print recommendations
-    println!("\nRecommendations:");
-    for name in &cfg.enabled {
+    let mut recommendations = Vec::new();
+    for name in &all_names {
+        if !enabled_set.contains(name.as_str()) {
+            continue;
+        }
         if let Some(raw) = cfg.engines.get(name) {
             let engine_cfg = parse_engine_config(raw);
             match engine_cfg.state.install_status.as_str() {
                 "pending" => {
-                    println!("  - Run 'scanner install' to install {}", name);
+                    recommendations.push(format!("  - Run 'scanner {} install' to install {}", name, name));
                 }
                 "failed" => {
-                    println!("  - Re-run 'scanner install' to fix {} installation", name);
+                    recommendations.push(format!("  - Re-run 'scanner {} install' to fix {} installation", name, name));
                 }
                 "installed" => {
                     if engine_cfg.state.db_status == "missing" {
-                        println!(
-                            "  - Run 'scanner clamav update' to download virus database"
-                        );
+                        recommendations.push(format!(
+                            "  - Run 'scanner {} update' to download virus database",
+                            name
+                        ));
                     }
                 }
                 _ => {}
             }
+        }
+    }
+
+    if !recommendations.is_empty() {
+        println!("\nRecommendations:");
+        for r in &recommendations {
+            println!("{}", r);
         }
     }
 
@@ -725,7 +787,7 @@ async fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Resul
 
     for name in &cfg.enabled {
         match name.as_str() {
-            "clamav" => cmd_clamav_install_inner(false, security_cfg, dir).await?,
+            "clamav" => cmd_clamav_install_inner(false, None, dir, security_cfg).await?,
             _ => println!("  {} - install not implemented", name),
         }
     }
@@ -737,20 +799,46 @@ async fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Resul
 /// ClamAV engine subcommand dispatch.
 async fn cmd_clamav(action: ClamavAction, security_cfg: &std::path::Path) -> Result<()> {
     match action {
-        ClamavAction::Install { force } => {
-            cmd_clamav_install_inner(force, security_cfg, None).await
+        ClamavAction::Install { force, url, dir } => {
+            cmd_clamav_install_inner(force, url.as_deref(), dir.as_deref(), security_cfg).await
         }
+        ClamavAction::Enable => cmd_clamav_enable(security_cfg),
+        ClamavAction::Disable => cmd_clamav_disable(security_cfg),
         ClamavAction::Update => cmd_clamav_update(security_cfg).await,
         ClamavAction::Test { path } => cmd_clamav_test(security_cfg, &path).await,
         ClamavAction::Info => cmd_clamav_info(security_cfg).await,
     }
 }
 
+/// Enable ClamAV engine with install check (via `scanner clamav enable`).
+fn cmd_clamav_enable(security_cfg: &std::path::Path) -> Result<()> {
+    let cfg = load_scanner_config(security_cfg)?;
+    let raw = cfg.engines.get("clamav").ok_or_else(|| {
+        anyhow::anyhow!("ClamAV not configured. Run 'scanner add clamav' first.")
+    })?;
+    let engine_cfg = parse_engine_config(raw);
+
+    if engine_cfg.state.install_status != "installed" {
+        anyhow::bail!(
+            "ClamAV is not installed (status: {}). Run 'scanner clamav install' first.",
+            if engine_cfg.state.install_status.is_empty() { "none" } else { &engine_cfg.state.install_status }
+        );
+    }
+
+    cmd_enable(security_cfg, "clamav")
+}
+
+/// Disable ClamAV engine (via `scanner clamav disable`).
+fn cmd_clamav_disable(security_cfg: &std::path::Path) -> Result<()> {
+    cmd_disable(security_cfg, "clamav")
+}
+
 /// Core ClamAV install logic, shared by `scanner clamav install` and `scanner install`.
 async fn cmd_clamav_install_inner(
     force: bool,
-    security_cfg: &std::path::Path,
+    url_override: Option<&str>,
     dir: Option<&str>,
+    security_cfg: &std::path::Path,
 ) -> Result<()> {
     let mut cfg = load_scanner_config(security_cfg)?;
 
@@ -801,20 +889,40 @@ async fn cmd_clamav_install_inner(
     }
 
     // Step 3: Download if still not found
-    if detected_path.is_empty() && !engine_cfg.url.is_empty() {
-        println!("  clamav           downloading from {}...", engine_cfg.url);
-        let download_dir = std::path::Path::new(&install_dir).join("clamav");
-        let _ = std::fs::create_dir_all(&download_dir);
+    // URL priority: --url override > config url > error
+    if detected_path.is_empty() {
+        let download_url = url_override
+            .map(String::from)
+            .or_else(|| if !engine_cfg.url.is_empty() { Some(engine_cfg.url.clone()) } else { None });
 
-        match download_engine(&engine_cfg.url, &download_dir) {
-            Ok(extracted_path) => {
-                detected_path = extracted_path;
-                println!("  clamav           downloaded to {}", detected_path);
+        match download_url {
+            Some(ref url) => {
+                println!("  clamav           downloading from {}...", url);
+                let download_dir = std::path::Path::new(&install_dir).join("clamav");
+                let _ = std::fs::create_dir_all(&download_dir);
+
+                match download_engine(url, &download_dir) {
+                    Ok(extracted_path) => {
+                        detected_path = extracted_path;
+                        println!("  clamav           downloaded to {}", detected_path);
+                    }
+                    Err(e) => {
+                        println!("  clamav           download failed: {}", e);
+                        state.install_status = "failed".to_string();
+                        state.install_error = format!("download failed: {}", e);
+                        if let Some(updated) = marshal_engine_config(&raw, &state, "", "") {
+                            cfg.engines.insert("clamav".to_string(), updated);
+                            save_scanner_config(security_cfg, &cfg)?;
+                        }
+                        return Ok(());
+                    }
+                }
             }
-            Err(e) => {
-                println!("  clamav           download failed: {}", e);
+            None => {
                 state.install_status = "failed".to_string();
-                state.install_error = format!("download failed: {}", e);
+                state.install_error =
+                    "no download URL configured. Use --url or run 'scanner add clamav --url <URL>' first.".to_string();
+                println!("  clamav           FAILED: {}", state.install_error);
                 if let Some(updated) = marshal_engine_config(&raw, &state, "", "") {
                     cfg.engines.insert("clamav".to_string(), updated);
                     save_scanner_config(security_cfg, &cfg)?;
