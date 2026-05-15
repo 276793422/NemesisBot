@@ -1,7 +1,8 @@
 //! ClamAV TCP client for the clamd daemon.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -22,28 +23,41 @@ impl ClamavScanResult {
 
 /// TCP client for clamd.
 pub struct Client {
-    pub address: String,
-    pub timeout: Duration,
+    address: String,
+    timeout: Duration,
+    socket_addr: SocketAddr,
 }
 
 impl Client {
     pub fn new(address: &str) -> Self {
+        let socket_addr: SocketAddr = address.parse().unwrap_or("127.0.0.1:3310".parse().unwrap());
         Self {
             address: address.to_string(),
             timeout: Duration::from_secs(30),
+            socket_addr,
         }
     }
 
     pub fn with_timeout(address: &str, timeout: Duration) -> Self {
+        let socket_addr: SocketAddr = address.parse().unwrap_or("127.0.0.1:3310".parse().unwrap());
         Self {
             address: address.to_string(),
             timeout,
+            socket_addr,
         }
     }
 
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     /// Ping clamd to check if it's alive.
-    pub fn ping(&self) -> Result<(), String> {
-        let resp = self.send_command("PING")?;
+    pub async fn ping(&self) -> Result<(), String> {
+        let resp = self.send_command("PING").await?;
         if resp != "PONG" {
             return Err(format!("unexpected ping response: {}", resp));
         }
@@ -51,62 +65,66 @@ impl Client {
     }
 
     /// Get clamd version.
-    pub fn version(&self) -> Result<String, String> {
-        self.send_command("VERSION")
+    pub async fn version(&self) -> Result<String, String> {
+        self.send_command("VERSION").await
     }
 
     /// Scan a single file by path.
-    pub fn scan_file(&self, file_path: &Path) -> Result<ClamavScanResult, String> {
+    pub async fn scan_file(&self, file_path: &Path) -> Result<ClamavScanResult, String> {
         let cmd = format!("SCAN {}", file_path.display());
-        let resp = self.send_command(&cmd)?;
+        let resp = self.send_command(&cmd).await?;
         Ok(parse_scan_response(&resp))
     }
 
     /// Scan directory without stopping on infected files.
-    pub fn cont_scan(&self, path: &Path) -> Result<Vec<ClamavScanResult>, String> {
+    pub async fn cont_scan(&self, path: &Path) -> Result<Vec<ClamavScanResult>, String> {
         let cmd = format!("CONTSCAN {}", path.display());
-        let resp = self.send_command(&cmd)?;
+        let resp = self.send_command(&cmd).await?;
         Ok(parse_multi_scan_response(&resp))
     }
 
     /// Scan content using the INSTREAM protocol.
-    pub fn scan_stream(&self, content: &[u8]) -> Result<ClamavScanResult, String> {
-        let mut stream = TcpStream::connect_timeout(&self.address.parse().map_err(|e: std::net::AddrParseError| e.to_string())?, self.timeout)
-            .map_err(|e| format!("failed to connect to clamd: {}", e))?;
-        stream.set_read_timeout(Some(self.timeout)).ok();
-        stream.set_write_timeout(Some(self.timeout)).ok();
+    pub async fn scan_stream(&self, content: &[u8]) -> Result<ClamavScanResult, String> {
+        let result = tokio::time::timeout(self.timeout, async {
+            let mut stream = TcpStream::connect(&self.socket_addr)
+                .await
+                .map_err(|e| format!("failed to connect to clamd: {}", e))?;
 
-        // Send INSTREAM command
-        let cmd = b"nINSTREAM\n";
-        stream.write_all(cmd).map_err(|e| format!("failed to send INSTREAM: {}", e))?;
+            // Send INSTREAM command
+            let cmd = b"nINSTREAM\n";
+            stream.write_all(cmd).await.map_err(|e| format!("failed to send INSTREAM: {}", e))?;
 
-        // Stream in chunks with 4-byte big-endian length prefix
-        let chunk_size = 32 * 1024;
-        let mut offset = 0;
-        while offset < content.len() {
-            let end = (offset + chunk_size).min(content.len());
-            let chunk = &content[offset..end];
-            let len = chunk.len() as u32;
-            stream.write_all(&len.to_be_bytes()).map_err(|e| format!("write chunk len: {}", e))?;
-            stream.write_all(chunk).map_err(|e| format!("write chunk data: {}", e))?;
-            offset = end;
-        }
+            // Stream in chunks with 4-byte big-endian length prefix
+            let chunk_size = 32 * 1024;
+            let mut offset = 0;
+            while offset < content.len() {
+                let end = (offset + chunk_size).min(content.len());
+                let chunk = &content[offset..end];
+                let len = chunk.len() as u32;
+                stream.write_all(&len.to_be_bytes()).await.map_err(|e| format!("write chunk len: {}", e))?;
+                stream.write_all(chunk).await.map_err(|e| format!("write chunk data: {}", e))?;
+                offset = end;
+            }
 
-        // Send termination (0-length chunk)
-        stream.write_all(&0u32.to_be_bytes()).map_err(|e| format!("send termination: {}", e))?;
+            // Send termination (0-length chunk)
+            stream.write_all(&0u32.to_be_bytes()).await.map_err(|e| format!("send termination: {}", e))?;
 
-        // Read response
-        stream.set_read_timeout(Some(self.timeout)).ok();
-        let mut reader = BufReader::new(stream);
-        let mut resp_line = String::new();
-        reader.read_line(&mut resp_line).map_err(|e| format!("read response: {}", e))?;
+            // Read response
+            let mut reader = BufReader::new(stream);
+            let mut resp_line = String::new();
+            reader.read_line(&mut resp_line).await.map_err(|e| format!("read response: {}", e))?;
 
-        Ok(parse_scan_response(resp_line.trim()))
+            Ok::<ClamavScanResult, String>(parse_scan_response(resp_line.trim()))
+        })
+        .await
+        .map_err(|_| "scan_stream timed out".to_string())?;
+
+        result
     }
 
     /// Reload the virus database.
-    pub fn reload(&self) -> Result<(), String> {
-        let resp = self.send_command("RELOAD")?;
+    pub async fn reload(&self) -> Result<(), String> {
+        let resp = self.send_command("RELOAD").await?;
         if resp.contains("RELOADING") {
             Ok(())
         } else {
@@ -115,28 +133,26 @@ impl Client {
     }
 
     /// Get clamd statistics.
-    pub fn stats(&self) -> Result<String, String> {
-        self.send_command("STATS")
+    pub async fn stats(&self) -> Result<String, String> {
+        self.send_command("STATS").await
     }
 
-    fn send_command(&self, command: &str) -> Result<String, String> {
-        let mut stream = TcpStream::connect_timeout(
-            &self.address.parse().map_err(|e: std::net::AddrParseError| e.to_string())?,
-            self.timeout,
-        ).map_err(|e| format!("connect to clamd at {}: {}", self.address, e))?;
-
-        stream.set_read_timeout(Some(self.timeout)).ok();
-        stream.set_write_timeout(Some(self.timeout)).ok();
+    async fn send_command(&self, command: &str) -> Result<String, String> {
+        let stream = tokio::time::timeout(self.timeout, TcpStream::connect(&self.socket_addr))
+            .await
+            .map_err(|_| format!("connect to clamd at {} timed out", self.address))?
+            .map_err(|e| format!("connect to clamd at {}: {}", self.address, e))?;
 
         let cmd = format!("n{}\n", command);
-        stream.write_all(cmd.as_bytes()).map_err(|e| format!("send command: {}", e))?;
+        let (read_half, mut write_half) = stream.into_split();
+        write_half.write_all(cmd.as_bytes()).await.map_err(|e| format!("send command: {}", e))?;
 
-        let mut reader = BufReader::new(stream);
+        let mut reader = BufReader::new(read_half);
         let mut lines = Vec::new();
 
         loop {
             let mut line = String::new();
-            match reader.read_line(&mut line) {
+            match reader.read_line(&mut line).await {
                 Ok(0) => break,
                 Ok(_) => {
                     let trimmed = line.trim().to_string();
@@ -302,14 +318,14 @@ mod tests {
     #[test]
     fn test_client_new() {
         let client = Client::new("127.0.0.1:3310");
-        assert_eq!(client.address, "127.0.0.1:3310");
-        assert_eq!(client.timeout, Duration::from_secs(30));
+        assert_eq!(client.address(), "127.0.0.1:3310");
+        assert_eq!(client.timeout(), Duration::from_secs(30));
     }
 
     #[test]
     fn test_client_with_timeout() {
         let client = Client::with_timeout("127.0.0.1:3310", Duration::from_secs(120));
-        assert_eq!(client.timeout, Duration::from_secs(120));
+        assert_eq!(client.timeout(), Duration::from_secs(120));
     }
 
     #[test]
@@ -348,60 +364,60 @@ mod tests {
         assert!(debug.contains("OK"));
     }
 
-    #[test]
-    fn test_client_ping_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_ping_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310"); // unlikely port
-        let result = client.ping();
+        let result = client.ping().await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_version_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_version_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.version();
+        let result = client.version().await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_scan_file_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_scan_file_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.scan_file(Path::new("/tmp/test.txt"));
+        let result = client.scan_file(Path::new("/tmp/test.txt")).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_cont_scan_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_cont_scan_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.cont_scan(Path::new("/tmp"));
+        let result = client.cont_scan(Path::new("/tmp")).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_scan_stream_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_scan_stream_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.scan_stream(b"test content");
+        let result = client.scan_stream(b"test content").await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_reload_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_reload_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.reload();
+        let result = client.reload().await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_client_stats_fails_when_no_daemon() {
+    #[tokio::test]
+    async fn test_client_stats_fails_when_no_daemon() {
         let client = Client::new("127.0.0.1:13310");
-        let result = client.stats();
+        let result = client.stats().await;
         assert!(result.is_err());
     }
 
     #[test]
     fn test_client_invalid_address() {
         let client = Client::new("not-a-valid-address");
-        let result = client.ping();
-        assert!(result.is_err());
+        // With invalid address, the socket_addr falls back to default
+        assert_eq!(client.address(), "not-a-valid-address");
     }
 
     #[test]

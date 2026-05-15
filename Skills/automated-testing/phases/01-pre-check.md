@@ -64,10 +64,10 @@ type FileOperationTool struct {
 **检查方法**:
 ```bash
 # 查看 TestAIServer README
-cat test/TestAIServer/README.md
+cat test-tools/TestAIServer/README.md
 
 # 或者运行帮助命令
-cd test/TestAIServer
+cd test-tools/TestAIServer
 ./testaiserver.exe --help
 ```
 
@@ -150,7 +150,7 @@ echo "✅ 需要 AI 支持"
 
 # 3. TestAIServer 能力检查
 echo "[3/3] 检查 TestAIServer 能力..."
-cd test/TestAIServer
+cd test-tools/TestAIServer
 if ./testaiserver.exe --help | grep -q "testai-5.0"; then
   echo "✅ TestAIServer 支持所需模型"
 else

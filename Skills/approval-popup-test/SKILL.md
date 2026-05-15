@@ -27,7 +27,7 @@
 | 项目 | 路径 |
 |------|------|
 | Rust 项目 | `NemesisBot_Rust/` |
-| Go 项目（TestAIServer） | `NemesisBot/test/TestAIServer/` |
+| Go 项目（TestAIServer） | `NemesisBot_Rust/test-tools/TestAIServer/` |
 | Skill 路径 | `Skills/approval-popup-test/` |
 
 ---
@@ -115,7 +115,7 @@ cp plugins/plugin-ui/target/release/plugin_ui.dll test/uat-approval/plugins/
 
 2. **启动 Go TestAIServer**:
 ```bash
-# 在 NemesisBot/test/TestAIServer/ 目录下执行
+# 在 NemesisBot_Rust/test-tools/TestAIServer/ 目录下执行
 ./testaiserver.exe &   # 使用 run_in_background: true
 ```
 
@@ -125,9 +125,9 @@ curl -s http://127.0.0.1:8080/v1/models
 # 确认返回包含 testai-5.0
 ```
 
-**注意**: TestAIServer 是 Go 项目，已有预编译的 `testaiserver.exe`。如果没有，需要先编译：
+**注意**: TestAIServer 是 Go 项目，位于 `test-tools/TestAIServer/`，已有预编译的 `testaiserver.exe`。如果没有，需要先编译：
 ```bash
-# 在 NemesisBot/test/TestAIServer/ 目录下执行
+# 在 test-tools/TestAIServer/ 目录下执行
 go build -o testaiserver.exe .
 ```
 

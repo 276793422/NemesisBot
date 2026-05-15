@@ -36,8 +36,8 @@ impl ScanHook {
     }
 
     /// Health check.
-    pub fn health_check(&self) -> Result<(), String> {
-        self.scanner.ping()
+    pub async fn health_check(&self) -> Result<(), String> {
+        self.scanner.ping().await
     }
 
     /// Get a reference to the underlying scanner.
@@ -158,14 +158,14 @@ mod tests {
         assert!(formatted.contains("/tmp/safe.txt"));
     }
 
-    #[test]
-    fn test_scan_hook_new() {
+    #[tokio::test]
+    async fn test_scan_hook_new() {
         let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
         let hook = ScanHook::new(scanner);
         // Verify hook can return the scanner
         let scanner_ref = hook.get_scanner();
         // Access ping to verify scanner was created (config is private)
-        assert!(scanner_ref.ping().is_err()); // not running, so ping should fail
+        assert!(scanner_ref.ping().await.is_err()); // not running, so ping should fail
     }
 
     #[tokio::test]
@@ -288,10 +288,10 @@ mod tests {
         assert!(formatted.contains("Eicar"));
     }
 
-    #[test]
-    fn test_health_check_fails_when_not_running() {
+    #[tokio::test]
+    async fn test_health_check_fails_when_not_running() {
         let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
         let hook = ScanHook::new(scanner);
-        assert!(hook.health_check().is_err());
+        assert!(hook.health_check().await.is_err());
     }
 }

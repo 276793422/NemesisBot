@@ -19,7 +19,7 @@
 > - ✅ 阶段 8（结果分析）的详细指南
 > - ✅ 故障排查参考
 >
-> **注意**：脚本只停止服务，不删除 `test/autotest/` 目录。删除目录仍需手动执行。
+> **注意**：脚本只停止服务，不删除 `test-tools/autotest/` 目录。删除目录仍需手动执行。
 >
 > ---
 
@@ -27,11 +27,11 @@
 
 **⚠️ 重要前提**：
 - 阶段 6 已完成测试执行
-- 需要从 `test/autotest/` 返回项目根目录进行清理
+- 需要从 `test-tools/autotest/` 返回项目根目录进行清理
 
 **清理目标**：
 - 停止所有测试进程
-- 删除整个 `test/autotest/` 目录
+- 删除整个 `test-tools/autotest/` 目录
 - 释放所有占用的端口
 
 ---
@@ -42,7 +42,7 @@
 
 **目的**: 切换到项目根目录进行清理
 
-**当前状态**: 可能在 `test/autotest/` 或其他目录
+**当前状态**: 可能在 `test-tools/autotest/` 或其他目录
 
 **命令**:
 ```bash
@@ -50,13 +50,13 @@ echo "=== 阶段 7: 清理环境 ==="
 echo ""
 
 # 返回项目根目录
-# 如果在 test/autotest/，使用 ../..
+# 如果在 test-tools/autotest/，使用 ../..
 # 如果在其他位置，使用绝对路径
 echo "切换到项目根目录..."
 
 # 尝试检测当前位置并返回根目录
-if [[ "$(pwd)" =~ /test/autotest$ ]]; then
-  echo "检测到在 test/autotest/ 目录，返回根目录..."
+if [[ "$(pwd)" =~ /test-tools/autotest$ ]]; then
+  echo "检测到在 test-tools/autotest/ 目录，返回根目录..."
   cd ../..
 elif [[ "$(pwd)" =~ /test$ ]]; then
   echo "检测到在 test/ 目录，返回根目录..."
@@ -67,7 +67,7 @@ else
 fi
 
 # 验证是否在根目录
-if [ -f "go.mod" ] && [ -d "test" ]; then
+if [ -f "Cargo.toml" ] && [ -d "test-tools" ]; then
   echo "✅ 已返回项目根目录: $(pwd)"
 else
   echo "❌ 无法确定项目根目录位置"
@@ -83,8 +83,8 @@ echo ""
 === 阶段 7: 清理环境 ===
 
 切换到项目根目录...
-检测到在 test/autotest/ 目录，返回根目录...
-✅ 已返回项目根目录: /c/AI/NemesisBot/NemesisBot
+检测到在 test-tools/autotest/ 目录，返回根目录...
+✅ 已返回项目根目录: /c/AI/NemesisBot/NemesisBot_Rust
 ```
 
 ---
@@ -134,8 +134,8 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
 else
   # Unix/Linux 环境
   # 从 PID 文件读取（如果存在）
-  if [ -f "test/autotest/nemesisbot.pid" ]; then
-    BOT_PID=$(cat test/autotest/nemesisbot.pid)
+  if [ -f "test-tools/autotest/nemesisbot.pid" ]; then
+    BOT_PID=$(cat test-tools/autotest/nemesisbot.pid)
     echo "  从 PID 文件读取: $BOT_PID"
 
     # 检查进程是否存在
@@ -241,8 +241,8 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
 else
   # Unix/Linux 环境
   # 从 PID 文件读取（如果存在）
-  if [ -f "test/autotest/testaiserver.pid" ]; then
-    TESTAI_PID=$(cat test/autotest/testaiserver.pid)
+  if [ -f "test-tools/autotest/testaiserver.pid" ]; then
+    TESTAI_PID=$(cat test-tools/autotest/testaiserver.pid)
     echo "  从 PID 文件读取: $TESTAI_PID"
 
     # 检查进程是否存在
@@ -328,7 +328,7 @@ echo ""
 
 ### 7.5 删除测试目录
 
-**目的**: 删除整个 `test/autotest/` 目录
+**目的**: 删除整个 `test-tools/autotest/` 目录
 
 **当前工作目录**: 项目根目录
 
@@ -344,19 +344,19 @@ echo ""
 echo "[4/4] 删除测试目录..."
 
 # 检查测试目录是否存在
-if [ ! -d "test/autotest" ]; then
-  echo "⚠️  测试目录不存在: test/autotest"
+if [ ! -d "test-tools/autotest" ]; then
+  echo "⚠️  测试目录不存在: test-tools/autotest"
   echo "   可能已被删除或从未创建"
 else
-  echo "  删除 test/autotest/ 目录..."
-  rm -rf test/autotest
+  echo "  删除 test-tools/autotest/ 目录..."
+  rm -rf test-tools/autotest
 
   # 等待文件系统同步
   sleep 1
 fi
 
 # 验证清理结果
-if [ -d "test/autotest" ]; then
+if [ -d "test-tools/autotest" ]; then
   echo "❌ 测试目录仍然存在"
   echo ""
   echo "可能原因:"
@@ -368,12 +368,12 @@ if [ -d "test/autotest" ]; then
   echo "  - 文件是否被其他程序占用"
   echo ""
   echo "手动清理命令:"
-  echo "  cd test/autotest"
+  echo "  cd test-tools/autotest"
   echo "  # 检查占用情况"
   echo "  # 然后逐个删除文件"
   exit 1
 else
-  echo "✅ 测试目录已删除: test/autotest/"
+  echo "✅ 测试目录已删除: test-tools/autotest/"
 fi
 
 echo ""
@@ -382,8 +382,8 @@ echo ""
 **预期输出**:
 ```
 [4/4] 删除测试目录...
-  删除 test/autotest/ 目录...
-✅ 测试目录已删除: test/autotest/
+  删除 test-tools/autotest/ 目录...
+✅ 测试目录已删除: test-tools/autotest/
 ```
 
 ---
@@ -445,11 +445,11 @@ fi
 echo ""
 
 # 检查测试目录
-if [ -d "test/autotest" ]; then
-  echo "❌ 测试目录仍然存在: test/autotest"
+if [ -d "test-tools/autotest" ]; then
+  echo "❌ 测试目录仍然存在: test-tools/autotest"
   REMAINING=$((REMAINING + 1))
 else
-  echo "✅ 测试目录已清理: test/autotest"
+  echo "✅ 测试目录已清理: test-tools/autotest"
 fi
 
 echo ""
@@ -486,7 +486,7 @@ fi
 ✅ NemesisBot 进程已停止
 ✅ TestAIServer 进程已停止
 
-✅ 测试目录已清理: test/autotest
+✅ 测试目录已清理: test-tools/autotest
 
 ========================================
      ✅ 环境清理完全成功
@@ -527,7 +527,7 @@ fi
 
     报告位置:
       - 测试报告: docs/REPORT/TEST_XXX_YYYY-MM-DD.md
-      - ⚠️ 不要保存到 test/autotest/（已被删除）
+      - ⚠️ 不要保存到 test-tools/autotest/（已被删除）
 
   测试失败:
     分析步骤:
@@ -538,8 +538,8 @@ fi
          - 配置问题（模型、参数）
 
       2. 收集诊断信息:
-         - Bot 日志（test/autotest/nemesisbot.log，但已被删除）
-         - TestAIServer 日志（test/autotest/，已被删除）
+         - Bot 日志（test-tools/autotest/nemesisbot.log，但已被删除）
+         - TestAIServer 日志（test-tools/autotest/，已被删除）
          - 错误消息和堆栈跟踪
          - 说明: 如果日志已被删除，需要重新运行测试收集
 
@@ -580,7 +580,7 @@ fi
 
 **目的**: 提供标准化的测试报告格式
 
-**报告保存位置**: `docs/REPORT/`（不在 `test/autotest/`）
+**报告保存位置**: `docs/REPORT/`（不在 `test-tools/autotest/`）
 
 **模板**:
 
@@ -606,7 +606,7 @@ fi
 - **Go 版本**: [版本]
 - **TestAIServer**: testai-X.X
 - **NemesisBot**: [版本]
-- **测试工作目录**: test/autotest/ (已清理)
+- **测试工作目录**: test-tools/autotest/ (已清理)
 
 ---
 
@@ -742,11 +742,11 @@ fi
 - [ ] **已返回项目根目录**
 - [ ] NemesisBot 进程已停止
 - [ ] TestAIServer 进程已停止
-- [ ] **test/autotest/ 目录已删除** ⚠️ **必须**
+- [ ] **test-tools/autotest/ 目录已删除** ⚠️ **必须**
 - [ ] 端口 8080 已释放
 - [ ] 端口 49001 已释放
 - [ ] 测试结果已记录
-- [ ] **测试报告已生成并保存到 `docs/REPORT/`** ⚠️ **不在 test/autotest/**
+- [ ] **测试报告已生成并保存到 `docs/REPORT/`** ⚠️ **不在 test-tools/autotest/**
 - [ ] 问题已跟踪（如适用）
 
 **状态**: ✅ 通过 / ❌ 失败
@@ -758,19 +758,19 @@ fi
 ```
 阶段流程:
   1. 预检查 → 验证测试适用性
-  2. 环境准备 → 创建 test/autotest/，编译工具
-  3. 本地初始化 → 创建 test/autotest/.nemesisbot/
+  2. 环境准备 → 创建 test-tools/autotest/，编译工具
+  3. 本地初始化 → 创建 test-tools/autotest/.nemesisbot/
   4. 配置 AI → 添加测试模型
-  5. 启动 Bot → 启动 gateway（在 test/autotest/）
+  5. 启动 Bot → 启动 gateway（在 test-tools/autotest/）
   6. 执行测试 → 运行测试场景
-  7. 清理环境 → 返回根目录，删除 test/autotest/
+  7. 清理环境 → 返回根目录，删除 test-tools/autotest/
   8. 结果分析 → 生成报告（保存到 docs/REPORT/）
 
 目录流转:
-  根目录 → test/autotest/ → (保持) → (保持) → (保持) → (保持) → 根目录
+  根目录 → test-tools/autotest/ → (保持) → (保持) → (保持) → (保持) → 根目录
 
 关键改进:
-  - 规范测试工作目录到 test/autotest/
+  - 规范测试工作目录到 test-tools/autotest/
   - 简化清理为删除单个目录
   - 测试报告隔离（保存在 docs/REPORT/）
   - 源码位置不变，只管理编译产物

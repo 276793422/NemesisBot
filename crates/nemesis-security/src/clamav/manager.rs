@@ -178,16 +178,12 @@ impl Manager {
         // Step 8: Start auto-update if configured
         if update_interval > Duration::ZERO {
             let updater = self.updater.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 if let Some(ref updater) = updater {
-                    loop {
-                        tokio::time::sleep(update_interval).await;
-                        if let Err(e) = updater.update().await {
-                            tracing::warn!(error = %e, "Periodic virus database update failed");
-                        }
-                    }
+                    updater.start_auto_update().await;
                 }
             });
+            let _ = handle;
         }
 
         self.started.store(true, Ordering::SeqCst);

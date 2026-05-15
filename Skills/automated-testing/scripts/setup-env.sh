@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# setup-env.sh - NemesisBot 测试环境准备脚本
+# setup-env.sh - NemesisBot Rust 项目测试环境准备脚本
 #
 # 功能：
-#   1. 编译 testaiserver.exe → test/autotest/
-#   2. 编译 nemesisbot.exe → test/autotest/
-#   3. 编译 websocket_chat_client.exe → test/autotest/
+#   1. 编译 testaiserver.exe → test-tools/autotest/（Go 项目）
+#   2. 编译 nemesisbot.exe → test-tools/autotest/（Rust 项目）
+#   3. 编译 websocket_chat_client.exe → test-tools/autotest/（Rust 项目）
 #   4. 启动 testaiserver（后台）
 #   5. 保存 testaiserver PID
 #
@@ -38,38 +38,45 @@ cd "$PROJECT_ROOT"
 
 # === 1. 检查环境 ===
 
-# 检查 Go
+# 检查 Rust
+if ! command -v cargo &> /dev/null; then
+    echo "ERROR: Cargo not installed (Rust toolchain required)"
+    echo "SETUP_FAILURE"
+    exit 1
+fi
+
+# 检查 Go（TestAIServer 仍为 Go 项目）
 if ! command -v go &> /dev/null; then
-    echo "ERROR: Go not installed"
+    echo "ERROR: Go not installed (required for TestAIServer)"
     echo "SETUP_FAILURE"
     exit 1
 fi
 
 # 检查必要目录
-if [ ! -d "test/TestAIServer" ]; then
-    echo "ERROR: test/TestAIServer not found"
+if [ ! -d "test-tools/TestAIServer" ]; then
+    echo "ERROR: test-tools/TestAIServer not found"
     echo "SETUP_FAILURE"
     exit 1
 fi
 
-if [ ! -f "test/websocket_chat_client.go" ]; then
-    echo "ERROR: test/websocket_chat_client.go not found"
+if [ ! -d "test-tools/websocket-client" ]; then
+    echo "ERROR: test-tools/websocket-client not found"
     echo "SETUP_FAILURE"
     exit 1
 fi
 
 # === 2. 创建测试目录 ===
 
-echo "Creating test/autotest directory..."
-mkdir -p test/autotest
+echo "Creating test-tools/autotest directory..."
+mkdir -p test-tools/autotest
 
 # === 3. 编译组件 ===
 
 echo "Compiling test components..."
 
-# 编译 TestAIServer（必须在自身模块目录中编译）
+# 编译 TestAIServer（Go 项目，必须在自身模块目录中编译）
 echo "[1/3] Compiling TestAIServer..."
-cd test/TestAIServer
+cd test-tools/TestAIServer
 if ! go build -o ../autotest/testaiserver.exe .; then
     echo "ERROR: Failed to compile TestAIServer"
     cd "$PROJECT_ROOT"
@@ -78,27 +85,37 @@ if ! go build -o ../autotest/testaiserver.exe .; then
 fi
 cd "$PROJECT_ROOT"
 
-# 编译 NemesisBot
+# 编译 NemesisBot（Rust 项目，从根目录编译）
 echo "[2/3] Compiling NemesisBot..."
-# IMPORTANT: 必须使用 production build tag 才能编译 Wails UI
-if ! go build -tags production -o test/autotest/nemesisbot.exe ./nemesisbot; then
+if ! cargo build --release -p nemesisbot; then
     echo "ERROR: Failed to compile NemesisBot"
     echo "SETUP_FAILURE"
     exit 1
 fi
+cp target/release/nemesisbot.exe test-tools/autotest/
 
-# 编译 WebSocket 客户端
+# 编译 WebSocket 客户端（Rust 项目）
 echo "[3/3] Compiling WebSocket client..."
-if ! go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go; then
+cd test-tools/websocket-client
+if ! cargo build --release; then
     echo "ERROR: Failed to compile WebSocket client"
+    cd "$PROJECT_ROOT"
     echo "SETUP_FAILURE"
     exit 1
 fi
+# 复制编译产物（二进制名取决于 Cargo.toml 配置）
+# 尝试常见的二进制名
+for bin_name in websocket_chat_client websocket-client ws_client; do
+    if [ -f "target/release/${bin_name}.exe" ]; then
+        cp "target/release/${bin_name}.exe" ../autotest/websocket_chat_client.exe
+        break
+    fi
+done
+cd "$PROJECT_ROOT"
 
 # 验证编译产物
-if [ ! -f "test/autotest/testaiserver.exe" ] || \
-   [ ! -f "test/autotest/nemesisbot.exe" ] || \
-   [ ! -f "test/autotest/websocket_chat_client.exe" ]; then
+if [ ! -f "test-tools/autotest/testaiserver.exe" ] || \
+   [ ! -f "test-tools/autotest/nemesisbot.exe" ]; then
     echo "ERROR: Compilation artifacts missing"
     echo "SETUP_FAILURE"
     exit 1
@@ -110,7 +127,7 @@ echo "Compilation successful"
 
 echo "Starting TestAIServer..."
 
-cd test/autotest
+cd test-tools/autotest
 
 # 停止可能存在的旧进程
 taskkill //F //IM testaiserver.exe 2>/dev/null || true

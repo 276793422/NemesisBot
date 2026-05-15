@@ -28,15 +28,15 @@
 **⚠️ 重要前提**：此阶段必须在**项目根目录**下执行。
 
 **项目根目录特征**：
-- 包含 `go.mod` 文件
+- 包含 `Cargo.toml` 文件（workspace 根配置）
 - 包含 `nemesisbot/` 目录
-- 包含 `test/` 目录
+- 包含 `test-tools/` 目录
 
 **阶段目标**：
-- 创建测试工作目录 `test/autotest/`
-- 编译所有测试工具到 `test/autotest/`
+- 创建测试工作目录 `test-tools/autotest/`
+- 编译所有测试工具到 `test-tools/autotest/`
 - 启动 TestAIServer
-- **本阶段结束时，工作目录将切换到 `test/autotest/`**
+- **本阶段结束时，工作目录将切换到 `test-tools/autotest/`**
 
 ---
 
@@ -46,16 +46,16 @@
 
 **目的**: 确保从项目根目录开始执行
 
-**当前工作目录**: 项目根目录（例如：`C:/AI/NemesisBot/NemesisBot`）
+**当前工作目录**: 项目根目录（例如：`C:/AI/NemesisBot/NemesisBot_Rust`）
 
 **命令**:
 ```bash
 # 验证当前目录是否为项目根目录
 echo "=== 验证起始目录 ==="
 
-if [ ! -f "go.mod" ]; then
+if [ ! -f "Cargo.toml" ]; then
   echo "❌ 错误: 当前目录不是项目根目录"
-  echo "   请在包含 go.mod 的目录中执行此流程"
+  echo "   请在包含 Cargo.toml 的目录中执行此流程"
   exit 1
 fi
 
@@ -64,8 +64,8 @@ if [ ! -d "nemesisbot" ]; then
   exit 1
 fi
 
-if [ ! -d "test" ]; then
-  echo "❌ 错误: 找不到 test/ 目录"
+if [ ! -d "test-tools" ]; then
+  echo "❌ 错误: 找不到 test-tools/ 目录"
   exit 1
 fi
 
@@ -76,14 +76,14 @@ echo ""
 **预期输出**:
 ```
 === 验证起始目录 ===
-✅ 当前目录验证通过: /c/AI/NemesisBot/NemesisBot
+✅ 当前目录验证通过: /c/AI/NemesisBot/NemesisBot_Rust
 ```
 
 ---
 
 ### 2.1 创建测试工作目录
 
-**目的**: 创建 `test/autotest/` 作为测试工作目录
+**目的**: 创建 `test-tools/autotest/` 作为测试工作目录
 
 **当前工作目录**: 项目根目录
 
@@ -92,18 +92,18 @@ echo ""
 # 创建测试工作目录
 echo "=== 创建测试工作目录 ==="
 
-mkdir -p test/autotest
+mkdir -p test-tools/autotest
 
-if [ ! -d "test/autotest" ]; then
+if [ ! -d "test-tools/autotest" ]; then
   echo "❌ 测试工作目录创建失败"
   exit 1
 fi
 
-echo "✅ 测试工作目录已创建: test/autotest/"
+echo "✅ 测试工作目录已创建: test-tools/autotest/"
 echo ""
 
 # 切换到测试工作目录
-cd test/autotest
+cd test-tools/autotest
 echo "📍 当前工作目录: $(pwd)"
 echo ""
 ```
@@ -111,12 +111,12 @@ echo ""
 **预期输出**:
 ```
 === 创建测试工作目录 ===
-✅ 测试工作目录已创建: test/autotest/
+✅ 测试工作目录已创建: test-tools/autotest/
 
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot/NemesisBot_Rust/test-tools/autotest
 ```
 
-**⚠️ 重要**: 从此步开始，所有命令都在 `test/autotest/` 目录中执行
+**⚠️ 重要**: 从此步开始，所有命令都在 `test-tools/autotest/` 目录中执行
 
 ---
 
@@ -124,11 +124,11 @@ echo ""
 
 **目的**: 编译测试用 AI 服务器
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
-**源码位置**: `../TestAIServer/`（相对于 `test/autotest/`）
+**源码位置**: `../../test-tools/TestAIServer/`（相对于项目根目录）
 
-**编译产物**: `test/autotest/testaiserver.exe`
+**编译产物**: `test-tools/autotest/testaiserver.exe`
 
 **⚠️ 重要**: TestAIServer 是一个独立的 Go 模块，必须在**其模块目录**中编译
 
@@ -137,9 +137,9 @@ echo ""
 # 编译 TestAIServer
 echo "=== 编译 TestAIServer ==="
 
-# **重要**: TestAIServer 是独立模块，必须在其目录中编译
+# **重要**: TestAIServer 是独立 Go 模块，必须在其目录中编译
 # 从项目根目录进入 TestAIServer 目录编译
-cd ../TestAIServer && go build -o ../autotest/testaiserver.exe . && cd ../autotest
+cd ../../test-tools/TestAIServer && go build -o ../autotest/testaiserver.exe . && cd ../autotest
 
 # 验证编译结果
 if [ ! -f "testaiserver.exe" ]; then
@@ -165,20 +165,22 @@ echo ""
 
 **目的**: 编译主程序
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
-**源码位置**: `../../nemesisbot/`（相对于 `test/autotest/`）
+**源码位置**: `../../nemesisbot/`（相对于项目根目录）
 
-**编译产物**: `test/autotest/nemesisbot.exe`
+**编译产物**: `test-tools/autotest/nemesisbot.exe`
 
 **命令**:
 ```bash
 # 编译 NemesisBot
 echo "=== 编译 NemesisBot ==="
 
-# 从源码位置编译
-# ../../nemesisbot 是相对于 test/autotest/ 的路径
-go build -o nemesisbot.exe ../../nemesisbot
+# 从项目根目录使用 Cargo 编译
+cd ../..
+cargo build --release -p nemesisbot
+cp target/release/nemesisbot.exe test-tools/autotest/
+cd test-tools/autotest
 
 # 验证编译结果
 if [ ! -f "nemesisbot.exe" ]; then
@@ -204,20 +206,23 @@ echo ""
 
 **目的**: 编译 WebSocket 测试工具
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
-**源码位置**: `../websocket_chat_client.go`（相对于 `test/autotest/`）
+**源码位置**: `../../test-tools/websocket-client/`（相对于项目根目录）
 
-**编译产物**: `test/autotest/websocket_chat_client.exe`
+**编译产物**: `test-tools/autotest/websocket_chat_client.exe`
 
 **命令**:
 ```bash
 # 编译 WebSocket 测试客户端
 echo "=== 编译 WebSocket 测试客户端 ==="
 
-# 从源码位置编译
-# ../websocket_chat_client.go 是相对于 test/autotest/ 的路径
-go build -o websocket_chat_client.exe ../websocket_chat_client.go
+# 从项目根目录使用 Cargo 编译
+cd ../..
+cd test-tools/websocket-client && cargo build --release
+cp target/release/websocket_chat_client.exe ../autotest/ 2>/dev/null || true
+cd ../..
+cd test-tools/autotest
 
 # 验证编译结果
 if [ ! -f "websocket_chat_client.exe" ]; then
@@ -243,11 +248,11 @@ echo ""
 
 **目的**: 在后台启动测试 AI 服务器
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **可执行文件**: `./testaiserver.exe`
 
-**PID 文件**: `testaiserver.pid`（保存在 `test/autotest/`）
+**PID 文件**: `testaiserver.pid`（保存在 `test-tools/autotest/`）
 
 **命令**:
 ```bash
@@ -325,7 +330,7 @@ TestAIServer PID: 12345
 
 **目的**: 等待服务器完全启动并可以接受请求
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -386,7 +391,7 @@ curl http://127.0.0.1:8080/v1/models
 
 **目的**: 验证所有组件都已正确准备
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -486,7 +491,7 @@ echo ""
 **预期输出**:
 ```
 === 环境验证 ===
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
 
 检测到 Windows 环境
 
@@ -503,8 +508,8 @@ echo ""
 
 === 环境验证完成，所有检查通过 ===
 
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
-📁 测试工具位置: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
+📁 测试工具位置: /c/AI/NemesisBot_Rust/test-tools/autotest
    ├── testaiserver.exe
    ├── nemesisbot.exe
    ├── websocket_chat_client.exe
@@ -530,8 +535,8 @@ echo ""
 ```
 
 **⚠️ 重要**：
-- 所有测试工具编译产物都在 `test/autotest/` 中
-- 所有测试操作都在 `test/autotest/` 目录中执行
+- 所有测试工具编译产物都在 `test-tools/autotest/` 中
+- 所有测试操作都在 `test-tools/autotest/` 目录中执行
 - 源码文件位置保持不变
 
 ---
@@ -547,10 +552,10 @@ echo ""
 **解决方案**:
 ```bash
 # 返回项目根目录
-cd /c/AI/NemesisBot/NemesisBot
+cd /c/AI/NemesisBot/NemesisBot_Rust
 
 # 或使用相对路径
-cd ../../  # 如果在 test/autotest/ 中
+cd ../../  # 如果在 test-tools/autotest/ 中
 ```
 
 ---
@@ -585,27 +590,25 @@ kill -9 <PID>
 
 ### 问题 3: NemesisBot 编译失败
 
-**症状**: `go build` 返回错误
+**症状**: `cargo build` 返回错误
 
 **可能原因**:
 - 依赖缺失
 - 代码错误
-- Go 版本不兼容
+- Rust 工具链版本不兼容
 
 **解决方案**:
 ```bash
-# 确保在 test/autotest/ 目录
-pwd  # 应该显示 .../test/autotest
+# 确保在 test-tools/autotest/ 目录
+pwd  # 应该显示 .../test-tools/autotest
 
-# 更新依赖（从项目根目录）
-cd ../../
-go mod tidy
+# 从项目根目录重新编译
+cd ../..
+cargo build --release -p nemesisbot
+cp target/release/nemesisbot.exe test-tools/autotest/
 
 # 返回测试目录
-cd test/autotest
-
-# 重新编译
-go build -o nemesisbot.exe ../../nemesisbot
+cd test-tools/autotest
 ```
 
 ---
@@ -638,18 +641,18 @@ sleep 5
 **环境准备完成检查点**:
 
 - [ ] 起始目录验证通过
-- [ ] 测试工作目录 `test/autotest/` 已创建
-- [ ] TestAIServer 编译成功（`test/autotest/testaiserver.exe`）
-- [ ] NemesisBot 编译成功（`test/autotest/nemesisbot.exe`）
-- [ ] WebSocket 客户端编译成功（`test/autotest/websocket_chat_client.exe`）
+- [ ] 测试工作目录 `test-tools/autotest/` 已创建
+- [ ] TestAIServer 编译成功（`test-tools/autotest/testaiserver.exe`）
+- [ ] NemesisBot 编译成功（`test-tools/autotest/nemesisbot.exe`）
+- [ ] WebSocket 客户端编译成功（`test-tools/autotest/websocket_chat_client.exe`）
 - [ ] TestAIServer 进程运行中
-- [ ] **TestAIServer PID 已保存到 `test/autotest/testaiserver.pid`** ⚠️ **必须**
+- [ ] **TestAIServer PID 已保存到 `test-tools/autotest/testaiserver.pid`** ⚠️ **必须**
 - [ ] TestAIServer 端口监听
 - [ ] TestAIServer API 可访问
-- [ ] **当前工作目录在 `test/autotest/`** ⚠️ **重要**
+- [ ] **当前工作目录在 `test-tools/autotest/`** ⚠️ **重要**
 
 **状态**: ✅ 通过 / ❌ 失败
 
 ---
 
-**下一步**: 阶段 3 - 本地环境初始化（继续在 `test/autotest/` 目录中执行）
+**下一步**: 阶段 3 - 本地环境初始化（继续在 `test-tools/autotest/` 目录中执行）

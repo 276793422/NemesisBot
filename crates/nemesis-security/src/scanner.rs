@@ -318,7 +318,7 @@ pub trait VirusScanner: Send + Sync {
     async fn stop(&self) -> Result<(), String>;
 
     /// Whether the engine is ready to scan.
-    fn is_ready(&self) -> bool;
+    async fn is_ready(&self) -> bool;
 
     /// Scan a single file.
     async fn scan_file(&self, path: &Path) -> ScanResult;
@@ -424,9 +424,9 @@ impl VirusScanner for ClamAVEngine {
     }
 
     async fn get_info(&self) -> EngineInfo {
-        let cfg = self.config.read();
-        let address = cfg.address.clone();
-        let ready = self.is_ready();
+        let address = self.config.read().address.clone();
+        drop(self.config.read());
+        let ready = self.is_ready().await;
         EngineInfo {
             name: "clamav".to_string(),
             version: String::new(),
@@ -440,11 +440,13 @@ impl VirusScanner for ClamAVEngine {
         if self.started.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let cfg = self.config.read();
-        let address = if cfg.address.is_empty() {
-            "127.0.0.1:3310".to_string()
-        } else {
-            cfg.address.clone()
+        let address = {
+            let cfg = self.config.read();
+            if cfg.address.is_empty() {
+                "127.0.0.1:3310".to_string()
+            } else {
+                cfg.address.clone()
+            }
         };
 
         let scanner_config = crate::clamav::scanner::ScannerConfig {
@@ -457,6 +459,7 @@ impl VirusScanner for ClamAVEngine {
         // Verify connectivity
         scanner
             .ping()
+            .await
             .map_err(|e| format!("ClamAV ping failed: {}", e))?;
 
         *self.scanner.write() = Some(Arc::new(scanner));
@@ -474,14 +477,15 @@ impl VirusScanner for ClamAVEngine {
         Ok(())
     }
 
-    fn is_ready(&self) -> bool {
+    async fn is_ready(&self) -> bool {
         if !self.started.load(Ordering::SeqCst) {
             return false;
         }
-        self.scanner
-            .read()
-            .as_ref()
-            .map_or(false, |s| s.ping().is_ok())
+        let scanner = self.scanner.read().clone();
+        match scanner {
+            Some(s) => s.ping().await.is_ok(),
+            None => false,
+        }
     }
 
     async fn scan_file(&self, path: &Path) -> ScanResult {
@@ -568,7 +572,7 @@ impl VirusScanner for ClamAVEngine {
     }
 
     async fn update_database(&self) -> Result<(), String> {
-        if !self.is_ready() {
+        if !self.is_ready().await {
             return Err("clamav engine not ready".to_string());
         }
         Ok(())
@@ -849,7 +853,7 @@ impl VirusScanner for StubScanner {
         Vec::new()
     }
 
-    fn is_ready(&self) -> bool {
+    async fn is_ready(&self) -> bool {
         true
     }
 
@@ -939,7 +943,7 @@ impl VirusScanner for ClamavScannerWrapper {
     }
 
     async fn get_info(&self) -> EngineInfo {
-        let ready = self.scanner.ping().is_ok();
+        let ready = self.scanner.ping().await.is_ok();
         EngineInfo {
             name: "clamav".to_string(),
             version: String::new(),
@@ -951,7 +955,7 @@ impl VirusScanner for ClamavScannerWrapper {
 
     async fn start(&self) -> Result<(), String> {
         // ClamAV is an external daemon, just verify connectivity
-        self.scanner.ping().map_err(|e| format!("ClamAV ping failed: {}", e))
+        self.scanner.ping().await.map_err(|e| format!("ClamAV ping failed: {}", e))
     }
 
     async fn stop(&self) -> Result<(), String> {
@@ -959,8 +963,8 @@ impl VirusScanner for ClamavScannerWrapper {
         Ok(())
     }
 
-    fn is_ready(&self) -> bool {
-        self.scanner.ping().is_ok()
+    async fn is_ready(&self) -> bool {
+        self.scanner.ping().await.is_ok()
     }
 
     async fn scan_file(&self, path: &Path) -> ScanResult {
@@ -1259,7 +1263,7 @@ impl ScanChain {
 
         let mut results = Vec::new();
         for engine in &self.engines {
-            if !engine.is_ready() {
+            if !engine.is_ready().await {
                 warn!("Engine not ready, skipping: {}", engine.name());
                 continue;
             }
@@ -1294,7 +1298,7 @@ impl ScanChain {
 
         let mut results = Vec::new();
         for engine in &self.engines {
-            if !engine.is_ready() {
+            if !engine.is_ready().await {
                 continue;
             }
 
@@ -1328,7 +1332,7 @@ impl ScanChain {
 
         let mut all_results = Vec::new();
         for engine in &self.engines {
-            if !engine.is_ready() {
+            if !engine.is_ready().await {
                 continue;
             }
 
@@ -1597,7 +1601,7 @@ mod tests {
     async fn test_stub_scan_file_clean() {
         let scanner = StubScanner;
         assert_eq!(scanner.name(), "stub");
-        assert!(scanner.is_ready());
+        assert!(scanner.is_ready().await);
         let result = scanner.scan_file(Path::new("/tmp/any.txt")).await;
         assert!(!result.infected);
         assert!(result.virus.is_empty());
@@ -2110,11 +2114,11 @@ mod tests {
         assert_eq!(engine.name(), "clamav");
     }
 
-    #[test]
-    fn test_create_engine_stub_with_null() {
+    #[tokio::test]
+    async fn test_create_engine_stub_with_null() {
         let engine = create_engine("stub", &serde_json::Value::Null).unwrap();
         assert_eq!(engine.name(), "stub");
-        assert!(engine.is_ready());
+        assert!(engine.is_ready().await);
     }
 
     #[test]
@@ -2496,10 +2500,10 @@ mod tests {
         let _ = stats;
     }
 
-    #[test]
-    fn test_clamav_wrapper_is_ready() {
+    #[tokio::test]
+    async fn test_clamav_wrapper_is_ready() {
         let scanner = ScanEngine::ClamAV.build();
-        assert!(!scanner.is_ready()); // No daemon running
+        assert!(!scanner.is_ready().await); // No daemon running
     }
 
     #[test]
@@ -2601,12 +2605,12 @@ mod tests {
 
     // ---- ClamAVEngine specific tests ----
 
-    #[test]
-    fn test_clamav_engine_new() {
+    #[tokio::test]
+    async fn test_clamav_engine_new() {
         let config = ClamAVEngineConfig::default();
         let engine = ClamAVEngine::new(config);
         assert_eq!(engine.name(), "clamav");
-        assert!(!engine.is_ready());
+        assert!(!engine.is_ready().await);
         assert_eq!(engine.get_clamav_path(), "");
     }
 

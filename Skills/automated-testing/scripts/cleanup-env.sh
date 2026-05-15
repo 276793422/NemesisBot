@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# cleanup-env.sh - NemesisBot 测试环境清理脚本
+# cleanup-env.sh - NemesisBot Rust 项目测试环境清理脚本
 #
 # 功能：
 #   1. 停止 nemesisbot.exe（通过进程名）
@@ -8,7 +8,7 @@
 #   3. 等待文件释放
 #
 # 注意：
-#   - 不删除 test/autotest/ 目录（由 AI 负责）
+#   - 不删除 test-tools/autotest/ 目录（由 AI 负责）
 #
 # 使用方法：
 #   bash Skills/automated-testing/scripts/cleanup-env.sh
@@ -33,13 +33,13 @@ cd "$PROJECT_ROOT"
 echo "Stopping NemesisBot..."
 
 # 尝试通过 PID 文件停止
-if [ -f "test/autotest/nemesisbot.pid" ]; then
-    NEMESIS_PID=$(cat test/autotest/nemesisbot.pid)
+if [ -f "test-tools/autotest/nemesisbot.pid" ]; then
+    NEMESIS_PID=$(cat test-tools/autotest/nemesisbot.pid)
     if ps -p "$NEMESIS_PID" > /dev/null 2>&1; then
         echo "Stopping NemesisBot (PID: $NEMESIS_PID)..."
         kill "$NEMESIS_PID" 2>/dev/null || true
     fi
-    rm -f test/autotest/nemesisbot.pid
+    rm -f test-tools/autotest/nemesisbot.pid
 fi
 
 # 通过进程名强制停止（兼容 Windows）
@@ -50,13 +50,13 @@ taskkill //F //IM nemesisbot.exe 2>/dev/null || true
 echo "Stopping TestAIServer..."
 
 # 尝试通过 PID 文件停止
-if [ -f "test/autotest/testaiserver.pid" ]; then
-    TESTAI_PID=$(cat test/autotest/testaiserver.pid)
+if [ -f "test-tools/autotest/testaiserver.pid" ]; then
+    TESTAI_PID=$(cat test-tools/autotest/testaiserver.pid)
     if ps -p "$TESTAI_PID" > /dev/null 2>&1; then
         echo "Stopping TestAIServer (PID: $TESTAI_PID)..."
         kill "$TESTAI_PID" 2>/dev/null || true
     fi
-    rm -f test/autotest/testaiserver.pid
+    rm -f test-tools/autotest/testaiserver.pid
 fi
 
 # 通过进程名强制停止（兼容 Windows）
@@ -82,6 +82,6 @@ fi
 
 echo ""
 echo "Environment cleanup completed!"
-echo "Note: test/autotest/ directory was not removed (AI should handle this)"
+echo "Note: test-tools/autotest/ directory was not removed (AI should handle this)"
 
 exit 0

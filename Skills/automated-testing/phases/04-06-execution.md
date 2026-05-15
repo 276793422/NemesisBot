@@ -3,12 +3,12 @@
 本阶段完成测试 AI 配置、Bot 启动和测试执行。
 
 **⚠️ 重要前提**：
-- 必须在 `test/autotest/` 目录中执行
+- 必须在 `test-tools/autotest/` 目录中执行
 - 阶段 2 已完成编译
 - 阶段 3 已完成本地环境初始化
 - TestAIServer 正在运行
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 ---
 
@@ -18,7 +18,7 @@
 
 **目的**: 配置测试 AI 模型
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -49,7 +49,7 @@ echo ""
 **预期输出**:
 ```
 === 阶段 4: 配置测试 AI ===
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
 
 添加测试模型...
 ✓ Model 'testai-1.1' added successfully!
@@ -64,7 +64,7 @@ echo ""
 
 **目的**: 确认模型配置正确
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -100,7 +100,7 @@ testai-1.1 (default)
 
 **目的**: 启动 NemesisBot Gateway
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **⚠️ 重要**:
 - 使用 `gateway` 模式，不是 `agent` 模式
@@ -121,7 +121,7 @@ echo ""
 sleep 2
 
 # **⚠️ 重要**: 必须保存 PID 到文件
-# PID 文件保存在当前工作目录 (test/autotest/)
+# PID 文件保存在当前工作目录 (test-tools/autotest/)
 # **Windows 和 Unix/Linux 的 PID 获取方式不同**
 
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
@@ -155,7 +155,7 @@ echo ""
 **预期输出**:
 ```
 === 阶段 5: 启动 Bot ===
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
 
 Bot PID: 12346
 ✅ PID 已保存到 nemesisbot.pid
@@ -167,7 +167,7 @@ Bot PID: 12346
 
 **目的**: 等待 Bot 完全启动
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -210,7 +210,7 @@ echo ""
 
 **目的**: 确认 Bot 的 WebSocket 端口已就绪
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -252,7 +252,7 @@ echo ""
 检查 WebSocket 端口...
 ✅ WebSocket 端口 49001 已就绪
 
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
 ```
 
 ---
@@ -263,7 +263,7 @@ echo ""
 
 **目的**: 执行具体的测试场景
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **前置条件**:
 - ✅ TestAIServer 运行中（PID 在 `testaiserver.pid`）
@@ -284,7 +284,7 @@ echo ""
 
 **目的**: 测试基本的消息收发功能
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -303,7 +303,7 @@ echo ""
 **预期输出**:
 ```
 === 阶段 6: 执行测试 ===
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
 
 连接到 ws://127.0.0.1:49001/ws...
 ✅ 已连接
@@ -337,7 +337,7 @@ echo ""
 
 **目的**: 根据需要创建不同的测试场景
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **测试场景示例**:
 
@@ -405,7 +405,7 @@ echo ""
 
 **目的**: 检查 Bot 运行日志
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -435,7 +435,7 @@ echo ""
 
 **本阶段完成后的目录结构**:
 ```
-test/autotest/              # 当前工作目录
+test-tools/autotest/              # 当前工作目录
 ├── testaiserver.exe         # 已编译
 ├── testaiserver.pid         # TestAIServer 进程 ID
 ├── nemesisbot.exe           # 已编译
@@ -465,15 +465,15 @@ test/autotest/              # 当前工作目录
 ```
 
 **⚠️ 重要**：
-- 所有运行时生成的文件都在 `test/autotest/` 中
+- 所有运行时生成的文件都在 `test-tools/autotest/` 中
 - 包括日志、会话、状态等
-- 测试报告应保存到 `docs/REPORT/`（不在 `test/autotest/` 中）
+- 测试报告应保存到 `docs/REPORT/`（不在 `test-tools/autotest/` 中）
 
 ---
 
 ## 测试报告
 
-**⚠️ 重要**：测试报告必须保存到 `docs/REPORT/` 目录，不要保存在 `test/autotest/` 中，避免被清理时删除。
+**⚠️ 重要**：测试报告必须保存到 `docs/REPORT/` 目录，不要保存在 `test-tools/autotest/` 中，避免被清理时删除。
 
 **生成测试报告**:
 ```bash
@@ -506,7 +506,7 @@ cat > "$REPORT_FILE" << 'EOF'
 - **操作系统**: Windows 11
 - **TestAIServer**: testai-1.1
 - **NemesisBot**: [版本]
-- **测试工作目录**: test/autotest/
+- **测试工作目录**: test-tools/autotest/
 
 ---
 
@@ -608,9 +608,9 @@ tail -100 nemesisbot.log
 
 **测试执行完成检查点**:
 
-- [ ] **当前工作目录在 `test/autotest/`**
+- [ ] **当前工作目录在 `test-tools/autotest/`**
 - [ ] Bot 进程已启动（gateway 模式）
-- [ ] **Bot PID 已保存到 `test/autotest/nemesisbot.pid`** ⚠️ **必须**
+- [ ] **Bot PID 已保存到 `test-tools/autotest/nemesisbot.pid`** ⚠️ **必须**
 - [ ] WebSocket 连接成功
 - [ ] 测试消息已发送
 - [ ] 收到 Bot 响应
@@ -618,7 +618,7 @@ tail -100 nemesisbot.log
 - [ ] 响应内容符合预期
 - [ ] 响应时间在可接受范围
 - [ ] 测试结果已记录
-- [ ] **测试报告已保存到 `docs/REPORT/`** ⚠️ **不在 test/autotest/**
+- [ ] **测试报告已保存到 `docs/REPORT/`** ⚠️ **不在 test-tools/autotest/**
 
 **状态**: ✅ 通过 / ❌ 失败
 

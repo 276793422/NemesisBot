@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+const SAFE_EXTENSIONS: &[&str] = &["txt", "md", "json", "yaml", "yml", "xml", "csv", "log", "ini", "toml", "html", "css", "js", "ts"];
+const EXEC_EXTENSIONS: &[&str] = &["exe", "dll", "bat", "cmd", "ps1", "sh", "so", "dylib", "msi", "vbs", "com", "scr", "pif", "jar", "py"];
+
 /// Scanner configuration.
 #[derive(Debug, Clone)]
 pub struct ScannerConfig {
@@ -102,7 +105,7 @@ impl Scanner {
             }
         }
 
-        let result = self.client.scan_file(file_path)?;
+        let result = self.client.scan_file(file_path).await?;
         self.record_scan(0, result.infected, false).await;
 
         if result.infected {
@@ -132,7 +135,7 @@ impl Scanner {
             });
         }
 
-        let result = self.client.scan_stream(data)?;
+        let result = self.client.scan_stream(data).await?;
         self.record_scan(data.len() as u64, result.infected, false).await;
         Ok(result)
     }
@@ -165,22 +168,12 @@ impl Scanner {
             .to_lowercase();
 
         // Skip known safe file types
-        let safe_extensions: &[&str] = &[
-            "txt", "md", "json", "yaml", "yml",
-            "xml", "csv", "log", "ini", "toml",
-            "html", "css", "js", "ts",
-        ];
-        if safe_extensions.contains(&ext.as_str()) {
+        if SAFE_EXTENSIONS.contains(&ext.as_str()) {
             return false;
         }
 
         // Always scan executable types
-        let exec_extensions: &[&str] = &[
-            "exe", "dll", "bat", "cmd", "ps1",
-            "sh", "so", "dylib", "msi", "vbs",
-            "com", "scr", "pif", "jar", "py",
-        ];
-        if exec_extensions.contains(&ext.as_str()) {
+        if EXEC_EXTENSIONS.contains(&ext.as_str()) {
             return true;
         }
 
@@ -196,7 +189,7 @@ impl Scanner {
             return Ok(Vec::new());
         }
 
-        let results = self.client.cont_scan(dir_path)?;
+        let results = self.client.cont_scan(dir_path).await?;
 
         for r in &results {
             self.record_scan(0, r.infected, false).await;
@@ -219,8 +212,8 @@ impl Scanner {
     }
 
     /// Ping the scanner backend.
-    pub fn ping(&self) -> Result<(), String> {
-        self.client.ping()
+    pub async fn ping(&self) -> Result<(), String> {
+        self.client.ping().await
     }
 
     async fn record_scan(&self, bytes: u64, infected: bool, is_error: bool) {
@@ -442,11 +435,11 @@ mod tests {
         assert_eq!(cloned.max_file_size, config.max_file_size);
     }
 
-    #[test]
-    fn test_scanner_new_with_client() {
+    #[tokio::test]
+    async fn test_scanner_new_with_client() {
         let client = Client::new("127.0.0.1:3310");
         let scanner = Scanner::new_with_client(client, test_config());
-        assert!(scanner.ping().is_err()); // no daemon running
+        assert!(scanner.ping().await.is_err()); // no daemon running
     }
 
     #[tokio::test]

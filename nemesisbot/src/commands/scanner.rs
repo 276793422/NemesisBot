@@ -1001,7 +1001,7 @@ fn cmd_test(security_cfg: &std::path::Path, name: &str, file_path: &str) -> Resu
     // Wait briefly for engine to be ready
     std::thread::sleep(Duration::from_secs(2));
 
-    if !engine.is_ready() {
+    if !rt.block_on(engine.is_ready()) {
         eprintln!("Engine '{}' is not ready. Make sure the daemon is running.", name);
         // Still try to stop
         let _ = rt.block_on(engine.stop());

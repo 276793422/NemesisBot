@@ -17,10 +17,10 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 
 1. **所有路径必须使用正斜杠** `C:/path/to/file`，禁止反斜杠。WebSocket 消息中的路径、命令行参数中的路径均如此。
 2. **禁止在命令中使用项目绝对路径**: 所有 `cd`、编译输出路径等均使用相对路径。唯一允许的绝对路径是测试文件目标 `C:/Zoo/Temp/test`（与项目无关的外部路径）和 WebSocket 消息中的文件路径。
-3. **工作目录流转**: Phase 1-2 在项目根目录，Phase 3-5 在 `test/autotest/`，Phase 5 末尾返回项目根目录。**每个阶段开始时执行 `pwd` 验证当前目录**。
-4. **使用项目自带的 WebSocket 客户端**: `test/websocket_chat_client.go`，不使用 Python 脚本。
-5. **编译 Bot 使用 `go build -a`**: 确保 `-a` 强制重编译，`-tags "production,powershell"` 启用 PowerShell 兼容。
-6. **EICAR 测试必须使用 Go 脚本发送**: EICAR 字符串含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。用 `go run send_eicar.go` 替代 `websocket_chat_client.exe`。
+3. **工作目录流转**: Phase 1-2 在项目根目录，Phase 3-5 在 `test-tools/autotest/`，Phase 5 末尾返回项目根目录。**每个阶段开始时执行 `pwd` 验证当前目录**。
+4. **使用项目自带的 WebSocket 客户端**: `test-tools/websocket-client/`（Rust 项目），编译后使用。
+5. **编译 Bot 使用 `cargo build --release`**: Release 模式编译。
+6. **EICAR 测试必须使用脚本发送**: EICAR 字符串含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。使用专门的脚本发送。
 
 ---
 
@@ -28,7 +28,8 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 
 | 条件 | 说明 |
 |------|------|
-| Go 编译器 | 系统已安装 |
+| Rust 工具链 | 系统已安装（rustc + cargo） |
+| Go 编译器 | TestAIServer 仍为 Go 项目，需要 Go 编译 |
 | 网络 | 需能访问 `database.clamav.net`（下载病毒库）；官网下载失败时回退本地 |
 | 本地安装包（回退用） | `Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip` |
 
@@ -38,38 +39,49 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 
 ## Phase 1: 环境准备
 
-**每个 Step 开始前验证**: `pwd` 应在项目根目录（`NemesisBot/NemesisBot`）。
+**每个 Step 开始前验证**: `pwd` 应在项目根目录（`NemesisBot/NemesisBot_Rust`）。
 
 ### Step 1: 编译测试 AI 服务
 
 ```bash
 pwd
-mkdir -p test/autotest
-cd test/TestAIServer && go build -o ../../test/autotest/testaiserver.exe .
+mkdir -p test-tools/autotest
+cd test-tools/TestAIServer && go build -o ../../test-tools/autotest/testaiserver.exe .
+cd ../../..
 ```
 
-**验证**: `ls test/autotest/testaiserver.exe` 存在。
+**注意**: TestAIServer 是 Go 项目，仍在自身模块目录中使用 `go build .` 编译。如果已有预编译的 `testaiserver.exe`，可直接复制：
+```bash
+cp test-tools/TestAIServer/testaiserver.exe test-tools/autotest/
+```
 
-### Step 2: 编译无弹窗 Bot
+**验证**: `ls test-tools/autotest/testaiserver.exe` 存在。
+
+### Step 2: 编译 NemesisBot
 
 ```bash
 pwd
-go build -a -tags "production,powershell" -ldflags "-s -w" -o test/autotest/nemesisbot.exe ./nemesisbot/
+cargo build --release -p nemesisbot
+cp target/release/nemesisbot.exe test-tools/autotest/
 ```
 
-`-a` 强制全部重编译，`-tags "production,powershell"` 启用 PowerShell 兼容。直接输出到 `test/autotest/`，无需额外复制。
+Release 模式编译，复制到测试工作目录。
 
 ### Step 3: 编译 WebSocket 测试客户端
 
 ```bash
 pwd
-go build -o test/autotest/websocket_chat_client.exe test/websocket_chat_client.go
+cd test-tools/websocket-client && cargo build --release
+cp target/release/websocket_chat_client.exe ../autotest/
+cd ../..
 ```
+
+**注意**: WebSocket 客户端是 Rust 项目，使用 `cargo build --release` 编译。实际的二进制文件名请查看 `test-tools/websocket-client/Cargo.toml` 中的 `[[bin]]` 配置。
 
 ### Step 4: 启动测试 AI 服务
 
 ```bash
-cd test/autotest
+cd test-tools/autotest
 pwd
 ./testaiserver.exe > testai.log 2>&1 &
 ```
@@ -79,7 +91,7 @@ pwd
 ### Step 5: 配置本地 Bot
 
 ```bash
-cd test/autotest
+cd test-tools/autotest
 pwd
 ./nemesisbot.exe --local onboard default
 ./nemesisbot.exe --local model add --model test/testai-5.0 --base http://127.0.0.1:8080/v1 --key test-key --default
@@ -91,7 +103,7 @@ pwd
 
 ## Phase 2: Scanner 配置与安装
 
-**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
+**每个 Step 开始前验证**: `pwd` 应在 `test-tools/autotest/`。
 
 ### Step 6: 启用 clamav 引擎
 
@@ -129,7 +141,7 @@ fi
 ```
 
 **说明**:
-- 本地安装包路径使用相对路径 `../../Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip`（从 `test/autotest` 出发）
+- 本地安装包路径使用相对路径 `../../Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip`（从 `test-tools/autotest` 出发）
 - 本地回退使用 Python HTTP 服务（端口 9999），Phase 5 清理时需停止
 - `scanner install` 会自动完成：下载 zip → 解压 → 递归检测 `clamd.exe` → freshclam 下载病毒库 → 验证
 
@@ -145,7 +157,7 @@ fi
 
 ## Phase 3: Bot 启动与验证
 
-**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
+**每个 Step 开始前验证**: `pwd` 应在 `test-tools/autotest/`。
 
 ### Step 10: 端口和进程预检查
 
@@ -182,7 +194,7 @@ grep "Scanner chain initialized" nemesisbot.log
 
 ## Phase 4: 扫描功能验证
 
-**每个 Step 开始前验证**: `pwd` 应在 `test/autotest/`。
+**每个 Step 开始前验证**: `pwd` 应在 `test-tools/autotest/`。
 
 ### 前置: 创建测试目录
 
@@ -210,35 +222,35 @@ grep "virus detected" nemesisbot.log
 
 ### Step 14: 感染文件拦截
 
-**注意**: EICAR 字符串包含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。必须使用 Go 脚本直接发送，确保 JSON 中 `\` 正确编码为 `\\`。
+**注意**: EICAR 字符串包含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。必须使用脚本直接发送，确保 JSON 中 `\` 正确编码为 `\\`。
 
-在 `test/autotest/` 下创建 `send_eicar.go`（固定内容，不需要命令行参数）：
+在 `test-tools/autotest/` 下创建 `send_eicar.py`（Python 脚本，避免 bash 转义问题）：
 
-```go
-package main
-import (
-    "encoding/json"
-    "fmt"
-    "log"
-    "time"
-    "github.com/gorilla/websocket"
-)
-func main() {
-    content := `<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/eicar.exe","content":"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"}</FILE_OP>`
-    conn, _, err := websocket.DefaultDialer.Dial("ws://127.0.0.1:49001/ws", nil)
-    if err != nil { log.Fatal(err) }
-    defer conn.Close()
-    msg := map[string]string{"type": "message", "content": content, "timestamp": time.Now().Format(time.RFC3339)}
-    data, _ := json.Marshal(msg)
-    conn.WriteMessage(websocket.TextMessage, data)
-    fmt.Println("EICAR sent")
-    time.Sleep(15 * time.Second)
-}
+```python
+import asyncio
+import websockets
+import json
+import time
+
+async def send_eicar():
+    content = '<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/eicar.exe","content":"X5O!P%@AP[4\\\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"}</FILE_OP>'
+    uri = 'ws://127.0.0.1:49001/ws'
+    async with websockets.connect(uri) as ws:
+        msg = {
+            'type': 'message',
+            'content': content,
+            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
+        }
+        await ws.send(json.dumps(msg))
+        print('EICAR sent')
+        await asyncio.sleep(15)
+
+asyncio.run(send_eicar())
 ```
 
 ```bash
 pwd
-go run send_eicar.go
+python send_eicar.py
 ```
 
 **验证**:
@@ -270,14 +282,14 @@ taskkill //F //IM testaiserver.exe
 # 若 Step 8 启用了本地 HTTP 回退，停止 Python 进程
 taskkill //F //IM python.exe 2>/dev/null
 
-# 先切出测试目录再删除（工作目录在 test/autotest 内时 Windows 会锁住目录）
+# 先切出测试目录再删除（工作目录在 test-tools/autotest 内时 Windows 会锁住目录）
 cd ../..
 pwd
-rm -rf test/autotest
+rm -rf test-tools/autotest
 rm -rf C:/Zoo/Temp/test
 ```
 
-**验证**: `ls test/autotest 2>/dev/null && echo "FAIL: 目录残留" || echo "PASS: 已清理"`
+**验证**: `ls test-tools/autotest 2>/dev/null && echo "FAIL: 目录残留" || echo "PASS: 已清理"`
 
 ### Step 17: 分析日志
 

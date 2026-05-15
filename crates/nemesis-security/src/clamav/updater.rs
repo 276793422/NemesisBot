@@ -33,7 +33,7 @@ impl Updater {
 
     /// Run a virus database update.
     pub async fn update(&self) -> Result<(), String> {
-        let freshclam_exe = self.find_executable("freshclam");
+        let freshclam_exe = super::find_executable(&self.config.clamav_path, "freshclam");
         if !Path::new(&freshclam_exe).exists() {
             return Err(format!("freshclam not found at {}", freshclam_exe));
         }
@@ -140,17 +140,6 @@ impl Updater {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    fn find_executable(&self, name: &str) -> String {
-        let exe_name = if cfg!(target_os = "windows") {
-            format!("{}.exe", name)
-        } else {
-            name.to_string()
-        };
-        Path::new(&self.config.clamav_path)
-            .join(&exe_name)
-            .to_string_lossy()
-            .to_string()
-    }
 }
 
 #[cfg(test)]
@@ -221,8 +210,7 @@ mod tests {
 
     #[test]
     fn test_find_executable() {
-        let updater = Updater::new(test_config());
-        let exe = updater.find_executable("freshclam");
+        let exe = super::super::find_executable("/usr/bin", "freshclam");
         if cfg!(target_os = "windows") {
             assert!(exe.ends_with("freshclam.exe"));
         } else {

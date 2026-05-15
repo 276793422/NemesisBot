@@ -42,7 +42,7 @@ impl Daemon {
             return Err("clamd daemon is already running".to_string());
         }
 
-        let clamd_exe = self.find_executable("clamd");
+        let clamd_exe = super::find_executable(&self.config.clamav_path, "clamd");
         if !std::path::Path::new(&clamd_exe).exists() {
             return Err(format!("clamd executable not found at {}", clamd_exe));
         }
@@ -64,7 +64,7 @@ impl Daemon {
         let timeout = Duration::from_secs(self.config.startup_timeout_secs);
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            if self.client.ping().is_ok() {
+            if self.client.ping().await.is_ok() {
                 tracing::info!("ClamAV daemon started and ready");
                 return Ok(());
             }
@@ -99,11 +99,11 @@ impl Daemon {
     }
 
     /// Check if daemon is responsive.
-    pub fn is_ready(&self) -> bool {
+    pub async fn is_ready(&self) -> bool {
         if !self.is_running() {
             return false;
         }
-        self.client.ping().is_ok()
+        self.client.ping().await.is_ok()
     }
 
     /// Block until the daemon is ready or the context is cancelled.
@@ -113,7 +113,7 @@ impl Daemon {
     pub async fn wait_for_ready(&self, deadline: Duration) -> Result<(), String> {
         let start = std::time::Instant::now();
         loop {
-            if self.client.ping().is_ok() {
+            if self.client.ping().await.is_ok() {
                 return Ok(());
             }
             if start.elapsed() >= deadline {
@@ -123,17 +123,6 @@ impl Daemon {
         }
     }
 
-    fn find_executable(&self, name: &str) -> String {
-        let exe_name = if cfg!(target_os = "windows") {
-            format!("{}.exe", name)
-        } else {
-            name.to_string()
-        };
-        std::path::Path::new(&self.config.clamav_path)
-            .join(&exe_name)
-            .to_string_lossy()
-            .to_string()
-    }
 }
 
 #[cfg(test)]
@@ -175,7 +164,7 @@ mod tests {
         let daemon = Daemon::new(cfg);
         assert!(!daemon.is_running());
         // Verify the client was configured with default address
-        assert_eq!(daemon.client().address, "127.0.0.1:3310");
+        assert_eq!(daemon.client().address(), "127.0.0.1:3310");
     }
 
     #[test]
@@ -187,13 +176,14 @@ mod tests {
     #[test]
     fn test_daemon_is_ready_not_running() {
         let daemon = Daemon::new(test_config());
-        assert!(!daemon.is_ready());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt.block_on(async { daemon.is_ready().await }));
     }
 
     #[test]
     fn test_daemon_client() {
         let daemon = Daemon::new(test_config());
-        assert_eq!(daemon.client().address, "127.0.0.1:3310");
+        assert_eq!(daemon.client().address(), "127.0.0.1:3310");
     }
 
     #[tokio::test]
@@ -205,8 +195,7 @@ mod tests {
 
     #[test]
     fn test_find_executable() {
-        let daemon = Daemon::new(test_config());
-        let exe = daemon.find_executable("clamd");
+        let exe = super::super::find_executable("/usr/bin", "clamd");
         if cfg!(target_os = "windows") {
             assert!(exe.ends_with("clamd.exe"));
         } else {
@@ -262,7 +251,8 @@ mod tests {
         let daemon = Daemon::new(test_config());
         daemon.running.store(true, Ordering::SeqCst);
         // Running is true but no actual daemon, so ping should fail
-        assert!(!daemon.is_ready());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt.block_on(async { daemon.is_ready().await }));
         daemon.running.store(false, Ordering::SeqCst);
     }
 }

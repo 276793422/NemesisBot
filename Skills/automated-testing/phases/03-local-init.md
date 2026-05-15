@@ -3,15 +3,15 @@
 创建本地配置目录和初始化配置文件。
 
 **⚠️ 重要前提**：
-- 此阶段必须在 `test/autotest/` 目录中执行
+- 此阶段必须在 `test-tools/autotest/` 目录中执行
 - 阶段 2 应该已经创建了该目录并编译了所有工具
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **阶段目标**：
 - 使用 `--local` 模式初始化 NemesisBot 配置
-- 创建 `test/autotest/.nemesisbot/` 目录
-- **本阶段结束时，仍在 `test/autotest/` 目录中**
+- 创建 `test-tools/autotest/.nemesisbot/` 目录
+- **本阶段结束时，仍在 `test-tools/autotest/` 目录中**
 
 ---
 
@@ -21,17 +21,17 @@
 
 **目的**: 确保在正确的目录中执行
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
 # 验证当前目录
 echo "=== 验证当前目录 ==="
 
-# 检查是否在 test/autotest/ 目录
+# 检查是否在 test-tools/autotest/ 目录
 CURRENT_DIR=$(pwd)
-if [[ ! "$CURRENT_DIR" =~ /test/autotest$ ]]; then
-  echo "❌ 错误: 当前目录不是 test/autotest/"
+if [[ ! "$CURRENT_DIR" =~ /test-tools/autotest$ ]]; then
+  echo "❌ 错误: 当前目录不是 test-tools/autotest/"
   echo "   当前目录: $CURRENT_DIR"
   echo "   请先执行阶段 2，或切换到正确的目录"
   exit 1
@@ -60,7 +60,7 @@ echo ""
 **预期输出**:
 ```
 === 验证当前目录 ===
-✅ 当前目录验证通过: /c/AI/NemesisBot/NemesisBot/test/autotest
+✅ 当前目录验证通过: /c/AI/NemesisBot_Rust/test-tools/autotest
 ✅ 测试工具验证通过
 ```
 
@@ -70,9 +70,9 @@ echo ""
 
 **目的**: 使用 `--local` 模式创建本地配置
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
-**⚠️ 重要**: 必须确保在 `test/autotest/` 目录中执行，否则配置会被创建在错误的位置
+**⚠️ 重要**: 必须确保在 `test-tools/autotest/` 目录中执行，否则配置会被创建在错误的位置
 
 **命令**:
 ```bash
@@ -83,13 +83,13 @@ echo "=== 初始化本地环境 ==="
 echo "📍 当前工作目录: $(pwd)"
 
 # 验证是否在正确的目录
-if [[ ! "$(pwd)" =~ /test/autotest$ ]]; then
-  echo "❌ 错误: 不在 test/autotest/ 目录中"
+if [[ ! "$(pwd)" =~ /test-tools/autotest$ ]]; then
+  echo "❌ 错误: 不在 test-tools/autotest/ 目录中"
   echo "   当前目录: $(pwd)"
   echo ""
   echo "正在切换到正确目录..."
-  cd test/autotest || {
-    echo "❌ 无法切换到 test/autotest/"
+  cd test-tools/autotest || {
+    echo "❌ 无法切换到 test-tools/autotest/"
     exit 1
   }
   echo "✅ 已切换到: $(pwd)"
@@ -154,9 +154,9 @@ For more information:
 
 **目的**: 确认所有必要的文件和目录都已创建
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
-**配置位置**: `./.nemesisbot/`（即 `test/autotest/.nemesisbot/`）
+**配置位置**: `./.nemesisbot/`（即 `test-tools/autotest/.nemesisbot/`）
 
 **命令**:
 ```bash
@@ -191,7 +191,7 @@ drwxr-xr-x 1 Zoo 197121    0 Mar 23 12:23 ..
 -rw-r--r-- 1 Zoo 197121 3415 Mar 23 12:23 config.json
 drwxr-xr-x 1 Zoo 197121    0 Mar 23 12:23 workspace
 
-📍 配置位置: /c/AI/NemesisBot/NemesisBot/test/autotest/.nemesisbot
+📍 配置位置: /c/AI/NemesisBot_Rust/test-tools/autotest/.nemesisbot
 ```
 
 ---
@@ -200,7 +200,7 @@ drwxr-xr-x 1 Zoo 197121    0 Mar 23 12:23 workspace
 
 **目的**: 检查配置文件是否正确创建
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -283,7 +283,7 @@ echo ""
 
 **目的**: 检查配置文件内容是否正确
 
-**当前工作目录**: `test/autotest/`
+**当前工作目录**: `test-tools/autotest/`
 
 **命令**:
 ```bash
@@ -329,8 +329,8 @@ Web 服务器配置:
 
 ✅ 本地环境初始化完成
 
-📍 当前工作目录: /c/AI/NemesisBot/NemesisBot/test/autotest
-📁 配置目录: /c/AI/NemesisBot/NemesisBot/test/autotest/.nemesisbot
+📍 当前工作目录: /c/AI/NemesisBot_Rust/test-tools/autotest
+📁 配置目录: /c/AI/NemesisBot_Rust/test-tools/autotest/.nemesisbot
 ```
 
 ---
@@ -339,7 +339,7 @@ Web 服务器配置:
 
 **本阶段完成后的目录结构**:
 ```
-test/autotest/              # 当前工作目录
+test-tools/autotest/              # 当前工作目录
 ├── testaiserver.exe         # 已编译（阶段 2）
 ├── nemesisbot.exe           # 已编译（阶段 2）
 ├── websocket_chat_client.exe  # 已编译（阶段 2）
@@ -362,7 +362,7 @@ test/autotest/              # 当前工作目录
 
 **⚠️ 重要**：
 - `.nemesisbot/` 是相对于**当前工作目录**的
-- 因为当前在 `test/autotest/` 中，所以配置在 `test/autotest/.nemesisbot/`
+- 因为当前在 `test-tools/autotest/` 中，所以配置在 `test-tools/autotest/.nemesisbot/`
 - 这样配置完全隔离，不影响项目根目录或用户主目录
 
 ---
@@ -373,14 +373,14 @@ test/autotest/              # 当前工作目录
 - ✅ 完全隔离，不影响主配置（`~/.nemesisbot`）
 - ✅ 不影响项目根目录配置
 - ✅ 每次测试都是干净的环境
-- ✅ 测试完成后可以完全清理（删除整个 `test/autotest/`）
+- ✅ 测试完成后可以完全清理（删除整个 `test-tools/autotest/`）
 - ✅ 避免配置冲突
 
 **配置位置对比**:
 ```
 主配置:        ~/.nemesisbot/
 项目本地配置:  ./.nemesisbot/ (在项目根目录)
-测试配置:      test/autotest/.nemesisbot/ (在本流程中)
+测试配置:      test-tools/autotest/.nemesisbot/ (在本流程中)
 ```
 
 ---
@@ -389,7 +389,7 @@ test/autotest/              # 当前工作目录
 
 ### 问题 1: 目录验证失败
 
-**症状**: 提示"当前目录不是 test/autotest/"
+**症状**: 提示"当前目录不是 test-tools/autotest/"
 
 **原因**: 在错误的目录中执行
 
@@ -399,10 +399,10 @@ test/autotest/              # 当前工作目录
 pwd
 
 # 如果在项目根目录
-cd test/autotest
+cd test-tools/autotest
 
 # 如果在其他位置，使用绝对路径
-cd /c/AI/NemesisBot/NemesisBot/test/autotest
+cd /c/AI/NemesisBot_Rust/test-tools/autotest
 ```
 
 ---
@@ -456,7 +456,7 @@ rm -rf ./.nemesisbot
 
 **本地环境初始化完成检查点**:
 
-- [ ] **当前目录验证通过**（在 `test/autotest/` 中）
+- [ ] **当前目录验证通过**（在 `test-tools/autotest/` 中）
 - [ ] `.nemesisbot` 目录已创建
 - [ ] workspace 目录结构完整
 - [ ] config.json 文件存在
@@ -464,10 +464,10 @@ rm -rf ./.nemesisbot
 - [ ] SOUL.md 文件存在
 - [ ] USER.md 文件存在
 - [ ] 配置内容正确
-- [ ] **当前工作目录仍在 `test/autotest/`** ⚠️ **重要**
+- [ ] **当前工作目录仍在 `test-tools/autotest/`** ⚠️ **重要**
 
 **状态**: ✅ 通过 / ❌ 失败
 
 ---
 
-**下一步**: 阶段 4 - 配置测试 AI（继续在 `test/autotest/` 目录中执行）
+**下一步**: 阶段 4 - 配置测试 AI（继续在 `test-tools/autotest/` 目录中执行）

@@ -10,13 +10,13 @@
 
 ```powershell
 # === 确保在项目根目录 ===
-cd C:\AI\NemesisBot\NemesisBot
+cd C:\AI\NemesisBot\NemesisBot_Rust
 
 # === 阶段 2: 环境准备（脚本） ===
 .\Skills\automated-testing\scripts\setup-env.ps1
 
 # === 阶段 3: 本地初始化（AI） ===
-cd test\autotest
+cd test-tools\autotest
 .\nemesisbot.exe onboard default --local
 
 # === 阶段 4: 配置 AI（AI） ===
@@ -31,31 +31,31 @@ cd test\autotest
 
 # === 阶段 6: 执行测试（AI - 另一个终端） ===
 # 在新的 PowerShell 窗口中：
-cd C:\AI\NemesisBot\NemesisBot\test\autotest
+cd C:\AI\NemesisBot\NemesisBot_Rust\test-tools\autotest
 .\websocket_chat_client.exe
 
 # === 阶段 7: 清理环境（混合） ===
 # 返回项目根目录
-cd C:\AI\NemesisBot\NemesisBot
+cd C:\AI\NemesisBot\NemesisBot_Rust
 
 # 停止服务（脚本）
 .\Skills\automated-testing\scripts\cleanup-env.ps1
 
 # 删除测试目录（AI）
-Remove-Item -Recurse -Force test\autotest
+Remove-Item -Recurse -Force test-tools\autotest
 ```
 
 ### Git Bash / Linux
 
 ```bash
 # === 确保在项目根目录 ===
-cd /c/AI/NemesisBot/NemesisBot
+cd /c/AI/NemesisBot/NemesisBot_Rust
 
 # === 阶段 2: 环境准备（脚本） ===
 bash Skills/automated-testing/scripts/setup-env.sh
 
 # === 阶段 3: 本地初始化（AI） ===
-cd test/autotest
+cd test-tools/autotest
 ./nemesisbot.exe onboard default --local
 
 # === 阶段 4: 配置 AI（AI） ===
@@ -73,13 +73,13 @@ cd test/autotest
 
 # === 阶段 7: 清理环境（混合） ===
 # 返回项目根目录
-cd /c/AI/NemesisBot/NemesisBot
+cd /c/AI/NemesisBot/NemesisBot_Rust
 
 # 停止服务（脚本）
 bash Skills/automated-testing/scripts/cleanup-env.sh
 
 # 删除测试目录（AI）
-rm -rf test/autotest
+rm -rf test-tools/autotest
 ```
 
 ---
@@ -93,7 +93,7 @@ rm -rf test/autotest
 bash Skills/automated-testing/scripts/setup-env.sh
 
 # 2. 一行命令初始化、配置、启动
-cd test/autotest && \
+cd test-tools/autotest && \
   ./nemesisbot.exe onboard default --local && \
   ./nemesisbot.exe model add --model test/testai-1.1 --base http://127.0.0.1:8080/v1 --key test-key --default && \
   ./nemesisbot.exe gateway &
@@ -105,7 +105,7 @@ sleep 5
 # 4. 清理
 cd ../.. && \
   bash Skills/automated-testing/scripts/cleanup-env.sh && \
-  rm -rf test/autotest
+  rm -rf test-tools/autotest
 ```
 
 ---
@@ -116,7 +116,7 @@ cd ../.. && \
 
 ```
 SETUP_START
-Creating test\autotest directory...
+Creating test-tools\autotest directory...
 Compiling test components...
 [1/3] Compiling TestAIServer...
 [2/3] Compiling NemesisBot...
@@ -127,7 +127,7 @@ Waiting for TestAIServer to be ready...
 SETUP_SUCCESS
 TESTAI_PID=7256
 TESTAI_PORT=8080
-WORK_DIR=C:\AI\NemesisBot\NemesisBot\test\autotest
+WORK_DIR=C:\AI\NemesisBot\NemesisBot_Rust\test-tools\autotest
 
 Environment setup completed successfully!
 TestAIServer is running with PID: 7256
@@ -172,7 +172,7 @@ All processes stopped successfully
 CLEANUP_SUCCESS
 
 Environment cleanup completed!
-Note: test\autotest\ directory was not removed (AI should handle this)
+Note: test-tools\autotest\ directory was not removed (AI should handle this)
 ```
 
 ---
@@ -195,9 +195,9 @@ bash Skills/automated-testing/scripts/cleanup-env.sh
 
 ### 2. 编译失败
 
-**错误**: `go: command not found`
+**错误**: `cargo: command not found`
 
-**解决**: 确保 Go 已安装并在 PATH 中
+**解决**: 确保 Rust 工具链（cargo）已安装并在 PATH 中
 
 ### 3. 权限错误
 
@@ -215,5 +215,5 @@ Stop-Process -Name "testaiserver" -Force
 
 ---
 
-**更新日期**: 2026-03-23
+**更新日期**: 2026-05-15
 **状态**: ✅ 已验证
