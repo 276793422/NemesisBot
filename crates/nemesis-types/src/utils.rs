@@ -34,12 +34,59 @@ pub fn now_timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Truncate string to max length with ellipsis.
+/// Returns the largest byte index `i` such that `i <= max_len` and `s.is_char_boundary(i)`.
+///
+/// Safe to use for prefix slicing: `&s[..floor_char_boundary(s, n)]`
+pub fn floor_char_boundary(s: &str, max_len: usize) -> usize {
+    if max_len >= s.len() {
+        return s.len();
+    }
+    let mut i = max_len;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Returns the smallest byte index `i` such that `i >= min_start` and `s.is_char_boundary(i)`.
+///
+/// Safe to use for suffix slicing: `&s[ceil_char_boundary(s, start)..]`
+pub fn ceil_char_boundary(s: &str, min_start: usize) -> usize {
+    if min_start == 0 || min_start >= s.len() {
+        return min_start.min(s.len());
+    }
+    let mut i = min_start;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Truncate string to max byte length with ellipsis, UTF-8 safe.
+///
+/// Finds the largest char boundary not exceeding `max_len` before slicing.
+/// If the string fits within `max_len` bytes, returns it unchanged.
+/// Otherwise returns the longest prefix that fits (with room for "...").
 pub fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
+        return s.to_string();
+    }
+    // Need at least 3 bytes for "..."
+    let budget = max_len.saturating_sub(3);
+    if budget == 0 {
+        return "...".to_string();
+    }
+    // Find the largest char boundary <= budget.
+    let boundary = s
+        .char_indices()
+        .take_while(|(idx, ch)| *idx + ch.len_utf8() <= budget)
+        .last()
+        .map(|(idx, ch)| idx + ch.len_utf8())
+        .unwrap_or(0);
+    if boundary == 0 {
+        "...".to_string()
     } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+        format!("{}...", &s[..boundary])
     }
 }
 
@@ -80,6 +127,62 @@ mod tests {
     #[test]
     fn test_truncate_long() {
         assert_eq!(truncate("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_exactly_max_len() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_max_len_zero() {
+        assert_eq!(truncate("hello", 0), "...");
+    }
+
+    #[test]
+    fn test_truncate_max_len_one() {
+        assert_eq!(truncate("hello", 1), "...");
+    }
+
+    #[test]
+    fn test_truncate_max_len_four() {
+        assert_eq!(truncate("hello", 4), "h...");
+    }
+
+    // --- UTF-8 safety tests ---
+
+    #[test]
+    fn test_truncate_chinese_at_boundary() {
+        // "你好世界ABCD" = 4×3 (CJK) + 4×1 (ASCII) = 16 bytes
+        // truncate to 10: budget = 10-3 = 7 bytes
+        // "你好" = 6 bytes fits, "世" = 3 bytes → 6+3=9 > 7, stops at "你好"
+        let s = "你好世界ABCD";
+        let result = truncate(s, 10);
+        assert!(result.starts_with("你好"), "got: {}", result);
+        assert!(result.ends_with("..."), "got: {}", result);
+        assert!(result.is_char_boundary(result.len()));
+    }
+
+    #[test]
+    fn test_truncate_exact_char_boundary() {
+        // "你好" = 6 bytes, truncate to 6 → no truncation
+        assert_eq!(truncate("你好", 6), "你好");
+    }
+
+    #[test]
+    fn test_truncate_single_multibyte_char() {
+        // "你好" = 6 bytes, truncate to 5 → cannot fit any char in budget=2
+        assert_eq!(truncate("你好", 5), "...");
+    }
+
+    #[test]
+    fn test_truncate_emoji() {
+        // "Hello 🌍 World" — 🌍 is 4 bytes
+        let s = "Hello 🌍 World";
+        let result = truncate(s, 10);
+        // "Hello " = 6 bytes, budget = 10-3 = 7, "Hello " fits, "🌍" needs 4 more = 10 > 7
+        assert!(result.starts_with("Hello "), "got: {}", result);
+        assert!(result.ends_with("..."), "got: {}", result);
     }
 
     #[test]
@@ -168,38 +271,15 @@ mod tests {
     // --- truncate edge cases ---
 
     #[test]
-    fn test_truncate_exactly_max_len() {
-        assert_eq!(truncate("hello", 5), "hello");
-    }
-
-    #[test]
-    fn test_truncate_max_len_zero() {
-        // s.len() > 0, max_len=0, saturating_sub(3) on 0 = 0, &s[..0] = ""
-        assert_eq!(truncate("hello", 0), "...");
-    }
-
-    #[test]
-    fn test_truncate_max_len_one() {
-        // "hello".len()=5 > 1, saturating_sub(3) on 1 = 0, &s[..0] = ""
-        assert_eq!(truncate("hello", 1), "...");
-    }
-
-    #[test]
     fn test_truncate_max_len_two() {
-        // saturating_sub(3) on 2 = 0
+        // budget = 2-3 = 0 → "..."
         assert_eq!(truncate("hello", 2), "...");
     }
 
     #[test]
     fn test_truncate_max_len_three() {
-        // 5 > 3, saturating_sub(3) on 3 = 0, &s[..0] = ""
+        // budget = 3-3 = 0 → "..."
         assert_eq!(truncate("hello", 3), "...");
-    }
-
-    #[test]
-    fn test_truncate_max_len_four() {
-        // 5 > 4, saturating_sub(3) on 4 = 1, &s[..1] = "h"
-        assert_eq!(truncate("hello", 4), "h...");
     }
 
     #[test]
@@ -209,10 +289,9 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_unicode() {
-        // Unicode characters — truncate operates on bytes, so be careful
+    fn test_truncate_unicode_fits() {
         let s = "héllo";
-        assert_eq!(truncate(s, 10), "héllo"); // fits within max_len
+        assert_eq!(truncate(s, 10), "héllo");
     }
 
     #[test]
@@ -284,5 +363,54 @@ mod tests {
         let (extracted_id, extracted_content) = extract_rpc_correlation_id(&formatted).unwrap();
         assert_eq!(extracted_id, id);
         assert_eq!(extracted_content, content);
+    }
+
+    // --- floor_char_boundary ---
+
+    #[test]
+    fn test_floor_char_boundary_ascii() {
+        assert_eq!(floor_char_boundary("hello", 3), 3);
+        assert_eq!(floor_char_boundary("hello", 5), 5);
+        assert_eq!(floor_char_boundary("hello", 10), 5);
+    }
+
+    #[test]
+    fn test_floor_char_boundary_multibyte() {
+        // "你好世界" = 12 bytes (3 bytes each)
+        let s = "你好世界";
+        assert_eq!(floor_char_boundary(s, 5), 3); // 5 -> 3 (first char boundary)
+        assert_eq!(floor_char_boundary(s, 4), 3); // 4 -> 3
+        assert_eq!(floor_char_boundary(s, 6), 6); // exact boundary
+        assert_eq!(floor_char_boundary(s, 0), 0);
+    }
+
+    #[test]
+    fn test_floor_char_boundary_empty() {
+        assert_eq!(floor_char_boundary("", 0), 0);
+        assert_eq!(floor_char_boundary("", 5), 0);
+    }
+
+    // --- ceil_char_boundary ---
+
+    #[test]
+    fn test_ceil_char_boundary_ascii() {
+        assert_eq!(ceil_char_boundary("hello", 2), 2);
+        assert_eq!(ceil_char_boundary("hello", 5), 5);
+        assert_eq!(ceil_char_boundary("hello", 0), 0);
+    }
+
+    #[test]
+    fn test_ceil_char_boundary_multibyte() {
+        // "你好世界" = 12 bytes
+        let s = "你好世界";
+        assert_eq!(ceil_char_boundary(s, 4), 6); // 4 -> 6 (next char boundary)
+        assert_eq!(ceil_char_boundary(s, 5), 6); // 5 -> 6
+        assert_eq!(ceil_char_boundary(s, 6), 6); // exact boundary
+        assert_eq!(ceil_char_boundary(s, 0), 0);
+    }
+
+    #[test]
+    fn test_ceil_char_boundary_empty() {
+        assert_eq!(ceil_char_boundary("", 0), 0);
     }
 }

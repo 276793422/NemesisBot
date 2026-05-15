@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use parking_lot::RwLock;
 
+use nemesis_types::utils;
+
 /// DLP scan result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlpResult {
@@ -304,7 +306,8 @@ impl DlpEngine {
     /// Scan tool output for sensitive data leaks.
     pub fn scan_tool_output(&self, tool_name: &str, output: &str) -> DlpResult {
         let text = if output.len() > 5000 {
-            &output[..5000] // Truncate large outputs
+            let end = utils::floor_char_boundary(output, 5000);
+            &output[..end]
         } else {
             output
         };

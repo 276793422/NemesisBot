@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use nemesis_types::utils;
+
 /// Credential scan result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialResult {
@@ -135,7 +137,9 @@ impl Scanner {
             MaskMode::Fixed => "[REDACTED]".to_string(),
             MaskMode::KeyValue => {
                 if value.len() > 8 {
-                    format!("{}...{}", &value[..4], &value[value.len()-4..])
+                    let end = utils::floor_char_boundary(value, 4);
+                    let start = utils::ceil_char_boundary(value, value.len() - 4);
+                    format!("{}...{}", &value[..end], &value[start..])
                 } else {
                     "[REDACTED]".to_string()
                 }
@@ -204,7 +208,9 @@ impl Scanner {
 
 fn mask_keep_prefix(value: &str) -> String {
     if value.len() > 8 {
-        format!("{}...{}", &value[..4], &value[value.len()-4..])
+        let end = utils::floor_char_boundary(value, 4);
+        let start = utils::ceil_char_boundary(value, value.len() - 4);
+        format!("{}...{}", &value[..end], &value[start..])
     } else {
         "[REDACTED]".to_string()
     }

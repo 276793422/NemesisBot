@@ -942,11 +942,7 @@ impl AgentLoopExecutor {
         }).await;
 
         // Log response.
-        let response_preview = if final_content.len() > 120 {
-            format!("{}...", &final_content[..120])
-        } else {
-            final_content.clone()
-        };
+        let response_preview = nemesis_types::utils::truncate(&final_content, 120);
         info!(
             "Response: {} (session={}, iterations={}, len={})",
             response_preview,

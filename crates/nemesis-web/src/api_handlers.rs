@@ -18,6 +18,8 @@ use crate::websocket_handler::IncomingMessage;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+
+use nemesis_types::utils;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -295,7 +297,8 @@ pub async fn handle_api_models(
                             *key = if s.len() <= 4 {
                                 serde_json::Value::String("****".to_string())
                             } else {
-                                serde_json::Value::String(format!("{}****", &s[..4]))
+                                let end = utils::floor_char_boundary(s, 4);
+                                serde_json::Value::String(format!("{}****", &s[..end]))
                             };
                         }
                     }
@@ -561,8 +564,9 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
                         if s.len() <= 4 {
                             *value = serde_json::Value::String("****".to_string());
                         } else {
+                            let end = utils::floor_char_boundary(s, 4);
                             *value =
-                                serde_json::Value::String(format!("{}****", &s[..4]));
+                                serde_json::Value::String(format!("{}****", &s[..end]));
                         }
                     }
                 }

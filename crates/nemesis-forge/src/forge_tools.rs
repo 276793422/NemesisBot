@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use nemesis_types::utils;
+
 use crate::forge::Forge;
 
 // ---------------------------------------------------------------------------
@@ -1301,11 +1303,7 @@ impl ForgeToolExecutor {
             output.push_str("|-----|------|----------------|-------------|-------------|\n");
             for a in &active {
                 let sig = a.tool_signature.join("->");
-                let truncated = if sig.len() > 30 {
-                    format!("{}...", &sig[..27])
-                } else {
-                    sig.clone()
-                };
+                let truncated = utils::truncate(&sig, 30);
                 let sr = if a.usage_count > 0 {
                     let total = a.usage_count + a.consecutive_observing_rounds as u64;
                     format!(

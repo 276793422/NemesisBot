@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tracing;
 
+use nemesis_types::utils;
+
 use crate::types::{AggregatedExperience, CollectedExperience, CollectorConfig, Experience};
 
 /// In-memory aggregation for a pattern.
@@ -578,13 +580,9 @@ fn summarize_value(value: &serde_json::Value, max_len: usize) -> String {
     truncate_str(&s, max_len)
 }
 
-/// Truncate a string to at most `max_len` characters, appending "..." if truncated.
+/// Truncate a string to at most `max_len` bytes, appending "..." if truncated.
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
-    }
+    utils::truncate(s, max_len)
 }
 
 #[cfg(test)]
@@ -959,7 +957,7 @@ mod tests {
         assert_eq!(truncate_str("hello", 10), "hello");
         let long = "a".repeat(200);
         let truncated = truncate_str(&long, 100);
-        assert_eq!(truncated.len(), 103); // 100 + "..."
+        assert_eq!(truncated.len(), 100); // 97 chars + "..." = 100
         assert!(truncated.ends_with("..."));
     }
 

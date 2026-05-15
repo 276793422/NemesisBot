@@ -8,6 +8,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing;
 
+use nemesis_types::utils;
+
 /// Configuration for the audit log.
 #[derive(Debug, Clone)]
 pub struct AuditLogConfig {
@@ -203,11 +205,7 @@ fn sanitize_target(target: &str) -> String {
         .replace('\n', " ")
         .replace('\r', " ")
         .replace('\t', " ");
-    if s.len() > 200 {
-        format!("{}...", &s[..200])
-    } else {
-        s
-    }
+    utils::truncate(&s, 200)
 }
 
 /// Sanitize a reason string for log output.
@@ -216,11 +214,7 @@ fn sanitize_reason(reason: &str) -> String {
         .replace('\n', " ")
         .replace('\r', " ")
         .replace('\t', " ");
-    if s.len() > 100 {
-        format!("{}...", &s[..100])
-    } else {
-        s
-    }
+    utils::truncate(&s, 100)
 }
 
 /// Sanitize a string for CSV output.

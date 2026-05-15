@@ -13,6 +13,8 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nemesis_types::utils;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -327,11 +329,7 @@ impl Tool for SubagentTool {
         );
 
         // Truncate user content if too long
-        let user_content = if result_summary.len() > 500 {
-            format!("{}...", &result_summary[..500])
-        } else {
-            result_summary.clone()
-        };
+        let user_content = utils::truncate(&result_summary, 500);
 
         ToolResult::user_result(&llm_content, &user_content)
     }

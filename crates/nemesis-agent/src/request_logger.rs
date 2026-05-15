@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
+use nemesis_types::utils;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -383,7 +384,7 @@ impl RequestLogger {
             content.push_str("\n### Message Details\n\n");
             for (i, msg) in info.messages.iter().enumerate() {
                 let msg_preview = if self.config.detail_level == DetailLevel::Truncated && msg.content.len() > TRUNCATE_MESSAGE_LIMIT {
-                    format!("{}...", &msg.content[..TRUNCATE_MESSAGE_LIMIT])
+                    utils::truncate(&msg.content, TRUNCATE_MESSAGE_LIMIT)
                 } else {
                     msg.content.clone()
                 };
@@ -391,7 +392,7 @@ impl RequestLogger {
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
                         let args_preview = if tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
-                            format!("{}...", &tc.arguments[..TRUNCATE_ARGS_LIMIT])
+                            utils::truncate(&tc.arguments, TRUNCATE_ARGS_LIMIT)
                         } else {
                             tc.arguments.clone()
                         };
@@ -418,9 +419,10 @@ impl RequestLogger {
         let response_content = if self.config.detail_level == DetailLevel::Truncated
             && info.content.len() > TRUNCATE_RESPONSE_LIMIT
         {
+            let end = utils::floor_char_boundary(&info.content, TRUNCATE_RESPONSE_LIMIT);
             format!(
                 "{}\n\n... [truncated]",
-                &info.content[..TRUNCATE_RESPONSE_LIMIT]
+                &info.content[..end]
             )
         } else {
             info.content.clone()
@@ -444,7 +446,7 @@ impl RequestLogger {
             content.push_str("\n### Tool Call Details\n\n");
             for tc in &info.tool_calls {
                 let args_preview = if self.config.detail_level == DetailLevel::Truncated && tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
-                    format!("{}...", &tc.arguments[..TRUNCATE_ARGS_LIMIT])
+                    utils::truncate(&tc.arguments, TRUNCATE_ARGS_LIMIT)
                 } else {
                     tc.arguments.clone()
                 };
@@ -506,7 +508,7 @@ impl RequestLogger {
             // Arguments section (mirrors Go's formatArguments).
             if !op.arguments.is_empty() {
                 let args_preview = if self.config.detail_level == DetailLevel::Truncated && op.arguments.len() > TRUNCATE_ARGS_LIMIT {
-                    format!("{}...", &op.arguments[..TRUNCATE_ARGS_LIMIT])
+                    utils::truncate(&op.arguments, TRUNCATE_ARGS_LIMIT)
                 } else {
                     op.arguments.clone()
                 };
@@ -516,7 +518,7 @@ impl RequestLogger {
             // Result section (mirrors Go's Result field).
             if !op.result.is_empty() {
                 let result_preview = if self.config.detail_level == DetailLevel::Truncated && op.result.len() > TRUNCATE_RESPONSE_LIMIT {
-                    format!("{}...", &op.result[..TRUNCATE_RESPONSE_LIMIT])
+                    utils::truncate(&op.result, TRUNCATE_RESPONSE_LIMIT)
                 } else {
                     op.result.clone()
                 };
@@ -609,7 +611,9 @@ fn mask_api_key(key: &str) -> String {
     if key.len() <= 6 {
         return "***".to_string();
     }
-    format!("{}***{}", &key[..3], &key[key.len() - 3..])
+    let end = utils::floor_char_boundary(key, 3);
+    let start = utils::ceil_char_boundary(key, key.len() - 3);
+    format!("{}***{}", &key[..end], &key[start..])
 }
 
 /// Format an operation type for display.

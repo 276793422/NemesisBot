@@ -2459,11 +2459,7 @@ pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
         if let Some(ref tool_calls) = msg.tool_calls {
             result.push_str("  ToolCalls:\n");
             for tc in tool_calls {
-                let args_preview = if tc.arguments.len() > 200 {
-                    format!("{}...", &tc.arguments[..200])
-                } else {
-                    tc.arguments.clone()
-                };
+                let args_preview = truncate(&tc.arguments, 200);
                 result.push_str(&format!(
                     "    - ID: {}, Name: {}\n",
                     tc.id, tc.name
@@ -2473,11 +2469,7 @@ pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
         }
 
         if !msg.content.is_empty() {
-            let content_preview = if msg.content.len() > 200 {
-                format!("{}...", &msg.content[..200])
-            } else {
-                msg.content.clone()
-            };
+            let content_preview = truncate(&msg.content, 200);
             result.push_str(&format!("  Content: {}\n", content_preview));
         }
 
@@ -2498,11 +2490,7 @@ pub fn format_tools_for_log(tools: &[ToolCallInfo]) -> String {
     }
     let mut result = String::from("[\n");
     for tc in tools {
-        let args_preview = if tc.arguments.len() > 200 {
-            format!("{}...", &tc.arguments[..200])
-        } else {
-            tc.arguments.clone()
-        };
+        let args_preview = truncate(&tc.arguments, 200);
         result.push_str(&format!(
             "  - ID: {}, Name: {}, Args: {}\n",
             tc.id, tc.name, args_preview
@@ -2512,13 +2500,10 @@ pub fn format_tools_for_log(tools: &[ToolCallInfo]) -> String {
     result
 }
 
-/// Truncate a string to a maximum length, appending "..." if truncated.
+/// Truncate a string to a maximum byte length, appending "..." if truncated.
+/// UTF-8 safe: finds the nearest char boundary before slicing.
 pub fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
-    }
+    nemesis_types::utils::truncate(s, max_len)
 }
 
 #[cfg(test)]
@@ -2968,7 +2953,10 @@ mod tests {
     #[test]
     fn test_truncate() {
         assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello world", 5), "hello...");
+        // budget = 5-3 = 2 bytes → "he" fits → "he..."
+        assert_eq!(truncate("hello world", 5), "he...");
+        // budget = 8-3 = 5 bytes → "hello" fits → "hello..."
+        assert_eq!(truncate("hello world", 8), "hello...");
     }
 
     #[test]

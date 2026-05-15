@@ -16,6 +16,8 @@ use std::collections::HashMap;
 
 use sha2::{Digest, Sha256};
 
+use nemesis_types::utils;
+
 use crate::types::{CollectedExperience, ExperienceStats};
 
 // ---------------------------------------------------------------------------
@@ -97,7 +99,8 @@ impl ConversationPattern {
             ConversationPatternType::SuccessTemplate => "st",
         };
         let id_prefix = if fingerprint.len() >= 12 {
-            &fingerprint[..12]
+            let end = utils::floor_char_boundary(fingerprint, 12);
+            &fingerprint[..end]
         } else {
             fingerprint
         };

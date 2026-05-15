@@ -13,6 +13,8 @@ use crate::registry::{ContextualTool, Tool, AsyncCallback, ToolRegistry};
 use crate::toolloop::{LLMCallback, ToolLoopConfig, run_tool_loop};
 use crate::types::ToolResult;
 use async_trait::async_trait;
+
+use nemesis_types::utils;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -452,12 +454,7 @@ impl Tool for SubagentTool {
         };
 
         // ForUser: Brief summary (truncated if too long)
-        let max_user_len = 500;
-        let user_content = if result_summary.len() > max_user_len {
-            format!("{}...", &result_summary[..max_user_len])
-        } else {
-            result_summary.clone()
-        };
+        let user_content = utils::truncate(&result_summary, 500);
 
         // ForLLM: Full execution details
         let llm_content = format!(
