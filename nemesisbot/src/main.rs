@@ -466,7 +466,7 @@ async fn main() -> Result<()> {
             commands::mcp::run(action, cli.local)?;
         }
         Commands::Security { action } => {
-            commands::security::run(action, cli.local)?;
+            commands::security::run(action, cli.local).await?;
         }
         Commands::Log { action } => {
             commands::log::run(action, cli.local)?;
@@ -484,7 +484,7 @@ async fn main() -> Result<()> {
             commands::workflow::run(action, cli.local)?;
         }
         Commands::Scanner { action } => {
-            commands::scanner::run(action, cli.local)?;
+            commands::scanner::run(action, cli.local).await?;
         }
         Commands::Shutdown => {
             commands::shutdown::run(cli.local)?;

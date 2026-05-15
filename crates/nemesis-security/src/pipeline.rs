@@ -551,60 +551,74 @@ impl SecurityPlugin {
         // Layer 7: Virus Scanner
         // Extract file paths/content and actually scan them.
         // Mirrors Go's `p.scanChain.ScanToolInvocation(ctx, invocation.ToolName, invocation.Args)`.
+        //
+        // Use block_in_place to avoid panicking when called from a tokio async context.
+        // This yields the current tokio worker thread so blocking is safe.
         {
-            let chain = self.scan_chain.blocking_read();
-            if chain.is_enabled() && chain.engine_count() > 0 {
+            let scan_chain = self.scan_chain.clone();
+            let tool_name = invocation.tool_name.clone();
+            let args = invocation.args.clone();
+            let user = invocation.user.clone();
+            let source = invocation.source.clone();
+
+            let scan_result: Option<(bool, Option<String>)> = tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                let chain = rt.block_on(scan_chain.read());
+                if !chain.is_enabled() || chain.engine_count() == 0 {
+                    return None;
+                }
+
                 // Extract file paths for scanning
-                let paths = chain.extract_paths_from_args(&invocation.tool_name, &invocation.args);
+                let paths = chain.extract_paths_from_args(&tool_name, &args);
 
                 if !paths.is_empty() {
                     tracing::debug!(
-                        tool = %invocation.tool_name,
+                        tool = %tool_name,
                         paths = ?paths,
                         "Layer 7: scanning extracted paths"
                     );
-                    // Scan each extracted file path synchronously
                     for file_path in &paths {
-                        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                            let path = std::path::Path::new(file_path);
-                            let result = rt.block_on(chain.scan_file(path));
+                        let path = std::path::Path::new(file_path);
+                        let result = rt.block_on(chain.scan_file(path));
+                        if result.blocked {
+                            return Some((false, Some(format!(
+                                "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                file_path, result.engine
+                            ))));
+                        }
+                    }
+                }
+
+                // Scan content in tool arguments (check multiple content fields)
+                for content_key in &["content", "data", "body", "html"] {
+                    if let Some(content) = args.get(*content_key).and_then(|v| v.as_str()) {
+                        if !content.is_empty() {
+                            let result = rt.block_on(chain.scan_content(content.as_bytes()));
                             if result.blocked {
-                                self.log_audit_event(
-                                    "denied", &op_type.to_string(), &invocation.user,
-                                    &invocation.source, file_path, "CRITICAL",
-                                    &format!("virus scanner: {} detected threat in {}",
-                                        result.engine, file_path),
-                                    "virus_scanner",
-                                );
-                                return (false, Some(format!(
+                                return Some((false, Some(format!(
                                     "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                    file_path, result.engine
-                                )));
+                                    content_key, result.engine
+                                ))));
                             }
                         }
                     }
                 }
 
-                // Scan content in tool arguments (e.g., write_file content)
-                if let Some(content) = invocation.args.get("content").and_then(|v| v.as_str()) {
-                    if !content.is_empty() {
-                        if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                            let result = rt.block_on(chain.scan_content(content.as_bytes()));
-                            if result.blocked {
-                                self.log_audit_event(
-                                    "denied", &op_type.to_string(), &invocation.user,
-                                    &invocation.source, &target, "CRITICAL",
-                                    &format!("virus scanner: {} detected threat in content",
-                                        result.engine),
-                                    "virus_scanner",
-                                );
-                                return (false, Some(format!(
-                                    "operation blocked by virus scanner: threat detected in content (engine: {})",
-                                    result.engine
-                                )));
-                            }
-                        }
+                None
+            });
+
+            if let Some((blocked, reason)) = scan_result {
+                if blocked == false {
+                    // Log the denial
+                    let target = extract_target(&tool_name, &args);
+                    if let Some(reason_str) = &reason {
+                        self.log_audit_event(
+                            "denied", &op_type.to_string(), &user,
+                            &source, &target, "CRITICAL",
+                            reason_str, "virus_scanner",
+                        );
                     }
+                    return (false, reason);
                 }
             }
         }
@@ -704,6 +718,37 @@ impl SecurityPlugin {
         if enabled {
             tracing::info!("Scanner chain initialized and enabled");
         }
+    }
+
+    /// Initialize the scanner chain from a full scanner config.
+    ///
+    /// Equivalent to Go's `initScannerChain()` in plugin.go which calls
+    /// `LoadFromConfig()` + `chain.Start()`.
+    ///
+    /// This clears any stub engines, loads engines from the config,
+    /// starts them (which launches clamd daemon via Manager), and enables the chain.
+    pub async fn init_scanner_from_config(&self, full_config: &crate::scanner::ScannerFullConfig) {
+        let mut chain = self.scan_chain.write().await;
+
+        // Clear default stub engines
+        chain.clear_engines();
+
+        // Load engines from config
+        chain.load_from_full_config(full_config);
+
+        if chain.engine_count() == 0 {
+            tracing::warn!("No scanner engines loaded from config, scanner chain remains disabled");
+            return;
+        }
+
+        // Start all engines (this launches clamd daemon via Manager for ClamAV)
+        chain.start().await;
+
+        chain.set_enabled(true);
+        tracing::info!(
+            engine_count = chain.engine_count(),
+            "Scanner chain initialized and enabled from config"
+        );
     }
 
     /// Async scan a tool invocation for threats using the scan chain.

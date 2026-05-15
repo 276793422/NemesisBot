@@ -43,6 +43,7 @@ members = [
     "test-tools/e2e-tests",
     "test-tools/http-test-server",
     "test-tools/websocket-client",
+    "test-tools/ws-send",
     "test-tools/bus-benchmarks",
     "test-tools/approval-test",
 ]

@@ -279,12 +279,14 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "list_directory" | "list_dir" => Some(OperationType::DirRead),
         "create_directory" | "create_dir" => Some(OperationType::DirCreate),
         "delete_directory" | "delete_dir" => Some(OperationType::DirDelete),
-        "exec" | "execute_command" => Some(OperationType::ProcessExec),
+        "exec" | "execute_command" | "shell" | "exec_async" | "cron" => Some(OperationType::ProcessExec),
         "spawn" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
-        "download" => Some(OperationType::NetworkDownload),
+        "download" | "install_skill" => Some(OperationType::NetworkDownload),
         "upload" => Some(OperationType::NetworkUpload),
-        "http_request" | "web_request" => Some(OperationType::NetworkRequest),
+        "http_request" | "web_request" | "web_fetch" | "web_search"
+        | "cluster_rpc" | "find_skills" => Some(OperationType::NetworkRequest),
+        "screen_capture" => Some(OperationType::FileWrite),
         _ => None,
     }
 }
@@ -298,11 +300,27 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
         "list_directory" | "list_dir" | "create_directory" | "create_dir" | "delete_directory" | "delete_dir" => {
             args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
-        "exec" | "execute_command" | "spawn" => {
+        "exec" | "execute_command" | "spawn" | "shell" | "exec_async" => {
             args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
-        "download" | "upload" | "http_request" | "web_request" => {
+        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
+        | "find_skills" => {
             args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "cluster_rpc" => {
+            args.get("peer_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "cron" => {
+            args.get("command").or_else(|| args.get("message"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "screen_capture" => {
+            args.get("save_path").or_else(|| args.get("path"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "install_skill" => {
+            args.get("url").or_else(|| args.get("source"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
         _ => String::new(),
     }
@@ -311,8 +329,13 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
 /// Extract URL from tool arguments.
 pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
-        "download" | "upload" | "http_request" | "web_request" => {
-            args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
+        | "install_skill" | "find_skills" => {
+            args.get("url").or_else(|| args.get("source"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "cluster_rpc" => {
+            args.get("peer_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
         _ => String::new(),
     }
@@ -874,5 +897,125 @@ mod tests {
     #[test]
     fn test_process_suspend_danger_level() {
         assert_eq!(get_danger_level(OperationType::ProcessSuspend), DangerLevel::Medium);
+    }
+
+    // ---- New tool mappings (shell, exec_async, web_fetch, etc.) ----
+
+    #[test]
+    fn test_tool_to_operation_shell_and_async() {
+        assert_eq!(tool_to_operation("shell"), Some(OperationType::ProcessExec));
+        assert_eq!(tool_to_operation("exec_async"), Some(OperationType::ProcessExec));
+    }
+
+    #[test]
+    fn test_tool_to_operation_web_tools() {
+        assert_eq!(tool_to_operation("web_fetch"), Some(OperationType::NetworkRequest));
+        assert_eq!(tool_to_operation("web_search"), Some(OperationType::NetworkRequest));
+    }
+
+    #[test]
+    fn test_tool_to_operation_screen_capture() {
+        assert_eq!(tool_to_operation("screen_capture"), Some(OperationType::FileWrite));
+    }
+
+    #[test]
+    fn test_tool_to_operation_install_skill() {
+        assert_eq!(tool_to_operation("install_skill"), Some(OperationType::NetworkDownload));
+    }
+
+    #[test]
+    fn test_extract_target_shell() {
+        let args = serde_json::json!({"command": "run ./malware.exe"});
+        assert_eq!(extract_target("shell", &args), "run ./malware.exe");
+    }
+
+    #[test]
+    fn test_extract_target_exec_async() {
+        let args = serde_json::json!({"command": "python script.py"});
+        assert_eq!(extract_target("exec_async", &args), "python script.py");
+    }
+
+    #[test]
+    fn test_extract_target_web_fetch() {
+        let args = serde_json::json!({"url": "http://example.com/payload"});
+        assert_eq!(extract_target("web_fetch", &args), "http://example.com/payload");
+    }
+
+    #[test]
+    fn test_extract_target_web_search() {
+        let args = serde_json::json!({"url": "http://search.example.com"});
+        assert_eq!(extract_target("web_search", &args), "http://search.example.com");
+    }
+
+    #[test]
+    fn test_extract_target_screen_capture() {
+        let args = serde_json::json!({"save_path": "/tmp/cap.png"});
+        assert_eq!(extract_target("screen_capture", &args), "/tmp/cap.png");
+
+        let args2 = serde_json::json!({"path": "/tmp/cap2.png"});
+        assert_eq!(extract_target("screen_capture", &args2), "/tmp/cap2.png");
+    }
+
+    #[test]
+    fn test_extract_target_install_skill() {
+        let args = serde_json::json!({"url": "https://github.com/user/skill"});
+        assert_eq!(extract_target("install_skill", &args), "https://github.com/user/skill");
+
+        let args2 = serde_json::json!({"source": "https://github.com/user/skill2"});
+        assert_eq!(extract_target("install_skill", &args2), "https://github.com/user/skill2");
+    }
+
+    #[test]
+    fn test_extract_url_web_tools() {
+        let args = serde_json::json!({"url": "https://api.example.com/v1"});
+        assert_eq!(extract_url("web_fetch", &args), "https://api.example.com/v1");
+        assert_eq!(extract_url("web_search", &args), "https://api.example.com/v1");
+
+        let args2 = serde_json::json!({"source": "https://github.com/skill"});
+        assert_eq!(extract_url("install_skill", &args2), "https://github.com/skill");
+    }
+
+    // ---- cluster_rpc, find_skills, cron mappings ----
+
+    #[test]
+    fn test_tool_to_operation_cluster_rpc() {
+        assert_eq!(tool_to_operation("cluster_rpc"), Some(OperationType::NetworkRequest));
+    }
+
+    #[test]
+    fn test_tool_to_operation_find_skills() {
+        assert_eq!(tool_to_operation("find_skills"), Some(OperationType::NetworkRequest));
+    }
+
+    #[test]
+    fn test_tool_to_operation_cron() {
+        assert_eq!(tool_to_operation("cron"), Some(OperationType::ProcessExec));
+    }
+
+    #[test]
+    fn test_extract_target_cluster_rpc() {
+        let args = serde_json::json!({"peer_id": "bot-2", "action": "ping"});
+        assert_eq!(extract_target("cluster_rpc", &args), "bot-2");
+    }
+
+    #[test]
+    fn test_extract_target_find_skills() {
+        let args = serde_json::json!({"query": "docker"});
+        assert_eq!(extract_target("find_skills", &args), "");
+    }
+
+    #[test]
+    fn test_extract_target_cron() {
+        let args = serde_json::json!({"command": "rm -rf /tmp/old", "action": "add"});
+        assert_eq!(extract_target("cron", &args), "rm -rf /tmp/old");
+
+        let args2 = serde_json::json!({"message": "reminder text", "action": "add"});
+        assert_eq!(extract_target("cron", &args2), "reminder text");
+    }
+
+    #[test]
+    fn test_extract_url_cluster_rpc() {
+        let args = serde_json::json!({"peer_id": "bot-3", "action": "chat"});
+        assert_eq!(extract_url("cluster_rpc", &args), "bot-3");
     }
 }

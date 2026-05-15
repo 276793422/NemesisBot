@@ -1,7 +1,7 @@
 //! Scanner command - manage virus scanner engines.
 //!
-//! Mirrors Go command/scanner.go with full subcommand support:
-//! list, add, remove, enable, disable, check, install, info, download, test, update.
+//! Mirrors Go command/scanner.go with subcommand support:
+//! list, add, remove, enable, disable, check, install, clamav (install/update/test/info).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -199,7 +199,7 @@ fn marshal_engine_config(
 const DATABASE_FILE: &str = "daily.cvd";
 
 // ---------------------------------------------------------------------------
-// ScannerAction - clap subcommands (matches Go's full subcommand set)
+// ScannerAction / ClamavAction - clap subcommands
 // ---------------------------------------------------------------------------
 
 #[derive(clap::Subcommand)]
@@ -243,38 +243,37 @@ pub enum ScannerAction {
         #[arg(long)]
         dir: Option<String>,
     },
-    /// Show scanner engine information
-    Info {
-        /// Engine name
-        name: String,
+    /// ClamAV engine operations
+    Clamav {
+        #[command(subcommand)]
+        action: ClamavAction,
     },
-    /// Download a scanner engine
-    Download {
-        /// Engine name
-        name: String,
-        /// Download directory
-        #[arg(long, default_value = ".")]
-        dir: String,
+}
+
+#[derive(clap::Subcommand)]
+pub enum ClamavAction {
+    /// Install ClamAV engine (download + configure + database)
+    Install {
+        /// Force re-install even if already installed
+        #[arg(long)]
+        force: bool,
     },
+    /// Update ClamAV virus database (run freshclam)
+    Update,
     /// Test scan a file
     Test {
-        /// Engine name
-        name: String,
         /// File path to scan
         path: String,
     },
-    /// Update scanner virus database
-    Update {
-        /// Engine name
-        name: String,
-    },
+    /// Show ClamAV engine information
+    Info,
 }
 
 // ---------------------------------------------------------------------------
 // Command dispatch
 // ---------------------------------------------------------------------------
 
-pub fn run(action: ScannerAction, local: bool) -> Result<()> {
+pub async fn run(action: ScannerAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let security_cfg = common::scanner_config_path(&home);
 
@@ -287,11 +286,8 @@ pub fn run(action: ScannerAction, local: bool) -> Result<()> {
         ScannerAction::Enable { name } => cmd_enable(&security_cfg, &name),
         ScannerAction::Disable { name } => cmd_disable(&security_cfg, &name),
         ScannerAction::Check => cmd_check(&security_cfg),
-        ScannerAction::Install { dir } => cmd_install(&security_cfg, dir.as_deref()),
-        ScannerAction::Info { name } => cmd_info(&security_cfg, &name),
-        ScannerAction::Download { name, dir } => cmd_download(&security_cfg, &name, &dir),
-        ScannerAction::Test { name, path } => cmd_test(&security_cfg, &name, &path),
-        ScannerAction::Update { name } => cmd_update(&security_cfg, &name),
+        ScannerAction::Install { dir } => cmd_install(&security_cfg, dir.as_deref()).await,
+        ScannerAction::Clamav { action } => cmd_clamav(action, &security_cfg).await,
     }
 }
 
@@ -582,8 +578,7 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
                 "installed" => {
                     if engine_cfg.state.db_status == "missing" {
                         println!(
-                            "  - Run 'scanner update {}' to download virus database",
-                            name
+                            "  - Run 'scanner clamav update' to download virus database"
                         );
                     }
                 }
@@ -687,16 +682,101 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
         target_dir.to_string_lossy().to_string()
     };
 
-    Ok(extracted_dir)
+    // Detect actual install path by recursively searching for the executable
+    let detected_dir = detect_executable_dir(
+        std::path::Path::new(&extracted_dir),
+        &["clamd.exe", "clamd", "clamscan.exe", "clamscan"],
+    )
+    .unwrap_or_else(|| extracted_dir);
+
+    Ok(detected_dir)
+}
+
+/// Recursively search for a target executable and return its parent directory.
+fn detect_executable_dir(dir: &std::path::Path, targets: &[&str]) -> Option<String> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Check this subdirectory for target executables
+                for exe in targets {
+                    if path.join(exe).exists() {
+                        return Some(path.to_string_lossy().to_string());
+                    }
+                }
+                // Recurse deeper
+                if let Some(found) = detect_executable_dir(&path, targets) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Install all pending enabled engines (matches Go cmdScannerInstall).
-fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Result<()> {
-    let mut cfg = load_scanner_config(security_cfg)?;
+async fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Result<()> {
+    let cfg = load_scanner_config(security_cfg)?;
 
     if cfg.enabled.is_empty() {
         println!("No engines enabled. Use 'scanner enable <engine>' first.");
         return Ok(());
+    }
+
+    for name in &cfg.enabled {
+        match name.as_str() {
+            "clamav" => cmd_clamav_install_inner(false, security_cfg, dir).await?,
+            _ => println!("  {} - install not implemented", name),
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+/// ClamAV engine subcommand dispatch.
+async fn cmd_clamav(action: ClamavAction, security_cfg: &std::path::Path) -> Result<()> {
+    match action {
+        ClamavAction::Install { force } => {
+            cmd_clamav_install_inner(force, security_cfg, None).await
+        }
+        ClamavAction::Update => cmd_clamav_update(security_cfg).await,
+        ClamavAction::Test { path } => cmd_clamav_test(security_cfg, &path).await,
+        ClamavAction::Info => cmd_clamav_info(security_cfg).await,
+    }
+}
+
+/// Core ClamAV install logic, shared by `scanner clamav install` and `scanner install`.
+async fn cmd_clamav_install_inner(
+    force: bool,
+    security_cfg: &std::path::Path,
+    dir: Option<&str>,
+) -> Result<()> {
+    let mut cfg = load_scanner_config(security_cfg)?;
+
+    let raw = match cfg.engines.get("clamav") {
+        Some(v) => v.clone(),
+        None => {
+            eprintln!("ClamAV engine not found in configuration.");
+            eprintln!("Add it first with: nemesisbot scanner add clamav");
+            std::process::exit(1);
+        }
+    };
+
+    let engine_cfg = parse_engine_config(&raw);
+
+    // Check if already installed
+    if engine_cfg.state.install_status == "installed" && !force {
+        println!("ClamAV already installed (path: {}). Use --force to reinstall.", engine_cfg.clamav_path);
+        return Ok(());
+    }
+
+    let mut state = engine_cfg.state.clone();
+    state.last_install_attempt = chrono::Utc::now().to_rfc3339();
+
+    if force && state.install_status == "installed" {
+        println!("Force reinstalling ClamAV...");
+        state.install_status = String::new();
     }
 
     let install_dir = dir
@@ -705,174 +785,141 @@ fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Result<()> 
 
     println!("Install directory: {}\n", install_dir);
 
-    let mut changed = false;
+    let mut detected_path = String::new();
 
-    for name in &cfg.enabled {
-        let raw = match cfg.engines.get(name) {
-            Some(v) => v,
-            None => continue,
-        };
+    // Step 1: Use configured path if set
+    if !engine_cfg.clamav_path.is_empty() {
+        detected_path = engine_cfg.clamav_path.clone();
+    }
 
-        // Check if already installed
-        let engine_cfg = parse_engine_config(raw);
-        if engine_cfg.state.install_status == "installed" {
-            println!("  {:<15}  already installed, skipping", name);
-            continue;
-        }
-
-        let mut state = engine_cfg.state.clone();
-        state.last_install_attempt = chrono::Utc::now().to_rfc3339();
-
-        let mut detected_path = String::new();
-
-        // Step 1: Use configured path if set
-        if !engine_cfg.clamav_path.is_empty() {
-            detected_path = engine_cfg.clamav_path.clone();
-        }
-
-        // Step 2: Check system PATH
-        if detected_path.is_empty() {
-            if let Some(sys_path) = lookup_system_clamav() {
-                detected_path = sys_path.clone();
-                println!("  {:<15}  found in system PATH: {}", name, sys_path);
-            }
-        }
-
-        // Step 3: Download if still not found
-        if detected_path.is_empty() && !engine_cfg.url.is_empty() {
-            println!("  Installing {:<15}  downloading from {}...", name, engine_cfg.url);
-            let download_dir = std::path::Path::new(&install_dir).join(name);
-            let _ = std::fs::create_dir_all(&download_dir);
-
-            match download_engine(&engine_cfg.url, &download_dir) {
-                Ok(extracted_path) => {
-                    detected_path = extracted_path;
-                    println!("  {:<15}  downloaded to {}", name, detected_path);
-                }
-                Err(e) => {
-                    println!("  {:<15}  download failed: {}", name, e);
-                    state.install_status = "failed".to_string();
-                    state.install_error = format!("download failed: {}", e);
-                    if let Some(updated) = marshal_engine_config(raw, &state, "", "") {
-                        cfg.engines.insert(name.clone(), updated);
-                        changed = true;
-                    }
-                    continue;
-                }
-            }
-        }
-
-        // Step 4: Validate
-        if detected_path.is_empty() {
-            state.install_status = "failed".to_string();
-            state.install_error =
-                "no download URL, install path, or system installation found".to_string();
-            println!(
-                "  {:<15}  FAILED: not found (no URL, path, or system PATH)",
-                name
-            );
-        } else if !check_executables_at_path(&detected_path) {
-            state.install_status = "failed".to_string();
-            state.install_error = format!("executable not found at {}", detected_path);
-            println!("  {:<15}  FAILED: {}", name, state.install_error);
-        } else {
-            state.install_status = "installed".to_string();
-            state.install_error = String::new();
-            println!("  {:<15}  OK (path: {})", name, detected_path);
-        }
-
-        // Step 5: Set DataDir
-        let data_dir = if engine_cfg.data_dir.is_empty() && !detected_path.is_empty() {
-            detected_path.clone()
-        } else {
-            engine_cfg.data_dir.clone()
-        };
-
-        // Step 6: Check/update virus database
-        if state.install_status == "installed" && !data_dir.is_empty() {
-            let db_file = std::path::Path::new(&data_dir)
-                .join("database")
-                .join(DATABASE_FILE);
-            if !db_file.exists() {
-                state.db_status = "missing".to_string();
-                println!(
-                    "  {:<15}  updating virus database...",
-                    name
-                );
-
-                // Set DataDir on engine so it knows where to download DB
-                if let Ok(engine) = nemesis_security::scanner::create_engine(name, raw) {
-                    // Start engine with timeout to trigger DB download
-                    let rt = tokio::runtime::Handle::current();
-                    let start_result = rt.block_on(async {
-                        // Use a 120s timeout for engine start
-                        tokio::time::timeout(Duration::from_secs(120), engine.start()).await
-                    });
-
-                    match start_result {
-                        Ok(Ok(())) => {
-                            // Poll for DB file to appear (90s deadline, 3s intervals)
-                            let deadline = std::time::Instant::now() + Duration::from_secs(90);
-                            let mut db_ready = false;
-
-                            while std::time::Instant::now() < deadline {
-                                std::thread::sleep(Duration::from_secs(3));
-                                if db_file.exists() {
-                                    state.db_status = "ready".to_string();
-                                    state.last_db_update = chrono::Utc::now().to_rfc3339();
-                                    println!("  {:<15}  database ready", name);
-                                    db_ready = true;
-                                    break;
-                                }
-                            }
-
-                            if !db_ready {
-                                println!(
-                                    "  {:<15}  database download timed out (90s)",
-                                    name
-                                );
-                            }
-
-                            // Stop engine after polling
-                            let _ = rt.block_on(engine.stop());
-                        }
-                        Ok(Err(e)) => {
-                            println!(
-                                "  {:<15}  database update skipped (engine start failed: {})",
-                                name, e
-                            );
-                        }
-                        Err(_) => {
-                            println!(
-                                "  {:<15}  database update skipped (engine start timed out)",
-                                name
-                            );
-                        }
-                    }
-                } else {
-                    println!(
-                        "  {:<15}  database update skipped (engine creation failed)",
-                        name
-                    );
-                    // Fall back to user-initiated update
-                    println!(
-                        "  {:<15}  virus database missing, run 'scanner update {}' to download",
-                        name, name
-                    );
-                }
-            } else {
-                state.db_status = "ready".to_string();
-            }
-        }
-
-        // Step 7: Persist
-        if let Some(updated) = marshal_engine_config(raw, &state, &detected_path, &data_dir) {
-            cfg.engines.insert(name.clone(), updated);
-            changed = true;
+    // Step 2: Check system PATH
+    if detected_path.is_empty() {
+        if let Some(sys_path) = lookup_system_clamav() {
+            detected_path = sys_path.clone();
+            println!("  clamav           found in system PATH: {}", sys_path);
         }
     }
 
-    if changed {
+    // Step 3: Download if still not found
+    if detected_path.is_empty() && !engine_cfg.url.is_empty() {
+        println!("  clamav           downloading from {}...", engine_cfg.url);
+        let download_dir = std::path::Path::new(&install_dir).join("clamav");
+        let _ = std::fs::create_dir_all(&download_dir);
+
+        match download_engine(&engine_cfg.url, &download_dir) {
+            Ok(extracted_path) => {
+                detected_path = extracted_path;
+                println!("  clamav           downloaded to {}", detected_path);
+            }
+            Err(e) => {
+                println!("  clamav           download failed: {}", e);
+                state.install_status = "failed".to_string();
+                state.install_error = format!("download failed: {}", e);
+                if let Some(updated) = marshal_engine_config(&raw, &state, "", "") {
+                    cfg.engines.insert("clamav".to_string(), updated);
+                    save_scanner_config(security_cfg, &cfg)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // Step 4: Validate executables
+    if detected_path.is_empty() {
+        state.install_status = "failed".to_string();
+        state.install_error =
+            "no download URL, install path, or system installation found".to_string();
+        println!("  clamav           FAILED: not found (no URL, path, or system PATH)");
+    } else if !check_executables_at_path(&detected_path) {
+        state.install_status = "failed".to_string();
+        state.install_error = format!("executable not found at {}", detected_path);
+        println!("  clamav           FAILED: {}", state.install_error);
+    } else {
+        state.install_status = "installed".to_string();
+        state.install_error = String::new();
+        println!("  clamav           OK (path: {})", detected_path);
+    }
+
+    // Step 5: Set DataDir
+    let data_dir = if engine_cfg.data_dir.is_empty() && !detected_path.is_empty() {
+        detected_path.clone()
+    } else {
+        engine_cfg.data_dir.clone()
+    };
+
+    // Step 6: Generate config files (freshclam.conf, clamd.conf)
+    if state.install_status == "installed" && !detected_path.is_empty() {
+        let clamav_dir = std::path::Path::new(&detected_path);
+        let db_dir = clamav_dir.join("database");
+
+        // Generate freshclam.conf
+        let freshclam_conf = clamav_dir.join("freshclam.conf");
+        match nemesis_security::clamav::config::generate_freshclam_config(
+            &db_dir.to_string_lossy(),
+            &freshclam_conf.to_string_lossy(),
+        ) {
+            Ok(()) => println!("  clamav           generated freshclam.conf"),
+            Err(e) => println!("  clamav           failed to generate freshclam.conf: {}", e),
+        }
+
+        // Generate clamd.conf
+        let clamd_conf = clamav_dir.join("clamd.conf");
+        let daemon_config = nemesis_security::clamav::config::DaemonConfig {
+            clamav_path: detected_path.clone(),
+            config_file: clamd_conf.to_string_lossy().to_string(),
+            database_dir: db_dir.to_string_lossy().to_string(),
+            listen_addr: if engine_cfg.address.is_empty() {
+                "127.0.0.1:3310".to_string()
+            } else {
+                engine_cfg.address.clone()
+            },
+            temp_dir: clamav_dir.join("tmp").to_string_lossy().to_string(),
+            startup_timeout_secs: 120,
+        };
+        match nemesis_security::clamav::config::generate_clamd_config(&daemon_config) {
+            Ok(()) => println!("  clamav           generated clamd.conf"),
+            Err(e) => println!("  clamav           failed to generate clamd.conf: {}", e),
+        }
+
+        // Step 7: Download virus database using Updater
+        if !freshclam_conf.exists() {
+            state.db_status = "missing".to_string();
+            println!("  clamav           skipped DB update (freshclam.conf not generated)");
+        } else {
+            println!("  clamav           downloading virus database...");
+            let updater = nemesis_security::clamav::updater::Updater::new(
+                nemesis_security::clamav::updater::UpdaterConfig {
+                    clamav_path: detected_path.clone(),
+                    database_dir: db_dir.to_string_lossy().to_string(),
+                    config_file: freshclam_conf.to_string_lossy().to_string(),
+                    update_interval: Duration::from_secs(0),
+                    mirror_urls: vec![],
+                },
+            );
+
+            match tokio::time::timeout(Duration::from_secs(120), updater.update()).await {
+                Ok(Ok(())) => {
+                    state.db_status = "ready".to_string();
+                    state.last_db_update = chrono::Utc::now().to_rfc3339();
+                    println!("  clamav           virus database ready");
+                }
+                Ok(Err(e)) => {
+                    state.db_status = "missing".to_string();
+                    println!("  clamav           virus database download failed: {}", e);
+                    println!("  clamav           run 'scanner clamav update' to retry");
+                }
+                Err(_) => {
+                    state.db_status = "missing".to_string();
+                    println!("  clamav           virus database download timed out (120s)");
+                    println!("  clamav           run 'scanner clamav update' to retry");
+                }
+            }
+        }
+    }
+
+    // Step 8: Persist
+    if let Some(updated) = marshal_engine_config(&raw, &state, &detected_path, &data_dir) {
+        cfg.engines.insert("clamav".to_string(), updated);
         save_scanner_config(security_cfg, &cfg)?;
     }
 
@@ -880,25 +927,99 @@ fn cmd_install(security_cfg: &std::path::Path, dir: Option<&str>) -> Result<()> 
     Ok(())
 }
 
-/// Show scanner engine information (matches Go cmdScannerInfo).
-fn cmd_info(security_cfg: &std::path::Path, name: &str) -> Result<()> {
+/// Update ClamAV virus database using freshclam (real implementation, fixes P0 BUG).
+async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     let cfg = load_scanner_config(security_cfg)?;
 
-    let raw = match cfg.engines.get(name) {
+    let raw = match cfg.engines.get("clamav") {
         Some(v) => v,
         None => {
-            eprintln!("Engine '{}' not found in configuration.", name);
+            eprintln!("ClamAV engine not found in configuration.");
+            eprintln!("Add it first with: nemesisbot scanner add clamav");
             std::process::exit(1);
         }
     };
 
-    // Create engine instance
-    let engine = nemesis_security::scanner::create_engine(name, raw)
+    let engine_cfg = parse_engine_config(raw);
+
+    // Resolve clamav path
+    let clamav_path = if !engine_cfg.clamav_path.is_empty() {
+        engine_cfg.clamav_path.clone()
+    } else if let Some(sys_path) = lookup_system_clamav() {
+        sys_path
+    } else {
+        anyhow::bail!("ClamAV not found. Install it first with 'scanner clamav install'");
+    };
+
+    let _data_dir = if !engine_cfg.data_dir.is_empty() {
+        engine_cfg.data_dir.clone()
+    } else {
+        clamav_path.clone()
+    };
+
+    let clamav_dir = std::path::Path::new(&clamav_path);
+    let db_dir = clamav_dir.join("database");
+
+    // Ensure freshclam.conf exists, generate if missing
+    let freshclam_conf = clamav_dir.join("freshclam.conf");
+    if !freshclam_conf.exists() {
+        println!("  Generating freshclam.conf...");
+        nemesis_security::clamav::config::generate_freshclam_config(
+            &db_dir.to_string_lossy(),
+            &freshclam_conf.to_string_lossy(),
+        ).map_err(|e| anyhow::anyhow!(e))?;
+    }
+
+    // Create Updater and run freshclam
+    let updater = nemesis_security::clamav::updater::Updater::new(
+        nemesis_security::clamav::updater::UpdaterConfig {
+            clamav_path: clamav_path.clone(),
+            database_dir: db_dir.to_string_lossy().to_string(),
+            config_file: freshclam_conf.to_string_lossy().to_string(),
+            update_interval: Duration::from_secs(0),
+            mirror_urls: vec![],
+        },
+    );
+
+    println!("  Running freshclam to update virus database...");
+    updater.update().await.map_err(|e| anyhow::anyhow!("freshclam failed: {}", e))?;
+    println!("  Virus database updated.");
+
+    // Update config.scanner.json
+    let mut full_cfg = load_scanner_config(security_cfg)?;
+    if let Some(raw_val) = full_cfg.engines.get("clamav").cloned() {
+        let mut ec = parse_engine_config(&raw_val);
+        ec.state.db_status = "ready".to_string();
+        ec.state.last_db_update = chrono::Utc::now().to_rfc3339();
+        if ec.clamav_path.is_empty() {
+            ec.clamav_path = clamav_path;
+        }
+        if let Ok(updated) = serde_json::to_value(ec) {
+            full_cfg.engines.insert("clamav".to_string(), updated);
+            let _ = save_scanner_config(security_cfg, &full_cfg);
+        }
+    }
+
+    Ok(())
+}
+
+/// Show ClamAV engine information.
+async fn cmd_clamav_info(security_cfg: &std::path::Path) -> Result<()> {
+    let cfg = load_scanner_config(security_cfg)?;
+
+    let raw = match cfg.engines.get("clamav") {
+        Some(v) => v,
+        None => {
+            eprintln!("ClamAV engine not found in configuration.");
+            std::process::exit(1);
+        }
+    };
+
+    // Create engine instance for runtime info
+    let engine = nemesis_security::scanner::create_engine("clamav", raw)
         .map_err(|e| anyhow::anyhow!("Error creating engine: {}", e))?;
 
-    // Use tokio runtime for async engine info
-    let rt = tokio::runtime::Handle::current();
-    let info = rt.block_on(engine.get_info());
+    let info = engine.get_info().await;
 
     println!("\nEngine: {}", info.name);
     println!("{}", "-".repeat(40));
@@ -926,74 +1047,23 @@ fn cmd_info(security_cfg: &std::path::Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Download a scanner engine (matches Go cmdScannerDownload).
-fn cmd_download(security_cfg: &std::path::Path, name: &str, dir: &str) -> Result<()> {
+/// Test scan a file using ClamAV engine.
+async fn cmd_clamav_test(security_cfg: &std::path::Path, file_path: &str) -> Result<()> {
     let cfg = load_scanner_config(security_cfg)?;
 
-    let raw = match cfg.engines.get(name) {
+    let raw = match cfg.engines.get("clamav") {
         Some(v) => v,
         None => {
-            eprintln!("Engine '{}' not found in configuration.", name);
+            eprintln!("ClamAV engine not found in configuration.");
             std::process::exit(1);
         }
     };
 
-    let engine_cfg = parse_engine_config(raw);
-    let url = if !engine_cfg.url.is_empty() {
-        &engine_cfg.url
-    } else {
-        eprintln!("No download URL configured for engine '{}'.", name);
-        eprintln!("Set a URL with: nemesisbot scanner add {} --url <url>", name);
-        std::process::exit(1);
-    };
-
-    let target_dir = std::path::Path::new(dir).join(name);
-    println!("Downloading {} from {} to {}...", name, url, target_dir.display());
-
-    match download_engine(url, &target_dir) {
-        Ok(extracted_path) => {
-            println!("Download complete: {}", extracted_path);
-
-            // Update config with download path
-            let mut full_cfg = load_scanner_config(security_cfg)?;
-            if let Some(raw_val) = full_cfg.engines.get(name).cloned() {
-                let mut ec = parse_engine_config(&raw_val);
-                ec.clamav_path = extracted_path;
-                if ec.state.install_status.is_empty() || ec.state.install_status == "pending" {
-                    ec.state.install_status = "installed".to_string();
-                }
-                if let Ok(updated) = serde_json::to_value(ec) {
-                    full_cfg.engines.insert(name.to_string(), updated);
-                    let _ = save_scanner_config(security_cfg, &full_cfg);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Download failed: {}", e);
-        }
-    }
-
-    Ok(())
-}
-
-/// Test scan a file (matches Go cmdScannerTest).
-fn cmd_test(security_cfg: &std::path::Path, name: &str, file_path: &str) -> Result<()> {
-    let cfg = load_scanner_config(security_cfg)?;
-
-    let raw = match cfg.engines.get(name) {
-        Some(v) => v,
-        None => {
-            eprintln!("Engine '{}' not found in configuration.", name);
-            std::process::exit(1);
-        }
-    };
-
-    let engine = nemesis_security::scanner::create_engine(name, raw)
+    let engine = nemesis_security::scanner::create_engine("clamav", raw)
         .map_err(|e| anyhow::anyhow!("Error creating engine: {}", e))?;
 
     // Start the engine for testing
-    let rt = tokio::runtime::Handle::current();
-    if let Err(e) = rt.block_on(engine.start()) {
+    if let Err(e) = engine.start().await {
         eprintln!("Warning: Failed to start engine: {}", e);
         println!("Attempting scan anyway (may use existing daemon)...");
     }
@@ -1001,17 +1071,16 @@ fn cmd_test(security_cfg: &std::path::Path, name: &str, file_path: &str) -> Resu
     // Wait briefly for engine to be ready
     std::thread::sleep(Duration::from_secs(2));
 
-    if !rt.block_on(engine.is_ready()) {
-        eprintln!("Engine '{}' is not ready. Make sure the daemon is running.", name);
-        // Still try to stop
-        let _ = rt.block_on(engine.stop());
+    if !engine.is_ready().await {
+        eprintln!("ClamAV engine is not ready. Make sure the daemon is running.");
+        let _ = engine.stop().await;
         std::process::exit(1);
     }
 
-    println!("🔬 Scanning: {}", file_path);
-    let result = rt.block_on(engine.scan_file(std::path::Path::new(file_path)));
+    println!("Scanning: {}", file_path);
+    let result = engine.scan_file(std::path::Path::new(file_path)).await;
 
-    let _ = rt.block_on(engine.stop());
+    let _ = engine.stop().await;
 
     println!("{}", "-".repeat(40));
     println!("  Engine:   {}", result.engine);
@@ -1021,51 +1090,6 @@ fn cmd_test(security_cfg: &std::path::Path, name: &str, file_path: &str) -> Resu
         println!("  Virus:    {}", result.virus);
     } else {
         println!("  Status:   CLEAN");
-    }
-
-    Ok(())
-}
-
-/// Update scanner virus database (matches Go cmdScannerUpdate).
-fn cmd_update(security_cfg: &std::path::Path, name: &str) -> Result<()> {
-    let cfg = load_scanner_config(security_cfg)?;
-
-    let raw = match cfg.engines.get(name) {
-        Some(v) => v,
-        None => {
-            eprintln!("Engine '{}' not found in configuration.", name);
-            std::process::exit(1);
-        }
-    };
-
-    let engine = nemesis_security::scanner::create_engine(name, raw)
-        .map_err(|e| anyhow::anyhow!("Error creating engine: {}", e))?;
-
-    let rt = tokio::runtime::Handle::current();
-
-    println!("🔄 Updating virus database for {}...", name);
-    rt.block_on(engine.update_database())
-        .map_err(|e| anyhow::anyhow!("Update failed: {}", e))?;
-
-    println!("Virus database update complete.");
-
-    // Show database status
-    let status = rt.block_on(engine.get_database_status());
-    println!("  Available:  {}", status.available);
-    if !status.last_update.is_empty() {
-        println!("  Last update: {}", status.last_update);
-    }
-
-    // Update config
-    let mut full_cfg = load_scanner_config(security_cfg)?;
-    if let Some(raw_val) = full_cfg.engines.get(name).cloned() {
-        let mut engine_cfg = parse_engine_config(&raw_val);
-        engine_cfg.state.db_status = "ready".to_string();
-        engine_cfg.state.last_db_update = chrono::Utc::now().to_rfc3339();
-        if let Ok(updated) = serde_json::to_value(engine_cfg) {
-            full_cfg.engines.insert(name.to_string(), updated);
-            let _ = save_scanner_config(security_cfg, &full_cfg);
-        }
     }
 
     Ok(())

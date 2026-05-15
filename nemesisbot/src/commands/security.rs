@@ -621,7 +621,7 @@ fn cmd_config_reset(security_cfg: &std::path::Path) -> Result<()> {
 // Main dispatch
 // ---------------------------------------------------------------------------
 
-pub fn run(action: SecurityAction, local: bool) -> Result<()> {
+pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let cfg_path = common::config_path(&home);
     let security_cfg = common::security_config_path(&home);
@@ -907,7 +907,7 @@ pub fn run(action: SecurityAction, local: bool) -> Result<()> {
         }
         SecurityAction::Scanner { action } => {
             // Delegate to the standalone scanner module
-            super::scanner::run(action, local)?;
+            super::scanner::run(action, local).await?;
         }
         SecurityAction::Test { tool, args } => {
             println!("Security test for tool '{}':", tool);

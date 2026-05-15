@@ -921,9 +921,24 @@ impl ScanEngine {
 // ---------------------------------------------------------------------------
 
 /// Wraps the ClamAV `Scanner` to implement the `VirusScanner` trait.
+///
+/// On `start()`, this creates a `clamav::Manager` which handles the full
+/// daemon lifecycle (config generation, DB download, daemon start, auto-update).
 struct ClamavScannerWrapper {
     scanner: crate::clamav::scanner::Scanner,
     config_address: String,
+    /// Manager config fields extracted from the engine config JSON.
+    manager_config: ClamavManagerFields,
+    /// Manager instance, created on start().
+    manager: tokio::sync::Mutex<Option<crate::clamav::manager::Manager>>,
+    started: AtomicBool,
+}
+
+/// Fields extracted from the engine config JSON needed to create a Manager.
+struct ClamavManagerFields {
+    clamav_path: String,
+    data_dir: String,
+    update_interval: String,
 }
 
 impl ClamavScannerWrapper {
@@ -932,7 +947,29 @@ impl ClamavScannerWrapper {
         Self {
             scanner: crate::clamav::scanner::Scanner::new(config),
             config_address: addr,
+            manager_config: ClamavManagerFields {
+                clamav_path: String::new(),
+                data_dir: String::new(),
+                update_interval: String::new(),
+            },
+            manager: tokio::sync::Mutex::new(None),
+            started: AtomicBool::new(false),
         }
+    }
+
+    /// Set the ClamAV installation path (used by Manager to find clamd.exe).
+    fn set_clamav_path(&mut self, path: String) {
+        self.manager_config.clamav_path = path;
+    }
+
+    /// Set the data directory for ClamAV databases.
+    fn set_data_dir(&mut self, dir: String) {
+        self.manager_config.data_dir = dir;
+    }
+
+    /// Set the update interval string (e.g., "24h").
+    fn set_update_interval(&mut self, interval: String) {
+        self.manager_config.update_interval = interval;
     }
 }
 
@@ -954,16 +991,67 @@ impl VirusScanner for ClamavScannerWrapper {
     }
 
     async fn start(&self) -> Result<(), String> {
-        // ClamAV is an external daemon, just verify connectivity
-        self.scanner.ping().await.map_err(|e| format!("ClamAV ping failed: {}", e))
+        if self.started.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        // Try to use Manager to start the daemon (full lifecycle management).
+        // This handles: config generation, DB download, daemon start, auto-update.
+        if !self.manager_config.clamav_path.is_empty() {
+            let mgr_config = crate::clamav::manager::ManagerConfig {
+                enabled: true,
+                clamav_path: self.manager_config.clamav_path.clone(),
+                data_dir: self.manager_config.data_dir.clone(),
+                address: self.config_address.clone(),
+                scanner: None,
+                update_interval: self.manager_config.update_interval.clone(),
+            };
+
+            let mut mgr = crate::clamav::manager::Manager::new(mgr_config);
+            match mgr.start().await {
+                Ok(()) => {
+                    tracing::info!("ClamAV daemon started via Manager");
+                    *self.manager.lock().await = Some(mgr);
+                    self.started.store(true, Ordering::SeqCst);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("Manager start failed ({}), falling back to ping-only mode", e);
+                    // Fall through to ping-only mode
+                }
+            }
+        }
+
+        // Fallback: just verify connectivity to an already-running daemon
+        self.scanner.ping().await.map_err(|e| format!("ClamAV ping failed: {}", e))?;
+        self.started.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn stop(&self) -> Result<(), String> {
-        // Nothing to stop, ClamAV daemon manages its own lifecycle
+        if !self.started.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let mut guard = self.manager.lock().await;
+        if let Some(mgr) = guard.take() {
+            mgr.stop().await?;
+            tracing::info!("ClamAV daemon stopped via Manager");
+        }
         Ok(())
     }
 
     async fn is_ready(&self) -> bool {
+        if !self.started.load(Ordering::SeqCst) {
+            return false;
+        }
+        // If manager is present, check its running state
+        let guard = self.manager.lock().await;
+        if let Some(ref mgr) = *guard {
+            if !mgr.is_running() {
+                return false;
+            }
+        }
+        drop(guard);
         self.scanner.ping().await.is_ok()
     }
 
@@ -1060,7 +1148,21 @@ pub fn create_engine(name: &str, config: &serde_json::Value) -> Result<Box<dyn V
             if let Some(timeout) = config.get("timeout_secs").and_then(|v| v.as_u64()) {
                 scanner_config.timeout = std::time::Duration::from_secs(timeout);
             }
-            Ok(Box::new(ClamavScannerWrapper::new(scanner_config)))
+
+            let mut wrapper = ClamavScannerWrapper::new(scanner_config);
+
+            // Extract Manager-related config fields for daemon lifecycle management
+            if let Some(path) = config.get("clamav_path").and_then(|v| v.as_str()) {
+                wrapper.set_clamav_path(path.to_string());
+            }
+            if let Some(dir) = config.get("data_dir").and_then(|v| v.as_str()) {
+                wrapper.set_data_dir(dir.to_string());
+            }
+            if let Some(interval) = config.get("update_interval").and_then(|v| v.as_str()) {
+                wrapper.set_update_interval(interval.to_string());
+            }
+
+            Ok(Box::new(wrapper))
         }
         "stub" => Ok(Box::new(StubScanner)),
         _ => Err(format!("unknown scanner engine: {}", name)),
@@ -1207,6 +1309,12 @@ impl ScanChain {
     /// Get the number of registered engines.
     pub fn engine_count(&self) -> usize {
         self.engines.len()
+    }
+
+    /// Remove all registered engines from the chain.
+    pub fn clear_engines(&mut self) {
+        self.engines.clear();
+        self.configs.clear();
     }
 
     /// Get the list of engines in execution order.
@@ -1416,7 +1524,7 @@ impl ScanChain {
                     }
                 }
             }
-            "exec" | "execute_command" => {
+            "exec" | "execute_command" | "shell" | "exec_async" => {
                 if !file_path.is_empty() {
                     let result = self.scan_file(Path::new(file_path)).await;
                     if result.blocked {
@@ -1427,6 +1535,69 @@ impl ScanChain {
                                 result.engine, file_path, result.virus
                             )),
                         );
+                    }
+                }
+            }
+            "web_fetch" => {
+                // Scan saved file if present
+                if !file_path.is_empty() {
+                    let result = self.scan_file(Path::new(file_path)).await;
+                    if result.blocked {
+                        return (
+                            false,
+                            Some(format!(
+                                "virus detected by {}: {} (virus: {})",
+                                result.engine, file_path, result.virus
+                            )),
+                        );
+                    }
+                }
+                // Scan inline content fields
+                for key in &["content", "data", "body", "html"] {
+                    if let Some(content) = args.get(*key).and_then(|v| v.as_str()) {
+                        if !content.is_empty() {
+                            let result = self.scan_content(content.as_bytes()).await;
+                            if result.blocked {
+                                return (
+                                    false,
+                                    Some(format!(
+                                        "virus detected by {}: content from web_fetch (virus: {})",
+                                        result.engine, result.virus
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            "screen_capture" | "install_skill" => {
+                if !file_path.is_empty() {
+                    let result = self.scan_file(Path::new(file_path)).await;
+                    if result.blocked {
+                        return (
+                            false,
+                            Some(format!(
+                                "virus detected by {}: {} (virus: {})",
+                                result.engine, file_path, result.virus
+                            )),
+                        );
+                    }
+                }
+            }
+            "cron" => {
+                // cron can schedule shell commands — scan referenced paths
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    if !cmd.is_empty() {
+                        let result = self.scan_content(cmd.as_bytes()).await;
+                        if result.blocked {
+                            return (
+                                false,
+                                Some(format!(
+                                    "virus detected by {}: cron command (virus: {})",
+                                    result.engine, result.virus
+                                )),
+                            );
+                        }
                     }
                 }
             }
@@ -1457,7 +1628,30 @@ impl ScanChain {
                     paths.push(path.to_string());
                 }
             }
-            "exec" | "shell" | "process_exec" | "execute_command" => {
+            "exec" | "shell" | "exec_async" | "process_exec" | "execute_command" => {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    for part in cmd.split_whitespace() {
+                        if part.contains('/') || part.contains('\\') || part.contains('.') {
+                            paths.push(part.to_string());
+                        }
+                    }
+                }
+            }
+            "screen_capture" => {
+                if let Some(path) = args.get("save_path").and_then(|v| v.as_str()) {
+                    paths.push(path.to_string());
+                }
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    paths.push(path.to_string());
+                }
+            }
+            "install_skill" => {
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    paths.push(path.to_string());
+                }
+            }
+            "cron" => {
+                // Extract paths from scheduled commands
                 if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                     for part in cmd.split_whitespace() {
                         if part.contains('/') || part.contains('\\') || part.contains('.') {
@@ -2911,5 +3105,137 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(chain.scan_directory(Path::new("/nonexistent/path/xyz123")));
         assert!(result.clean);
+    }
+
+    // ---- extract_paths_from_args for new tools ----
+
+    #[test]
+    fn test_extract_paths_shell_command() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"command": "run ./malware.exe --flag"});
+        let paths = chain.extract_paths_from_args("shell", &args);
+        assert!(paths.contains(&"./malware.exe".to_string()));
+    }
+
+    #[test]
+    fn test_extract_paths_exec_async_command() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"command": "python /tmp/script.py arg"});
+        let paths = chain.extract_paths_from_args("exec_async", &args);
+        assert!(paths.contains(&"/tmp/script.py".to_string()));
+    }
+
+    #[test]
+    fn test_extract_paths_screen_capture() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"save_path": "/tmp/cap.png"});
+        let paths = chain.extract_paths_from_args("screen_capture", &args);
+        assert!(paths.contains(&"/tmp/cap.png".to_string()));
+
+        let args2 = serde_json::json!({"path": "/tmp/cap2.png"});
+        let paths2 = chain.extract_paths_from_args("screen_capture", &args2);
+        assert!(paths2.contains(&"/tmp/cap2.png".to_string()));
+    }
+
+    #[test]
+    fn test_extract_paths_install_skill() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"path": "/skills/my-skill"});
+        let paths = chain.extract_paths_from_args("install_skill", &args);
+        assert!(paths.contains(&"/skills/my-skill".to_string()));
+    }
+
+    #[test]
+    fn test_extract_paths_web_fetch_no_file_path() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"url": "http://example.com/data"});
+        let paths = chain.extract_paths_from_args("web_fetch", &args);
+        assert!(paths.is_empty());
+    }
+
+    // ---- scan_tool_invocation for new tools ----
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_shell_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"command": "ls -la"});
+        let (allowed, error) = chain.scan_tool_invocation("shell", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_exec_async_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"command": "echo hello"});
+        let (allowed, error) = chain.scan_tool_invocation("exec_async", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_web_fetch_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"url": "http://example.com/data", "content": "safe content"});
+        let (allowed, error) = chain.scan_tool_invocation("web_fetch", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_screen_capture_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"save_path": "/tmp/cap.png"});
+        let (allowed, error) = chain.scan_tool_invocation("screen_capture", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_install_skill_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"url": "https://github.com/user/skill"});
+        let (allowed, error) = chain.scan_tool_invocation("install_skill", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    // ---- cron / cluster_rpc / find_skills ----
+
+    #[tokio::test]
+    async fn test_scan_tool_invocation_cron_clean() {
+        let mut chain = ScanChain::with_defaults();
+        chain.add_engine(Box::new(StubScanner));
+        chain.set_enabled(true);
+        let args = serde_json::json!({"action": "add", "command": "echo hello", "every_seconds": 60});
+        let (allowed, error) = chain.scan_tool_invocation("cron", &args).await;
+        assert!(allowed);
+        assert!(error.is_none());
+    }
+
+    #[test]
+    fn test_extract_paths_cron_command() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"action": "add", "command": "run ./malware.exe --flag"});
+        let paths = chain.extract_paths_from_args("cron", &args);
+        assert!(paths.contains(&"./malware.exe".to_string()));
+    }
+
+    #[test]
+    fn test_extract_paths_cron_no_command() {
+        let chain = ScanChain::with_defaults();
+        let args = serde_json::json!({"action": "add", "message": "reminder"});
+        let paths = chain.extract_paths_from_args("cron", &args);
+        assert!(paths.is_empty());
     }
 }

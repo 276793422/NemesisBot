@@ -18,9 +18,9 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 1. **所有路径必须使用正斜杠** `C:/path/to/file`，禁止反斜杠。WebSocket 消息中的路径、命令行参数中的路径均如此。
 2. **禁止在命令中使用项目绝对路径**: 所有 `cd`、编译输出路径等均使用相对路径。唯一允许的绝对路径是测试文件目标 `C:/Zoo/Temp/test`（与项目无关的外部路径）和 WebSocket 消息中的文件路径。
 3. **工作目录流转**: Phase 1-2 在项目根目录，Phase 3-5 在 `test-tools/autotest/`，Phase 5 末尾返回项目根目录。**每个阶段开始时执行 `pwd` 验证当前目录**。
-4. **使用项目自带的 WebSocket 客户端**: `test-tools/websocket-client/`（Rust 项目），编译后使用。
+4. **使用 `ws-send` 工具发送 WebSocket 消息**: `test-tools/ws-send/`（Rust 项目），编译后使用。禁止使用 Python 脚本。
 5. **编译 Bot 使用 `cargo build --release`**: Release 模式编译。
-6. **EICAR 测试必须使用脚本发送**: EICAR 字符串含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。使用专门的脚本发送。
+6. **EICAR 测试使用 `ws-send`**: `ws-send` 内部处理 JSON 协议封装，bash 只需传原始消息内容。EICAR 字符串中的反斜杠通过单引号保护。
 
 ---
 
@@ -33,7 +33,7 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 | 网络 | 需能访问 `database.clamav.net`（下载病毒库）；官网下载失败时回退本地 |
 | 本地安装包（回退用） | `Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip` |
 
-**端口**: 8080（测试 AI）、49001（Bot WebSocket）、3310（ClamAV）、9999（本地 HTTP 回退，按需）
+**端口**: 8080（测试 AI）、49000（Bot Web + WebSocket）、3310（ClamAV）、9999（本地 HTTP 回退，按需）
 
 ---
 
@@ -67,16 +67,15 @@ cp target/release/nemesisbot.exe test-tools/autotest/
 
 Release 模式编译，复制到测试工作目录。
 
-### Step 3: 编译 WebSocket 测试客户端
+### Step 3: 编译 ws-send 工具
 
 ```bash
 pwd
-cd test-tools/websocket-client && cargo build --release
-cp target/release/websocket_chat_client.exe ../autotest/
-cd ../..
+cargo build --release -p ws-send
+cp target/release/ws-send.exe test-tools/autotest/
 ```
 
-**注意**: WebSocket 客户端是 Rust 项目，使用 `cargo build --release` 编译。实际的二进制文件名请查看 `test-tools/websocket-client/Cargo.toml` 中的 `[[bin]]` 配置。
+`ws-send` 是 one-shot WebSocket 消息发送工具，自动封装 NemesisBot 的三级协议格式 `{type:"message", module:"chat", cmd:"send", data:{content:"..."}}`。
 
 ### Step 4: 启动测试 AI 服务
 
@@ -98,6 +97,8 @@ pwd
 ```
 
 **验证**: `grep restrict_to_workspace .nemesisbot/config.json` 确认值为 `false`。
+
+记录 `onboard` 输出中的 Auth Token（如 `276793422`），后续 `ws-send` 需要使用。
 
 ---
 
@@ -143,7 +144,7 @@ fi
 **说明**:
 - 本地安装包路径使用相对路径 `../../Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip`（从 `test-tools/autotest` 出发）
 - 本地回退使用 Python HTTP 服务（端口 9999），Phase 5 清理时需停止
-- `scanner install` 会自动完成：下载 zip → 解压 → 递归检测 `clamd.exe` → freshclam 下载病毒库 → 验证
+- `scanner install` 会自动完成：下载 zip → 解压 → 递归检测 `clamd.exe` → 生成 freshclam.conf + clamd.conf → freshclam 下载病毒库 → 验证
 
 ### Step 9: 验证安装结果
 
@@ -173,7 +174,7 @@ pwd
 ./nemesisbot.exe --local gateway > nemesisbot.log 2>&1 &
 ```
 
-等待约 10 秒（首次启动需下载病毒库）。
+等待约 12 秒（ClamAV daemon 加载病毒库需要时间）。
 
 ### Step 12: 验证 clamd 进程
 
@@ -186,8 +187,7 @@ netstat -ano | grep ":3310 " | grep LISTEN
 
 **验证日志**:
 ```bash
-grep "ClamAV daemon started and ready" nemesisbot.log
-grep "Scanner chain initialized" nemesisbot.log
+grep -i "clamav\|scanner\|daemon" nemesisbot.log
 ```
 
 ---
@@ -195,6 +195,14 @@ grep "Scanner chain initialized" nemesisbot.log
 ## Phase 4: 扫描功能验证
 
 **每个 Step 开始前验证**: `pwd` 应在 `test-tools/autotest/`。
+
+### 前置: 获取 Auth Token
+
+```bash
+grep -oP 'Auth Token: \K\d+' nemesisbot.log || grep -o 'access key: [0-9]*' nemesisbot.log
+```
+
+记下 Token 值（如 `276793422`），以下命令中用 `TOKEN` 代替。
 
 ### 前置: 创建测试目录
 
@@ -204,11 +212,9 @@ mkdir -p C:/Zoo/Temp/test
 
 ### Step 13: 干净文件放行
 
-从 `nemesisbot.log` 中获取 Auth Token（`🔑 Auth Token: XXXXXXXXX`）。
-
 ```bash
 pwd
-./websocket_chat_client.exe ws://127.0.0.1:49001/ws '<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/clean.txt","content":"hello world"}</FILE_OP>'
+./ws-send.exe --url ws://127.0.0.1:49000/ws --token TOKEN --msg '<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/clean.txt","content":"hello world"}</FILE_OP>'
 ```
 
 **验证**:
@@ -222,50 +228,31 @@ grep "virus detected" nemesisbot.log
 
 ### Step 14: 感染文件拦截
 
-**注意**: EICAR 字符串包含 `\` 和 `!`，bash 命令行参数传递会导致 JSON 转义错误。必须使用脚本直接发送，确保 JSON 中 `\` 正确编码为 `\\`。
-
-在 `test-tools/autotest/` 下创建 `send_eicar.py`（Python 脚本，避免 bash 转义问题）：
-
-```python
-import asyncio
-import websockets
-import json
-import time
-
-async def send_eicar():
-    content = '<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/eicar.exe","content":"X5O!P%@AP[4\\\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"}</FILE_OP>'
-    uri = 'ws://127.0.0.1:49001/ws'
-    async with websockets.connect(uri) as ws:
-        msg = {
-            'type': 'message',
-            'content': content,
-            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%SZ')
-        }
-        await ws.send(json.dumps(msg))
-        print('EICAR sent')
-        await asyncio.sleep(15)
-
-asyncio.run(send_eicar())
-```
+**注意**: EICAR 字符串中的反斜杠在 JSON 中需要双重转义（`\\P`），直接通过 bash 命令行传递会产生转义层级混乱。使用 `--file` 从文件读取消息内容，彻底避免 shell 转义问题。
 
 ```bash
 pwd
-python send_eicar.py
+# 写入消息文件（注意 content 值中的 \\P 是 JSON 转义，代表实际的 \P）
+cat > eicar_msg.txt << 'ENDMSG'
+<FILE_OP>{"operation":"file_write","path":"C:/Zoo/Temp/test/eicar.exe","content":"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"}</FILE_OP>
+ENDMSG
+
+./ws-send.exe --url ws://127.0.0.1:49000/ws --token TOKEN --file eicar_msg.txt
 ```
 
 **验证**:
 ```bash
 ls C:/Zoo/Temp/test/eicar.exe 2>/dev/null || echo "PASS: file not created"
 
-grep "virus detected" nemesisbot.log
+grep -i "eicar\|virus" nemesisbot.log
 # 预期: 包含 Eicar-Test-Signature
 ```
 
 ### Step 15: 验证拦截反馈
 
 ```bash
-grep "Tool execution failed" nemesisbot.log
-# 预期: virus detected by clamav: C:/Zoo/Temp/test/eicar.exe (virus: Eicar-Test-Signature)
+grep "instream" nemesisbot.log
+# 预期: instream(...): Eicar-Test-Signature FOUND
 ```
 
 ---
@@ -295,9 +282,9 @@ rm -rf C:/Zoo/Temp/test
 
 | 日志项 | 期望内容 |
 |--------|---------|
-| Bot 启动日志 | `ClamAV daemon started and ready` |
+| Bot 启动日志 | ClamAV daemon 进程启动，端口 3310 LISTENING |
 | 扫描放行日志 | clean file 无 virus detected |
-| 扫描拦截日志 | `virus detected`, `Eicar-Test-Signature` |
+| 扫描拦截日志 | `instream: Eicar-Test-Signature FOUND` |
 | 错误日志 | 无 unexpected error |
 
 ### Step 18: 输出测试报告

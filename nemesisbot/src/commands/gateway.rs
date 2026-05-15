@@ -275,6 +275,34 @@ fn load_security_rules(
     info!("Security config loaded from {}", config_path.display());
 }
 
+/// Load scanner full config from `config.scanner.json`.
+///
+/// Returns None if the file doesn't exist or can't be parsed.
+fn load_scanner_full_config(
+    config_path: &std::path::Path,
+) -> Option<nemesis_security::scanner::ScannerFullConfig> {
+    let data = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+
+    let enabled: Vec<String> = json
+        .get("enabled")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let engines: std::collections::HashMap<String, serde_json::Value> = json
+        .get("engines")
+        .and_then(|v| v.as_object())
+        .map(|map| map.clone().into_iter().collect())
+        .unwrap_or_default();
+
+    Some(nemesis_security::scanner::ScannerFullConfig { enabled, engines })
+}
+
 /// Open a URL in the default browser.
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -1281,7 +1309,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Mirrors Go's SecurityPlugin registered via PluginManager in instance.go.
     // Keep a reference to the auditor so we can wire up the approval manager later.
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
-    let security_auditor: Option<Arc<nemesis_security::auditor::SecurityAuditor>> = if security_enabled {
+    let security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>> = if security_enabled {
         let security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
         let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(security_config));
 
@@ -1290,9 +1318,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         load_security_rules(&plugin, &sec_config_path);
 
         let auditor = plugin.auditor();
-        agent_loop.set_security_plugin(plugin);
+        agent_loop.set_security_plugin(plugin.clone());
         info!("Security plugin enabled and injected into agent loop");
-        Some(auditor)
+
+        // Step 9c: Initialize scanner chain from config.scanner.json
+        // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
+        let scanner_config_path = common::scanner_config_path(&home);
+        if scanner_config_path.exists() {
+            if let Some(full_config) = load_scanner_full_config(&scanner_config_path) {
+                if !full_config.enabled.is_empty() {
+                    info!("Initializing scanner chain from config...");
+                    plugin.init_scanner_from_config(&full_config).await;
+                }
+            }
+        } else {
+            info!("Scanner config file not found: {}, scanner chain not initialized", scanner_config_path.display());
+        }
+
+        drop(auditor);
+        Some(plugin)
     } else {
         info!("Security plugin disabled by configuration");
         None
@@ -1473,7 +1517,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Wire up ApprovalManager: ProcessManager → SecurityPlugin auditor
     // When a tool call triggers an "ask" rule, the auditor will call
     // request_approval_sync() which spawns an approval popup child process.
-    if let Some(auditor) = security_auditor {
+    if let Some(ref plugin) = security_plugin {
+        let auditor = plugin.auditor();
         let adapter = Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
         auditor.set_approval_manager(adapter);
         info!("Approval manager wired (popup via ProcessManager)");
