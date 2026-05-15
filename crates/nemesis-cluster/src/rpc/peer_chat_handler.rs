@@ -7,7 +7,7 @@
 //! Key behaviour:
 //! - Immediately returns an ACK to the caller (non-blocking)
 //! - Spawns an async task for LLM processing
-//! - 59-minute timeout for LLM response (matching Go implementation)
+//! - Configurable LLM request timeout (default 2 hours, configurable via config.cluster.json)
 //! - Callback retries (3 attempts with exponential backoff)
 //! - Falls back to persisting results if all callbacks fail
 
@@ -21,8 +21,10 @@ use uuid::Uuid;
 
 use crate::rpc::client::RpcClient;
 
-/// Default LLM processing timeout (59 minutes).
-pub const DEFAULT_LLM_TIMEOUT: Duration = Duration::from_secs(59 * 60);
+/// Default LLM request timeout (2 hours).
+/// This is the maximum time to wait for a single LLM API request to respond.
+/// Configurable via `llm_timeout_secs` in config.cluster.json.
+pub const DEFAULT_LLM_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
 /// Maximum callback retry attempts.
 const MAX_CALLBACK_RETRIES: usize = 3;
@@ -160,6 +162,11 @@ impl PeerChatHandler {
     /// Set the task result persister.
     pub fn set_result_persister(&mut self, persister: Arc<dyn TaskResultPersister>) {
         self.result_persister = Some(persister);
+    }
+
+    /// Set the LLM request timeout.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// Return the configured timeout.
@@ -433,7 +440,7 @@ async fn process_async(
             return;
         }
         Err(_) => {
-            tracing::error!(task_id = %task_id, "LLM processing timeout (59min)");
+            tracing::error!(task_id = %task_id, "LLM processing timeout");
             send_callback_or_persist(
                 rpc_client,
                 result_persister,
@@ -591,7 +598,7 @@ mod tests {
     #[test]
     fn test_default_timeout() {
         let handler = PeerChatHandler::new("node-b".into());
-        assert_eq!(handler.timeout_secs(), 3540);
+        assert_eq!(handler.timeout_secs(), 7200);
     }
 
     #[test]

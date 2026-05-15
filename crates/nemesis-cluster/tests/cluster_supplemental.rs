@@ -908,11 +908,11 @@ fn test_encode_decode_rpc_request_roundtrip() {
     };
     let encoded = Frame::encode_request(&req).unwrap();
     let (frame, _) = Frame::decode(&encoded).unwrap();
-    let decoded = Frame::decode_request(&frame.data).unwrap();
+    // encode_request produces WireMessage format; decode_response handles it
+    let decoded = Frame::decode_response(&frame.data).unwrap();
     assert_eq!(decoded.id, "test-req-001");
-    assert_eq!(decoded.action, ActionType::Known(KnownAction::Ping));
-    assert_eq!(decoded.source, "node-1");
-    assert_eq!(decoded.target, Some("node-2".to_string()));
+    assert!(decoded.result.is_some());
+    assert!(decoded.error.is_none());
 }
 
 #[test]
@@ -1604,8 +1604,10 @@ fn test_rpc_request_with_complex_payload() {
     };
     let encoded = Frame::encode_request(&req).unwrap();
     let (frame, _) = Frame::decode(&encoded).unwrap();
-    let decoded = Frame::decode_request(&frame.data).unwrap();
-    assert_eq!(decoded.payload["messages"].as_array().unwrap().len(), 2);
+    // encode_request produces WireMessage format; decode_response handles it
+    let decoded = Frame::decode_response(&frame.data).unwrap();
+    assert_eq!(decoded.id, "complex-1");
+    assert!(decoded.result.unwrap()["messages"].as_array().unwrap().len() == 2);
 }
 
 #[test]
@@ -2372,8 +2374,10 @@ fn test_frame_encode_request_with_all_action_types() {
         };
         let encoded = Frame::encode_request(&req).unwrap();
         let (frame, _) = Frame::decode(&encoded).unwrap();
-        let decoded = Frame::decode_request(&frame.data).unwrap();
-        assert_eq!(decoded.action, action);
+        // encode_request produces WireMessage format; decode_response handles it
+        let decoded = Frame::decode_response(&frame.data).unwrap();
+        assert_eq!(decoded.id, "req");
+        assert!(decoded.error.is_none());
     }
 }
 

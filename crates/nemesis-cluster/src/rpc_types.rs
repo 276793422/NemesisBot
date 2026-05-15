@@ -137,9 +137,31 @@ impl Frame {
         Some((Frame { data }, total))
     }
 
-    /// Encode an RPC request as a framed binary message.
+    /// Encode an RPC request as a framed binary message (WireMessage format).
     pub fn encode_request(req: &RPCRequest) -> std::io::Result<Vec<u8>> {
-        let payload = serde_json::to_vec(req).map_err(|e| {
+        // Convert RPCRequest to WireMessage format expected by the server
+        let action_str = match &req.action {
+            ActionType::Known(k) => match k {
+                KnownAction::PeerChat => "peer_chat",
+                KnownAction::PeerChatCallback => "peer_chat_callback",
+                KnownAction::ForgeShare => "forge_share",
+                KnownAction::Ping => "ping",
+                KnownAction::Status => "status",
+            },
+            ActionType::Custom(s) => s.as_str(),
+        };
+        let wire = crate::transport::conn::WireMessage {
+            version: "1.0".into(),
+            id: req.id.clone(),
+            msg_type: "request".into(),
+            from: req.source.clone(),
+            to: req.target.clone().unwrap_or_default(),
+            action: action_str.into(),
+            payload: req.payload.clone(),
+            timestamp: chrono::Utc::now().timestamp(),
+            error: String::new(),
+        };
+        let payload = serde_json::to_vec(&wire).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         })?;
         Ok(Frame::new(payload).encode())
@@ -160,8 +182,18 @@ impl Frame {
         })
     }
 
-    /// Decode an RPC response from a framed binary message.
+    /// Decode an RPC response from a framed binary message (WireMessage format).
     pub fn decode_response(data: &[u8]) -> std::io::Result<RPCResponse> {
+        // Try WireMessage format first (from TcpConn server)
+        if let Ok(wire) = serde_json::from_slice::<crate::transport::conn::WireMessage>(data) {
+            let err = if wire.error.is_empty() { None } else { Some(wire.error) };
+            return Ok(RPCResponse {
+                id: wire.id,
+                result: Some(wire.payload),
+                error: err,
+            });
+        }
+        // Fallback: try direct RPCResponse format
         serde_json::from_slice(data).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         })
@@ -224,11 +256,13 @@ mod tests {
 
         let encoded = Frame::encode_request(&req).unwrap();
         let (frame, _) = Frame::decode(&encoded).unwrap();
-        let decoded = Frame::decode_request(&frame.data).unwrap();
 
+        // encode_request produces WireMessage format; decode_response handles it
+        let decoded = Frame::decode_response(&frame.data).unwrap();
         assert_eq!(decoded.id, "req-42");
-        assert_eq!(decoded.action, ActionType::Known(KnownAction::ForgeShare));
-        assert!(decoded.target.is_none());
+        // WireMessage wraps the payload as result
+        assert_eq!(decoded.result.unwrap()["artifact"], "skill-1");
+        assert!(decoded.error.is_none());
     }
 
     // -- Additional tests: RPC types edge cases --

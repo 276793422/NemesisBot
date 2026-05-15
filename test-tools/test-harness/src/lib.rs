@@ -439,9 +439,15 @@ pub fn resolve_nemesisbot_bin() -> Result<PathBuf> {
     bail!("nemesisbot binary not found in target/release or target/debug");
 }
 
-/// Resolve the AI server binary path.
+/// Resolve the AI server binary path (Go TestAIServer).
 pub fn resolve_ai_server_bin() -> Result<PathBuf> {
     let root = resolve_project_root()?;
+    // Go TestAIServer in test-tools/
+    let bin = root.join("test-tools/TestAIServer/testaiserver.exe");
+    if bin.exists() {
+        return Ok(bin);
+    }
+    // Fallback: check target/ for any legacy builds
     let bin = root.join("target/release/ai-server.exe");
     if bin.exists() {
         return Ok(bin);
@@ -450,7 +456,7 @@ pub fn resolve_ai_server_bin() -> Result<PathBuf> {
     if bin.exists() {
         return Ok(bin);
     }
-    bail!("ai-server binary not found in target/release or target/debug");
+    bail!("AI server binary not found (checked test-tools/TestAIServer/testaiserver.exe and target/)");
 }
 
 // ---------------------------------------------------------------------------

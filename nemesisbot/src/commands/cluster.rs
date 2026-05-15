@@ -512,26 +512,23 @@ pub fn run(action: ClusterAction, local: bool) -> Result<()> {
 
             // Check if config already exists and prompt for confirmation
             if cfg_path.exists() {
-                print!("  Cluster config already exists. Reinitialize? This will overwrite existing configuration. (y/N): ");
-                use std::io::{self, Write};
-                io::stdout().flush().ok();
-                let mut answer = String::new();
-                io::stdin().read_line(&mut answer).ok();
-                if answer.trim().to_lowercase() != "y" {
-                    println!("  Aborted.");
-                    return Ok(());
+                // In non-interactive mode (piped stdin), just overwrite
+                let _is_term = false; // CLI always uses Stdio::piped
+                use std::io::{self, Write, IsTerminal};
+                if io::stdin().is_terminal() {
+                    print!("  Cluster config already exists. Reinitialize? This will overwrite existing configuration. (y/N): ");
+                    io::stdout().flush().ok();
+                    let mut answer = String::new();
+                    io::stdin().read_line(&mut answer).ok();
+                    if answer.trim().to_lowercase() != "y" {
+                        println!("  Aborted.");
+                        return Ok(());
+                    }
                 }
             }
 
-            // Generate proper node ID
-            let hostname = std::env::var("COMPUTERNAME")
-                .or_else(|_| std::env::var("HOSTNAME"))
-                .unwrap_or_else(|_| "node".to_string());
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let node_id = format!("node-{}-{}", hostname.to_lowercase(), timestamp);
+            // Generate proper node ID (UUID-based for uniqueness)
+            let node_id = format!("node-{}", uuid::Uuid::new_v4());
             let default_name = format!("Bot {}", node_id);
 
             let mut config = serde_json::json!({

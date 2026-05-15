@@ -2,5 +2,6 @@
   "enabled": false,
   "port": 11949,
   "rpc_port": 21949,
-  "broadcast_interval": 30
+  "broadcast_interval": 30,
+  "llm_timeout_secs": 7200
 }

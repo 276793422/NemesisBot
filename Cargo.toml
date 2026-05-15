@@ -36,14 +36,15 @@ members = [
     "crates/nemesis-voice",
     "crates/nemesis-ui",
     "nemesisbot",
-    "test-tools/ai-server",
-    "test-tools/mcp-server",
     "test-tools/integration-test",
     "test-tools/cluster-test",
+    "test-tools/cluster-uat",
     "test-tools/test-harness",
     "test-tools/e2e-tests",
     "test-tools/http-test-server",
     "test-tools/websocket-client",
+    "test-tools/bus-benchmarks",
+    "test-tools/approval-test",
 ]
 
 [workspace.package]
@@ -107,6 +108,9 @@ clap = { version = "4", features = ["derive", "string"] }
 
 # FFI
 libloading = "0.8"
+
+# Socket
+socket2 = { version = "0.5", features = ["all"] }
 
 # Testing
 mockall = "0.13"

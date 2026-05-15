@@ -126,6 +126,9 @@ mod tests {
             }
         });
 
-        let _ = tokio::time::timeout(Duration::from_secs(5), futures_util::join!(task1, task2));
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            let _ = task1.await;
+            let _ = task2.await;
+        });
     }
 }

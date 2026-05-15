@@ -46,8 +46,19 @@ impl UdpListener {
     /// disable encryption (plaintext mode, backward compatible).
     pub fn new(port: u16, enc_key: Option<[u8; 32]>) -> Result<Self, io::Error> {
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
-        let socket = UdpSocket::bind(addr)?;
-        socket.set_broadcast(true)?;
+
+        // Use socket2 to set SO_REUSEADDR before binding.
+        // This allows multiple processes on the same machine to bind to the
+        // same UDP port, which is essential for localhost cluster testing.
+        let socket2_socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        socket2_socket.set_reuse_address(true)?;
+        socket2_socket.set_broadcast(true)?;
+        socket2_socket.bind(&socket2::SockAddr::from(addr))?;
+        let socket: UdpSocket = socket2_socket.into();
         socket.set_read_timeout(Some(Duration::from_secs(1)))?;
 
         let actual_port = socket.local_addr()?.port();

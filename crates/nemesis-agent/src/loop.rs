@@ -495,6 +495,17 @@ impl AgentLoop {
         self.security_plugin = Some(plugin);
     }
 
+    /// Set the continuation manager for async cluster RPC callbacks.
+    ///
+    /// When set, `cluster_continuation` messages intercepted by the bus loop
+    /// will trigger snapshot loading and LLM resumption.
+    pub fn set_continuation_manager(
+        &mut self,
+        manager: Arc<crate::loop_continuation::ContinuationManager>,
+    ) {
+        self.continuation_manager = Some(manager);
+    }
+
     /// Get the observer manager, if set.
     /// Mirrors Go's `GetObserverManager()`.
     pub fn get_observer_manager(&self) -> Option<&Arc<nemesis_observer::Manager>> {
@@ -1796,8 +1807,63 @@ impl AgentLoop {
 
             // Execute each tool call.
             instance.set_state(crate::types::AgentState::ExecutingTool);
+            let mut hit_async = false;
             for tc in &tool_calls {
                 let result = self.handle_tool_call(tc, context).await;
+
+                // Check for async cluster_rpc result — save continuation snapshot.
+                // The cluster_rpc tool returns "__ASYNC__:task_id:target" when
+                // the remote node accepts the request asynchronously.
+                if result.starts_with("__ASYNC__:") {
+                    let parts: Vec<String> = result.splitn(3, ':')
+                        .map(|s| s.to_string())
+                        .collect();
+                    if parts.len() >= 3 {
+                        let task_id = parts[1].clone();
+                        let target = parts[2].clone();
+                        if let Some(ref mgr) = self.continuation_manager {
+                            // Get messages up to this point (including the assistant's tool_call).
+                            // We use build_messages() to convert history → LlmMessage format.
+                            let messages = self.build_messages(instance);
+                            let channel = context.channel.clone();
+                            let chat_id = context.chat_id.clone();
+
+                            // Save continuation snapshot (spawns a tokio task for disk write)
+                            let mgr = mgr.clone();
+                            let tc_id = tc.id.clone();
+                            let msgs = messages.clone();
+                            let task_id_spawn = task_id.clone();
+                            tokio::spawn(async move {
+                                mgr.save_continuation(
+                                    &task_id_spawn,
+                                    msgs,
+                                    &tc_id,
+                                    &channel,
+                                    &chat_id,
+                                ).await;
+                            });
+
+                            info!(
+                                "Continuation saved for async cluster_rpc: task_id={}, tool_call_id={}",
+                                task_id, tc.id
+                            );
+                        }
+
+                        // Return an intermediate message to the user and stop processing.
+                        // The continuation will resume when the callback arrives.
+                        let intermediate = format!(
+                            "已发送请求到远程节点 {}，等待响应中... (task_id: {})",
+                            target, task_id
+                        );
+                        instance.add_tool_result(&tc.id, &format!("Request accepted by {}. Task ID: {}", target, task_id));
+
+                        let formatted = context.format_rpc_message(&intermediate);
+                        events.push(AgentEvent::Done(formatted));
+                        hit_async = true;
+                        break;
+                    }
+                }
+
                 let tool_result = ToolCallResult {
                     tool_name: tc.name.clone(),
                     result: result.clone(),
@@ -1807,6 +1873,10 @@ impl AgentLoop {
 
                 // Feed the result back as a tool message.
                 instance.add_tool_result(&tc.id, &result);
+            }
+
+            if hit_async {
+                break;
             }
         }
 

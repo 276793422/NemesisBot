@@ -1,0 +1,11 @@
+[package]
+name = "approval-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-security = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }

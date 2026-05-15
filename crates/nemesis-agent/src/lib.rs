@@ -50,6 +50,8 @@ pub use loop_tools::register_extended_tools;
 pub use loop_tools::setup_cluster_rpc_channel;
 pub use loop_tools::ClusterRpcChannelConfig;
 pub use loop_tools::SharedToolConfig;
+pub use loop_tools::ClusterRpcConfig;
+pub use loop_tools::ClusterRpcTool;
 pub use session::{Session, SessionManager, SessionStore, StoredSession, StoredMessage, Summarizer, NullNotifier, SummarizationNotifier};
 pub use session::{estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel};
 pub use ringbuffer::RingBuffer;

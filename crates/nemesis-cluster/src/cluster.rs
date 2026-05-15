@@ -55,7 +55,7 @@ pub trait MessageBus: Send + Sync {
 pub const DEFAULT_UDP_PORT: u16 = 11949;
 pub const DEFAULT_RPC_PORT: u16 = 21949;
 pub const DEFAULT_BROADCAST_INTERVAL: Duration = Duration::from_secs(30);
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(90);
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// The cluster manages a set of nodes and distributes tasks.
 pub struct Cluster {
@@ -775,6 +775,12 @@ impl Cluster {
         self.rpc_port = rpc;
     }
 
+    /// Set the human-readable node name (e.g. "Node-A").
+    /// Called from gateway.rs after loading the name from config.cluster.json.
+    pub fn set_node_name(&mut self, name: impl Into<String>) {
+        self.node_name = name.into();
+    }
+
     /// Get the stop channel receiver.
     pub fn stop_receiver(&self) -> broadcast::Receiver<()> {
         self.stop_tx.subscribe()
@@ -1322,6 +1328,11 @@ impl Cluster {
         *self.rpc_client.lock() = Some(client);
     }
 
+    /// Get a cloned reference to the RPC client (if initialized).
+    pub fn rpc_client_arc(&self) -> Option<Arc<RpcClient>> {
+        self.rpc_client.lock().clone()
+    }
+
     // -- RPC server accessor ---------------------------------------------------
 
     /// Set the RPC server instance.
@@ -1559,6 +1570,10 @@ impl ClusterCallbacks for Cluster {
         &self.node_id
     }
 
+    fn name(&self) -> &str {
+        &self.node_name
+    }
+
     fn address(&self) -> &str {
         &self.address
     }
@@ -1627,24 +1642,38 @@ struct ClusterPeerResolver {
 
 impl PeerResolver for ClusterPeerResolver {
     fn get_peer_info(&self, peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
-        let info = self.registry.get(peer_id)?;
-        let is_online = info.status == NodeStatus::Online;
-
-        // Use the stored addresses (all discovered IPs) for multi-address failover.
-        // Fall back to parsing the primary address if addresses is empty.
-        let (_, port) = parse_host_port(&info.base.address);
-        let addresses = if !info.addresses.is_empty() {
-            info.addresses.clone()
-        } else {
-            let (host, _) = parse_host_port(&info.base.address);
-            if host.is_empty() {
-                Vec::new()
+        // 1. Direct lookup by key (e.g. "Node-A" or a node_id)
+        if let Some(info) = self.registry.get(peer_id) {
+            let is_online = info.status == NodeStatus::Online;
+            let (_, port) = parse_host_port(&info.base.address);
+            let addresses = if !info.addresses.is_empty() {
+                info.addresses.clone()
             } else {
-                vec![host]
-            }
-        };
+                let (host, _) = parse_host_port(&info.base.address);
+                if host.is_empty() { Vec::new() } else { vec![host] }
+            };
+            return Some((addresses, port, is_online));
+        }
 
-        Some((addresses, port, is_online))
+        // 2. Fallback: scan all peers for matching node_id or name.
+        //    This handles cases where the caller uses a node_id (e.g. "node-laptop-xxx")
+        //    but the registry key is a peer name (e.g. "Node-A").
+        let all = self.registry.list_peers();
+        for info in &all {
+            if info.base.id == peer_id || info.base.name == peer_id {
+                let is_online = info.status == NodeStatus::Online;
+                let (_, port) = parse_host_port(&info.base.address);
+                let addresses = if !info.addresses.is_empty() {
+                    info.addresses.clone()
+                } else {
+                    let (host, _) = parse_host_port(&info.base.address);
+                    if host.is_empty() { Vec::new() } else { vec![host] }
+                };
+                return Some((addresses, port, is_online));
+            }
+        }
+
+        None
     }
 
     fn get_local_interfaces(&self) -> Vec<LocalNetworkInterface> {
@@ -2339,7 +2368,7 @@ mod tests {
         assert_eq!(DEFAULT_UDP_PORT, 11949);
         assert_eq!(DEFAULT_RPC_PORT, 21949);
         assert_eq!(DEFAULT_BROADCAST_INTERVAL, Duration::from_secs(30));
-        assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(90));
+        assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(3600));
     }
 
     #[test]

@@ -67,7 +67,7 @@ impl TestConfig {
 
         let ai_server_bin = ai_server_bin.unwrap_or_else(|| resolve_ai_server_bin().unwrap_or_else(|_| {
             let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));
-            root.join("target/release/ai-server.exe")
+            root.join("test-tools/TestAIServer/testaiserver.exe")
         }));
         let gateway_bin = gateway_bin.unwrap_or_else(|| resolve_nemesisbot_bin().unwrap_or_else(|_| {
             let root = resolve_project_root().unwrap_or_else(|_| PathBuf::from("."));

@@ -57,6 +57,11 @@ pub struct AppConfig {
     pub rpc_port: u16,
     #[serde(default = "default_broadcast_interval")]
     pub broadcast_interval: u64,
+    /// LLM request timeout in seconds for B-side peer_chat processing.
+    /// This is the maximum time to wait for the LLM API to respond.
+    /// Default: 7200 (2 hours). Set to 0 to disable timeout.
+    #[serde(default = "default_llm_timeout_secs")]
+    pub llm_timeout_secs: u64,
 }
 
 impl Default for AppConfig {
@@ -66,6 +71,7 @@ impl Default for AppConfig {
             port: default_udp_port(),
             rpc_port: default_rpc_port(),
             broadcast_interval: default_broadcast_interval(),
+            llm_timeout_secs: default_llm_timeout_secs(),
         }
     }
 }
@@ -80,6 +86,10 @@ fn default_rpc_port() -> u16 {
 
 fn default_broadcast_interval() -> u64 {
     30
+}
+
+fn default_llm_timeout_secs() -> u64 {
+    7200 // 2 hours
 }
 
 /// Load app configuration from workspace/config/config.cluster.json.
@@ -161,6 +171,7 @@ mod tests {
             port: 12345,
             rpc_port: 22345,
             broadcast_interval: 60,
+            llm_timeout_secs: 7200,
         };
 
         save_app_config(workspace, &config).unwrap();
@@ -232,6 +243,7 @@ mod tests {
             port: 9999,
             rpc_port: 19999,
             broadcast_interval: 45,
+            llm_timeout_secs: 3600,
         };
         let json = serde_json::to_string_pretty(&config).unwrap();
         let parsed: AppConfig = serde_json::from_str(&json).unwrap();

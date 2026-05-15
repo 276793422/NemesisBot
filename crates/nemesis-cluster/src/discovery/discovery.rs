@@ -31,6 +31,8 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 30;
 pub trait ClusterCallbacks: Send + Sync {
     /// Get the local node ID.
     fn node_id(&self) -> &str;
+    /// Get the human-readable node name (e.g. "Node-A").
+    fn name(&self) -> &str;
     /// Get the RPC bind address (e.g. `"0.0.0.0:9000"`).
     fn address(&self) -> &str;
     /// Get the RPC port number.
@@ -90,6 +92,7 @@ impl NullCallbacks {
 
 impl ClusterCallbacks for NullCallbacks {
     fn node_id(&self) -> &str { &self.node_id }
+    fn name(&self) -> &str { &self.node_id }
     fn address(&self) -> &str { &self.address }
     fn rpc_port(&self) -> u16 { self.rpc_port }
     fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
@@ -163,6 +166,7 @@ impl RegistryCallbacks {
 
 impl ClusterCallbacks for RegistryCallbacks {
     fn node_id(&self) -> &str { &self.node_id }
+    fn name(&self) -> &str { &self.node_id }
     fn address(&self) -> &str { &self.address }
     fn rpc_port(&self) -> u16 { self.rpc_port }
     fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
@@ -557,7 +561,7 @@ fn send_announce_with(
 
     let msg = DiscoveryMessage::new_announce(
         cluster.node_id(),
-        cluster.node_id(),
+        cluster.name(),
         addresses,
         cluster.rpc_port(),
         cluster.role(),

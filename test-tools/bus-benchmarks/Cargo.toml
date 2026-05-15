@@ -1,0 +1,11 @@
+[package]
+name = "bus-benchmarks"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nemesis-bus = { workspace = true }
+nemesis-types = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }

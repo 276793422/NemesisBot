@@ -1492,6 +1492,18 @@ pub struct ClusterRpcConfig {
     pub local_node_id: String,
     /// Default timeout in seconds.
     pub timeout_secs: u64,
+    /// Local RPC port (included in payloads so remote nodes can callback).
+    pub local_rpc_port: u16,
+}
+
+impl Default for ClusterRpcConfig {
+    fn default() -> Self {
+        Self {
+            local_node_id: String::new(),
+            timeout_secs: 3600,
+            local_rpc_port: 21949,
+        }
+    }
 }
 
 /// Setup the cluster RPC channel for peer-to-peer communication.
@@ -1632,12 +1644,16 @@ impl Tool for ClusterRpcTool {
 
         let target_node = val
             .get("target_node")
+            .or_else(|| val.get("target"))
+            .or_else(|| val.get("peer_id"))
             .and_then(|v| v.as_str())
             .ok_or("Missing 'target_node' field")?;
 
+        // Extract message content: check "message" first, then "data.content" (testai-3.0 format)
         let message = val
             .get("message")
             .and_then(|v| v.as_str())
+            .or_else(|| val.get("data").and_then(|d| d.get("content")).and_then(|v| v.as_str()))
             .unwrap_or("");
 
         let rpc_call = match &self.rpc_call_fn {
@@ -1670,13 +1686,33 @@ impl Tool for ClusterRpcTool {
         };
 
         let payload = serde_json::json!({
-            "message": message,
+            "content": message,
             "channel": channel,
             "chat_id": chat_id,
             "timeout": self.config.timeout_secs,
+            "_source_rpc_port": self.config.local_rpc_port,
         });
 
         let result = rpc_call(target_node, "peer_chat", payload).await?;
+
+        // Check if the response is an async ACK from PeerChatHandler.
+        // ACK format: {"status": "accepted", "task_id": "auto-xxx"}
+        // In this case, return __ASYNC__ marker so AgentLoop saves a continuation snapshot.
+        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status == "accepted" {
+            let task_id = result
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            tracing::info!(
+                task_id = %task_id,
+                target = %target_node,
+                "Peer chat ACK received, returning async marker"
+            );
+            return Ok(format!("__ASYNC__:{}:{}", task_id, target_node));
+        }
+
+        // Synchronous response — extract content field
         let content = result
             .get("content")
             .and_then(|v| v.as_str())
@@ -3489,6 +3525,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -3509,10 +3546,11 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let mut tool = ClusterRpcTool::new(config);
         tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
-            let msg = payload.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let msg = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
             Box::pin(async move {
                 Ok(serde_json::json!({"content": format!("Echo: {}", msg)}))
             })
@@ -3760,6 +3798,7 @@ mod tests {
         let cluster_config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tools = register_extended_tools(None, Some(cluster_config), None);
         assert!(tools.contains_key("cluster_rpc"));
@@ -4324,6 +4363,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 120,
+            local_rpc_port: 21949,
         };
         assert_eq!(config.local_node_id, "node-1");
         assert_eq!(config.timeout_secs, 120);
@@ -4334,6 +4374,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -4346,6 +4387,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -4445,6 +4487,7 @@ mod tests {
             cluster_rpc: Some(ClusterRpcConfig {
                 local_node_id: "n1".to_string(),
                 timeout_secs: 60,
+                local_rpc_port: 21949,
             }),
             ..Default::default()
         };
@@ -4662,6 +4705,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 3600,
+            local_rpc_port: 21949,
         };
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("node-1"));
@@ -4672,6 +4716,7 @@ mod tests {
         let cluster_config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 3600,
+            local_rpc_port: 21949,
         };
         let config = setup_cluster_rpc_channel_with_config(&cluster_config);
         assert_eq!(config.request_timeout, std::time::Duration::from_secs(24 * 3600));
@@ -4682,6 +4727,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         tool.set_context("rpc", "chat-123");
@@ -4694,6 +4740,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -4842,6 +4889,7 @@ mod tests {
         let cluster_config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tools = register_extended_tools(None, Some(cluster_config), None);
         assert!(tools.contains_key("cluster_rpc"));
@@ -5067,6 +5115,7 @@ mod tests {
             cluster_rpc: Some(ClusterRpcConfig {
                 local_node_id: "node-1".to_string(),
                 timeout_secs: 60,
+                local_rpc_port: 21949,
             }),
             spawn: Some(SpawnConfig {
                 default_model: "test".to_string(),
@@ -5283,6 +5332,7 @@ mod tests {
         let config = ClusterRpcConfig {
             local_node_id: "node-1".to_string(),
             timeout_secs: 60,
+            local_rpc_port: 21949,
         };
         let tool = ClusterRpcTool::new(config);
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");

@@ -419,11 +419,34 @@ impl RpcClient {
     ) -> Result<RPCResponse, RpcClientError> {
         let mut conn = Connection::new(std_stream);
 
-        // Encode and send request
-        let encoded = Frame::encode_request(request).map_err(|e| {
+        // Encode request as WireMessage JSON and send with single length prefix.
+        // Connection::send adds [4-byte length][data] framing.
+        // We send the raw JSON bytes so the server's AsyncFrameReader reads
+        // [4-byte length][JSON WireMessage] — single framing only.
+        let wire = crate::transport::conn::WireMessage {
+            version: "1.0".into(),
+            id: request.id.clone(),
+            msg_type: "request".into(),
+            from: request.source.clone(),
+            to: request.target.clone().unwrap_or_default(),
+            action: match &request.action {
+                crate::rpc_types::ActionType::Known(k) => match k {
+                    crate::rpc_types::KnownAction::PeerChat => "peer_chat",
+                    crate::rpc_types::KnownAction::PeerChatCallback => "peer_chat_callback",
+                    crate::rpc_types::KnownAction::ForgeShare => "forge_share",
+                    crate::rpc_types::KnownAction::Ping => "ping",
+                    crate::rpc_types::KnownAction::Status => "status",
+                },
+                crate::rpc_types::ActionType::Custom(s) => s.as_str(),
+            }.into(),
+            payload: request.payload.clone(),
+            timestamp: chrono::Utc::now().timestamp(),
+            error: String::new(),
+        };
+        let json_bytes = serde_json::to_vec(&wire).map_err(|e| {
             RpcClientError::Serialization(e.to_string())
         })?;
-        conn.send(&encoded).map_err(|e| {
+        conn.send(&json_bytes).map_err(|e| {
             RpcClientError::Connection(format!("send to {}: {}", addr, e))
         })?;
 
@@ -433,7 +456,7 @@ impl RpcClient {
             "RPC request sent, waiting for response"
         );
 
-        // Receive response frame
+        // Receive response frame: [4-byte length][JSON WireMessage]
         let resp_data = conn.recv().map_err(|e| {
             RpcClientError::Connection(format!("recv from {}: {}", addr, e))
         })?;
