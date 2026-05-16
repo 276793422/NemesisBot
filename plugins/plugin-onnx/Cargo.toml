@@ -1,0 +1,19 @@
+[package]
+name = "plugin-onnx"
+version = "0.1.0"
+edition = "2021"
+description = "NemesisBot ONNX embedding plugin — local ML-based text embedding DLL"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate target).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+
+# Build: cd plugins/plugin-onnx && cargo build --release
+# Output: target/release/plugin_onnx.dll (or .so/.dylib on other platforms)

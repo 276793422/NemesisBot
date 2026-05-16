@@ -103,25 +103,42 @@ echo "  OK Build completed in ${BUILD_DURATION}s"
 echo ""
 
 # ============================================
-# Step 3: Build plugin-ui DLL (release)
+# Step 3: Build plugin DLLs (release)
 # ============================================
 if [ "$SKIP_PLUGIN" = true ]; then
-    echo "[Step 3/4] Plugin DLL skipped (--skip-plugin)"
+    echo "[Step 3/4] Plugin DLLs skipped (--skip-plugin)"
     echo ""
 else
-    echo "[Step 3/4] Building plugin-ui DLL..."
-    PLUGIN_DIR="plugins/plugin-ui"
+    echo "[Step 3/4] Building plugin DLLs..."
 
-    if [ -f "$PLUGIN_DIR/Cargo.toml" ]; then
+    # --- plugin-ui ---
+    PLUGIN_UI_DIR="plugins/plugin-ui"
+    if [ -f "$PLUGIN_UI_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-ui..."
         DLL_START=$SECONDS
-        if (cd "$PLUGIN_DIR" && cargo build --release 2>&1); then
+        if (cd "$PLUGIN_UI_DIR" && cargo build --release 2>&1); then
             DLL_DURATION=$(( SECONDS - DLL_START ))
-            echo "  OK Plugin DLL built in ${DLL_DURATION}s"
+            echo "  OK Plugin-ui DLL built in ${DLL_DURATION}s"
         else
-            echo "  WARN Plugin DLL build failed (non-fatal, continuing without plugin)"
+            echo "  WARN Plugin-ui DLL build failed (non-fatal, continuing without plugin)"
         fi
     else
-        echo "  SKIP $PLUGIN_DIR/Cargo.toml not found"
+        echo "  SKIP $PLUGIN_UI_DIR/Cargo.toml not found"
+    fi
+
+    # --- plugin-onnx ---
+    PLUGIN_ONNX_DIR="plugins/plugin-onnx"
+    if [ -f "$PLUGIN_ONNX_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-onnx..."
+        ONNX_START=$SECONDS
+        if (cd "$PLUGIN_ONNX_DIR" && cargo build --release 2>&1); then
+            ONNX_DURATION=$(( SECONDS - ONNX_START ))
+            echo "  OK Plugin-onnx DLL built in ${ONNX_DURATION}s"
+        else
+            echo "  WARN Plugin-onnx DLL build failed (non-fatal, continuing without plugin)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_ONNX_DIR/Cargo.toml not found"
     fi
     echo ""
 fi
@@ -160,6 +177,24 @@ done
 
 if [ "$DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN plugin-ui.dll not found in build output"
+fi
+
+# Copy plugin-onnx DLL to bin/plugins/
+ONNX_DLL_FOUND=false
+for dll_path in "plugins/plugin-onnx/target/release/plugin_onnx.dll" \
+                "plugins/plugin-onnx/target/release/plugin-onnx.dll"; do
+    if [ -f "$dll_path" ]; then
+        cp "$dll_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$dll_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("plugin_onnx.dll (${SIZE_MB} MB)")
+        ONNX_DLL_FOUND=true
+        break
+    fi
+done
+
+if [ "$ONNX_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN plugin-onnx.dll not found in build output"
 fi
 
 # Copy test-tools binaries to bin/tests/

@@ -107,32 +107,50 @@ echo   OK Build completed
 echo.
 
 REM ============================================
-REM Step 3: Build plugin-ui DLL (release)
+REM Step 3: Build plugin DLLs (release)
 REM ============================================
 if "%SKIP_PLUGIN%"=="1" (
-    echo [Step 3/4] Plugin DLL skipped ^(--skip-plugin^)
+    echo [Step 3/4] Plugin DLLs skipped ^(--skip-plugin^)
     echo.
     goto step4
 )
 
-echo [Step 3/4] Building plugin-ui DLL...
+echo [Step 3/4] Building plugin DLLs...
 
-if not exist "plugins\plugin-ui\Cargo.toml" (
-    echo   SKIP plugins\plugin-ui\Cargo.toml not found
-    echo.
-    goto step4
-)
-
-pushd plugins\plugin-ui
-cargo build --release
-if errorlevel 1 (
+REM --- plugin-ui ---
+if exist "plugins\plugin-ui\Cargo.toml" (
+    echo   Building plugin-ui...
+    pushd plugins\plugin-ui
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-ui DLL build failed ^(non-fatal, continuing without plugin^)
+        echo.
+        goto plugin_onnx
+    )
     popd
-    echo   WARN Plugin DLL build failed ^(non-fatal, continuing without plugin^)
-    echo.
-    goto step4
+    echo   OK Plugin-ui DLL built
+) else (
+    echo   SKIP plugins\plugin-ui\Cargo.toml not found
 )
-popd
-echo   OK Plugin DLL built
+
+:plugin_onnx
+REM --- plugin-onnx ---
+if exist "plugins\plugin-onnx\Cargo.toml" (
+    echo   Building plugin-onnx...
+    pushd plugins\plugin-onnx
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-onnx DLL build failed ^(non-fatal, continuing without plugin^)
+        echo.
+        goto step4
+    )
+    popd
+    echo   OK Plugin-onnx DLL built
+) else (
+    echo   SKIP plugins\plugin-onnx\Cargo.toml not found
+)
 echo.
 
 :step4
@@ -163,6 +181,22 @@ if exist "plugins\plugin-ui\target\release\plugin_ui.dll" (
     copy /y "plugins\plugin-ui\target\release\plugin-ui.dll" "bin\plugins\" >nul 2>&1
     set /a COPIED+=1
     set DLL_FOUND=1
+)
+
+REM Copy plugin-onnx DLL to bin\plugins\
+set ONNX_DLL_FOUND=0
+if exist "plugins\plugin-onnx\target\release\plugin_onnx.dll" (
+    copy /y "plugins\plugin-onnx\target\release\plugin_onnx.dll" "bin\plugins\" >nul 2>&1
+    set /a COPIED+=1
+    set ONNX_DLL_FOUND=1
+) else if exist "plugins\plugin-onnx\target\release\plugin-onnx.dll" (
+    copy /y "plugins\plugin-onnx\target\release\plugin-onnx.dll" "bin\plugins\" >nul 2>&1
+    set /a COPIED+=1
+    set ONNX_DLL_FOUND=1
+)
+
+if "!ONNX_DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
+    echo   WARN plugin-onnx.dll not found in build output
 )
 
 if "!DLL_FOUND!"=="0" if "%SKIP_PLUGIN%"=="0" (
