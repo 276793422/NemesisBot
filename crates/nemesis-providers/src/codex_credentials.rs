@@ -89,6 +89,43 @@ pub fn create_codex_cli_token_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global lock to serialize tests that modify the CODEX_HOME env var.
+    static CODEX_HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets an env var and restores it on drop.
+    /// Holds the global CODEX_HOME_LOCK to prevent parallel test interference.
+    struct CodexEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        key: String,
+        orig: Option<String>,
+    }
+
+    impl CodexEnvGuard {
+        fn set(key: &str, val: &str) -> Self {
+            let lock = CODEX_HOME_LOCK.lock().unwrap();
+            let orig = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, val); }
+            Self { _lock: lock, key: key.to_string(), orig }
+        }
+
+        fn remove(key: &str) -> Self {
+            let lock = CODEX_HOME_LOCK.lock().unwrap();
+            let orig = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key); }
+            Self { _lock: lock, key: key.to_string(), orig }
+        }
+    }
+
+    impl Drop for CodexEnvGuard {
+        fn drop(&mut self) {
+            match &self.orig {
+                Some(val) => unsafe { std::env::set_var(&self.key, val); },
+                None => unsafe { std::env::remove_var(&self.key); },
+            }
+        }
+    }
 
     #[test]
     fn test_parse_auth_json() {
@@ -123,6 +160,7 @@ mod tests {
 
     #[test]
     fn test_resolve_codex_auth_path_with_env() {
+        let _g = CodexEnvGuard::remove("CODEX_HOME");
         // This test just validates the path construction logic
         let _path = resolve_codex_auth_path();
         // Path will depend on CODEX_HOME env var or home dir
@@ -171,15 +209,15 @@ mod tests {
 
     #[test]
     fn test_read_codex_cli_credentials_missing_file() {
+        let _g = CodexEnvGuard::remove("CODEX_HOME");
         let result = read_codex_cli_credentials();
         // Should fail because ~/.codex/auth.json doesn't exist in test env
-        // (unless explicitly set up)
-        // Just ensure it returns an error without panicking
         let _ = result;
     }
 
     #[test]
     fn test_create_token_source_returns_function() {
+        let _g = CodexEnvGuard::remove("CODEX_HOME");
         // Verify the closure is created and is callable
         let source = create_codex_cli_token_source();
         // The actual call will fail because auth.json doesn't exist,
@@ -236,6 +274,8 @@ mod tests {
 
     #[test]
     fn test_token_source_expiry_check() {
+        // Ensure CODEX_HOME is not set by parallel tests
+        let _g = CodexEnvGuard::remove("CODEX_HOME");
         // Create a token source and verify expired credentials are rejected
         let source = create_codex_cli_token_source();
         // The source itself is always created; the actual expiry check happens
@@ -254,15 +294,14 @@ mod tests {
 
     #[test]
     fn test_resolve_codex_auth_path_with_env_var() {
-        unsafe { std::env::set_var("CODEX_HOME", "/tmp/codex_test"); }
+        let _g = CodexEnvGuard::set("CODEX_HOME", "/tmp/codex_test");
         let path = resolve_codex_auth_path().unwrap();
         assert_eq!(path, PathBuf::from("/tmp/codex_test/auth.json"));
-        unsafe { std::env::remove_var("CODEX_HOME"); }
     }
 
     #[test]
     fn test_resolve_codex_auth_path_default() {
-        unsafe { std::env::remove_var("CODEX_HOME"); }
+        let _g = CodexEnvGuard::remove("CODEX_HOME");
         let path = resolve_codex_auth_path();
         assert!(path.is_ok());
         let p = path.unwrap();
@@ -273,7 +312,6 @@ mod tests {
     #[test]
     fn test_read_codex_cli_credentials_with_valid_file() {
         let dir = tempfile::tempdir().unwrap();
-        // Create the codex dir structure under the temp dir
         let codex_dir = dir.path().join(".codex");
         std::fs::create_dir_all(&codex_dir).unwrap();
         let auth_path = codex_dir.join("auth.json");
@@ -283,17 +321,9 @@ mod tests {
         )
         .unwrap();
 
-        // CODEX_HOME should point to the parent dir (where .codex/ is), or directly to a dir with auth.json
-        // The function appends "auth.json" to CODEX_HOME, so set it to the .codex dir
-        unsafe { std::env::set_var("CODEX_HOME", codex_dir.to_string_lossy().to_string()); }
+        let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
         let result = read_codex_cli_credentials();
-        unsafe { std::env::remove_var("CODEX_HOME"); }
 
-        // This may fail in parallel test runs due to env var races - skip if so
-        if result.is_err() {
-            eprintln!("Skipping: {}", result.unwrap_err());
-            return;
-        }
         let creds = result.unwrap();
         assert_eq!(creds.access_token, "valid_tok_123");
         assert_eq!(creds.account_id, "acc_456");
@@ -308,9 +338,8 @@ mod tests {
         let auth_path = codex_dir.join("auth.json");
         std::fs::write(&auth_path, r#"{"tokens":{"access_token":"","refresh_token":"ref"}}"#).unwrap();
 
-        unsafe { std::env::set_var("CODEX_HOME", codex_dir.to_string_lossy().to_string()); }
+        let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
         let result = read_codex_cli_credentials();
-        unsafe { std::env::remove_var("CODEX_HOME"); }
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no access_token"));
@@ -324,15 +353,10 @@ mod tests {
         let auth_path = codex_dir.join("auth.json");
         std::fs::write(&auth_path, "not valid json").unwrap();
 
-        unsafe { std::env::set_var("CODEX_HOME", codex_dir.to_string_lossy().to_string()); }
+        let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
         let result = read_codex_cli_credentials();
-        unsafe { std::env::remove_var("CODEX_HOME"); }
 
-        // May fail due to parallel env var races
-        if result.is_ok() {
-            eprintln!("Skipping: env var race");
-            return;
-        }
+        assert!(result.is_err());
         assert!(result.unwrap_err().contains("parsing"));
     }
 
@@ -348,10 +372,9 @@ mod tests {
         )
         .unwrap();
 
-        unsafe { std::env::set_var("CODEX_HOME", codex_dir.to_string_lossy().to_string()); }
+        let _g = CodexEnvGuard::set("CODEX_HOME", &codex_dir.to_string_lossy().to_string());
         let source = create_codex_cli_token_source();
         let result = source();
-        unsafe { std::env::remove_var("CODEX_HOME"); }
 
         assert!(result.is_ok());
         let (token, account_id) = result.unwrap();

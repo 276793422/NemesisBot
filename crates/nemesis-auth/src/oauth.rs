@@ -2292,4 +2292,138 @@ mod tests {
     fn test_standalone_extract_account_id_empty_str() {
         assert_eq!(super::extract_account_id(""), "");
     }
+
+    #[test]
+    fn test_oauth_provider_config_fields() {
+        let cfg = OAuthProviderConfig::openai();
+        assert!(!cfg.issuer.is_empty());
+        assert!(!cfg.client_id.is_empty());
+        assert!(!cfg.scopes.is_empty());
+        assert!(cfg.port > 0);
+    }
+
+    #[test]
+    fn test_url_encode_all_special() {
+        assert_eq!(url_encode("\0"), "%00");
+        assert_eq!(url_encode("\n"), "%0A");
+        assert_eq!(url_encode("\r"), "%0D");
+        assert_eq!(url_encode("\""), "%22");
+    }
+
+    #[test]
+    fn test_url_decode_empty() {
+        assert_eq!(url_decode(""), "");
+    }
+
+    #[test]
+    fn test_hex_val_all_hex_chars() {
+        assert_eq!(hex_val(b'0'), 0);
+        assert_eq!(hex_val(b'9'), 9);
+        assert_eq!(hex_val(b'a'), 10);
+        assert_eq!(hex_val(b'f'), 15);
+        assert_eq!(hex_val(b'A'), 10);
+        assert_eq!(hex_val(b'F'), 15);
+    }
+
+    #[test]
+    fn test_parse_token_response_missing_access_token_field() {
+        let body = r#"{"id_token":"header.payload.sig"}"#;
+        let result = parse_token_response_impl(body.as_bytes(), "openai");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_token_response_basic_fields() {
+        let body = r#"{"access_token":"at_123","token_type":"bearer"}"#;
+        let cred = parse_token_response_impl(body.as_bytes(), "openai").unwrap();
+        assert_eq!(cred.access_token, "at_123");
+        assert_eq!(cred.provider, "openai");
+    }
+
+    #[test]
+    fn test_parse_token_response_with_refresh_token_field() {
+        let body = r#"{"access_token":"at_123","refresh_token":"rt_456"}"#;
+        let cred = parse_token_response_impl(body.as_bytes(), "test").unwrap();
+        assert_eq!(cred.refresh_token.as_deref(), Some("rt_456"));
+    }
+
+    #[test]
+    fn test_parse_token_response_with_expires_in_field() {
+        let body = r#"{"access_token":"at_123","expires_in":3600}"#;
+        let cred = parse_token_response_impl(body.as_bytes(), "test").unwrap();
+        assert!(cred.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_parse_device_code_response_valid_fields() {
+        let json = r#"{"device_auth_id":"dc_123","user_code":"ABCD-1234","verification_uri":"https://example.com/verify","expires_in":900,"interval":5}"#;
+        let resp = parse_device_code_response(json).unwrap();
+        assert_eq!(resp.device_auth_id, "dc_123");
+        assert_eq!(resp.user_code, "ABCD-1234");
+        assert_eq!(resp.interval, 5);
+    }
+
+    #[test]
+    fn test_base64url_decode_various_length_inputs() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let test_cases: Vec<&[u8]> = vec![b"a", b"ab", b"abc", b"abcd", b"abcde", b"abcdef", b"abcdefg", b"abcdefgh"];
+        for original in test_cases {
+            let encoded = URL_SAFE_NO_PAD.encode(original);
+            let decoded = base64url_decode(&encoded).unwrap();
+            assert_eq!(decoded.as_slice(), original);
+        }
+    }
+
+    #[test]
+    fn test_build_authorize_url_with_custom_issuer() {
+        let cfg = OAuthProviderConfig {
+            issuer: "https://custom.auth.example.com".to_string(),
+            client_id: "my_client_id".to_string(),
+            scopes: "openid profile".to_string(),
+            originator: "myapp".to_string(),
+            port: 8080,
+        };
+        let pkce = crate::pkce::generate_pkce();
+        let url = build_authorize_url(&cfg, &pkce, "state123", "http://localhost:8080/cb");
+        assert!(url.starts_with("https://custom.auth.example.com/oauth/authorize?"));
+        assert!(url.contains("client_id=my_client_id"));
+        assert!(url.contains("originator=myapp"));
+    }
+
+    #[test]
+    fn test_extract_account_id_with_account_id_in_jwt() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"chatgpt_account_id":"acct_test_123"}"#);
+        let id_token = format!("{}.{}.sig", header, payload);
+        let result = super::extract_account_id(&id_token);
+        assert_eq!(result, "acct_test_123");
+    }
+
+    #[test]
+    fn test_parse_jwt_claims_impl_with_nested_claims() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user_1","email":"test@example.com","org":{"id":"org1","role":"admin"}}"#);
+        let jwt = format!("{}.{}.sig", header, payload);
+        let claims = parse_jwt_claims_impl(&jwt).unwrap();
+        assert_eq!(claims["sub"].as_str().unwrap(), "user_1");
+        assert_eq!(claims["email"].as_str().unwrap(), "test@example.com");
+        assert!(claims.get("org").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_access_token_network_failure() {
+        let cfg = OAuthProviderConfig::openai();
+        let cred = AuthCredential {
+            access_token: "at_123".to_string(),
+            refresh_token: Some("rt_456".to_string()),
+            expires_at: None,
+            provider: "openai".to_string(),
+            auth_method: "oauth".to_string(),
+            account_id: None,
+        };
+        let result = cfg.refresh_access_token(&cred).await;
+        assert!(result.is_err());
+    }
 }

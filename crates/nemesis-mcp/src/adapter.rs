@@ -382,6 +382,7 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::ClientResult;
 
     #[test]
     fn sanitize_name_basic() {
@@ -603,5 +604,431 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         };
         assert_ne!(def1.name, def2.name);
+    }
+
+    // ============================================================
+    // Tests using mock client for McpAdapter coverage
+    // ============================================================
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Mock client for testing McpAdapter without a real server.
+    struct MockClient {
+        server_info: Option<ServerInfo>,
+        tools: Vec<McpTool>,
+        call_results: std::sync::Mutex<std::collections::VecDeque<ToolCallResult>>,
+        initialized: AtomicBool,
+    }
+
+    impl MockClient {
+        fn new(server_name: &str, tools: Vec<McpTool>) -> Self {
+            Self {
+                server_info: Some(ServerInfo {
+                    name: server_name.to_string(),
+                    version: "1.0.0".to_string(),
+                }),
+                tools,
+                call_results: std::sync::Mutex::new(std::collections::VecDeque::new()),
+                initialized: AtomicBool::new(false),
+            }
+        }
+
+        fn with_call_result(&self, result: ToolCallResult) {
+            self.call_results.lock().unwrap().push_back(result);
+        }
+    }
+
+    #[async_trait]
+    impl Client for MockClient {
+        async fn initialize(&mut self) -> ClientResult<InitializeResult> {
+            self.initialized.store(true, Ordering::SeqCst);
+            Ok(InitializeResult {
+                protocol_version: PROTOCOL_VERSION.to_string(),
+                capabilities: ServerCapabilities::default(),
+                server_info: self.server_info.clone().unwrap(),
+            })
+        }
+
+        async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> {
+            Ok(self.tools.clone())
+        }
+
+        async fn call_tool(
+            &mut self,
+            _name: &str,
+            _arguments: serde_json::Value,
+        ) -> ClientResult<ToolCallResult> {
+            let mut results = self.call_results.lock().unwrap();
+            if let Some(result) = results.pop_front() {
+                Ok(result)
+            } else {
+                Ok(ToolCallResult::ok("default mock result"))
+            }
+        }
+
+        async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> {
+            Ok(vec![])
+        }
+
+        async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> {
+            Ok(ResourceContent::default())
+        }
+
+        async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> {
+            Ok(vec![])
+        }
+
+        async fn get_prompt(
+            &mut self,
+            _name: &str,
+            _arguments: serde_json::Value,
+        ) -> ClientResult<PromptResult> {
+            Ok(PromptResult::default())
+        }
+
+        async fn close(&mut self) -> ClientResult<()> {
+            Ok(())
+        }
+
+        fn server_info(&self) -> Option<&ServerInfo> {
+            self.server_info.as_ref()
+        }
+
+        fn is_connected(&self) -> bool {
+            self.initialized.load(Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn test_mcp_adapter_new_with_description() {
+        let mock = MockClient::new("test_server", vec![]);
+        let mcp_tool = McpTool {
+            name: "echo".to_string(),
+            description: Some("Echo the input".to_string()),
+            input_schema: serde_json::json!({"type": "object", "properties": {"message": {"type": "string"}}}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool.clone());
+
+        let def = adapter.definition();
+        assert_eq!(def.name, "mcp_test_server_echo");
+        assert!(def.description.contains("[MCP:test_server]"));
+        assert!(def.description.contains("Echo the input"));
+
+        assert_eq!(adapter.mcp_tool().name, "echo");
+    }
+
+    #[test]
+    fn test_mcp_adapter_new_without_description() {
+        let mock = MockClient::new("my_server", vec![]);
+        let mcp_tool = McpTool {
+            name: "read".to_string(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let def = adapter.definition();
+        assert!(def.description.contains("[MCP:my_server]"));
+        assert!(def.description.contains("MCP tool: read"));
+    }
+
+    #[test]
+    fn test_mcp_adapter_name_sanitization() {
+        let mock = MockClient::new("my server!", vec![]);
+        let mcp_tool = McpTool {
+            name: "my tool@1".to_string(),
+            description: Some("desc".to_string()),
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let def = adapter.definition();
+        // Spaces and special chars should be replaced with underscores
+        assert!(def.name.contains("my_server_"));
+        assert!(def.name.contains("my_tool_1"));
+    }
+
+    #[test]
+    fn test_mcp_adapter_with_timeout() {
+        let mock = MockClient::new("test", vec![]);
+        let mcp_tool = McpTool {
+            name: "tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool).with_timeout(Duration::from_secs(60));
+        let def = adapter.definition();
+        assert_eq!(def.name, "mcp_test_tool");
+    }
+
+    #[test]
+    fn test_mcp_adapter_parameters_structure() {
+        let mock = MockClient::new("srv", vec![]);
+        let schema = serde_json::json!({"type": "object", "properties": {"x": {"type": "number"}}});
+        let mcp_tool = McpTool {
+            name: "compute".to_string(),
+            description: Some("Compute".to_string()),
+            input_schema: schema.clone(),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let params = adapter.definition().parameters.as_object().unwrap();
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["additionalProperties"], false);
+        // The input_schema is nested under "properties"
+        assert!(params["properties"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_text_result() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult::ok("Hello from tool!"));
+
+        let mcp_tool = McpTool {
+            name: "echo".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({"message": "hi"})).await;
+        assert!(!result.is_error);
+        assert_eq!(result.content, "Hello from tool!");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_error_result() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult::err("Something went wrong"));
+
+        let mcp_tool = McpTool {
+            name: "fail_tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("fail_tool"));
+        assert!(result.content.contains("Something went wrong"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_error_result_no_text() {
+        let mock = MockClient::new("test", vec![]);
+        // Error result with image content (no text) — should return "unknown error"
+        mock.with_call_result(ToolCallResult {
+            content: vec![ToolContent {
+                content_type: "image".to_string(),
+                text: None,
+            }],
+            is_error: true,
+        });
+
+        let mcp_tool = McpTool {
+            name: "img_tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("unknown error"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_image_content() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult {
+            content: vec![ToolContent {
+                content_type: "image".to_string(),
+                text: Some("base64data".to_string()),
+            }],
+            is_error: false,
+        });
+
+        let mcp_tool = McpTool {
+            name: "img_tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("[Image:"));
+        assert!(result.content.contains("base64data"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_resource_content() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult {
+            content: vec![ToolContent {
+                content_type: "resource".to_string(),
+                text: Some("resource_data".to_string()),
+            }],
+            is_error: false,
+        });
+
+        let mcp_tool = McpTool {
+            name: "res_tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("[Resource:"));
+        assert!(result.content.contains("resource_data"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_unknown_content_type() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult {
+            content: vec![ToolContent {
+                content_type: "custom_type".to_string(),
+                text: Some("custom_data".to_string()),
+            }],
+            is_error: false,
+        });
+
+        let mcp_tool = McpTool {
+            name: "custom_tool".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert_eq!(result.content, "custom_data");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_multiple_content() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult {
+            content: vec![
+                ToolContent::text("part1"),
+                ToolContent::text("part2"),
+            ],
+            is_error: false,
+        });
+
+        let mcp_tool = McpTool {
+            name: "multi".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        let result = adapter.execute(serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("part1"));
+        assert!(result.content.contains("part2"));
+    }
+
+    #[tokio::test]
+    async fn test_mcp_adapter_execute_non_object_args() {
+        let mock = MockClient::new("test", vec![]);
+        mock.with_call_result(ToolCallResult::ok("ok"));
+
+        let mcp_tool = McpTool {
+            name: "flex".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
+
+        // Pass a string instead of object
+        let result = adapter.execute(serde_json::json!("not an object")).await;
+        assert!(!result.is_error);
+
+        // Pass null
+        let result = adapter.execute(serde_json::json!(null)).await;
+        assert!(!result.is_error);
+
+        // Pass array
+        let result = adapter.execute(serde_json::json!([1, 2, 3])).await;
+        assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn test_create_tools_from_client() {
+        let tools = vec![
+            McpTool {
+                name: "tool_a".to_string(),
+                description: Some("Tool A".to_string()),
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+            McpTool {
+                name: "tool_b".to_string(),
+                description: None,
+                input_schema: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let mock = MockClient::new("my_server", tools);
+
+        let adapters = create_tools_from_client(Box::new(mock)).await.unwrap();
+        assert_eq!(adapters.len(), 2);
+
+        let def0 = adapters[0].definition();
+        assert_eq!(def0.name, "mcp_my_server_tool_a");
+        assert!(def0.description.contains("[MCP:my_server]"));
+        assert!(def0.description.contains("Tool A"));
+
+        let def1 = adapters[1].definition();
+        assert_eq!(def1.name, "mcp_my_server_tool_b");
+        assert!(def1.description.contains("MCP tool: tool_b"));
+    }
+
+    #[tokio::test]
+    async fn test_create_tools_from_client_empty() {
+        let mock = MockClient::new("empty_server", vec![]);
+        let adapters = create_tools_from_client(Box::new(mock)).await.unwrap();
+        assert!(adapters.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_adapter_no_server_info() {
+        // Create a mock with no server info
+        struct NoInfoMock;
+
+        #[async_trait]
+        impl Client for NoInfoMock {
+            async fn initialize(&mut self) -> ClientResult<InitializeResult> {
+                Ok(InitializeResult {
+                    protocol_version: PROTOCOL_VERSION.to_string(),
+                    capabilities: ServerCapabilities::default(),
+                    server_info: ServerInfo { name: "n".into(), version: "1".into() },
+                })
+            }
+            async fn list_tools(&mut self) -> ClientResult<Vec<McpTool>> { Ok(vec![]) }
+            async fn call_tool(&mut self, _name: &str, _args: serde_json::Value) -> ClientResult<ToolCallResult> {
+                Ok(ToolCallResult::ok(""))
+            }
+            async fn list_resources(&mut self) -> ClientResult<Vec<Resource>> { Ok(vec![]) }
+            async fn read_resource(&mut self, _uri: &str) -> ClientResult<ResourceContent> { Ok(ResourceContent::default()) }
+            async fn list_prompts(&mut self) -> ClientResult<Vec<Prompt>> { Ok(vec![]) }
+            async fn get_prompt(&mut self, _name: &str, _args: serde_json::Value) -> ClientResult<PromptResult> { Ok(PromptResult::default()) }
+            async fn close(&mut self) -> ClientResult<()> { Ok(()) }
+            fn server_info(&self) -> Option<&ServerInfo> { None }
+            fn is_connected(&self) -> bool { false }
+        }
+
+        let mcp_tool = McpTool {
+            name: "test".to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        };
+        let adapter = McpAdapter::new(Box::new(NoInfoMock), mcp_tool);
+        let def = adapter.definition();
+        // When no server info, should use "unknown"
+        assert!(def.name.contains("unknown"));
     }
 }

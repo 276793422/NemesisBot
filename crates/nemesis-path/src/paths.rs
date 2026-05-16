@@ -471,6 +471,7 @@ mod tests {
 
     #[test]
     fn test_path_manager_config_path_default() {
+        let _g = EnvGuard::remove(ENV_CONFIG);
         let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
         assert_eq!(pm.config_path(), PathBuf::from("/tmp/test_home/config.json"));
     }
@@ -484,6 +485,7 @@ mod tests {
 
     #[test]
     fn test_path_manager_mcp_config_default() {
+        let _g = EnvGuard::remove(ENV_MCP_CONFIG);
         let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
         assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/config.mcp.json"));
     }
@@ -497,6 +499,7 @@ mod tests {
 
     #[test]
     fn test_path_manager_security_config_default() {
+        let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
         let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
         assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/config.security.json"));
     }
@@ -510,6 +513,7 @@ mod tests {
 
     #[test]
     fn test_path_manager_skills_config_default() {
+        let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
         let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
         assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/config.skills.json"));
     }
@@ -616,6 +620,13 @@ mod tests {
 
     // ---- New tests for coverage ----
 
+    /// Global reentrant mutex to serialize tests that modify environment variables.
+    /// Rust tests run in parallel by default, but env vars are process-global,
+    /// so concurrent modifications cause race conditions. The reentrant mutex allows
+    /// a single test thread to acquire multiple guards (for multiple EnvGuard instances)
+    /// while blocking other test threads.
+    static ENV_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
+
     /// Helper to safely set env var (set_var/remove_var became unsafe in Rust 2024 edition).
     fn env_set(key: &str, val: &str) {
         unsafe { std::env::set_var(key, val); }
@@ -627,17 +638,24 @@ mod tests {
     }
 
     /// Helper to save, set, and get a restore guard for an env var.
-    struct EnvGuard { key: String, orig: Option<String> }
+    /// Also acquires the global ENV_LOCK to serialize parallel tests.
+    struct EnvGuard {
+        key: String,
+        orig: Option<String>,
+        _lock: parking_lot::ReentrantMutexGuard<'static, ()>,
+    }
     impl EnvGuard {
         fn set(key: &str, val: &str) -> Self {
+            let lock = ENV_LOCK.lock();
             let orig = std::env::var(key).ok();
             env_set(key, val);
-            Self { key: key.to_string(), orig }
+            Self { key: key.to_string(), orig, _lock: lock }
         }
         fn remove(key: &str) -> Self {
+            let lock = ENV_LOCK.lock();
             let orig = std::env::var(key).ok();
             env_remove(key);
-            Self { key: key.to_string(), orig }
+            Self { key: key.to_string(), orig, _lock: lock }
         }
     }
     impl Drop for EnvGuard {
@@ -1396,6 +1414,7 @@ mod tests {
 
     #[test]
     fn test_path_manager_config_path_env_priority() {
+        let _g0 = EnvGuard::remove(ENV_CONFIG);
         let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
         // First verify default
         assert_eq!(pm.config_path(), PathBuf::from("/tmp/test_home/config.json"));

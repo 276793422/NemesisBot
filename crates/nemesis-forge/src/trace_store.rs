@@ -37,6 +37,7 @@ impl TraceStore {
         })?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         Ok(())
     }
 
@@ -139,6 +140,7 @@ impl TraceStore {
                     line.push('\n');
                     file.write_all(line.as_bytes()).await?;
                 }
+                file.flush().await?;
             }
         }
 

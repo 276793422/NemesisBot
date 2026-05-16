@@ -706,4 +706,293 @@ mod tests {
         manager.emit_sync(event).await;
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
+
+    // --- Additional tests ---
+
+    /// Test that unregistering a specific observer removes only that observer
+    /// while leaving others intact.
+    #[tokio::test]
+    async fn test_unregister_removes_specific_observer() {
+        let manager = Manager::new();
+        let (obs1, c1) = TestObserver::new("alpha");
+        let (obs2, c2) = TestObserver::new("beta");
+        let (obs3, c3) = TestObserver::new("gamma");
+
+        manager.register(obs1).await;
+        manager.register(obs2).await;
+        manager.register(obs3).await;
+        assert!(manager.has_observers().await);
+
+        // Unregister only "beta"
+        manager.unregister("beta").await;
+        assert!(manager.has_observers().await);
+
+        // Emit an event; alpha and gamma should receive it, beta should not
+        let event = make_event(EventType::ConversationStart);
+        manager.emit_sync(event).await;
+
+        assert_eq!(c1.load(Ordering::SeqCst), 1);
+        assert_eq!(c2.load(Ordering::SeqCst), 0); // beta was unregistered
+        assert_eq!(c3.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that unregistering a non-existent observer name does not remove
+    /// any registered observers.
+    #[tokio::test]
+    async fn test_unregister_nonexistent_name() {
+        let manager = Manager::new();
+        let (obs1, c1) = TestObserver::new("obs1");
+        let (obs2, c2) = TestObserver::new("obs2");
+
+        manager.register(obs1).await;
+        manager.register(obs2).await;
+
+        // Unregister a name that does not exist
+        manager.unregister("nonexistent").await;
+        assert!(manager.has_observers().await);
+
+        // Both observers should still be active
+        let event = make_event(EventType::ConversationStart);
+        manager.emit_sync(event).await;
+
+        assert_eq!(c1.load(Ordering::SeqCst), 1);
+        assert_eq!(c2.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test has_observers returns false when no observers are registered.
+    #[tokio::test]
+    async fn test_has_observers_false_when_empty() {
+        let manager = Manager::new();
+        assert!(!manager.has_observers().await);
+
+        // Register one, then unregister it
+        let (obs, _) = TestObserver::new("temp");
+        manager.register(obs).await;
+        assert!(manager.has_observers().await);
+
+        manager.unregister("temp").await;
+        assert!(!manager.has_observers().await);
+    }
+
+    /// Test has_observers returns true when at least one observer is registered.
+    #[tokio::test]
+    async fn test_has_observers_true_when_registered() {
+        let manager = Manager::new();
+        let (obs, _) = TestObserver::new("single");
+        manager.register(obs).await;
+        assert!(manager.has_observers().await);
+    }
+
+    /// Test that a ConversationEnd event type is emitted and received correctly.
+    #[tokio::test]
+    async fn test_conversation_end_event_type() {
+        let manager = Manager::new();
+        let (obs, count) = TestObserver::new("end_listener");
+        manager.register(obs).await;
+
+        let event = ConversationEvent {
+            event_type: EventType::ConversationEnd,
+            trace_id: "trace-end-001".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: EventData::ConversationEnd(ConversationEndData {
+                session_key: "web:chat-end".to_string(),
+                channel: "web".to_string(),
+                chat_id: "chat-end".to_string(),
+                total_rounds: 7,
+                total_duration: Duration::from_secs(300),
+                content: "conversation finished".to_string(),
+                error: Some("timeout exceeded".to_string()),
+            }),
+        };
+
+        manager.emit_sync(event).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that a ToolCall event with EventData::ToolCall is emitted and
+    /// received correctly, including full argument data.
+    #[tokio::test]
+    async fn test_tool_call_event_data() {
+        let manager = Manager::new();
+        let (obs, count) = TestObserver::new("tool_listener");
+        manager.register(obs).await;
+
+        let mut arguments = HashMap::new();
+        arguments.insert("path".to_string(), serde_json::json!("/tmp/test.txt"));
+        arguments.insert("mode".to_string(), serde_json::json!("read"));
+
+        let event = ConversationEvent {
+            event_type: EventType::ToolCall,
+            trace_id: "trace-tool-001".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: EventData::ToolCall(ToolCallData {
+                tool_name: "file_read".to_string(),
+                arguments,
+                success: true,
+                duration: Duration::from_millis(42),
+                error: None,
+                llm_round: 2,
+                chain_pos: 1,
+            }),
+        };
+
+        manager.emit_sync(event).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that a ConversationEnd event with no error is emitted and received.
+    #[tokio::test]
+    async fn test_conversation_end_data_no_error_event() {
+        let manager = Manager::new();
+        let (obs, count) = TestObserver::new("end_no_err");
+        manager.register(obs).await;
+
+        let event = ConversationEvent {
+            event_type: EventType::ConversationEnd,
+            trace_id: "trace-end-ok".to_string(),
+            timestamp: chrono::Utc::now(),
+            data: EventData::ConversationEnd(ConversationEndData {
+                session_key: "rpc:job-42".to_string(),
+                channel: "rpc".to_string(),
+                chat_id: "job-42".to_string(),
+                total_rounds: 1,
+                total_duration: Duration::from_millis(800),
+                content: "task complete".to_string(),
+                error: None,
+            }),
+        };
+
+        manager.emit_sync(event).await;
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Test that the observer name() method returns the correct identifier.
+    #[tokio::test]
+    async fn test_observer_name_method() {
+        let (obs, _) = TestObserver::new("my_custom_name");
+        assert_eq!(obs.name(), "my_custom_name");
+
+        let (obs2, _) = TestObserver::new("another_observer");
+        assert_eq!(obs2.name(), "another_observer");
+    }
+
+    /// Test that the name method works correctly when the observer is used
+    /// through the dyn Observer trait object.
+    #[tokio::test]
+    async fn test_observer_name_via_dyn_trait() {
+        let (obs, _) = TestObserver::new("trait_name_test");
+        let dyn_obs: Arc<dyn Observer> = obs;
+        assert_eq!(dyn_obs.name(), "trait_name_test");
+    }
+
+    /// Test concurrent registration and unregistration from multiple tasks.
+    /// This verifies that the RwLock-based Manager handles concurrent access
+    /// without deadlock or data corruption.
+    #[tokio::test]
+    async fn test_concurrent_register_unregister() {
+        let manager = Arc::new(Manager::new());
+
+        // Spawn multiple tasks that register observers concurrently
+        let mut handles = vec![];
+        for i in 0..20 {
+            let mgr = Arc::clone(&manager);
+            handles.push(tokio::spawn(async move {
+                let name = format!("concurrent_obs_{}", i);
+                let (obs, _count) = TestObserver::new(&name);
+                mgr.register(obs).await;
+                name
+            }));
+        }
+
+        // Collect all registered names
+        let mut names = vec![];
+        for handle in handles {
+            names.push(handle.await.unwrap());
+        }
+
+        // All 20 should be registered
+        assert!(manager.has_observers().await);
+
+        // Now concurrently unregister half of them
+        let mut unreg_handles = vec![];
+        for name in names.iter().take(10) {
+            let mgr = Arc::clone(&manager);
+            let n = name.clone();
+            unreg_handles.push(tokio::spawn(async move {
+                mgr.unregister(&n).await;
+            }));
+        }
+        for handle in unreg_handles {
+            handle.await.unwrap();
+        }
+
+        // Should still have observers (the remaining 10)
+        assert!(manager.has_observers().await);
+
+        // Unregister the remaining 10 concurrently
+        let mut remaining_handles = vec![];
+        for name in names.iter().skip(10) {
+            let mgr = Arc::clone(&manager);
+            let n = name.clone();
+            remaining_handles.push(tokio::spawn(async move {
+                mgr.unregister(&n).await;
+            }));
+        }
+        for handle in remaining_handles {
+            handle.await.unwrap();
+        }
+
+        // All observers should now be gone
+        assert!(!manager.has_observers().await);
+    }
+
+    /// Test concurrent emit while registering/unregistering observers to
+    /// ensure no races or panics occur under mixed concurrent operations.
+    #[tokio::test]
+    async fn test_concurrent_emit_with_registration() {
+        let manager = Arc::new(Manager::new());
+
+        // Pre-register some observers
+        for i in 0..5 {
+            let (obs, _) = TestObserver::new(&format!("pre_{}", i));
+            manager.register(obs).await;
+        }
+
+        // Spawn a task that continuously emits events
+        let emit_mgr = Arc::clone(&manager);
+        let emit_handle = tokio::spawn(async move {
+            for _ in 0..50 {
+                let event = make_event(EventType::ConversationStart);
+                emit_mgr.emit(event).await;
+                tokio::task::yield_now().await;
+            }
+        });
+
+        // Spawn a task that concurrently registers more observers
+        let reg_mgr = Arc::clone(&manager);
+        let reg_handle = tokio::spawn(async move {
+            for i in 0..25 {
+                let (obs, _) = TestObserver::new(&format!("concurrent_{}", i));
+                reg_mgr.register(obs).await;
+                tokio::task::yield_now().await;
+            }
+        });
+
+        // Spawn a task that concurrently unregisters observers
+        let unreg_mgr = Arc::clone(&manager);
+        let unreg_handle = tokio::spawn(async move {
+            for i in 0..5 {
+                unreg_mgr.unregister(&format!("pre_{}", i)).await;
+                tokio::task::yield_now().await;
+            }
+        });
+
+        // Wait for all tasks to complete without panicking
+        emit_handle.await.unwrap();
+        reg_handle.await.unwrap();
+        unreg_handle.await.unwrap();
+
+        // The manager should still be in a valid state
+        assert!(manager.has_observers().await);
+    }
 }

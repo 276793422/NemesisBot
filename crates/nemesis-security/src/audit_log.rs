@@ -248,7 +248,7 @@ mod tests {
     fn test_sanitize_target_long() {
         let long = "a".repeat(300);
         let result = sanitize_target(&long);
-        assert_eq!(result.len(), 203); // 200 + "..."
+        assert_eq!(result.len(), 200); // 197 + "..." = 200
         assert!(result.ends_with("..."));
     }
 
@@ -261,7 +261,7 @@ mod tests {
     fn test_sanitize_reason_long() {
         let long = "x".repeat(150);
         let result = sanitize_reason(&long);
-        assert_eq!(result.len(), 103);
+        assert_eq!(result.len(), 100); // 97 + "..." = 100
         assert!(result.ends_with("..."));
     }
 

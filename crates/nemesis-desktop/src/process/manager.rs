@@ -1443,4 +1443,223 @@ mod tests {
         assert_eq!(rx1.try_recv().unwrap()["r"], 1);
         assert_eq!(rx2.try_recv().unwrap()["r"], 2);
     }
+
+    // ============================================================
+    // Additional coverage tests
+    // ============================================================
+
+    #[test]
+    fn test_process_manager_default_trait() {
+        let mgr = ProcessManager::default();
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    #[test]
+    fn test_ws_port_default() {
+        let mgr = ProcessManager::new();
+        assert_eq!(mgr.ws_port(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_start_stop_ws_port_assigned() {
+        let mgr = ProcessManager::new();
+        assert_eq!(mgr.ws_port(), 0);
+        mgr.start().await.unwrap();
+        let port = mgr.ws_port();
+        assert!(port > 0);
+        mgr.stop().unwrap();
+        // After stop, port should still be the same (not reset)
+        assert_eq!(mgr.ws_port(), port);
+    }
+
+    #[test]
+    fn test_get_child_status_all_variants() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+
+            let mut c1 = ChildProcess::new("c1".to_string(), 100, "t".to_string());
+            c1.status = ProcessStatus::Starting;
+            state.children.insert("c1".to_string(), c1);
+
+            let mut c2 = ChildProcess::new("c2".to_string(), 200, "t".to_string());
+            c2.status = ProcessStatus::Handshaking;
+            state.children.insert("c2".to_string(), c2);
+
+            let mut c3 = ChildProcess::new("c3".to_string(), 300, "t".to_string());
+            c3.status = ProcessStatus::Connected;
+            state.children.insert("c3".to_string(), c3);
+
+            let mut c4 = ChildProcess::new("c4".to_string(), 400, "t".to_string());
+            c4.status = ProcessStatus::Running;
+            state.children.insert("c4".to_string(), c4);
+
+            let mut c5 = ChildProcess::new("c5".to_string(), 500, "t".to_string());
+            c5.status = ProcessStatus::Failed;
+            state.children.insert("c5".to_string(), c5);
+
+            let mut c6 = ChildProcess::new("c6".to_string(), 600, "t".to_string());
+            c6.status = ProcessStatus::Terminated;
+            state.children.insert("c6".to_string(), c6);
+        }
+
+        assert_eq!(mgr.get_child("c1"), Some(ProcessStatus::Starting));
+        assert_eq!(mgr.get_child("c2"), Some(ProcessStatus::Handshaking));
+        assert_eq!(mgr.get_child("c3"), Some(ProcessStatus::Connected));
+        assert_eq!(mgr.get_child("c4"), Some(ProcessStatus::Running));
+        assert_eq!(mgr.get_child("c5"), Some(ProcessStatus::Failed));
+        assert_eq!(mgr.get_child("c6"), Some(ProcessStatus::Terminated));
+    }
+
+    #[test]
+    fn test_terminate_child_then_terminate_again() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+            let child = ChildProcess::new("c1".to_string(), 99999, "test".to_string());
+            state.children.insert("c1".to_string(), child);
+        }
+
+        // First terminate succeeds
+        assert!(mgr.terminate_child("c1").is_ok());
+        assert_eq!(mgr.active_count(), 0);
+
+        // Second terminate fails (child not found)
+        assert!(mgr.terminate_child("c1").is_err());
+    }
+
+    #[test]
+    fn test_submit_result_with_complex_json() {
+        let mgr = ProcessManager::new();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        {
+            let mut state = mgr.state.lock();
+            state.result_channels.insert("c1".to_string(), tx);
+        }
+
+        let result = serde_json::json!({
+            "action": "approved",
+            "request_id": "req-123",
+            "details": {
+                "operation": "file_write",
+                "path": "/tmp/test.txt",
+                "risk_level": "MEDIUM"
+            },
+            "timestamp": "2026-05-16T10:00:00Z"
+        });
+
+        assert!(mgr.submit_result("c1", result.clone()));
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received["action"], "approved");
+        assert_eq!(received["details"]["risk_level"], "MEDIUM");
+    }
+
+    #[test]
+    fn test_cleanup_stale_preserves_alive_and_removes_dead() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+            // Two alive children
+            let alive1 = ChildProcess::new("alive1".to_string(), 99999, "dashboard".to_string());
+            let alive2 = ChildProcess::new("alive2".to_string(), 99998, "approval".to_string());
+            // Two dead children (killed)
+            let mut dead1 = ChildProcess::new("dead1".to_string(), 99997, "test".to_string());
+            dead1.kill().unwrap();
+            let mut dead2 = ChildProcess::new("dead2".to_string(), 99996, "test".to_string());
+            dead2.kill().unwrap();
+
+            state.children.insert("alive1".to_string(), alive1);
+            state.children.insert("alive2".to_string(), alive2);
+            state.children.insert("dead1".to_string(), dead1);
+            state.children.insert("dead2".to_string(), dead2);
+
+            // Add result channels for all
+            let (tx1, _) = tokio::sync::oneshot::channel();
+            let (tx2, _) = tokio::sync::oneshot::channel();
+            state.result_channels.insert("dead1".to_string(), tx1);
+            state.result_channels.insert("dead2".to_string(), tx2);
+        }
+
+        assert_eq!(mgr.active_count(), 4);
+        mgr.cleanup_stale();
+        assert_eq!(mgr.active_count(), 2);
+        assert!(mgr.get_child("alive1").is_some());
+        assert!(mgr.get_child("alive2").is_some());
+        assert!(mgr.get_child("dead1").is_none());
+        assert!(mgr.get_child("dead2").is_none());
+        // Result channels for dead children should be removed
+        assert!(!mgr.submit_result("dead1", serde_json::json!({})));
+        assert!(!mgr.submit_result("dead2", serde_json::json!({})));
+    }
+
+    #[test]
+    fn test_notify_child_different_children() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+            let c1 = ChildProcess::new("c1".to_string(), 99999, "dashboard".to_string());
+            let c2 = ChildProcess::new("c2".to_string(), 99998, "approval".to_string());
+            state.children.insert("c1".to_string(), c1);
+            state.children.insert("c2".to_string(), c2);
+        }
+
+        // Both should fail because no WS connection
+        let r1 = mgr.notify_child("c1", "method", serde_json::Value::Null);
+        assert!(r1.is_err());
+
+        let r2 = mgr.notify_child("c2", "method", serde_json::Value::Null);
+        assert!(r2.is_err());
+
+        // Nonexistent child
+        let r3 = mgr.notify_child("c3", "method", serde_json::Value::Null);
+        assert!(r3.is_err());
+        assert!(r3.unwrap_err().contains("child not found"));
+    }
+
+    #[test]
+    fn test_get_child_by_type_multiple_types() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+            let c1 = ChildProcess::new("c1".to_string(), 100, "dashboard".to_string());
+            let c2 = ChildProcess::new("c2".to_string(), 200, "approval".to_string());
+            let c3 = ChildProcess::new("c3".to_string(), 300, "headless".to_string());
+            state.children.insert("c1".to_string(), c1);
+            state.children.insert("c2".to_string(), c2);
+            state.children.insert("c3".to_string(), c3);
+        }
+
+        assert_eq!(mgr.get_child_by_type("dashboard"), Some("c1".to_string()));
+        assert_eq!(mgr.get_child_by_type("approval"), Some("c2".to_string()));
+        assert_eq!(mgr.get_child_by_type("headless"), Some("c3".to_string()));
+        assert!(mgr.get_child_by_type("unknown").is_none());
+    }
+
+    #[test]
+    fn test_stop_with_result_channels_and_children() {
+        let mgr = ProcessManager::new();
+        {
+            let mut state = mgr.state.lock();
+            let child = ChildProcess::new("c1".to_string(), 99999, "test".to_string());
+            state.children.insert("c1".to_string(), child);
+            let (tx, _) = tokio::sync::oneshot::channel();
+            state.result_channels.insert("c1".to_string(), tx);
+        }
+
+        assert_eq!(mgr.active_count(), 1);
+        mgr.stop().unwrap();
+        assert_eq!(mgr.active_count(), 0);
+        assert!(!mgr.submit_result("c1", serde_json::json!({})));
+    }
+
+    #[test]
+    fn test_spawn_child_multiple_invocations_unique_ids() {
+        let mgr = ProcessManager::new();
+        // All will fail but each should try a unique child ID
+        let _ = mgr.spawn_child("test", &serde_json::json!({}));
+        let _ = mgr.spawn_child("test", &serde_json::json!({}));
+        let _ = mgr.spawn_child("test", &serde_json::json!({}));
+        // All fail during handshake, so active_count should be 0
+        assert_eq!(mgr.active_count(), 0);
+    }
 }

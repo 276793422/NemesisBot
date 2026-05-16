@@ -1061,4 +1061,228 @@ mod tests {
             Err(_) => { /* timeout — acceptable, the spawned task might be slow */ }
         }
     }
+
+    // ============================================================
+    // Additional coverage tests
+    // ============================================================
+
+    #[test]
+    fn test_build_request_body_empty_model_stays_empty() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4o".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+
+        // Empty model string stays empty after normalize (no special handling)
+        let body = provider.build_request_body(&[], &[], "", &ChatOptions::default());
+        assert_eq!(body["model"], "");
+    }
+
+    #[test]
+    fn test_build_request_body_with_stop_strings() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+
+        let body = provider.build_request_body(
+            &[], &[], "gpt-4",
+            &ChatOptions {
+                stop: Some(vec!["\n\n".to_string(), "END".to_string()]),
+                ..Default::default()
+            },
+        );
+        let stop = body["stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0], "\n\n");
+        assert_eq!(stop[1], "END");
+    }
+
+    #[test]
+    fn test_normalize_model_deepseek() {
+        assert_eq!(HttpProvider::normalize_model("deepseek-chat"), "deepseek-chat");
+        assert_eq!(HttpProvider::normalize_model("deepseek/deepseek-chat"), "deepseek-chat");
+    }
+
+    #[test]
+    fn test_normalize_model_gpt35_aliases() {
+        assert_eq!(HttpProvider::normalize_model("gpt35-turbo"), "gpt-3.5-turbo");
+        // "gpt35" without -turbo is not an alias, stays as-is
+        assert_eq!(HttpProvider::normalize_model("gpt35"), "gpt35");
+    }
+
+    #[test]
+    fn test_normalize_model_o_series() {
+        assert_eq!(HttpProvider::normalize_model("o1"), "o1");
+        assert_eq!(HttpProvider::normalize_model("o3-mini"), "o3-mini");
+    }
+
+    #[test]
+    fn test_uses_completion_tokens_negative_cases() {
+        assert!(!HttpProvider::uses_completion_tokens("gpt-3.5-turbo"));
+        assert!(!HttpProvider::uses_completion_tokens("gpt-4"));
+        assert!(!HttpProvider::uses_completion_tokens("gpt-4o"));
+        assert!(!HttpProvider::uses_completion_tokens("gpt-4o-mini"));
+        assert!(!HttpProvider::uses_completion_tokens("claude-3-sonnet"));
+        assert!(!HttpProvider::uses_completion_tokens("deepseek-chat"));
+    }
+
+    #[test]
+    fn test_http_provider_new_creates_client() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "key".to_string(),
+            default_model: "model".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+        assert_eq!(provider.default_model(), "model");
+        assert_eq!(provider.name(), "test");
+    }
+
+    #[test]
+    fn test_http_provider_config_with_multiple_headers() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4".to_string(),
+            timeout_secs: 30,
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("X-Api-Key".to_string(), "abc123".to_string());
+                h.insert("X-Request-Id".to_string(), "req-1".to_string());
+                h.insert("Authorization".to_string(), "Bearer override".to_string());
+                h
+            },
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+        assert_eq!(provider.name(), "test");
+    }
+
+    #[test]
+    fn test_build_request_body_with_tool_calls_message() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+
+        let messages = vec![Message {
+            role: "assistant".to_string(),
+            content: "".to_string(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_string(),
+                call_type: Some("function".to_string()),
+                function: Some(FunctionCall {
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"/test.txt"}"#.to_string(),
+                }),
+                name: None,
+                arguments: None,
+            }],
+            tool_call_id: None,
+            timestamp: None,
+        }];
+
+        let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+        let msg = &body["messages"][0];
+        assert!(msg.get("tool_calls").is_some());
+        let tc = msg["tool_calls"].as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn test_build_request_body_with_tool_result_message() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+
+        let messages = vec![Message {
+            role: "tool".to_string(),
+            content: "file contents here".to_string(),
+            tool_calls: vec![],
+            tool_call_id: Some("call_1".to_string()),
+            timestamp: None,
+        }];
+
+        let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+        let msg = &body["messages"][0];
+        assert_eq!(msg["role"], "tool");
+        assert_eq!(msg["tool_call_id"], "call_1");
+        assert_eq!(msg["content"], "file contents here");
+    }
+
+    #[test]
+    fn test_build_request_body_kimi_with_custom_temperature() {
+        let config = HttpProviderConfig {
+            name: "test".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: "test-key".to_string(),
+            default_model: "gpt-4".to_string(),
+            timeout_secs: 30,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: false,
+        };
+        let provider = HttpProvider::new(config);
+
+        // Kimi model with explicit temperature should keep it
+        let body = provider.build_request_body(
+            &[], &[], "moonshot-v1",
+            &ChatOptions { temperature: Some(0.5), ..Default::default() }
+        );
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn test_http_provider_config_default_model_accessor() {
+        let config = HttpProviderConfig {
+            name: "my-provider".to_string(),
+            base_url: "https://api.custom.com".to_string(),
+            api_key: "key".to_string(),
+            default_model: "custom-model".to_string(),
+            timeout_secs: 60,
+            headers: HashMap::new(),
+            proxy: None,
+            preserve_prefix: true,
+        };
+        let provider = HttpProvider::new(config);
+        assert_eq!(provider.default_model(), "custom-model");
+    }
 }

@@ -482,4 +482,151 @@ mod tests {
         assert_eq!(mgr.get_last_channel(), "second");
         assert_eq!(mgr.get_last_chat_id(), "second_chat");
     }
+
+    // --- Additional tests for is_internal_channel ---
+
+    #[test]
+    fn test_is_internal_channel_all_known_internal() {
+        // Explicitly verify every entry in INTERNAL_CHANNELS
+        assert!(is_internal_channel("cli"));
+        assert!(is_internal_channel("system"));
+        assert!(is_internal_channel("subagent"));
+    }
+
+    #[test]
+    fn test_is_internal_channel_common_external_channels() {
+        // Common external channel names that must NOT be internal
+        assert!(!is_internal_channel("web"));
+        assert!(!is_internal_channel("discord"));
+        assert!(!is_internal_channel("telegram"));
+        assert!(!is_internal_channel("feishu"));
+        assert!(!is_internal_channel("rpc"));
+        assert!(!is_internal_channel("slack"));
+    }
+
+    #[test]
+    fn test_is_internal_channel_with_colon_suffix() {
+        // Channels like "cli:user" or "system:alert" are not exact matches
+        assert!(!is_internal_channel("cli:user"));
+        assert!(!is_internal_channel("system:alert"));
+        assert!(!is_internal_channel("subagent:task"));
+    }
+
+    #[test]
+    fn test_is_internal_channel_with_whitespace() {
+        // Whitespace should not match
+        assert!(!is_internal_channel(" cli"));
+        assert!(!is_internal_channel("cli "));
+        assert!(!is_internal_channel(" system "));
+    }
+
+    #[test]
+    fn test_is_internal_channel_long_string() {
+        assert!(!is_internal_channel("a_very_long_channel_name_that_is_definitely_not_internal"));
+    }
+
+    // --- Additional workspace state edge cases ---
+
+    #[test]
+    fn test_set_last_channel_empty_string() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        mgr.set_last_channel("web:user").unwrap();
+        assert_eq!(mgr.get_last_channel(), "web:user");
+
+        // Overwrite with empty string
+        mgr.set_last_channel("").unwrap();
+        assert_eq!(mgr.get_last_channel(), "");
+    }
+
+    #[test]
+    fn test_set_last_chat_id_empty_string() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        mgr.set_last_chat_id("chat_123").unwrap();
+        assert_eq!(mgr.get_last_chat_id(), "chat_123");
+
+        // Overwrite with empty string
+        mgr.set_last_chat_id("").unwrap();
+        assert_eq!(mgr.get_last_chat_id(), "");
+    }
+
+    #[test]
+    fn test_timestamp_advances_on_set_last_channel() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        let ts1 = mgr.get_timestamp();
+        // Small delay is not needed; the timestamp resolution is sufficient
+        // that sequential calls produce different timestamps in practice,
+        // but we just verify the timestamp is >= the initial one.
+        mgr.set_last_channel("web:user").unwrap();
+        let ts2 = mgr.get_timestamp();
+        assert!(ts2 >= ts1);
+    }
+
+    #[test]
+    fn test_timestamp_advances_on_set_last_chat_id() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        let ts1 = mgr.get_timestamp();
+        mgr.set_last_chat_id("chat_1").unwrap();
+        let ts2 = mgr.get_timestamp();
+        assert!(ts2 >= ts1);
+    }
+
+    #[test]
+    fn test_snapshot_is_independent_of_manager() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+        mgr.set_last_channel("web:abc").unwrap();
+
+        let snap = mgr.snapshot();
+        // Modify the manager after snapshot
+        mgr.set_last_channel("discord:xyz").unwrap();
+
+        // Snapshot should still reflect old value
+        assert_eq!(snap.last_channel, "web:abc");
+        // Manager should have new value
+        assert_eq!(mgr.get_last_channel(), "discord:xyz");
+    }
+
+    #[test]
+    fn test_workspace_state_serialization_roundtrip() {
+        let original = WorkspaceState {
+            last_channel: "telegram:user42".to_string(),
+            last_chat_id: "msg_999".to_string(),
+            timestamp: Utc::now(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: WorkspaceState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.last_channel, original.last_channel);
+        assert_eq!(restored.last_chat_id, original.last_chat_id);
+        assert_eq!(restored.timestamp, original.timestamp);
+    }
+
+    #[test]
+    fn test_set_last_channel_with_unicode() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        mgr.set_last_channel("web:用户123").unwrap();
+        assert_eq!(mgr.get_last_channel(), "web:用户123");
+
+        // Verify persistence with unicode
+        let mgr2 = WorkspaceStateManager::new(tmp.path());
+        assert_eq!(mgr2.get_last_channel(), "web:用户123");
+    }
+
+    #[test]
+    fn test_set_last_chat_id_with_special_chars() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = WorkspaceStateManager::new(tmp.path());
+
+        mgr.set_last_chat_id("chat-abc_def:123").unwrap();
+        assert_eq!(mgr.get_last_chat_id(), "chat-abc_def:123");
+    }
 }

@@ -183,6 +183,9 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
     fn node_id(&self) -> &str {
         &self.node_id
     }
+    fn name(&self) -> &str {
+        &self.node_id
+    }
     fn address(&self) -> &str {
         "127.0.0.1"
     }

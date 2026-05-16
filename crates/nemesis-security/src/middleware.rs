@@ -3553,4 +3553,438 @@ mod tests {
         let result = wrapper.open_file(&file_path).await;
         assert!(result.is_err());
     }
+
+    // ============================================================
+    // Additional coverage for 95%+ target (final round)
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_file_wrapper_append_to_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\append.txt", ws);
+        std::fs::write(&file_path, "line1\n").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.append_file(&file_path, "line2").await;
+        assert!(result.is_ok(), "append_file failed: {:?}", result);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "line1\nline2");
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_append_to_existing_no_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\append2.txt", ws);
+        std::fs::write(&file_path, "nolinebreak").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.append_file(&file_path, "appended").await;
+        assert!(result.is_ok());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "nolinebreak\nappended");
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_append_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\new_append.txt", ws);
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.append_file(&file_path, "first line").await;
+        assert!(result.is_ok());
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "first line");
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_remove_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\to_remove.txt", ws);
+        std::fs::write(&file_path, "content").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Unrestricted);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.remove_file(&file_path).await;
+        assert!(result.is_ok());
+        assert!(!std::path::Path::new(&file_path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_edit_pattern_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\edit_miss.txt", ws);
+        std::fs::write(&file_path, "hello world").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.edit_file(&file_path, "nonexistent_pattern", "replacement").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_open_file_reads_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\binary.dat", ws);
+        std::fs::write(&file_path, b"\x00\x01\x02\x03").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.open_file(&file_path).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![0x00, 0x01, 0x02, 0x03]);
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_create_and_delete_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let new_dir = format!("{}\\new_dir", ws);
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Unrestricted);
+        let wrapper = SecureFileWrapper::new(&mw);
+        // Create directory
+        let result = wrapper.create_directory(&new_dir).await;
+        assert!(result.is_ok(), "create_directory failed: {:?}", result);
+        assert!(std::path::Path::new(&new_dir).is_dir());
+        // Delete directory
+        let result = wrapper.delete_directory(&new_dir).await;
+        assert!(result.is_ok(), "delete_directory failed: {:?}", result);
+        assert!(!std::path::Path::new(&new_dir).exists());
+    }
+
+    #[test]
+    fn test_file_metadata_struct() {
+        let meta = FileMetadata {
+            is_file: true,
+            is_dir: false,
+            len: 1024,
+            readonly: false,
+            modified: "2025-01-01T00:00:00Z".to_string(),
+        };
+        assert!(meta.is_file);
+        assert!(!meta.is_dir);
+        assert_eq!(meta.len, 1024);
+        assert!(!meta.readonly);
+    }
+
+    #[test]
+    fn test_dir_entry_struct() {
+        let entry = DirEntry {
+            name: "test.txt".to_string(),
+            is_dir: false,
+            size: 42,
+        };
+        assert_eq!(entry.name, "test.txt");
+        assert!(!entry.is_dir);
+        assert_eq!(entry.size, 42);
+    }
+
+    #[test]
+    fn test_operation_request_fields() {
+        let req = OperationRequest {
+            id: "test".to_string(),
+            op_type: OperationType::FileRead,
+            danger_level: DangerLevel::Low,
+            user: "test".to_string(),
+            source: "cli".to_string(),
+            target: "/tmp/test".to_string(),
+            timestamp: None,
+            approver: None,
+            approved_at: None,
+            denied_reason: None,
+        };
+        assert_eq!(req.id, "test");
+        assert!(req.approver.is_none());
+        assert!(req.approved_at.is_none());
+        assert!(req.denied_reason.is_none());
+    }
+
+    #[test]
+    fn test_batch_operation_request_fields() {
+        let req = BatchOperationRequest {
+            id: "batch".to_string(),
+            ..Default::default()
+        };
+        assert!(req.operations.is_empty());
+        assert!(req.user.is_empty());
+        assert!(req.source.is_empty());
+        assert!(req.description.is_empty());
+    }
+
+    #[test]
+    fn test_process_wrapper_check_spawn_elevated() {
+        let mw = make_middleware(PermissionPreset::Elevated);
+        let wrapper = SecureProcessWrapper::new(&mw);
+        // spawn is allowed under Elevated for safe commands
+        assert!(wrapper.check_process_spawn("cargo test").is_ok());
+    }
+
+    #[test]
+    fn test_process_wrapper_check_kill_unrestricted() {
+        let mw = make_middleware(PermissionPreset::Unrestricted);
+        let wrapper = SecureProcessWrapper::new(&mw);
+        // kill is allowed under Unrestricted
+        assert!(wrapper.check_process_kill("1234").is_ok());
+    }
+
+    #[test]
+    fn test_network_wrapper_check_request_standard() {
+        let mw = make_middleware(PermissionPreset::Standard);
+        let wrapper = SecureNetworkWrapper::new(&mw);
+        assert!(wrapper.check_network_request("https://example.com").is_ok());
+    }
+
+    #[test]
+    fn test_network_wrapper_check_download_standard() {
+        let mw = make_middleware(PermissionPreset::Standard);
+        let wrapper = SecureNetworkWrapper::new(&mw);
+        assert!(wrapper.check_network_download("https://example.com/file.zip").is_ok());
+    }
+
+    #[test]
+    fn test_network_wrapper_check_upload_standard_denied() {
+        let mw = make_middleware(PermissionPreset::Standard);
+        let wrapper = SecureNetworkWrapper::new(&mw);
+        assert!(wrapper.check_network_upload("https://example.com/upload").is_err());
+    }
+
+    #[test]
+    fn test_network_wrapper_upload_invalid_scheme() {
+        let mw = make_middleware(PermissionPreset::Unrestricted);
+        let wrapper = SecureNetworkWrapper::new(&mw);
+        assert!(wrapper.check_network_upload("ftp://example.com/upload").is_err());
+    }
+
+    #[test]
+    fn test_permission_is_target_allowed_with_allowed_list() {
+        let mut perm = create_cli_permission();
+        perm.allowed_targets.push("/tmp/allowed".to_string());
+        // When allowed_targets is non-empty, only those targets are allowed
+        assert!(!perm.is_target_denied("/tmp/allowed"));
+    }
+
+    #[test]
+    fn test_danger_level_ordering() {
+        assert!(DangerLevel::Low < DangerLevel::Medium);
+        assert!(DangerLevel::Medium < DangerLevel::High);
+        assert!(DangerLevel::High < DangerLevel::Critical);
+    }
+
+    #[test]
+    fn test_operation_type_equality() {
+        assert_eq!(OperationType::FileRead, OperationType::FileRead);
+        assert_ne!(OperationType::FileRead, OperationType::FileWrite);
+    }
+
+    #[test]
+    fn test_permission_preset_values() {
+        // Ensure all presets are distinct
+        let presets = [
+            PermissionPreset::ReadOnly,
+            PermissionPreset::Standard,
+            PermissionPreset::Elevated,
+            PermissionPreset::Unrestricted,
+        ];
+        for i in 0..presets.len() {
+            for j in (i+1)..presets.len() {
+                assert_ne!(presets[i], presets[j]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_security_middleware_with_preset_constructor() {
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(
+            auditor, "user1", "rpc", "/ws", PermissionPreset::Elevated,
+        );
+        assert_eq!(mw.preset(), PermissionPreset::Elevated);
+        assert_eq!(mw.user(), "user1");
+        assert_eq!(mw.source(), "rpc");
+    }
+
+    #[test]
+    fn test_http_request_default_fields() {
+        let req = HttpRequest {
+            url: String::new(),
+            method: "GET".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout_secs: None,
+        };
+        assert!(req.url.is_empty());
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn test_process_output_default_fields() {
+        let output = ProcessOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            success: false,
+        };
+        assert!(output.stdout.is_empty());
+        assert!(!output.success);
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_read_directory_with_mixed_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        std::fs::write(format!("{}\\file1.txt", ws), "hello").unwrap();
+        std::fs::write(format!("{}\\file2.txt", ws), "world").unwrap();
+        std::fs::create_dir(format!("{}\\subdir", ws)).unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.read_directory(&ws).await;
+        assert!(result.is_ok());
+        let entries = result.unwrap();
+        assert_eq!(entries.len(), 3);
+        // Entries should be sorted
+        assert!(entries.contains(&"file1.txt".to_string()));
+        assert!(entries.contains(&"file2.txt".to_string()));
+        assert!(entries.contains(&"subdir/".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_file_wrapper_stat_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::fs::canonicalize(dir.path()).unwrap().to_str().unwrap().to_string();
+        let file_path = format!("{}\\stat_me.txt", ws);
+        std::fs::write(&file_path, "stat content").unwrap();
+        let config = AuditorConfig {
+            enabled: true,
+            default_action: "allow".to_string(),
+            ..Default::default()
+        };
+        let auditor = std::sync::Arc::new(SecurityAuditor::new(config));
+        let mw = SecurityMiddleware::with_preset(auditor, "test_user", "cli", &ws, PermissionPreset::Standard);
+        let wrapper = SecureFileWrapper::new(&mw);
+        let result = wrapper.stat(&file_path).await;
+        assert!(result.is_ok());
+        let meta = result.unwrap();
+        assert!(meta.is_file);
+        assert!(!meta.is_dir);
+        assert_eq!(meta.len, 12);
+    }
+
+    #[test]
+    fn test_check_operation_registry_write_elevated() {
+        let mw = make_middleware(PermissionPreset::Elevated);
+        assert!(mw.check_operation(OperationType::RegistryWrite, "HKLM\\Software").is_err());
+    }
+
+    #[test]
+    fn test_check_operation_system_reboot_unrestricted() {
+        let mw = make_middleware(PermissionPreset::Unrestricted);
+        assert!(mw.check_operation(OperationType::SystemReboot, "now").is_ok());
+    }
+
+    #[test]
+    fn test_check_operation_hardware_spi_elevated() {
+        let mw = make_middleware(PermissionPreset::Elevated);
+        assert!(mw.check_operation(OperationType::HardwareSPI, "spidev1.0").is_err());
+    }
+
+    #[test]
+    fn test_check_operation_hardware_gpio_unrestricted() {
+        let mw = make_middleware(PermissionPreset::Unrestricted);
+        assert!(mw.check_operation(OperationType::HardwareGPIO, "17").is_ok());
+    }
+
+    #[test]
+    fn test_create_cli_permission_operations() {
+        let cli = create_cli_permission();
+        assert!(cli.is_operation_allowed(&OperationType::FileRead));
+        assert!(cli.is_operation_allowed(&OperationType::FileWrite));
+        assert!(cli.is_operation_allowed(&OperationType::FileDelete));
+        assert!(cli.is_operation_allowed(&OperationType::DirRead));
+        assert!(cli.is_operation_allowed(&OperationType::DirCreate));
+        assert!(cli.is_operation_allowed(&OperationType::ProcessExec));
+        assert!(cli.is_operation_allowed(&OperationType::NetworkDownload));
+        assert!(cli.is_operation_allowed(&OperationType::NetworkRequest));
+        // Operations not in allowed list
+        assert!(!cli.is_operation_allowed(&OperationType::ProcessKill));
+        assert!(!cli.is_operation_allowed(&OperationType::RegistryWrite));
+        assert!(!cli.is_operation_allowed(&OperationType::SystemShutdown));
+    }
+
+    #[test]
+    fn test_create_cli_permission_require_approval() {
+        let cli = create_cli_permission();
+        // require_approval contains ProcessKill, SystemShutdown, SystemReboot
+        assert!(cli.require_approval.contains_key(&OperationType::ProcessKill));
+        assert!(cli.require_approval.contains_key(&OperationType::SystemShutdown));
+        assert!(cli.require_approval.contains_key(&OperationType::SystemReboot));
+        // These are allowed without approval
+        assert!(!cli.require_approval.contains_key(&OperationType::FileDelete));
+        assert!(!cli.require_approval.contains_key(&OperationType::ProcessExec));
+        assert!(!cli.require_approval.contains_key(&OperationType::NetworkDownload));
+    }
+
+    #[test]
+    fn test_create_agent_permission_require_approval() {
+        let agent = create_agent_permission("agent-x");
+        assert!(agent.require_approval.contains_key(&OperationType::FileDelete));
+        assert!(agent.require_approval.contains_key(&OperationType::ProcessKill));
+        assert!(agent.require_approval.contains_key(&OperationType::SystemShutdown));
+        assert!(agent.require_approval.contains_key(&OperationType::NetworkDownload));
+    }
 }

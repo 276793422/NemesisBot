@@ -272,4 +272,133 @@ mod tests {
         let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
         assert!(!has_key);
     }
+
+    // -------------------------------------------------------------------------
+    // Additional status tests for coverage
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_status_run_with_temp_config() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let cfg_path = home.join("config.json");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let cfg = serde_json::json!({
+            "default_model": "test/model-1",
+            "model_list": [
+                {"model": "openai/gpt-4", "api_key": "sk-test123"},
+                {"model": "anthropic/claude", "api_key": ""}
+            ],
+            "security": {"enabled": false},
+            "forge": {"enabled": true}
+        });
+        std::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
+
+        // Verify the config can be parsed back correctly
+        let data = std::fs::read_to_string(&cfg_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
+
+        // Default model
+        let model = parsed.get("default_model").and_then(|v| v.as_str());
+        assert_eq!(model, Some("test/model-1"));
+
+        // Model count
+        let models = parsed.get("model_list").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(models.len(), 2);
+
+        // Provider counts
+        let mut provider_counts: std::collections::HashMap<String, (usize, bool)> = std::collections::HashMap::new();
+        for m in models {
+            let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            let parts: Vec<&str> = model.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let provider = parts[0].to_lowercase();
+                let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+                let entry = provider_counts.entry(provider).or_insert((0, false));
+                entry.0 += 1;
+                entry.1 = entry.1 || has_key;
+            }
+        }
+        assert_eq!(provider_counts["openai"], (1, true));
+        assert_eq!(provider_counts["anthropic"], (1, false));
+
+        // Security
+        let security_enabled = parsed.get("security")
+            .and_then(|s| s.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        assert!(!security_enabled);
+
+        // Forge
+        let forge_enabled = parsed.get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(forge_enabled);
+    }
+
+    #[test]
+    fn test_status_auth_no_credentials() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let auth_path = tmp.path().join("auth.json");
+        // No auth file means no credentials
+        assert!(!auth_path.exists());
+    }
+
+    #[test]
+    fn test_status_auth_with_credentials() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let auth_path = tmp.path().join("auth.json");
+        let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
+        let cred = nemesis_auth::AuthCredential::login_paste_token("openai", "test-key").unwrap();
+        store.save("openai", cred).unwrap();
+
+        let providers = store.list_providers();
+        assert_eq!(providers.len(), 1);
+        let retrieved = store.get("openai");
+        assert!(retrieved.is_some());
+
+        let cred = retrieved.unwrap();
+        let status = if cred.is_expired() {
+            "expired"
+        } else if cred.needs_refresh() {
+            "needs refresh"
+        } else {
+            "active"
+        };
+        assert!(!status.is_empty());
+    }
+
+    #[test]
+    fn test_status_model_parsing_mixed_models() {
+        let models = serde_json::json!([
+            {"model": "openai/gpt-4", "api_key": "key1"},
+            {"model": "anthropic/claude-3", "api_key": ""},
+            {"model": "no-slash-model", "api_key": "key3"},
+            {"model": "zhipu/glm-4", "api_key": "key4"},
+            {"model": "", "api_key": "key5"},
+        ]);
+        let model_list = models.as_array().unwrap();
+
+        let mut provider_counts: std::collections::HashMap<String, (usize, bool)> = std::collections::HashMap::new();
+        let mut no_provider_count = 0;
+        for m in model_list {
+            let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+            let parts: Vec<&str> = model.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let provider = parts[0].to_lowercase();
+                let has_key = m.get("api_key").and_then(|v| v.as_str()).map(|k| !k.is_empty()).unwrap_or(false);
+                let entry = provider_counts.entry(provider).or_insert((0, false));
+                entry.0 += 1;
+                entry.1 = entry.1 || has_key;
+            } else {
+                no_provider_count += 1;
+            }
+        }
+        assert_eq!(provider_counts.len(), 3);
+        assert_eq!(no_provider_count, 2); // "no-slash-model" and ""
+    }
 }

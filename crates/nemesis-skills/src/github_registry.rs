@@ -1918,4 +1918,155 @@ mod tests {
         assert_eq!(response.tree[0].entry_type, "blob");
         assert_eq!(response.tree[1].entry_type, "tree");
     }
+
+    #[test]
+    fn test_skill_dir_prefix_three_layer_without_slash() {
+        let config = GitHubSourceConfig {
+            name: "test".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{author}/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        };
+        let registry = GitHubRegistry::from_source(&config);
+        // No slash in slug -> returns None
+        let prefix = registry.skill_dir_prefix("simple");
+        assert!(prefix.is_none());
+    }
+
+    #[test]
+    fn test_build_skill_url_custom_base_url() {
+        let config = GitHubSourceConfig {
+            name: "custom-base".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        };
+        let mut registry = GitHubRegistry::from_source(&config);
+        registry.base_url = "https://custom.githubusercontent.com".to_string();
+        let url = registry.build_skill_url("pdf");
+        assert!(url.starts_with("https://custom.githubusercontent.com"));
+    }
+
+    #[test]
+    fn test_from_source_with_custom_timeout_and_size() {
+        let config = GitHubSourceConfig {
+            name: "custom-timeout".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "skills_json".to_string(),
+            index_path: "index.json".to_string(),
+            skill_path_pattern: "{slug}/SKILL.md".to_string(),
+            timeout_secs: 45,
+            max_size: 2048 * 1024,
+        };
+        let registry = GitHubRegistry::from_source(&config);
+        assert_eq!(registry.timeout, Duration::from_secs(45));
+        assert_eq!(registry.max_size, 2048 * 1024);
+    }
+
+    #[test]
+    fn test_github_skill_missing_optional_fields() {
+        let json = r#"[{"name":"minimal","description":"minimal skill"}]"#;
+        let skills: Vec<GithubSkill> = serde_json::from_str(json).unwrap();
+        assert_eq!(skills[0].name, "minimal");
+        assert!(skills[0].repository.is_none());
+        assert!(skills[0].author.is_none());
+        assert!(skills[0].tags.is_none());
+    }
+
+    #[test]
+    fn test_github_content_entry_type_file() {
+        let json = r#"[{"name":"SKILL.md","type":"file","path":"skills/pdf/SKILL.md"}]"#;
+        let entries: Vec<GitHubContentEntry> = serde_json::from_str(json).unwrap();
+        assert_eq!(entries[0].entry_type, "file");
+    }
+
+    #[test]
+    fn test_github_tree_response_large_tree() {
+        let mut entries = Vec::new();
+        for i in 0..50 {
+            entries.push(format!(r#"{{"path": "skills/skill{}/SKILL.md", "type": "blob"}}"#, i));
+        }
+        let json = format!(r#"{{"sha": "bigsha", "tree": [{}], "truncated": true}}"#, entries.join(","));
+        let response: GithubTreeResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(response.tree.len(), 50);
+        assert_eq!(response.truncated, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_search_connection_error() {
+        let config = GitHubSourceConfig {
+            name: "test".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "skills_json".to_string(),
+            index_path: "skills.json".to_string(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 1,
+            max_size: 1024,
+        };
+        let registry = GitHubRegistry::from_source(&config);
+        let result = registry.search("test", 10).await;
+        // Connection should fail
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_download_and_install_connection_error() {
+        let config = GitHubSourceConfig {
+            name: "test".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 1,
+            max_size: 1024,
+        };
+        let registry = GitHubRegistry::from_source(&config);
+        let result = registry.download_and_install("pdf", "1.0", "/tmp/nonexistent_install_target").await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_api_base_url_uses_github_api() {
+        let config = GitHubSourceConfig {
+            name: "test".to_string(),
+            repo: "org/repo".to_string(),
+            enabled: true,
+            branch: "main".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        };
+        let registry = GitHubRegistry::from_source(&config);
+        assert!(registry.api_base_url().contains("api.github.com"));
+    }
+
+    #[test]
+    fn test_new_from_config_enabled() {
+        let config = crate::types::GitHubConfig {
+            base_url: String::new(),
+            timeout_secs: 0,
+            max_size: 0,
+            enabled: true,
+        };
+        let registry = GitHubRegistry::new_from_config(&config);
+        assert_eq!(registry.name(), "github");
+    }
 }

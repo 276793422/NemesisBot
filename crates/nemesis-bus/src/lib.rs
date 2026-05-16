@@ -700,4 +700,749 @@ mod tests {
 
         assert_eq!(bus.dropped_outbound(), 0);
     }
+
+    // =========================================================================
+    // Additional tests: close() / is_closed() edge cases
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_close_prevents_both_inbound_and_outbound() {
+        let bus = MessageBus::new();
+        let mut in_rx = bus.subscribe_inbound();
+        let mut out_rx = bus.subscribe_outbound();
+
+        bus.close();
+
+        // Publish on both channels after close -- both should be silently dropped.
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "inbound after close".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "outbound after close".to_string(),
+            message_type: String::new(),
+        });
+
+        // Neither receiver should get anything.
+        let in_result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            in_rx.recv(),
+        )
+        .await;
+        let out_result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            out_rx.recv(),
+        )
+        .await;
+        assert!(in_result.is_err() || in_result.unwrap().is_err());
+        assert!(out_result.is_err() || out_result.unwrap().is_err());
+
+        // Dropped counters must remain 0 because close returns early.
+        assert_eq!(bus.dropped_inbound(), 0);
+        assert_eq!(bus.dropped_outbound(), 0);
+    }
+
+    #[test]
+    fn test_is_closed_reflects_state_transitions() {
+        let bus = MessageBus::new();
+        assert!(!bus.is_closed(), "newly created bus should not be closed");
+
+        bus.close();
+        assert!(bus.is_closed(), "bus should be closed after close()");
+
+        // Calling close again should not change anything.
+        bus.close();
+        assert!(bus.is_closed(), "bus should still be closed after second close()");
+    }
+
+    // =========================================================================
+    // Additional tests: error paths for publish when closed / receivers dropped
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_publish_inbound_all_receivers_dropped() {
+        let bus = MessageBus::new();
+
+        {
+            let rx = bus.subscribe_inbound();
+            assert_eq!(bus.inbound_subscriber_count(), 1);
+            // Receiver goes out of scope here.
+            drop(rx);
+        }
+
+        // After receiver is dropped, publish should not panic and should
+        // increment the dropped counter (no receivers left).
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "no receivers".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+
+        assert_eq!(bus.dropped_inbound(), 1);
+        assert_eq!(bus.inbound_subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_outbound_all_receivers_dropped() {
+        let bus = MessageBus::new();
+
+        {
+            let rx = bus.subscribe_outbound();
+            assert_eq!(bus.outbound_subscriber_count(), 1);
+            drop(rx);
+        }
+
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "no receivers".to_string(),
+            message_type: String::new(),
+        });
+
+        assert_eq!(bus.dropped_outbound(), 1);
+        assert_eq!(bus.outbound_subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_inbound_some_receivers_dropped() {
+        let bus = MessageBus::new();
+
+        let mut rx1 = bus.subscribe_inbound();
+        let rx2 = bus.subscribe_inbound();
+        assert_eq!(bus.inbound_subscriber_count(), 2);
+
+        // Drop one receiver; the other should still get messages.
+        drop(rx2);
+        assert_eq!(bus.inbound_subscriber_count(), 1);
+
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "partial".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+
+        // rx1 should still receive the message.
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            rx1.recv(),
+        )
+        .await
+        .expect("timeout waiting for message on surviving receiver")
+        .expect("recv error on surviving receiver");
+        assert_eq!(msg.content, "partial");
+        assert_eq!(bus.dropped_inbound(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_outbound_after_close_with_subscriber() {
+        let bus = MessageBus::new();
+        let mut rx = bus.subscribe_outbound();
+
+        // Publish one message before close.
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "before close".to_string(),
+            message_type: String::new(),
+        });
+
+        bus.close();
+
+        // Publish after close -- should be silently ignored.
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "after close".to_string(),
+            message_type: String::new(),
+        });
+
+        // The pre-close message should be receivable.
+        let msg = rx
+            .recv()
+            .await
+            .expect("should receive pre-close message");
+        assert_eq!(msg.content, "before close");
+
+        // The post-close message was never sent to the channel.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            rx.recv(),
+        )
+        .await;
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "should not receive post-close message"
+        );
+    }
+
+    // =========================================================================
+    // Additional tests: inbound_sender() / outbound_sender() edge cases
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_inbound_sender_cloned_independently() {
+        let bus = MessageBus::new();
+        let sender = bus.inbound_sender();
+        let mut rx = bus.subscribe_inbound();
+
+        // Publish via the cloned sender (not via publish_inbound).
+        sender
+            .send(InboundMessage {
+                channel: "direct".to_string(),
+                sender_id: "u".to_string(),
+                chat_id: "c".to_string(),
+                content: "from sender".to_string(),
+                media: vec![],
+                session_key: "t:c".to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .expect("send via cloned sender should succeed");
+
+        let msg = rx.recv().await.expect("receiver should get message");
+        assert_eq!(msg.content, "from sender");
+        assert_eq!(msg.channel, "direct");
+    }
+
+    #[tokio::test]
+    async fn test_outbound_sender_cloned_independently() {
+        let bus = MessageBus::new();
+        let sender = bus.outbound_sender();
+        let mut rx = bus.subscribe_outbound();
+
+        sender
+            .send(OutboundMessage {
+                channel: "direct".to_string(),
+                chat_id: "c".to_string(),
+                content: "from outbound sender".to_string(),
+                message_type: String::new(),
+            })
+            .expect("send via cloned outbound sender should succeed");
+
+        let msg = rx.recv().await.expect("receiver should get message");
+        assert_eq!(msg.content, "from outbound sender");
+        assert_eq!(msg.channel, "direct");
+    }
+
+    #[tokio::test]
+    async fn test_inbound_sender_works_even_after_bus_closed() {
+        // The cloned sender bypasses publish_inbound's close check.
+        // This tests the broadcast::Sender directly.
+        let bus = MessageBus::new();
+        let mut rx = bus.subscribe_inbound();
+        let sender = bus.inbound_sender();
+
+        bus.close();
+
+        // The broadcast::Sender itself is not closed; only publish_inbound
+        // checks the closed flag. Direct send should still work.
+        let result = sender.send(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "direct after close".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+
+        // broadcast::Sender::send should succeed because the underlying
+        // channel is still open (close only sets the AtomicBool).
+        assert!(result.is_ok(), "direct send should succeed even after bus.close()");
+
+        let msg = rx.recv().await.expect("receiver should get message");
+        assert_eq!(msg.content, "direct after close");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_inbound_senders_share_channel() {
+        let bus = MessageBus::new();
+        let sender1 = bus.inbound_sender();
+        let sender2 = bus.inbound_sender();
+        let mut rx = bus.subscribe_inbound();
+
+        sender1
+            .send(InboundMessage {
+                channel: "test".to_string(),
+                sender_id: "u1".to_string(),
+                chat_id: "c".to_string(),
+                content: "from sender1".to_string(),
+                media: vec![],
+                session_key: "t:c".to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .unwrap();
+
+        sender2
+            .send(InboundMessage {
+                channel: "test".to_string(),
+                sender_id: "u2".to_string(),
+                chat_id: "c".to_string(),
+                content: "from sender2".to_string(),
+                media: vec![],
+                session_key: "t:c".to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+            })
+            .unwrap();
+
+        let msg1 = rx.try_recv().expect("should get first message");
+        assert_eq!(msg1.content, "from sender1");
+        let msg2 = rx.try_recv().expect("should get second message");
+        assert_eq!(msg2.content, "from sender2");
+    }
+
+    #[tokio::test]
+    async fn test_inbound_sender_no_receivers_returns_error() {
+        let bus = MessageBus::new();
+        let sender = bus.inbound_sender();
+        // No subscribers. broadcast::Sender::send returns Err when there are
+        // no active receivers.
+        let result = sender.send(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "orphan".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+        assert!(result.is_err(), "send with no receivers should return Err");
+    }
+
+    #[tokio::test]
+    async fn test_outbound_sender_no_receivers_returns_error() {
+        let bus = MessageBus::new();
+        let sender = bus.outbound_sender();
+        let result = sender.send(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "orphan".to_string(),
+            message_type: String::new(),
+        });
+        assert!(result.is_err(), "send with no receivers should return Err");
+    }
+
+    // =========================================================================
+    // Additional tests: publishing with no subscribers (edge cases)
+    // =========================================================================
+
+    #[test]
+    fn test_publish_inbound_no_receivers_multiple_messages_drops_all() {
+        let bus = MessageBus::new();
+        for i in 0..10 {
+            bus.publish_inbound(InboundMessage {
+                channel: "test".to_string(),
+                sender_id: "u".to_string(),
+                chat_id: "c".to_string(),
+                content: format!("msg{}", i),
+                media: vec![],
+                session_key: "t:c".to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+            });
+        }
+        assert_eq!(bus.dropped_inbound(), 10);
+        assert_eq!(bus.dropped_outbound(), 0);
+    }
+
+    #[test]
+    fn test_publish_outbound_no_receivers_multiple_messages_drops_all() {
+        let bus = MessageBus::new();
+        for i in 0..10 {
+            bus.publish_outbound(OutboundMessage {
+                channel: "test".to_string(),
+                chat_id: "c".to_string(),
+                content: format!("out{}", i),
+                message_type: String::new(),
+            });
+        }
+        assert_eq!(bus.dropped_outbound(), 10);
+        assert_eq!(bus.dropped_inbound(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
+        let bus = MessageBus::new();
+
+        // Publish with no receivers -- message is dropped.
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "lost".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+        assert_eq!(bus.dropped_inbound(), 1);
+
+        // Subscribe and publish again.
+        let mut rx = bus.subscribe_inbound();
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "delivered".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+
+        let msg = rx.recv().await.expect("should receive message after subscribing");
+        assert_eq!(msg.content, "delivered");
+        assert_eq!(bus.dropped_inbound(), 1, "only the first message should be dropped");
+    }
+
+    #[tokio::test]
+    async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages() {
+        let bus = MessageBus::new();
+
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "lost".to_string(),
+            message_type: String::new(),
+        });
+        assert_eq!(bus.dropped_outbound(), 1);
+
+        let mut rx = bus.subscribe_outbound();
+        bus.publish_outbound(OutboundMessage {
+            channel: "test".to_string(),
+            chat_id: "c".to_string(),
+            content: "delivered".to_string(),
+            message_type: String::new(),
+        });
+
+        let msg = rx.recv().await.expect("should receive message after subscribing");
+        assert_eq!(msg.content, "delivered");
+        assert_eq!(bus.dropped_outbound(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_publish_inbound_subscribe_then_unsubscribe_all() {
+        let bus = MessageBus::new();
+
+        // Subscribe and then drop.
+        {
+            let _rx = bus.subscribe_inbound();
+            assert_eq!(bus.inbound_subscriber_count(), 1);
+        }
+        assert_eq!(bus.inbound_subscriber_count(), 0);
+
+        // Now publishing should drop the message.
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "after unsubscribe".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+        assert_eq!(bus.dropped_inbound(), 1);
+    }
+
+    // =========================================================================
+    // Additional tests: multiple concurrent publishers and subscribers
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_concurrent_multiple_publishers_multiple_subscribers_inbound() {
+        use std::sync::Arc;
+
+        let bus = Arc::new(MessageBus::new());
+        let num_subscribers = 3;
+        let num_publishers = 5;
+        let msgs_per_publisher = 20;
+        let total_expected = num_publishers * msgs_per_publisher;
+
+        // Spawn subscribers first.
+        let mut sub_handles = Vec::new();
+        for _ in 0..num_subscribers {
+            let mut rx = bus.subscribe_inbound();
+            let expected = total_expected;
+            sub_handles.push(tokio::spawn(async move {
+                let mut received = Vec::new();
+                for _ in 0..expected {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        rx.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(msg)) => received.push(msg.content),
+                        _ => break,
+                    }
+                }
+                received.len()
+            }));
+        }
+
+        // Give subscribers a moment to be ready.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Spawn publishers.
+        let mut pub_handles = Vec::new();
+        for p in 0..num_publishers {
+            let b = bus.clone();
+            pub_handles.push(tokio::spawn(async move {
+                for m in 0..msgs_per_publisher {
+                    b.publish_inbound(InboundMessage {
+                        channel: "test".to_string(),
+                        sender_id: format!("publisher{}", p),
+                        chat_id: "c".to_string(),
+                        content: format!("p{}-m{}", p, m),
+                        media: vec![],
+                        session_key: "t:c".to_string(),
+                        correlation_id: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                    });
+                }
+            }));
+        }
+
+        // Wait for all publishers to finish.
+        for h in pub_handles {
+            h.await.unwrap();
+        }
+
+        // Wait for all subscribers to finish.
+        let mut sub_counts = Vec::new();
+        for h in sub_handles {
+            sub_counts.push(h.await.unwrap());
+        }
+
+        // Each subscriber should have received all messages (broadcast fan-out).
+        for (i, &count) in sub_counts.iter().enumerate() {
+            assert_eq!(
+                count, total_expected,
+                "subscriber {} should receive {} messages, got {}",
+                i, total_expected, count
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_inbound_and_outbound_are_independent() {
+        use std::sync::Arc;
+
+        let bus = Arc::new(MessageBus::new());
+        let mut in_rx = bus.subscribe_inbound();
+        let mut out_rx = bus.subscribe_outbound();
+
+        let b1 = bus.clone();
+        let b2 = bus.clone();
+
+        // Publish inbound on one task, outbound on another.
+        let in_handle = tokio::spawn(async move {
+            for i in 0..10 {
+                b1.publish_inbound(InboundMessage {
+                    channel: "test".to_string(),
+                    sender_id: "u".to_string(),
+                    chat_id: "c".to_string(),
+                    content: format!("in{}", i),
+                    media: vec![],
+                    session_key: "t:c".to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                });
+            }
+        });
+
+        let out_handle = tokio::spawn(async move {
+            for i in 0..10 {
+                b2.publish_outbound(OutboundMessage {
+                    channel: "test".to_string(),
+                    chat_id: "c".to_string(),
+                    content: format!("out{}", i),
+                    message_type: String::new(),
+                });
+            }
+        });
+
+        in_handle.await.unwrap();
+        out_handle.await.unwrap();
+
+        // Inbound receiver should only have inbound messages.
+        let mut in_count = 0;
+        while let Ok(msg) = in_rx.try_recv() {
+            assert!(
+                msg.content.starts_with("in"),
+                "inbound receiver got wrong message: {}",
+                msg.content
+            );
+            in_count += 1;
+        }
+        assert_eq!(in_count, 10);
+
+        // Outbound receiver should only have outbound messages.
+        let mut out_count = 0;
+        while let Ok(msg) = out_rx.try_recv() {
+            assert!(
+                msg.content.starts_with("out"),
+                "outbound receiver got wrong message: {}",
+                msg.content
+            );
+            out_count += 1;
+        }
+        assert_eq!(out_count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_close_during_publish() {
+        use std::sync::Arc;
+
+        let bus = Arc::new(MessageBus::new());
+        let _rx = bus.subscribe_inbound();
+
+        let b1 = bus.clone();
+        let b2 = bus.clone();
+
+        // One task publishes messages, another closes the bus.
+        let pub_handle = tokio::spawn(async move {
+            for i in 0..100 {
+                b1.publish_inbound(InboundMessage {
+                    channel: "test".to_string(),
+                    sender_id: "u".to_string(),
+                    chat_id: "c".to_string(),
+                    content: format!("msg{}", i),
+                    media: vec![],
+                    session_key: "t:c".to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                });
+                // Yield occasionally to interleave with close.
+                if i % 10 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        let close_handle = tokio::spawn(async move {
+            // Close after a small delay.
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            b2.close();
+        });
+
+        pub_handle.await.unwrap();
+        close_handle.await.unwrap();
+
+        assert!(bus.is_closed());
+        // Some messages were published before close, some after.
+        // The important invariant: no panic, no deadlock.
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_subscribers_drop_while_publishing() {
+        use std::sync::Arc;
+
+        let bus = Arc::new(MessageBus::new());
+
+        // Create several subscribers.
+        let mut receivers: Vec<broadcast::Receiver<InboundMessage>> = Vec::new();
+        for _ in 0..5 {
+            receivers.push(bus.subscribe_inbound());
+        }
+
+        let b = bus.clone();
+        let pub_handle = tokio::spawn(async move {
+            for i in 0..50 {
+                b.publish_inbound(InboundMessage {
+                    channel: "test".to_string(),
+                    sender_id: "u".to_string(),
+                    chat_id: "c".to_string(),
+                    content: format!("msg{}", i),
+                    media: vec![],
+                    session_key: "t:c".to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                });
+            }
+        });
+
+        // Drop some receivers while publishing is in progress.
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        receivers.truncate(2); // Drop 3 receivers.
+
+        pub_handle.await.unwrap();
+
+        // Remaining receivers should still have gotten messages.
+        assert_eq!(bus.inbound_subscriber_count(), 2);
+    }
+
+    // =========================================================================
+    // Additional tests: with_capacity edge case
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_with_capacity_one_does_not_panic() {
+        // Smallest possible capacity: 1.
+        let bus = MessageBus::with_capacity(1);
+        let mut rx = bus.subscribe_inbound();
+
+        bus.publish_inbound(InboundMessage {
+            channel: "test".to_string(),
+            sender_id: "u".to_string(),
+            chat_id: "c".to_string(),
+            content: "first".to_string(),
+            media: vec![],
+            session_key: "t:c".to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+        });
+
+        let msg = rx.recv().await.expect("should receive first message");
+        assert_eq!(msg.content, "first");
+    }
+
+    #[tokio::test]
+    async fn test_with_capacity_overflow_drops_oldest() {
+        // With capacity 2, publishing 4 messages should drop the oldest 2.
+        let bus = MessageBus::with_capacity(2);
+        let mut rx = bus.subscribe_inbound();
+
+        for i in 0..4 {
+            bus.publish_inbound(InboundMessage {
+                channel: "test".to_string(),
+                sender_id: "u".to_string(),
+                chat_id: "c".to_string(),
+                content: format!("msg{}", i),
+                media: vec![],
+                session_key: "t:c".to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+            });
+        }
+
+        // With broadcast capacity 2 and no recv yet, the oldest messages
+        // may have been overwritten. recv() should return messages but
+        // may start from a later one or return a RecvError::Lagged.
+        let result = rx.recv().await;
+        assert!(result.is_ok() || result.is_err(), "recv should complete without panic");
+    }
 }

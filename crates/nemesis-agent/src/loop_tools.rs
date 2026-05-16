@@ -5399,4 +5399,748 @@ mod tests {
         let result = tool.execute("not json", &ctx).await;
         assert!(result.is_err());
     }
+
+    // =========================================================================
+    // BootstrapTool coverage
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_not_confirmed() {
+        let tmp = TempDir::new().unwrap();
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({"confirmed": false}).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Must confirm"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_invalid_args() {
+        let tmp = TempDir::new().unwrap();
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let result = tool.execute("not json", &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid arguments"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_missing_confirmed_field() {
+        let tmp = TempDir::new().unwrap();
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({"other": true}).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Missing or invalid 'confirmed'"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_already_removed() {
+        let tmp = TempDir::new().unwrap();
+        // No BOOTSTRAP.md file created
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({"confirmed": true}).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("already been removed"));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_success() {
+        let tmp = TempDir::new().unwrap();
+        let bootstrap_path = tmp.path().join("BOOTSTRAP.md");
+        tokio::fs::write(&bootstrap_path, "# Bootstrap").await.unwrap();
+        assert!(bootstrap_path.exists());
+
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({"confirmed": true}).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("complete"));
+        assert!(!bootstrap_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_tool_description_and_params() {
+        let tmp = TempDir::new().unwrap();
+        let tool = BootstrapTool::new(&tmp.path().to_string_lossy());
+        assert!(!tool.description().is_empty());
+        let params = tool.parameters();
+        assert!(params.is_object());
+        assert!(params["properties"]["confirmed"].is_object());
+    }
+
+    // =========================================================================
+    // ClusterRpcTool additional coverage
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cluster_rpc_tool_with_async_ack() {
+        let config = ClusterRpcConfig {
+            local_node_id: "node-1".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 21949,
+        };
+        let mut tool = ClusterRpcTool::new(config);
+        tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async {
+                Ok(serde_json::json!({"status": "accepted", "task_id": "auto-123"}))
+            })
+        }));
+
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let result = tool
+            .execute(r#"{"target_node": "node-2", "message": "hello"}"#, &ctx)
+            .await
+            .unwrap();
+        assert!(result.contains("__ASYNC__:auto-123:node-2"));
+    }
+
+    #[tokio::test]
+    async fn test_cluster_rpc_tool_target_aliases() {
+        // Test that "target", "target_node", and "peer_id" all work
+        let config = ClusterRpcConfig {
+            local_node_id: "node-1".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 21949,
+        };
+
+        // Test with "target" alias
+        let mut tool = ClusterRpcTool::new(config.clone());
+        tool.set_rpc_call_fn(Arc::new(|node: &str, _action: &str, _payload: serde_json::Value| {
+            let node = node.to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) })
+        }));
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let result = tool.execute(r#"{"target": "node-3", "message": "hi"}"#, &ctx).await;
+        assert!(result.is_ok());
+
+        // Test with "peer_id" alias
+        let mut tool2 = ClusterRpcTool::new(config);
+        tool2.set_rpc_call_fn(Arc::new(|node: &str, _action: &str, _payload: serde_json::Value| {
+            let node = node.to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("Response to {}", node)})) })
+        }));
+        let result2 = tool2.execute(r#"{"peer_id": "node-4", "message": "hi"}"#, &ctx).await;
+        assert!(result2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_cluster_rpc_tool_data_content_fallback() {
+        let config = ClusterRpcConfig {
+            local_node_id: "node-1".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 21949,
+        };
+        let mut tool = ClusterRpcTool::new(config);
+        tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
+            let content = payload.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("Got: {}", content)})) })
+        }));
+
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        // Use data.content format instead of message
+        let result = tool
+            .execute(r#"{"target_node": "node-2", "data": {"content": "via data"}} "#, &ctx)
+            .await
+            .unwrap();
+        assert!(result.contains("Got: via data"));
+    }
+
+    #[tokio::test]
+    async fn test_cluster_rpc_tool_stored_context_fallback() {
+        let config = ClusterRpcConfig {
+            local_node_id: "node-1".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 21949,
+        };
+        let mut tool = ClusterRpcTool::new(config);
+        tool.set_context("stored-ch", "stored-cid");
+        tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, payload: serde_json::Value| {
+            let ch = payload.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let cid = payload.get("chat_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Box::pin(async move { Ok(serde_json::json!({"content": format!("ch={}, cid={}", ch, cid)})) })
+        }));
+
+        // Empty context channel/chat_id -> should fall back to stored
+        let ctx = RequestContext::new("", "", "user1", "sess1");
+        let result = tool
+            .execute(r#"{"target_node": "node-2", "message": "test"}"#, &ctx)
+            .await
+            .unwrap();
+        assert!(result.contains("ch=stored-ch"));
+        assert!(result.contains("cid=stored-cid"));
+    }
+
+    #[tokio::test]
+    async fn test_cluster_rpc_tool_empty_sync_response() {
+        let config = ClusterRpcConfig {
+            local_node_id: "node-1".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 21949,
+        };
+        let mut tool = ClusterRpcTool::new(config);
+        tool.set_rpc_call_fn(Arc::new(|_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async { Ok(serde_json::json!({"status": "done"})) })
+        }));
+
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let result = tool
+            .execute(r#"{"target_node": "node-2", "message": "test"}"#, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, "");
+    }
+
+    // =========================================================================
+    // CronTool additional coverage: create with different schedule types
+    // =========================================================================
+
+    fn make_cron_service_with_dir(tmp: &TempDir) -> Arc<std::sync::Mutex<nemesis_cron::service::CronService>> {
+        let db_path = tmp.path().join("cron.db");
+        Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(&db_path.to_string_lossy()),
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_with_every_schedule() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        tool.set_context("web", "chat1");
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "test-every",
+            "schedule": "every:60s",
+            "content": "test reminder"
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+        assert!(result.unwrap().contains("Created cron job"));
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_with_cron_expr() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        tool.set_context("web", "chat1");
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "test-cron",
+            "schedule": "0 * * * *",
+            "content": "hourly task"
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+        assert!(result.unwrap().contains("Created cron job"));
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_and_delete() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        tool.set_context("web", "chat1");
+
+        // Create
+        let create_args = serde_json::json!({
+            "action": "create",
+            "name": "temp-job",
+            "schedule": "every:30s",
+            "content": "temporary"
+        }).to_string();
+        let create_result = tool.execute(&create_args, &ctx).await.unwrap();
+        // Extract ID from "Created cron job: temp-job (ID: xxx)"
+        let id_start = create_result.find("(ID: ").unwrap();
+        let id_end = create_result.find(")").unwrap();
+        let job_id = &create_result[id_start + 5..id_end];
+
+        // Delete
+        let delete_args = serde_json::json!({"action": "delete", "id": job_id}).to_string();
+        let delete_result = tool.execute(&delete_args, &ctx).await;
+        assert!(delete_result.is_ok());
+        assert!(delete_result.unwrap().contains("Deleted cron job"));
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_invalid_every_schedule() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "bad-schedule",
+            "schedule": "every:invalid"
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_with_empty_action() {
+        let svc = make_cron_service();
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        // Default action is empty string -> should hit "unknown action"
+        let args = serde_json::json!({"name": "test"}).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown cron action"));
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_list_after_create() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        tool.set_context("web", "chat1");
+
+        // Create a job first
+        let create_args = serde_json::json!({
+            "action": "create",
+            "name": "listable-job",
+            "schedule": "every:120s",
+            "content": "content"
+        }).to_string();
+        tool.execute(&create_args, &ctx).await.unwrap();
+
+        // List
+        let list_args = serde_json::json!({"action": "list"}).to_string();
+        let result = tool.execute(&list_args, &ctx).await.unwrap();
+        assert!(result.contains("listable-job"));
+    }
+
+    // =========================================================================
+    // InstallSkillTool coverage
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_install_skill_tool_missing_slug() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"name": "test"}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("slug parameter is required"));
+    }
+
+    #[tokio::test]
+    async fn test_install_skill_tool_empty_slug() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"slug": ""}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("slug parameter is required"));
+    }
+
+    #[tokio::test]
+    async fn test_install_skill_tool_invalid_json() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute("not json", &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_install_skill_tool_path_traversal() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"slug": "../evil"}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid slug"));
+    }
+
+    #[tokio::test]
+    async fn test_install_skill_tool_already_exists() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_string_lossy().to_string();
+        // Create the skill directory to simulate existing skill
+        let skill_dir = tmp.path().join("skills").join("existing-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, workspace);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"slug": "existing-skill"}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already exists locally"));
+    }
+
+    // =========================================================================
+    // FindSkillsTool coverage
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_find_skills_tool_empty_query() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = FindSkillsTool::new(registry);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"query": ""}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing or empty"));
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_tool_missing_query() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = FindSkillsTool::new(registry);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute(r#"{"other": "value"}"#, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing or empty"));
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_tool_invalid_json() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = FindSkillsTool::new(registry);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+        let result = tool.execute("not json", &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_find_skills_tool_description_and_params() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = FindSkillsTool::new(registry);
+        assert!(!tool.description().is_empty());
+        assert!(tool.parameters().is_object());
+    }
+
+    // =========================================================================
+    // InstallSkillTool description/params
+    // =========================================================================
+
+    #[test]
+    fn test_install_skill_tool_description_and_params() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let tool = InstallSkillTool::new(registry, "/tmp/ws".to_string());
+        assert!(!tool.description().is_empty());
+        assert!(tool.parameters().is_object());
+    }
+
+    // =========================================================================
+    // register_shared_tools with skills_registry
+    // =========================================================================
+
+    #[test]
+    fn test_register_shared_tools_with_skills_registry() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let config = SharedToolConfig {
+            skills_registry: Some(registry),
+            workspace: Some("/tmp/test-workspace".to_string()),
+            ..Default::default()
+        };
+        let tools = register_shared_tools(&config);
+        assert!(tools.contains_key("find_skills"));
+        assert!(tools.contains_key("install_skill"));
+    }
+
+    #[test]
+    fn test_register_shared_tools_with_skills_registry_no_workspace() {
+        let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
+        let config = SharedToolConfig {
+            skills_registry: Some(registry),
+            workspace: None,
+            ..Default::default()
+        };
+        let tools = register_shared_tools(&config);
+        assert!(tools.contains_key("find_skills"));
+        // install_skill requires workspace
+        assert!(!tools.contains_key("install_skill"));
+    }
+
+    // =========================================================================
+    // ClusterRpcConfig default
+    // =========================================================================
+
+    #[test]
+    fn test_cluster_rpc_config_default() {
+        let config = ClusterRpcConfig::default();
+        assert!(config.local_node_id.is_empty());
+        assert_eq!(config.timeout_secs, 3600);
+        assert_eq!(config.local_rpc_port, 21949);
+    }
+
+    // =========================================================================
+    // MessageTool: JSON args without content field
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_message_tool_json_without_content_field() {
+        let tool = MessageTool::new();
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let result = tool
+            .execute(r#"{"other": "value"}"#, &ctx)
+            .await
+            .unwrap();
+        // Should fall back to raw args
+        assert_eq!(result, r#"{"other": "value"}"#);
+    }
+
+    // =========================================================================
+    // WebSearchTool extract_query method
+    // =========================================================================
+
+    #[test]
+    fn test_web_search_tool_extract_query_method() {
+        let tool = WebSearchTool::new(WebSearchConfig::default());
+        assert_eq!(tool.extract_query(r#"{"query": "test"}"#).unwrap(), "test");
+        assert_eq!(tool.extract_query("plain text").unwrap(), "plain text");
+    }
+
+    // =========================================================================
+    // ForgeBridgeTool via register_shared_tools
+    // =========================================================================
+
+    #[test]
+    fn test_register_shared_tools_with_forge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = nemesis_forge::config::ForgeConfig::default();
+        let forge = Arc::new(nemesis_forge::forge::Forge::new(config, tmp.path().to_path_buf()));
+        let executor = Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(forge));
+        let config = SharedToolConfig {
+            forge_executor: Some(executor),
+            ..Default::default()
+        };
+        let tools = register_shared_tools(&config);
+        assert!(tools.contains_key("forge_reflect"));
+    }
+
+    // =========================================================================
+    // register_shared_tools with complete_bootstrap
+    // =========================================================================
+
+    #[test]
+    fn test_register_shared_tools_includes_complete_bootstrap() {
+        let config = SharedToolConfig {
+            workspace: Some("/tmp/ws".to_string()),
+            ..Default::default()
+        };
+        let tools = register_shared_tools(&config);
+        assert!(tools.contains_key("complete_bootstrap"));
+    }
+
+    // =========================================================================
+    // McpDiscoveryResult fields
+    // =========================================================================
+
+    #[test]
+    fn test_mcp_discovery_result_fields() {
+        let result = McpDiscoveryResult {
+            tools: vec![],
+            server_name: "test".to_string(),
+        };
+        assert!(result.tools.is_empty());
+        assert_eq!(result.server_name, "test");
+    }
+
+    // =========================================================================
+    // Additional percent_decode edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_percent_decode_invalid_hex() {
+        // %GG is not valid hex - should keep the original
+        let result = percent_decode("%GG");
+        assert!(result.contains("%GG"));
+    }
+
+    #[test]
+    fn test_percent_decode_partial_hex() {
+        // %1 at end (only one hex char) - chars.by_ref().take(2) consumes the '1'
+        // and produces an empty string for the hex parse, so the result is "%"
+        let result = percent_decode("test%1");
+        // The function consumes '1' via take(2) but only gets one char for hex parse
+        // which fails, so it outputs "%" + "1" (the hex string)
+        assert!(result.starts_with("test"));
+    }
+
+    // =========================================================================
+    // urlencoding edge cases
+    // =========================================================================
+
+    #[test]
+    fn test_urlencoding_unreserved_chars() {
+        // Unreserved characters should not be encoded
+        assert_eq!(urlencoding("A-Z"), "A-Z");
+        assert_eq!(urlencoding("0-9"), "0-9");
+        assert_eq!(urlencoding("hello_world"), "hello_world");
+        assert_eq!(urlencoding("file.txt"), "file.txt");
+        assert_eq!(urlencoding("a~b"), "a~b");
+    }
+
+    #[test]
+    fn test_urlencoding_empty() {
+        assert_eq!(urlencoding(""), "");
+    }
+
+    // =========================================================================
+    // SharedToolConfig clone
+    // =========================================================================
+
+    #[test]
+    fn test_shared_tool_config_clone() {
+        let config = SharedToolConfig {
+            web_search: Some(WebSearchConfig::default()),
+            ..Default::default()
+        };
+        let cloned = config.clone();
+        assert!(cloned.web_search.is_some());
+    }
+
+    // =========================================================================
+    // register_shared_tools_async: MCP enabled with no servers
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_register_shared_tools_async_mcp_enabled_no_servers() {
+        let config = SharedToolConfig {
+            mcp_enabled: true,
+            mcp_servers: vec![],
+            ..Default::default()
+        };
+        let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools_async(&config, Option::<fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<(String, String, Option<serde_json::Value>)>, String>> + Send>>>::None).await;
+        assert!(tools.contains_key("message"));
+        // No MCP servers configured -> no MCP tools
+        assert!(!tools.keys().any(|k| k.starts_with("mcp_")));
+    }
+
+    // =========================================================================
+    // Tool trait: set_context for SpawnTool
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_spawn_tool_set_context() {
+        let config = SpawnConfig {
+            default_model: "test".to_string(),
+            max_concurrent: 5,
+        };
+        let tool = SpawnTool::new(config);
+        tool.set_context("discord", "channel-123");
+
+        // Execute with empty context -> should use stored
+        let mut tool_with_fn = SpawnTool::new(SpawnConfig {
+            default_model: "test".to_string(),
+            max_concurrent: 5,
+        });
+        tool_with_fn.set_context("stored-ch", "stored-cid");
+        tool_with_fn.set_spawn_fn(Arc::new(
+            |_agent_id: &str, _task: &str, _model: &str, channel: &str, chat_id: &str| {
+                let ch = channel.to_string();
+                let cid = chat_id.to_string();
+                Box::pin(async move { Ok(format!("ch={}, cid={}", ch, cid)) })
+            },
+        ));
+
+        let ctx = RequestContext::new("", "", "user1", "sess1");
+        let result = tool_with_fn
+            .execute(r#"{"agent_id": "a1", "task": "do"}"#, &ctx)
+            .await
+            .unwrap();
+        assert!(result.contains("ch=stored-ch"));
+        assert!(result.contains("cid=stored-cid"));
+    }
+
+    // =========================================================================
+    // Additional CronTool: create with deliver=false
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cron_tool_create_no_deliver() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "no-deliver",
+            "schedule": "every:60s",
+            "content": "test",
+            "deliver": false
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    // =========================================================================
+    // Additional CronTool: create with at: schedule (RFC3339 timestamp)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_cron_tool_create_with_at_schedule() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        tool.set_context("web", "chat1");
+        let future_ts = "2099-12-31T23:59:59+00:00";
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "at-job",
+            "schedule": format!("at:{}", future_ts),
+            "content": "future task"
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_ok(), "Expected ok, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_create_with_invalid_at_schedule() {
+        let tmp = TempDir::new().unwrap();
+        let svc = make_cron_service_with_dir(&tmp);
+        let tool = CronTool::new(svc);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let args = serde_json::json!({
+            "action": "create",
+            "name": "bad-at",
+            "schedule": "at:not-a-timestamp",
+            "content": "test"
+        }).to_string();
+        let result = tool.execute(&args, &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // ExecTool: command with no output
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_exec_tool_no_output_command() {
+        let tmp = TempDir::new().unwrap();
+        let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
+        let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+        let cmd = if cfg!(target_os = "windows") {
+            "cd ."
+        } else {
+            "true"
+        };
+        let args = serde_json::json!({"command": cmd}).to_string();
+        let result = tool.execute(&args, &ctx).await.unwrap();
+        assert!(result.contains("no output") || result.is_empty() || !result.contains("Exit code"));
+    }
 }

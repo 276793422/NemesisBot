@@ -1780,4 +1780,296 @@ mod tests {
         assert_eq!(*timeout, Duration::from_secs(60));
     }
 
+    #[tokio::test]
+    async fn test_desktop_tool_screenshot_mcp_success() {
+        struct ScreenshotMCPCaller;
+        impl crate::browser::MCPToolCaller for ScreenshotMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Ok("screenshot_saved.png".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ScreenshotMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Screenshot"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_screenshot_mcp_with_region() {
+        struct ScreenshotMCPCaller;
+        impl crate::browser::MCPToolCaller for ScreenshotMCPCaller {
+            fn call_tool(
+                &self,
+                tool_name: &str,
+                args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                let tool_name = tool_name.to_string();
+                let args = args.clone();
+                Box::pin(async move {
+                    assert_eq!(tool_name, "capture_screenshot_to_file");
+                    assert_eq!(args["x"], 10);
+                    assert_eq!(args["y"], 20);
+                    assert_eq!(args["width"], 100);
+                    assert_eq!(args["height"], 200);
+                    Ok("region_screenshot.png".to_string())
+                })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ScreenshotMCPCaller)));
+        let result = tool.execute(&serde_json::json!({
+            "action": "take_screenshot", "x": 10, "y": 20, "width": 100, "height": 200
+        })).await;
+        assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_screenshot_mcp_error() {
+        struct FailingMCPCaller;
+        impl crate::browser::MCPToolCaller for FailingMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Err("screenshot failed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "take_screenshot"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("screenshot failed"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_list_windows_mcp_success() {
+        struct ListMCPCaller;
+        impl crate::browser::MCPToolCaller for ListMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Ok("[{\"hwnd\":\"123\",\"title\":\"Test\"}]".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ListMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Test"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_list_windows_mcp_error() {
+        struct FailingMCPCaller;
+        impl crate::browser::MCPToolCaller for FailingMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Err("list failed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("list_windows failed"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_find_window_with_mcp_success() {
+        struct FindMCPCaller;
+        impl crate::browser::MCPToolCaller for FindMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Ok("{\"hwnd\":\"0x123\",\"title\":\"Chrome\"}".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FindMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Chrome"})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Chrome"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_find_window_with_mcp_error() {
+        struct FailingMCPCaller;
+        impl crate::browser::MCPToolCaller for FailingMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Err("find failed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "find_window", "title": "Chrome"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("find_window failed"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_type_text_mcp_success() {
+        struct TypeMCPCaller;
+        impl crate::browser::MCPToolCaller for TypeMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Ok("typed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(TypeMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "type_text", "text": "hello"})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Typed"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_click_at_mcp_success() {
+        struct ClickMCPCaller;
+        impl crate::browser::MCPToolCaller for ClickMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Ok("clicked".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ClickMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "click_at", "x": 100, "y": 200})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Clicked"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_get_window_text_with_hwnd_mcp() {
+        struct TextMCPCaller;
+        impl crate::browser::MCPToolCaller for TextMCPCaller {
+            fn call_tool(
+                &self,
+                tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                let name = tool_name.to_string();
+                Box::pin(async move {
+                    if name == "get_window_text" {
+                        Ok("Window Title Text".to_string())
+                    } else {
+                        Ok("{}".to_string())
+                    }
+                })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(TextMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"})).await;
+        assert!(!result.is_error);
+        assert!(result.for_llm.contains("Window Title Text"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_get_window_text_with_title_mcp_find_error() {
+        struct FailingMCPCaller;
+        impl crate::browser::MCPToolCaller for FailingMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Err("find failed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("find_window"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_get_window_text_with_title_mcp_find_returns_empty_hwnd() {
+        struct EmptyHwndMCPCaller;
+        impl crate::browser::MCPToolCaller for EmptyHwndMCPCaller {
+            fn call_tool(
+                &self,
+                tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                let name = tool_name.to_string();
+                Box::pin(async move {
+                    if name == "find_window_by_title" {
+                        Ok("{\"hwnd\":\"\"}".to_string())
+                    } else {
+                        Ok("{}".to_string())
+                    }
+                })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(EmptyHwndMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "get_window_text", "title": "Chrome"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("could not resolve"));
+    }
+
+    #[tokio::test]
+    async fn test_desktop_tool_get_window_text_mcp_error() {
+        struct FailingMCPCaller;
+        impl crate::browser::MCPToolCaller for FailingMCPCaller {
+            fn call_tool(
+                &self,
+                _tool_name: &str,
+                _args: &serde_json::Value,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+                Box::pin(async { Err("get_text failed".to_string()) })
+            }
+            fn is_connected(&self) -> bool { true }
+        }
+        let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(FailingMCPCaller)));
+        let result = tool.execute(&serde_json::json!({"action": "get_window_text", "hwnd": "0x123"})).await;
+        assert!(result.is_error);
+        assert!(result.for_llm.contains("get_window_text failed"));
+    }
+
+    #[test]
+    fn test_desktop_action_from_str_edge_cases() {
+        assert!(DesktopAction::from_str("").is_err());
+        assert!(DesktopAction::from_str("FIND_WINDOW").is_err());
+        assert!(DesktopAction::from_str("find_window ").is_err());
+    }
+
+    #[test]
+    fn test_window_info_default_fields() {
+        let info = WindowInfo {
+            hwnd: String::new(),
+            title: String::new(),
+            class_name: String::new(),
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+        };
+        assert!(info.hwnd.is_empty());
+        assert_eq!(info.width, 0);
+    }
 }

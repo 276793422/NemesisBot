@@ -868,4 +868,191 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(data["logging"]["llm"]["enabled"], true);
     }
+
+    // -------------------------------------------------------------------------
+    // Additional log tests for coverage
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_expand_tilde_no_home_dir() {
+        // Just verify it returns the original path for non-tilde paths
+        let result = expand_tilde("/absolute/path");
+        assert_eq!(result, "/absolute/path");
+
+        let result = expand_tilde("relative/path");
+        assert_eq!(result, "relative/path");
+    }
+
+    #[test]
+    fn test_resolve_path_various() {
+        let tmp = TempDir::new().unwrap();
+
+        // Absolute path
+        let result = resolve_path("/abs/path", tmp.path());
+        assert!(result.contains("abs"));
+
+        // Relative path
+        let result = resolve_path("logs/test", tmp.path());
+        assert!(result.starts_with(&tmp.path().to_string_lossy().to_string()));
+
+        // Tilde path
+        let result = resolve_path("~/my-logs", tmp.path());
+        assert!(!result.starts_with('~') || dirs::home_dir().is_none());
+    }
+
+    #[test]
+    fn test_default_logging_config_completeness() {
+        let cfg = default_logging_config();
+        // LLM section
+        assert!(cfg.get("llm").is_some());
+        assert_eq!(cfg["llm"]["enabled"], false);
+        assert_eq!(cfg["llm"]["detail_level"], "full");
+        assert_eq!(cfg["llm"]["log_dir"], "logs/request_logs");
+
+        // General section
+        assert!(cfg.get("general").is_some());
+        assert_eq!(cfg["general"]["enabled"], true);
+        assert_eq!(cfg["general"]["level"], "INFO");
+        assert_eq!(cfg["general"]["console"], true);
+        assert_eq!(cfg["general"]["enable_console"], true);
+    }
+
+    #[test]
+    fn test_write_logging_config_to_new_path() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("subdir").join("config.json");
+        let logging = default_logging_config();
+
+        write_logging_config(&cfg, &logging).unwrap();
+
+        // Directory should be created
+        assert!(cfg.parent().unwrap().exists());
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(data.get("logging").is_some());
+    }
+
+    #[test]
+    fn test_cmd_llm_enable_with_empty_log_dir() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let config = serde_json::json!({
+            "logging": {
+                "llm": {
+                    "enabled": false,
+                    "detail_level": "",
+                    "log_dir": ""
+                }
+            }
+        });
+        std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_llm_enable(&cfg, &workspace).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["llm"]["enabled"], true);
+        // Empty fields should be filled with defaults
+        assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
+        assert_eq!(data["logging"]["llm"]["detail_level"], "full");
+    }
+
+    #[test]
+    fn test_cmd_general_level_various_valid_levels() {
+        for level in &["DEBUG", "INFO", "WARN", "ERROR", "FATAL", "TRACE"] {
+            let tmp = TempDir::new().unwrap();
+            let cfg = tmp.path().join("config.json");
+            let config = serde_json::json!({"logging": default_logging_config()});
+            std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+
+            cmd_general_level(&cfg, level).unwrap();
+
+            let data: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+            assert_eq!(data["logging"]["general"]["level"], *level);
+        }
+    }
+
+    #[test]
+    fn test_cmd_general_level_lowercase_input() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let config = serde_json::json!({"logging": default_logging_config()});
+        std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+
+        cmd_general_level(&cfg, "error").unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["general"]["level"], "ERROR");
+    }
+
+    #[test]
+    fn test_cmd_general_console_multiple_toggles() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let config = serde_json::json!({"logging": default_logging_config()});
+        std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+
+        // Toggle false
+        cmd_general_console(&cfg).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["general"]["enable_console"], false);
+
+        // Toggle back to true
+        cmd_general_console(&cfg).unwrap();
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["general"]["enable_console"], true);
+    }
+
+    #[test]
+    fn test_cmd_all_status_no_config() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_all_status(&cfg, &workspace).unwrap();
+    }
+
+    #[test]
+    fn test_cmd_general_status_no_general_section() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let config = serde_json::json!({"logging": {}});
+        std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+
+        cmd_general_status(&cfg).unwrap();
+    }
+
+    #[test]
+    fn test_read_logging_config_invalid_json() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(&cfg, "invalid json {{{").unwrap();
+
+        let result = read_logging_config(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cmd_llm_config_both_options() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = tmp.path().join("config.json");
+        let config = serde_json::json!({"logging": default_logging_config()});
+        std::fs::write(&cfg, serde_json::to_string(&config).unwrap()).unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        cmd_llm_config(&cfg, &workspace, Some("truncated"), Some("custom-logs")).unwrap();
+
+        let data: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(data["logging"]["llm"]["detail_level"], "truncated");
+        assert!(data["logging"]["llm"]["log_dir"].as_str().unwrap().contains("custom-logs"));
+    }
 }

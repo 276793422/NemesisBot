@@ -845,8 +845,8 @@ mod tests {
         assert!(err.unwrap().contains("command guard"));
     }
 
-    #[test]
-    fn test_safe_operation_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_safe_operation_allowed() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "read_file".to_string(),
@@ -895,8 +895,8 @@ mod tests {
         assert!(err.unwrap().contains("SSRF"));
     }
 
-    #[test]
-    fn test_register_rules() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_register_rules() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             default_action: "deny".to_string(),
@@ -975,8 +975,8 @@ mod tests {
         assert!(!plugin.is_enabled());
     }
 
-    #[test]
-    fn test_safe_download_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_safe_download_allowed() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "download".to_string(),
@@ -989,8 +989,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_safe_network_request_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_safe_network_request_allowed() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             ssrf_enabled: false, // Disable SSRF to avoid DNS resolution issues in tests
@@ -1042,8 +1042,8 @@ mod tests {
         assert!(config.enabled);
     }
 
-    #[test]
-    fn test_plugin_with_all_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_with_all_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             injection_enabled: false,
@@ -1066,8 +1066,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_safe_file_write() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_safe_file_write() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "write_file".to_string(),
@@ -1095,8 +1095,8 @@ mod tests {
         assert_eq!(config.default_action, "deny");
     }
 
-    #[test]
-    fn test_plugin_execute_disabled_returns_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_execute_disabled_returns_allowed() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: false,
             ..Default::default()
@@ -1113,8 +1113,8 @@ mod tests {
         assert!(err.is_none());
     }
 
-    #[test]
-    fn test_plugin_injection_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_injection_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             injection_enabled: false,
@@ -1132,8 +1132,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_command_guard_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_command_guard_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             command_guard_enabled: false,
@@ -1151,8 +1151,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_credential_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_credential_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             credential_enabled: false,
@@ -1172,8 +1172,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_ssrf_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_ssrf_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             ssrf_enabled: false,
@@ -1192,8 +1192,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_dlp_disabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_dlp_disabled() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             dlp_enabled: false,
@@ -1244,7 +1244,7 @@ mod tests {
         plugin.init_scanner_chain(false);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_plugin_scan_invocation_clean() {
         let plugin = make_plugin();
         let args = r#"{"path": "/tmp/test.txt", "content": "normal"}"#;
@@ -1252,7 +1252,7 @@ mod tests {
         assert!(!detected);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_plugin_scan_invocation_invalid_json() {
         let plugin = make_plugin();
         let args = "not valid json";
@@ -1273,8 +1273,8 @@ mod tests {
         assert!(plugin.audit_logger().is_none());
     }
 
-    #[test]
-    fn test_plugin_config_with_custom_threshold() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_config_with_custom_threshold() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             injection_threshold: 0.9,
@@ -1293,8 +1293,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_safe_read_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_safe_read_allowed() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "read_file".to_string(),
@@ -1307,8 +1307,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_list_dir_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_list_dir_allowed() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "list_dir".to_string(),
@@ -1345,8 +1345,8 @@ mod tests {
         assert_eq!(plugin.config_path(), Some("/custom/path/security.json".to_string()));
     }
 
-    #[test]
-    fn test_plugin_execute_empty_metadata() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_execute_empty_metadata() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "read_file".to_string(),
@@ -1466,8 +1466,8 @@ mod tests {
         assert!(result.unwrap_err().contains("not a JSON object"));
     }
 
-    #[test]
-    fn test_plugin_with_audit_log_enabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_with_audit_log_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let log_dir = dir.path().join("audit_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
@@ -1490,8 +1490,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_with_audit_chain_enabled() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_with_audit_chain_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let chain_path = dir.path().join("audit_chain.jsonl");
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
@@ -1513,8 +1513,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_set_rules_override() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_set_rules_override() {
         let plugin = make_plugin();
         plugin.set_rules(OperationType::FileRead, vec![
             SecurityRule {
@@ -1534,8 +1534,8 @@ mod tests {
         assert!(!allowed);
     }
 
-    #[test]
-    fn test_plugin_process_rules() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_process_rules() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             default_action: "allow".to_string(),
@@ -1559,8 +1559,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_network_rules() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_network_rules() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             ssrf_enabled: false,
@@ -1682,8 +1682,8 @@ mod tests {
         assert!(chain.blocking_read().engine_count() > 0);
     }
 
-    #[test]
-    fn test_plugin_execute_unknown_tool_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_execute_unknown_tool_allowed() {
         let plugin = make_plugin();
         let inv = ToolInvocation {
             tool_name: "completely_unknown_tool".to_string(),
@@ -1716,7 +1716,7 @@ mod tests {
         assert!(!allowed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_plugin_scan_invocation_with_args() {
         let plugin = make_plugin();
         let args = r#"{"path": "/tmp/clean.txt"}"#;
@@ -1724,8 +1724,8 @@ mod tests {
         assert!(!detected);
     }
 
-    #[test]
-    fn test_plugin_execute_creates_dir_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_execute_creates_dir_allowed() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             default_action: "allow".to_string(),
@@ -1742,8 +1742,8 @@ mod tests {
         assert!(allowed);
     }
 
-    #[test]
-    fn test_plugin_execute_download_allowed() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_plugin_execute_download_allowed() {
         let plugin = SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             ssrf_enabled: false,

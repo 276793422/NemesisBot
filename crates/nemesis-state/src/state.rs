@@ -338,4 +338,247 @@ mod tests {
         state.set_error("second error");
         assert_eq!(state.error_message(), Some("second error".to_string()));
     }
+
+    // --- Additional tests for is_running() across all states ---
+
+    #[test]
+    fn test_is_running_from_created_is_false() {
+        let state = BotState::new();
+        assert_eq!(state.current(), State::Created);
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn test_is_running_from_initializing_is_false() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        assert_eq!(state.current(), State::Initializing);
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn test_is_running_from_running_is_true() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        assert_eq!(state.current(), State::Running);
+        assert!(state.is_running());
+    }
+
+    #[test]
+    fn test_is_running_from_stopping_is_false() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        state.start_stopping().unwrap();
+        assert_eq!(state.current(), State::Stopping);
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn test_is_running_from_stopped_is_false() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        state.start_stopping().unwrap();
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn test_is_running_from_error_is_false() {
+        let state = BotState::new();
+        state.set_error("boom");
+        assert_eq!(state.current(), State::Error);
+        assert!(!state.is_running());
+    }
+
+    // --- State transition edge cases ---
+
+    #[test]
+    fn test_start_running_from_created_fails() {
+        let state = BotState::new();
+        let result = state.start_running();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state initializing but was created"));
+        // State should remain unchanged
+        assert_eq!(state.current(), State::Created);
+    }
+
+    #[test]
+    fn test_start_running_from_running_fails() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        let result = state.start_running();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state initializing but was running"));
+        // State should remain unchanged
+        assert_eq!(state.current(), State::Running);
+    }
+
+    #[test]
+    fn test_start_running_from_stopped_fails() {
+        let state = BotState::new();
+        state.set_stopped();
+        let result = state.start_running();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state initializing but was stopped"));
+    }
+
+    #[test]
+    fn test_start_running_from_error_fails() {
+        let state = BotState::new();
+        state.set_error("err");
+        let result = state.start_running();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state initializing but was error"));
+    }
+
+    #[test]
+    fn test_start_initializing_from_stopped_fails() {
+        let state = BotState::new();
+        state.set_stopped();
+        let result = state.start_initializing();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state created but was stopped"));
+    }
+
+    #[test]
+    fn test_start_initializing_from_error_fails() {
+        let state = BotState::new();
+        state.set_error("err");
+        let result = state.start_initializing();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected state created but was error"));
+    }
+
+    #[test]
+    fn test_set_error_from_running() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        assert!(state.is_running());
+
+        // set_error is unconditional
+        state.set_error("runtime crash");
+        assert_eq!(state.current(), State::Error);
+        assert_eq!(state.error_message(), Some("runtime crash".to_string()));
+        assert!(!state.is_running());
+    }
+
+    #[test]
+    fn test_set_error_from_stopping() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        state.start_stopping().unwrap();
+
+        state.set_error("shutdown failed");
+        assert_eq!(state.current(), State::Error);
+        assert_eq!(state.error_message(), Some("shutdown failed".to_string()));
+    }
+
+    #[test]
+    fn test_set_error_with_empty_string() {
+        let state = BotState::new();
+        state.set_error("");
+        assert_eq!(state.current(), State::Error);
+        assert_eq!(state.error_message(), Some(String::new()));
+    }
+
+    #[test]
+    fn test_set_stopped_from_running() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        // set_stopped is unconditional, can jump directly from Running
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+    }
+
+    #[test]
+    fn test_set_stopped_is_idempotent() {
+        let state = BotState::new();
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+    }
+
+    #[test]
+    fn test_set_error_is_idempotent() {
+        let state = BotState::new();
+        state.set_error("first");
+        assert_eq!(state.current(), State::Error);
+        state.set_error("second");
+        assert_eq!(state.current(), State::Error);
+        assert_eq!(state.error_message(), Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_full_lifecycle_created_to_stopped() {
+        let state = BotState::new();
+        assert_eq!(state.current(), State::Created);
+        assert!(!state.is_running());
+        assert!(state.error_message().is_none());
+
+        state.start_initializing().unwrap();
+        assert_eq!(state.current(), State::Initializing);
+
+        state.start_running().unwrap();
+        assert_eq!(state.current(), State::Running);
+        assert!(state.is_running());
+
+        state.start_stopping().unwrap();
+        assert_eq!(state.current(), State::Stopping);
+        assert!(!state.is_running());
+
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+        assert!(!state.is_running());
+        assert!(state.error_message().is_none());
+    }
+
+    #[test]
+    fn test_lifecycle_with_error_recovery() {
+        // Error during initialization, then forced stop
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.set_error("init failed");
+        assert_eq!(state.current(), State::Error);
+        assert_eq!(state.error_message(), Some("init failed".to_string()));
+
+        // Cannot start stopping from error
+        let result = state.start_stopping();
+        assert!(result.is_err());
+
+        // But set_stopped is unconditional
+        state.set_stopped();
+        assert_eq!(state.current(), State::Stopped);
+        // error_message persists even though state changed
+        assert_eq!(state.error_message(), Some("init failed".to_string()));
+    }
+
+    #[test]
+    fn test_start_stopping_from_running_succeeds() {
+        let state = BotState::new();
+        state.start_initializing().unwrap();
+        state.start_running().unwrap();
+        let result = state.start_stopping();
+        assert!(result.is_ok());
+        assert_eq!(state.current(), State::Stopping);
+    }
+
+    #[test]
+    fn test_state_equality_and_copy() {
+        // Verify State is Copy and PartialEq works
+        let s1 = State::Running;
+        let s2 = s1; // Copy
+        assert_eq!(s1, s2);
+
+        let s3 = State::Stopped;
+        assert_ne!(s1, s3);
+    }
 }

@@ -1185,4 +1185,169 @@ mod tests {
         assert!(resp.is_error_response());
         assert_eq!(resp.id.as_deref(), Some("req-1"));
     }
+
+    // ============================================================
+    // Additional coverage tests
+    // ============================================================
+
+    #[test]
+    fn test_client_new_with_various_keys() {
+        let ws_key = WebSocketKey {
+            key: "complex-key-with-special-chars_123".to_string(),
+            port: 65535,
+            path: "/path/to/endpoint".to_string(),
+        };
+        let client = WebSocketClient::new(&ws_key);
+        assert_eq!(client.id(), "complex-key-with-special-chars_123");
+        assert_eq!(client.server_url(), "ws://127.0.0.1:65535/path/to/endpoint");
+    }
+
+    #[test]
+    fn test_client_state_initial_values() {
+        let ws_key = make_ws_key();
+        let client = WebSocketClient::new(&ws_key);
+        assert!(!client.is_connected());
+    }
+
+    #[test]
+    fn test_client_close_then_reopen_state() {
+        let ws_key = make_ws_key();
+        let client = WebSocketClient::new(&ws_key);
+        assert!(!client.is_connected());
+        client.close();
+        assert!(!client.is_connected());
+        // After close, notify should still fail
+        assert!(client.notify("test", serde_json::Value::Null).is_err());
+    }
+
+    #[test]
+    fn test_handle_message_response_no_id() {
+        let dispatcher = Dispatcher::new();
+        let pending = parking_lot::Mutex::new(HashMap::new());
+        let send_tx_opt: Option<tokio::sync::mpsc::Sender<String>> = None;
+
+        // Response without id field - should not panic
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": "ok"
+        });
+        let text = serde_json::to_string(&msg).unwrap();
+        WebSocketClient::handle_message(&text, "test", &pending, &dispatcher, &send_tx_opt);
+    }
+
+    #[test]
+    fn test_handle_message_request_with_fallback_handler() {
+        let dispatcher = Dispatcher::new();
+        let pending = parking_lot::Mutex::new(HashMap::new());
+        let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(64);
+        let send_tx_opt = Some(send_tx);
+
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        dispatcher.set_fallback(move |msg| {
+            called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Message::new_response(
+                msg.id.as_deref().unwrap_or(""),
+                serde_json::json!("fallback-response"),
+            ))
+        });
+
+        let request = Message::new_request("unknown_method", serde_json::Value::Null);
+        let text = serde_json::to_string(&request).unwrap();
+        WebSocketClient::handle_message(&text, "test", &pending, &dispatcher, &send_tx_opt);
+
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+        let resp_str = send_rx.try_recv().unwrap();
+        let resp: Message = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp.is_success_response());
+        assert_eq!(resp.result.unwrap(), serde_json::json!("fallback-response"));
+    }
+
+    #[test]
+    fn test_websocket_key_default_values() {
+        let ws_key = WebSocketKey {
+            key: String::new(),
+            port: 0,
+            path: String::new(),
+        };
+        let client = WebSocketClient::new(&ws_key);
+        assert_eq!(client.id(), "");
+        assert_eq!(client.server_url(), "ws://127.0.0.1:0");
+    }
+
+    #[test]
+    fn test_handle_message_with_null_params() {
+        let dispatcher = Dispatcher::new();
+        let received = Arc::new(std::sync::Mutex::new(None));
+        let received_clone = received.clone();
+        dispatcher.register_notification("test", move |msg| {
+            *received_clone.lock().unwrap() = msg.params.clone();
+        });
+
+        let pending = parking_lot::Mutex::new(HashMap::new());
+        let send_tx_opt: Option<tokio::sync::mpsc::Sender<String>> = None;
+
+        let notification = Message::new_notification("test", serde_json::Value::Null);
+        let text = serde_json::to_string(&notification).unwrap();
+        WebSocketClient::handle_message(&text, "test", &pending, &dispatcher, &send_tx_opt);
+
+        let guard = received.lock().unwrap();
+        // JSON null params may deserialize as None or Some(Value::Null) depending on serde behavior
+        match guard.as_ref() {
+            Some(v) => assert!(v.is_null()),
+            None => {} // null params deserialized as None is also valid
+        }
+    }
+
+    #[test]
+    fn test_handle_message_request_with_object_params() {
+        let dispatcher = Dispatcher::new();
+        let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(64);
+        let send_tx_opt = Some(send_tx);
+        let pending = parking_lot::Mutex::new(HashMap::new());
+
+        dispatcher.register("compute", |msg| {
+            let params = msg.params.as_ref();
+            let a = params.and_then(|p| p.get("a")).and_then(|v| v.as_i64()).unwrap_or(0);
+            let b = params.and_then(|p| p.get("b")).and_then(|v| v.as_i64()).unwrap_or(0);
+            Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!(a + b)))
+        });
+
+        let request = Message::new_request("compute", serde_json::json!({"a": 3, "b": 4}));
+        let text = serde_json::to_string(&request).unwrap();
+        WebSocketClient::handle_message(&text, "test", &pending, &dispatcher, &send_tx_opt);
+
+        let resp_str = send_rx.try_recv().unwrap();
+        let resp: Message = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp.is_success_response());
+        assert_eq!(resp.result.unwrap(), serde_json::json!(7));
+    }
+
+    #[test]
+    fn test_client_dispatcher_is_arc_shared() {
+        let ws_key = make_ws_key();
+        let client = WebSocketClient::new(&ws_key);
+        client.register_handler("test", |msg| {
+            Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        });
+
+        // dispatcher() returns a reference to the same Arc<Dispatcher>
+        let req = Message::new_request("test", serde_json::Value::Null);
+        let result = client.dispatcher().dispatch(&req).unwrap().unwrap();
+        assert!(result.is_success_response());
+    }
+
+    #[test]
+    fn test_client_register_then_close() {
+        let ws_key = make_ws_key();
+        let client = WebSocketClient::new(&ws_key);
+        client.register_handler("test", |msg| {
+            Ok(Message::new_response(msg.id.as_deref().unwrap_or(""), serde_json::json!("ok")))
+        });
+        client.close();
+        // Dispatcher should still work after close
+        let req = Message::new_request("test", serde_json::Value::Null);
+        let result = client.dispatcher().dispatch(&req).unwrap().unwrap();
+        assert!(result.is_success_response());
+    }
 }

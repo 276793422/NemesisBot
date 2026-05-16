@@ -159,3 +159,155 @@ impl ChannelManagerTrait for ChannelManagerAdapter {
         self.enabled_channels.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_health_config(port: u16) -> nemesis_health::server::HealthServerConfig {
+        nemesis_health::server::HealthServerConfig {
+            listen_addr: format!("127.0.0.1:{}", port),
+            version: Some("test".to_string()),
+        }
+    }
+
+    fn make_heartbeat_config() -> nemesis_heartbeat::HeartbeatConfig {
+        nemesis_heartbeat::HeartbeatConfig::new(30, true, std::env::temp_dir().to_string_lossy().to_string())
+    }
+
+    // -------------------------------------------------------------------------
+    // HealthServerAdapter construction
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_health_server_adapter_initial_state() {
+        let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18790)));
+        let adapter = HealthServerAdapter::new(health_server);
+        assert!(adapter.start().is_ok());
+    }
+
+    #[test]
+    fn test_health_server_adapter_stop() {
+        let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18791)));
+        let adapter = HealthServerAdapter::new(health_server);
+        assert!(adapter.stop().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_health_server_adapter_start_idempotent() {
+        let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18792)));
+        let adapter = HealthServerAdapter::new(health_server);
+        assert!(adapter.start().is_ok());
+        assert!(adapter.start().is_ok());
+        assert!(adapter.stop().is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // HeartbeatServiceAdapter construction
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_heartbeat_adapter_initial_state() {
+        let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+        let adapter = HeartbeatServiceAdapter::new(heartbeat);
+        assert!(adapter.start().is_ok());
+    }
+
+    #[test]
+    fn test_heartbeat_adapter_stop() {
+        let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+        let adapter = HeartbeatServiceAdapter::new(heartbeat);
+        assert!(adapter.stop().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_adapter_start_idempotent() {
+        let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+        let adapter = HeartbeatServiceAdapter::new(heartbeat);
+        assert!(adapter.start().is_ok());
+        assert!(adapter.start().is_ok());
+        assert!(adapter.stop().is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // ChannelManagerAdapter construction
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_channel_manager_adapter_enabled_channels() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let channels = vec!["web".to_string(), "websocket".to_string()];
+        let adapter = ChannelManagerAdapter::new(manager, channels.clone());
+        assert_eq!(adapter.enabled_channels(), channels);
+    }
+
+    #[test]
+    fn test_channel_manager_adapter_empty_channels() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let adapter = ChannelManagerAdapter::new(manager, vec![]);
+        assert!(adapter.enabled_channels().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_adapter_start() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let adapter = ChannelManagerAdapter::new(manager, vec!["web".to_string()]);
+        assert!(adapter.start().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_adapter_stop() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let adapter = ChannelManagerAdapter::new(manager, vec![]);
+        assert!(adapter.stop().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_adapter_start_idempotent() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let adapter = ChannelManagerAdapter::new(manager, vec![]);
+        assert!(adapter.start().is_ok());
+        assert!(adapter.start().is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // AtomicBool ordering test
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_atomic_bool_swap_behavior() {
+        let flag = AtomicBool::new(false);
+        assert!(!flag.swap(true, Ordering::SeqCst));
+        assert!(flag.swap(true, Ordering::SeqCst));
+        assert!(flag.swap(false, Ordering::SeqCst));
+        assert!(!flag.swap(false, Ordering::SeqCst));
+    }
+
+    // -------------------------------------------------------------------------
+    // LifecycleService trait tests
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_health_server_adapter_trait_object() {
+        let health_server = Arc::new(nemesis_health::server::HealthServer::new(make_health_config(18793)));
+        let adapter = HealthServerAdapter::new(health_server);
+        let _trait_obj: &dyn LifecycleService = &adapter;
+        assert!(adapter.start().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_adapter_trait_object() {
+        let heartbeat = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(make_heartbeat_config()));
+        let adapter = HeartbeatServiceAdapter::new(heartbeat);
+        let _trait_obj: &dyn LifecycleService = &adapter;
+        assert!(adapter.start().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_channel_manager_adapter_trait_object() {
+        let manager = Arc::new(nemesis_channels::manager::ChannelManager::new());
+        let adapter = ChannelManagerAdapter::new(manager, vec!["web".to_string()]);
+        let _trait_obj: &dyn LifecycleService = &adapter;
+        assert!(adapter.start().is_ok());
+    }
+}

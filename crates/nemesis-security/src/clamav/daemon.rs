@@ -255,4 +255,101 @@ mod tests {
         assert!(!rt.block_on(async { daemon.is_ready().await }));
         daemon.running.store(false, Ordering::SeqCst);
     }
+
+    // ============================================================
+    // Additional coverage tests
+    // ============================================================
+
+    #[test]
+    fn test_daemon_config_default_values() {
+        let cfg = DaemonConfig::default();
+        assert_eq!(cfg.startup_timeout_secs, 120);
+        assert_eq!(cfg.listen_addr, "127.0.0.1:3310");
+    }
+
+    #[test]
+    fn test_daemon_new_with_custom_address() {
+        let mut cfg = test_config();
+        cfg.listen_addr = "192.168.1.1:9999".to_string();
+        let daemon = Daemon::new(cfg);
+        assert_eq!(daemon.client().address(), "192.168.1.1:9999");
+        assert!(!daemon.is_running());
+    }
+
+    #[test]
+    fn test_daemon_is_running_flag_toggle() {
+        let daemon = Daemon::new(test_config());
+        assert!(!daemon.is_running());
+        daemon.running.store(true, Ordering::SeqCst);
+        assert!(daemon.is_running());
+        daemon.running.store(false, Ordering::SeqCst);
+        assert!(!daemon.is_running());
+    }
+
+    #[tokio::test]
+    async fn test_daemon_stop_idempotent() {
+        let daemon = Daemon::new(test_config());
+        // Stop when not running should succeed
+        assert!(daemon.stop().await.is_ok());
+        // Stop again should still succeed
+        assert!(daemon.stop().await.is_ok());
+    }
+
+    #[test]
+    fn test_daemon_client_default_address_on_empty() {
+        let mut cfg = test_config();
+        cfg.listen_addr = String::new();
+        let daemon = Daemon::new(cfg);
+        assert_eq!(daemon.client().address(), "127.0.0.1:3310");
+    }
+
+    #[tokio::test]
+    async fn test_daemon_start_already_running_different_state() {
+        let daemon = Daemon::new(test_config());
+        // Set running to true, then try to start
+        daemon.running.store(true, Ordering::SeqCst);
+        let result = daemon.start().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already running"));
+        // Reset state
+        daemon.running.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_start_empty_clamav_path() {
+        let daemon = Daemon::new(DaemonConfig {
+            clamav_path: String::new(),
+            config_file: "/tmp/clamd.conf".to_string(),
+            ..Default::default()
+        });
+        let result = daemon.start().await;
+        assert!(result.is_err());
+        // Should fail because clamd not found
+    }
+
+    #[test]
+    fn test_daemon_config_clone() {
+        let cfg = test_config();
+        let cloned = cfg.clone();
+        assert_eq!(cfg.clamav_path, cloned.clamav_path);
+        assert_eq!(cfg.config_file, cloned.config_file);
+        assert_eq!(cfg.listen_addr, cloned.listen_addr);
+        assert_eq!(cfg.startup_timeout_secs, cloned.startup_timeout_secs);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_is_ready_returns_false_when_not_running() {
+        let daemon = Daemon::new(test_config());
+        assert!(!daemon.is_running());
+        // is_ready checks is_running first, so should return false
+        assert!(!daemon.is_ready().await);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_process_initially_none() {
+        let daemon = Daemon::new(test_config());
+        // The internal process should be None
+        let proc = daemon.process.lock().await;
+        assert!(proc.is_none());
+    }
 }

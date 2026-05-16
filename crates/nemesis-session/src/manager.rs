@@ -948,4 +948,140 @@ mod tests {
         let history = mgr.get_history("nonexistent:key");
         assert!(history.is_empty());
     }
+
+    // ==================== Additional requested tests ====================
+
+    #[test]
+    fn test_with_default_timeout_custom_timeout_behavior() {
+        // Verify that SessionMgr::new with a custom timeout correctly controls
+        // expiry behavior, while with_default_timeout uses 3600s.
+        // Custom short timeout: sessions should expire quickly.
+        let short_mgr = SessionMgr::new(Duration::from_millis(1));
+        let s = short_mgr.create_session("web", "u1", "c1");
+        assert_eq!(short_mgr.count(), 1);
+
+        // Wait for the session to exceed the 1ms timeout
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let removed = short_mgr.cleanup_expired();
+        assert_eq!(removed, 1);
+        assert_eq!(short_mgr.count(), 0);
+        // Session ID should no longer be retrievable
+        assert!(short_mgr.get(&s.id).is_none());
+
+        // with_default_timeout uses 3600s, so sessions should survive cleanup.
+        let default_mgr = SessionMgr::with_default_timeout();
+        default_mgr.create_session("web", "u1", "c1");
+        assert_eq!(default_mgr.cleanup_expired(), 0);
+        assert_eq!(default_mgr.count(), 1);
+    }
+
+    #[test]
+    fn test_shutdown_sessions_inaccessible_after_shutdown() {
+        let mgr = SessionMgr::new(Duration::from_secs(3600));
+        let s1 = mgr.create_session("web", "u1", "c1");
+        let s2 = mgr.create_session("rpc", "u2", "c2");
+        assert_eq!(mgr.count(), 2);
+
+        mgr.shutdown();
+
+        // All sessions should be gone
+        assert_eq!(mgr.count(), 0);
+        assert!(mgr.get(&s1.id).is_none());
+        assert!(mgr.get(&s2.id).is_none());
+
+        // Operations on cleared IDs should not panic
+        mgr.touch(&s1.id);
+        assert!(mgr.remove(&s1.id).is_none());
+
+        // The manager should still be usable after shutdown (new sessions work)
+        let s3 = mgr.create_session("web", "u3", "c3");
+        assert_eq!(mgr.count(), 1);
+        assert!(mgr.get(&s3.id).is_some());
+    }
+
+    #[test]
+    fn test_stats_tracks_active_and_chat_sessions_correctly() {
+        let mgr = SessionMgr::new(Duration::from_secs(3600));
+
+        // Initially both counters should be zero
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 0);
+        assert_eq!(stats["chat_sessions"], 0);
+
+        // Add connection sessions
+        mgr.create_session("web", "u1", "c1");
+        mgr.create_session("rpc", "u2", "c2");
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 2);
+        assert_eq!(stats["chat_sessions"], 0);
+
+        // Add chat sessions
+        mgr.add_message("web:user1", "user", "hello");
+        mgr.get_or_create_chat("rpc:user2");
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 2);
+        assert_eq!(stats["chat_sessions"], 2);
+
+        // Remove one connection session
+        mgr.remove(&mgr.get(&format!("sess_0")).unwrap().id);
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 1);
+        assert_eq!(stats["chat_sessions"], 2);
+
+        // Shutdown clears connection sessions but not chat sessions
+        mgr.shutdown();
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 0);
+        assert_eq!(stats["chat_sessions"], 2);
+    }
+
+    #[test]
+    fn test_access_nonexistent_session_operations_safe() {
+        let mgr = SessionMgr::new(Duration::from_secs(3600));
+
+        // get on non-existent ID returns None
+        assert!(mgr.get("does_not_exist").is_none());
+
+        // remove on non-existent ID returns None
+        assert!(mgr.remove("does_not_exist").is_none());
+
+        // touch on non-existent ID is a no-op
+        mgr.touch("does_not_exist");
+
+        // get_history on non-existent chat key returns empty vec
+        assert!(mgr.get_history("no:such:key").is_empty());
+
+        // get_summary on non-existent chat key returns None
+        assert!(mgr.get_summary("no:such:key").is_none());
+
+        // count should still be zero
+        assert_eq!(mgr.count(), 0);
+
+        // stats should report zero for everything
+        let stats = mgr.stats();
+        assert_eq!(stats["active_sessions"], 0);
+        assert_eq!(stats["chat_sessions"], 0);
+    }
+
+    #[test]
+    fn test_touch_on_expired_session_is_no_op() {
+        // Create a manager with a very short timeout
+        let mgr = SessionMgr::new(Duration::from_millis(1));
+        let session = mgr.create_session("web", "u1", "c1");
+        let id = session.id.clone();
+
+        // Wait for the session to expire
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Clean up expired sessions
+        let removed = mgr.cleanup_expired();
+        assert_eq!(removed, 1);
+        assert_eq!(mgr.count(), 0);
+
+        // Touch the now-expired (removed) session ID — should not panic
+        // and should not re-create the session
+        mgr.touch(&id);
+        assert_eq!(mgr.count(), 0);
+        assert!(mgr.get(&id).is_none());
+    }
 }

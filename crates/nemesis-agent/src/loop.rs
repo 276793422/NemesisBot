@@ -5328,4 +5328,224 @@ mod tests {
         assert!(result.contains("tc_1"));
         assert!(result.contains("tc_2"));
     }
+
+    // =========================================================================
+    // Additional coverage tests for loop.rs utility functions
+    // =========================================================================
+
+    #[test]
+    fn test_format_messages_for_log_with_tool_calls_and_content() {
+        let messages = vec![
+            LlmMessage {
+                role: "assistant".to_string(),
+                content: "Let me help you.".to_string(),
+                tool_calls: Some(vec![ToolCallInfo {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: r#"{"path":"/test.txt"}"#.to_string(),
+                }]),
+                tool_call_id: None,
+            },
+        ];
+        let result = format_messages_for_log(&messages);
+        assert!(result.contains("ToolCalls:"));
+        assert!(result.contains("call_1"));
+        assert!(result.contains("read_file"));
+        assert!(result.contains("Let me help you."));
+    }
+
+    #[test]
+    fn test_format_messages_for_log_with_tool_call_id_v2() {
+        let messages = vec![
+            LlmMessage {
+                role: "tool".to_string(),
+                content: "file contents here".to_string(),
+                tool_calls: None,
+                tool_call_id: Some("call_abc".to_string()),
+            },
+        ];
+        let result = format_messages_for_log(&messages);
+        assert!(result.contains("ToolCallID: call_abc"));
+    }
+
+    #[test]
+    fn test_format_messages_for_log_long_content_truncated() {
+        let long_content = "A".repeat(500);
+        let messages = vec![
+            LlmMessage {
+                role: "user".to_string(),
+                content: long_content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        let result = format_messages_for_log(&messages);
+        assert!(result.len() < long_content.len() + 100);
+    }
+
+    #[test]
+    fn test_format_messages_for_log_long_arguments_truncated() {
+        let long_args = "X".repeat(500);
+        let messages = vec![
+            LlmMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+                tool_calls: Some(vec![ToolCallInfo {
+                    id: "call_1".to_string(),
+                    name: "test".to_string(),
+                    arguments: long_args.clone(),
+                }]),
+                tool_call_id: None,
+            },
+        ];
+        let result = format_messages_for_log(&messages);
+        assert!(result.len() < long_args.len() + 100);
+    }
+
+    #[test]
+    fn test_format_tools_for_log_long_args_truncated() {
+        let long_args = "Y".repeat(500);
+        let tools = vec![ToolCallInfo {
+            id: "tc_long".to_string(),
+            name: "long_tool".to_string(),
+            arguments: long_args.clone(),
+        }];
+        let result = format_tools_for_log(&tools);
+        assert!(result.len() < long_args.len() + 100);
+    }
+
+    fn make_inbound_msg(sender_id: &str, chat_id: &str, metadata: std::collections::HashMap<String, String>) -> nemesis_types::channel::InboundMessage {
+        nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: sender_id.to_string(),
+            chat_id: chat_id.to_string(),
+            content: String::new(),
+            media: vec![],
+            session_key: String::new(),
+            correlation_id: String::new(),
+            metadata,
+        }
+    }
+
+    #[test]
+    fn test_extract_peer_with_peer_kind_direct_v2() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("peer_kind".to_string(), "direct".to_string());
+        let msg = make_inbound_msg("node-123", "chat-1", metadata);
+        let result = extract_peer(&msg);
+        assert_eq!(result, "direct:node-123");
+    }
+
+    #[test]
+    fn test_extract_peer_with_peer_kind_cluster() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("peer_kind".to_string(), "cluster".to_string());
+        metadata.insert("peer_id".to_string(), "worker-1".to_string());
+        let msg = make_inbound_msg("user-1", "chat-abc", metadata);
+        let result = extract_peer(&msg);
+        assert_eq!(result, "cluster:worker-1");
+    }
+
+    #[test]
+    fn test_extract_parent_peer_valid_v2() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("parent_peer_kind".to_string(), "cluster".to_string());
+        metadata.insert("parent_peer_id".to_string(), "parent-1".to_string());
+        let msg = make_inbound_msg("user-1", "chat-1", metadata);
+        let result = extract_parent_peer(&msg);
+        assert_eq!(result, Some("cluster:parent-1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_parent_peer_empty_kind_v2() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("parent_peer_kind".to_string(), "".to_string());
+        metadata.insert("parent_peer_id".to_string(), "parent-1".to_string());
+        let msg = make_inbound_msg("user-1", "chat-1", metadata);
+        let result = extract_parent_peer(&msg);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_parent_peer_empty_id_v2() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("parent_peer_kind".to_string(), "cluster".to_string());
+        metadata.insert("parent_peer_id".to_string(), "".to_string());
+        let msg = make_inbound_msg("user-1", "chat-1", metadata);
+        let result = extract_parent_peer(&msg);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_parent_peer_no_metadata_v2() {
+        let msg = make_inbound_msg("user-1", "chat-1", std::collections::HashMap::new());
+        let result = extract_parent_peer(&msg);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_continuation_task_id_valid_v2() {
+        assert_eq!(extract_continuation_task_id("cluster_continuation:task-123"), Some("task-123"));
+    }
+
+    #[test]
+    fn test_extract_continuation_task_id_no_prefix_v2() {
+        assert_eq!(extract_continuation_task_id("regular-message"), None);
+    }
+
+    #[test]
+    fn test_is_internal_channel_all_variants() {
+        assert!(is_internal_channel("cli"));
+        assert!(is_internal_channel("system"));
+        assert!(is_internal_channel("subagent"));
+        assert!(!is_internal_channel("web"));
+        assert!(!is_internal_channel("rpc"));
+        assert!(!is_internal_channel("discord"));
+        assert!(!is_internal_channel(""));
+    }
+
+    #[test]
+    fn test_build_agent_main_session_key_various() {
+        assert_eq!(build_agent_main_session_key("main"), "agent:main:main");
+        assert_eq!(build_agent_main_session_key("worker-1"), "agent:worker-1:main");
+        assert_eq!(build_agent_main_session_key(""), "agent::main");
+    }
+
+    #[test]
+    fn test_truncate_empty_string() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_short_string() {
+        assert_eq!(truncate("hello", 100), "hello");
+    }
+
+    #[test]
+    fn test_resolve_route_with_guild_and_team() {
+        let input = RouteInput {
+            channel: "discord".to_string(),
+            account_id: None,
+            peer: "direct:user1".to_string(),
+            parent_peer: None,
+            guild_id: Some("guild-123".to_string()),
+            team_id: Some("team-456".to_string()),
+        };
+        let output = resolve_route(&input);
+        assert_eq!(output.agent_id, "main");
+    }
+
+    #[test]
+    fn test_resolve_route_with_account_id() {
+        let input = RouteInput {
+            channel: "web".to_string(),
+            account_id: Some("acc-123".to_string()),
+            peer: "direct:user1".to_string(),
+            parent_peer: None,
+            guild_id: None,
+            team_id: None,
+        };
+        let output = resolve_route(&input);
+        assert_eq!(output.agent_id, "main");
+    }
 }
