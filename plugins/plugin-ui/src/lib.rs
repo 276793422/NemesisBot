@@ -11,12 +11,15 @@
 //! Build: `cargo build --release` → plugin-ui.dll
 //! Place alongside nemesisbot.exe in plugins/ subdirectory.
 
+mod host_services;
 mod window;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
 use std::sync::Mutex;
+
+use host_services::HostServices;
 
 /// DLL version string.
 const PLUGIN_VERSION: &str = "0.2.0";
@@ -37,6 +40,20 @@ static ACTIVE_HWND: AtomicIsize = AtomicIsize::new(0);
 /// when the user clicks Approve/Reject. Read by `plugin_get_approval_result()`.
 /// Stored as CString for safe C ABI return (includes null terminator).
 static APPROVAL_RESULT: Mutex<Option<CString>> = Mutex::new(None);
+
+/// Stored host services pointer (set during plugin_init).
+static HOST_PTR: AtomicPtr<HostServices> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Log a message via host services if available, otherwise eprintln.
+fn log_msg(level: i32, msg: &str) {
+    let host_ptr = HOST_PTR.load(Ordering::SeqCst);
+    if !host_ptr.is_null() {
+        let host = unsafe { &*host_ptr };
+        host_services::host_log(Some(host), level, "plugin-ui", msg);
+    } else {
+        eprintln!("[plugin-ui] {}", msg);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Configuration types — pure window config, no business logic
@@ -97,7 +114,46 @@ pub const PLUGIN_ERR_WINDOW: i32 = 3;
 pub const PLUGIN_ERR_UNKNOWN_TYPE: i32 = 5;
 
 // ---------------------------------------------------------------------------
-// C ABI exports
+// C ABI exports — Unified Plugin Interface
+// ---------------------------------------------------------------------------
+
+/// Initialize the plugin.
+///
+/// `config_dir`: Directory path where plugin configuration files are located.
+/// `host`: Pointer to HostServices vtable (may be NULL for standalone testing).
+///
+/// Returns: 0 on success, negative error code on failure.
+#[no_mangle]
+pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32 {
+    // Store host pointer
+    HOST_PTR.store(host as *mut HostServices, Ordering::SeqCst);
+
+    if !config_dir.is_null() {
+        let dir = unsafe { CStr::from_ptr(config_dir) }.to_string_lossy();
+        log_msg(1, &format!("plugin_init: config_dir={}", dir));
+    }
+
+    // Check WebView2 availability
+    if plugin_check_available() != 1 {
+        log_msg(3, "plugin_init: WebView2 not available");
+        // Not a fatal error — still return OK, window creation will fail later
+    }
+
+    log_msg(2, &format!("plugin_init: version={}, host={}", PLUGIN_VERSION, if host.is_null() { "none" } else { "provided" }));
+    PLUGIN_OK
+}
+
+/// Release resources held by the plugin.
+///
+/// Idempotent — safe to call multiple times.
+#[no_mangle]
+pub extern "C" fn plugin_free() {
+    HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
+    log_msg(2, "plugin_free: resources released");
+}
+
+// ---------------------------------------------------------------------------
+// C ABI exports — Window management
 // ---------------------------------------------------------------------------
 
 /// Check if the plugin is available (WebView2 runtime installed on Windows).

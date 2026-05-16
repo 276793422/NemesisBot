@@ -108,7 +108,19 @@ pub struct VectorConfig {
     /// Provider API embedding model name.
     #[serde(default)]
     pub api_model: Option<String>,
+
+    /// Config directory for unified plugin interface (not serialized).
+    #[serde(skip)]
+    pub plugin_config_dir: Option<String>,
+
+    /// Host services pointer for unified plugin interface (not serialized).
+    #[serde(skip)]
+    pub host_services: Option<*const nemesis_plugin::HostServices>,
 }
+
+// SAFETY: The HostServices pointer is read-only and valid for process lifetime.
+unsafe impl Send for VectorConfig {}
+unsafe impl Sync for VectorConfig {}
 
 impl Default for VectorConfig {
     fn default() -> Self {
@@ -118,6 +130,8 @@ impl Default for VectorConfig {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         }
     }
 }
@@ -296,6 +310,8 @@ mod tests {
             plugin_path: Some("/path/to/plugin".to_string()),
             plugin_model_path: Some("/path/to/model".to_string()),
             api_model: Some("text-embedding-3-small".to_string()),
+            plugin_config_dir: None,
+            host_services: None,
         };
         assert_eq!(config.embedding_tier, "plugin");
         assert_eq!(config.local_dim, 512);
@@ -310,6 +326,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: Some("my-model".to_string()),
+            plugin_config_dir: None,
+            host_services: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: VectorConfig = serde_json::from_str(&json).unwrap();

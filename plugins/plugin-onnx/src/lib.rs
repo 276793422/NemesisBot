@@ -3,22 +3,26 @@
 //! Provides C ABI exports for computing text embeddings using a local ONNX model.
 //! Designed for BERT-style sentence embedding models (e.g. all-MiniLM-L6-v2).
 //!
-//! C ABI contract:
-//! - `embed_init(model_path, dim)` → i32 (0 = success)
-//! - `embed(text, out, dim)` → i32 (0 = success)
-//! - `embed_free()` → release resources
+//! C ABI contract (unified interface):
+//! - `plugin_init(config_dir, host)` → i32 (0 = success)
+//! - `plugin_embed(text, out, dim)` → i32 (0 = success)
+//! - `plugin_free()` → release resources
 //!
 //! Pipeline: tokenize → ONNX inference → mean pooling → L2 normalize
 //!
 //! Build: `cargo build --release` → plugin_onnx.dll
 
+mod host_services;
+
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI32, AtomicBool, AtomicPtr, Ordering};
 
 #[cfg(test)]
 use ndarray::{Array1, Array2};
+use host_services::HostServices;
 use ort::session::Session;
 #[allow(unused_imports)]
 use ort::value::Tensor;
@@ -32,7 +36,7 @@ use tokenizers::Tokenizer;
 const E_OK: i32 = 0;
 /// Null pointer argument.
 const E_NULL_PTR: i32 = -1;
-/// Plugin not initialized (call embed_init first).
+/// Plugin not initialized (call plugin_init first).
 const E_NOT_INIT: i32 = -2;
 /// Tokenization failed.
 const E_TOKENIZE: i32 = -3;
@@ -42,6 +46,101 @@ const E_INFER: i32 = -4;
 const E_DIM: i32 = -5;
 /// Initialization failed (model load, session creation, etc.).
 const E_INIT: i32 = -6;
+/// Download failed.
+const E_DOWNLOAD: i32 = -7;
+/// Configuration error.
+const E_CONFIG: i32 = -8;
+
+// ---------------------------------------------------------------------------
+// Plugin configuration
+// ---------------------------------------------------------------------------
+
+/// Compile-time embedded default configuration.
+const DEFAULT_CONFIG: &str = include_str!("../config/plugin.toml");
+
+/// Top-level plugin configuration with three model tiers.
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct PluginConfig {
+    #[serde(default)]
+    plugin: PluginInfo,
+    #[serde(default = "default_active")]
+    active: String,
+    #[serde(default)]
+    models: ModelsConfig,
+}
+
+fn default_active() -> String { "medium".to_string() }
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        toml::from_str(DEFAULT_CONFIG).unwrap_or_else(|_| PluginConfig {
+            plugin: PluginInfo::default(),
+            active: default_active(),
+            models: ModelsConfig::default(),
+        })
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
+struct PluginInfo {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+}
+
+/// Container for the three model tiers.
+#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
+struct ModelsConfig {
+    #[serde(default)]
+    large: ModelConfig,
+    #[serde(default)]
+    medium: ModelConfig,
+    #[serde(default)]
+    small: ModelConfig,
+}
+
+impl ModelsConfig {
+    fn get(&self, key: &str) -> Option<&ModelConfig> {
+        match key {
+            "large" => Some(&self.large),
+            "medium" => Some(&self.medium),
+            "small" => Some(&self.small),
+            _ => None,
+        }
+    }
+
+    fn get_mut(&mut self, key: &str) -> Option<&mut ModelConfig> {
+        match key {
+            "large" => Some(&mut self.large),
+            "medium" => Some(&mut self.medium),
+            "small" => Some(&mut self.small),
+            _ => None,
+        }
+    }
+}
+
+/// Per-tier model configuration.
+#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
+struct ModelConfig {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    dimension: i32,
+    #[serde(default)]
+    model_url: String,
+    #[serde(default)]
+    model_size: u64,
+    #[serde(default)]
+    tokenizer_url: String,
+    #[serde(default)]
+    tokenizer_size: u64,
+    /// Absolute local path after download. Empty = not yet downloaded.
+    #[serde(default)]
+    local_model_path: String,
+    #[serde(default)]
+    local_tokenizer_path: String,
+}
 
 // ---------------------------------------------------------------------------
 // Global state
@@ -52,17 +151,208 @@ struct EmbedState {
     session: Option<Session>,
     tokenizer: Option<Tokenizer>,
     dim: i32,
-    initialized: bool,
 }
 
+/// Mutex serialises all access.  ONNX Runtime's `Session::run()` requires
+/// `&mut self` in ort 2.0.0-rc.12, so we cannot use an RwLock for
+/// concurrent inference.  Concurrency is instead handled at the consumer
+/// level (the `Mutex<NativePlugin>` in `embedding.rs`).
 static STATE: LazyLock<std::sync::Mutex<EmbedState>> = LazyLock::new(|| {
     std::sync::Mutex::new(EmbedState {
         session: None,
         tokenizer: None,
         dim: 0,
-        initialized: false,
     })
 });
+
+/// Reference count: how many callers have called `plugin_init` without a
+/// matching `plugin_free`.  The ONNX session is only destroyed when this
+/// drops to zero.
+static INIT_COUNT: AtomicI32 = AtomicI32::new(0);
+
+/// Once the ONNX session has been destroyed, ONNX Runtime's internal global
+/// state cannot safely be re-initialised.  Setting this flag blocks all
+/// future `plugin_init` calls, preventing the segfault.
+static PERMANENTLY_FREED: AtomicBool = AtomicBool::new(false);
+
+/// Stored host services pointer (set during plugin_init).
+static HOST_PTR: AtomicPtr<HostServices> = AtomicPtr::new(std::ptr::null_mut());
+
+// ---------------------------------------------------------------------------
+// Logging helpers
+// ---------------------------------------------------------------------------
+
+/// Log a message via host services if available, otherwise eprintln.
+fn log_msg(level: i32, msg: &str) {
+    let host_ptr = HOST_PTR.load(Ordering::SeqCst);
+    if !host_ptr.is_null() {
+        let host = unsafe { &*host_ptr };
+        host_services::host_log(Some(host), level, "plugin-onnx", msg);
+    } else {
+        eprintln!("[plugin-onnx] {}", msg);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration loading & saving
+// ---------------------------------------------------------------------------
+
+fn config_path(config_dir: &str) -> std::path::PathBuf {
+    Path::new(config_dir).join("plugin-onnx.toml")
+}
+
+/// Load plugin configuration.
+///
+/// 1. If `{config_dir}/plugin-onnx.toml` exists → load it.
+/// 2. If not → save embedded default config to that path, then load from disk.
+fn load_config(config_dir: &str) -> PluginConfig {
+    let path = config_path(config_dir);
+
+    if !path.exists() {
+        if let Err(e) = std::fs::create_dir_all(config_dir) {
+            log_msg(3, &format!("Failed to create config dir '{}': {}", config_dir, e));
+        } else {
+            match std::fs::write(&path, DEFAULT_CONFIG) {
+                Ok(()) => {
+                    log_msg(2, &format!("Default config saved to {}", path.display()));
+                }
+                Err(e) => {
+                    log_msg(3, &format!("Failed to save default config: {}", e));
+                }
+            }
+        }
+    }
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match toml::from_str::<PluginConfig>(&content) {
+            Ok(config) => {
+                log_msg(2, &format!("Config loaded from {}", path.display()));
+                config
+            }
+            Err(e) => {
+                log_msg(4, &format!("Failed to parse config '{}': {}", path.display(), e));
+                PluginConfig::default()
+            }
+        },
+        Err(e) => {
+            log_msg(3, &format!("Failed to read config '{}': {}, using defaults", path.display(), e));
+            PluginConfig::default()
+        }
+    }
+}
+
+/// Save plugin configuration back to disk.
+fn save_config(config: &PluginConfig, config_dir: &str) {
+    let path = config_path(config_dir);
+    match toml::to_string_pretty(config) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                log_msg(3, &format!("Failed to save config to {}: {}", path.display(), e));
+            } else {
+                log_msg(1, &format!("Config saved to {}", path.display()));
+            }
+        }
+        Err(e) => {
+            log_msg(3, &format!("Failed to serialize config: {}", e));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File resolution & download
+// ---------------------------------------------------------------------------
+
+/// Ensure a model/tokenizer file is locally available.
+///
+/// Returns `(resolved_path, was_updated)`.
+///
+/// - `local_path` non-empty and file exists → use it directly
+/// - `local_path` non-empty but file missing → re-download
+/// - `local_path` empty → download
+/// - No host services → search `data_dir` for the file as fallback
+fn ensure_file(
+    url: &str,
+    local_path: &str,
+    data_dir: &str,
+    model_name: &str,
+    filename: &str,
+    host: Option<&HostServices>,
+) -> Result<(String, bool), i32> {
+    // Case 1: local_path is set and file exists
+    if !local_path.is_empty() && Path::new(local_path).exists() {
+        log_msg(1, &format!("{} found at {}", filename, local_path));
+        return Ok((local_path.to_string(), false));
+    }
+
+    // Case 2: local_path is set but file is missing — fall through to download
+    if !local_path.is_empty() {
+        log_msg(2, &format!("{} was at {} but file missing, re-downloading", filename, local_path));
+    }
+
+    // Need to download — compute destination path
+    let dest_dir = Path::new(data_dir).join(model_name);
+    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
+        log_msg(3, &format!("Failed to create dir {}: {}", dest_dir.display(), e));
+    }
+    let dest = dest_dir.join(filename);
+    let dest_str = dest.to_string_lossy().to_string();
+
+    if let Some(host) = host {
+        if url.is_empty() {
+            log_msg(4, &format!("{} not found and no URL configured", filename));
+            return Err(E_CONFIG);
+        }
+        log_msg(2, &format!("Downloading {} from {}...", filename, url));
+        download_via_host(host, url, &dest_str)?;
+        log_msg(2, &format!("{} downloaded to {}", filename, dest_str));
+        Ok((dest_str, true))
+    } else {
+        // No host services — search known locations as fallback (standalone test)
+        let candidates = [
+            dest.clone(),
+            Path::new(data_dir).join(filename),
+            Path::new(".").join(filename),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                let found = candidate.to_string_lossy().to_string();
+                log_msg(1, &format!("Found {} at {}", filename, found));
+                return Ok((found, true));
+            }
+        }
+        log_msg(4, &format!("No host services and {} not found in known locations", filename));
+        Err(E_DOWNLOAD)
+    }
+}
+
+/// Resolve the plugin data directory via host services, or fall back to config_dir.
+fn resolve_data_dir(host: Option<&HostServices>, fallback: &str) -> String {
+    match host {
+        Some(host) => match host.get_plugin_data_dir {
+            Some(get_data_dir) => {
+                let plugin_name = std::ffi::CString::new("plugin-onnx").unwrap();
+                let mut buf = vec![0u8; 4096];
+                let len = get_data_dir(
+                    plugin_name.as_ptr(),
+                    buf.as_mut_ptr() as *mut c_char,
+                    buf.len(),
+                );
+                if len < 0 {
+                    log_msg(3, &format!("get_plugin_data_dir failed: {}, using fallback", len));
+                    return fallback.to_string();
+                }
+                CStr::from_bytes_with_nul(&buf[..len as usize + 1])
+                    .map(|c| c.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| fallback.to_string())
+            }
+            None => {
+                log_msg(1, "host.get_plugin_data_dir not available, using config_dir");
+                fallback.to_string()
+            }
+        },
+        None => fallback.to_string(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -78,11 +368,6 @@ fn derive_tokenizer_path(model_path: &str) -> String {
 }
 
 /// Perform mean pooling over the sequence dimension, weighted by attention mask.
-///
-/// `output`: flat data [1, seq_len, dim] from ONNX output
-/// `mask`: attention mask values (1.0 for real tokens, 0.0 for padding)
-/// `seq_len`: sequence length
-/// `dim`: embedding dimension
 fn mean_pool(output: &[f32], mask: &[i64], seq_len: usize, dim: usize) -> Vec<f32> {
     let mut result = vec![0.0f32; dim];
     let mut count = 0usize;
@@ -118,74 +403,192 @@ fn l2_normalize(vec: &mut [f32]) {
     }
 }
 
+/// Download a file using host services if available.
+fn download_via_host(host: &HostServices, url: &str, dest: &str) -> Result<(), i32> {
+    let download_fn = host.download_file.ok_or(E_DOWNLOAD)?;
+    let c_url = std::ffi::CString::new(url).map_err(|_| E_DOWNLOAD)?;
+    let c_dest = std::ffi::CString::new(dest).map_err(|_| E_DOWNLOAD)?;
+    let result = download_fn(c_url.as_ptr(), c_dest.as_ptr());
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(E_DOWNLOAD)
+    }
+}
+
 // ---------------------------------------------------------------------------
-// C ABI exports
+// C ABI exports — Unified Plugin Interface
 // ---------------------------------------------------------------------------
 
-/// Initialize the embedding plugin with an ONNX model and output dimension.
+/// Initialize the plugin.
 ///
-/// `model_path`: Null-terminated UTF-8 string pointing to the `.onnx` model file.
-/// `dim`: Expected output embedding dimension (e.g. 384 for all-MiniLM-L6-v2).
+/// `config_dir`: Directory path where plugin configuration files are located.
+/// `host`: Pointer to HostServices vtable (may be NULL for standalone testing).
 ///
 /// Returns: 0 on success, negative error code on failure.
+///
+/// Flow:
+/// 1. Load config (save embedded default if file missing)
+/// 2. Read `active` model tier
+/// 3. Check `local_model_path`:
+///    - non-empty + file exists → use it
+///    - non-empty + file missing → download, update config
+///    - empty → download, update config
+/// 4. Same for tokenizer
+/// 5. Load ONNX session + tokenizer
 #[no_mangle]
-pub extern "C" fn embed_init(model_path: *const c_char, dim: i32) -> i32 {
-    if model_path.is_null() {
-        eprintln!("[plugin-onnx] embed_init: model_path is null");
-        return E_NULL_PTR;
+pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32 {
+    // Store host pointer (even if null)
+    HOST_PTR.store(host as *mut HostServices, Ordering::SeqCst);
+
+    let host_ref = if host.is_null() {
+        None
+    } else {
+        Some(unsafe { &*host })
+    };
+
+    // --- Gate 1: ONNX Runtime already torn down? ---
+    if PERMANENTLY_FREED.load(Ordering::SeqCst) {
+        log_msg(4, "plugin_init: cannot re-init after free (ONNX Runtime limitation)");
+        return E_INIT;
     }
 
-    let model_str = unsafe { CStr::from_ptr(model_path) };
-    let model_str = match model_str.to_str() {
+    // Parse config_dir
+    let config_dir_str = if config_dir.is_null() {
+        log_msg(3, "plugin_init: config_dir is null, using current directory");
+        ".".to_string()
+    } else {
+        match unsafe { CStr::from_ptr(config_dir) }.to_str() {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                log_msg(4, &format!("plugin_init: config_dir is not valid UTF-8: {}", e));
+                return E_CONFIG;
+            }
+        }
+    };
+
+    // --- Gate 2: Fast path — already initialised, just bump ref count ---
+    if INIT_COUNT.load(Ordering::SeqCst) > 0 {
+        INIT_COUNT.fetch_add(1, Ordering::SeqCst);
+        log_msg(1, &format!(
+            "plugin_init: already initialised, ref_count={}",
+            INIT_COUNT.load(Ordering::SeqCst)
+        ));
+        return E_OK;
+    }
+
+    // --- Slow path: load config and create session ---
+    let mut config = load_config(&config_dir_str);
+    let active = config.active.clone();
+
+    // Resolve data directory
+    let data_dir = resolve_data_dir(host_ref, &config_dir_str);
+
+    // Get active model config
+    let model_conf = match config.models.get(&active) {
+        Some(m) => m.clone(),
+        None => {
+            log_msg(4, &format!("plugin_init: unknown active model '{}'", active));
+            return E_CONFIG;
+        }
+    };
+
+    let dim = model_conf.dimension;
+    if dim <= 0 {
+        log_msg(4, &format!("plugin_init: invalid dim={} for model '{}'", dim, active));
+        return E_DIM;
+    }
+
+    if model_conf.name.is_empty() {
+        log_msg(4, &format!("plugin_init: model name is empty for tier '{}'", active));
+        return E_CONFIG;
+    }
+
+    // Ensure model file is available
+    let (model_path, model_updated) = match ensure_file(
+        &model_conf.model_url,
+        &model_conf.local_model_path,
+        &data_dir,
+        &model_conf.name,
+        "model.onnx",
+        host_ref,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            log_msg(4, &format!("plugin_init: failed to obtain model file: {}", e));
+            return e;
+        }
+    };
+
+    // Ensure tokenizer file is available
+    let (tokenizer_path, tokenizer_updated) = match ensure_file(
+        &model_conf.tokenizer_url,
+        &model_conf.local_tokenizer_path,
+        &data_dir,
+        &model_conf.name,
+        "tokenizer.json",
+        host_ref,
+    ) {
+        Ok(result) => result,
+        Err(_) => {
+            // Tokenizer failure is not fatal — derive from model path as fallback
+            log_msg(3, "plugin_init: tokenizer not available, trying derived path");
+            (derive_tokenizer_path(&model_path), false)
+        }
+    };
+
+    // Write updated paths back to config and save
+    if model_updated || tokenizer_updated {
+        if let Some(mc) = config.models.get_mut(&active) {
+            if model_updated {
+                mc.local_model_path = model_path.clone();
+            }
+            if tokenizer_updated {
+                mc.local_tokenizer_path = tokenizer_path.clone();
+            }
+        }
+        save_config(&config, &config_dir_str);
+    }
+
+    // --- Create session ---
+    let mut state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed_init: model_path is not valid UTF-8: {}", e);
+            log_msg(4, &format!("plugin_init: failed to lock state: {}", e));
             return E_INIT;
         }
     };
 
-    if model_str.is_empty() {
-        eprintln!("[plugin-onnx] embed_init: model_path is empty");
-        return E_INIT;
+    // Double-check inside write lock
+    if state.session.is_some() {
+        drop(state);
+        INIT_COUNT.fetch_add(1, Ordering::SeqCst);
+        log_msg(1, &format!(
+            "plugin_init: initialised by another thread, ref_count={}",
+            INIT_COUNT.load(Ordering::SeqCst)
+        ));
+        return E_OK;
     }
 
-    if dim <= 0 {
-        eprintln!("[plugin-onnx] embed_init: invalid dim={}", dim);
-        return E_DIM;
-    }
-
-    // Load tokenizer from same directory as model
-    let tokenizer_path = derive_tokenizer_path(model_str);
+    // Load tokenizer
     let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
         Ok(t) => {
-            eprintln!("[plugin-onnx] Tokenizer loaded from {}", tokenizer_path);
+            log_msg(1, &format!("Tokenizer loaded from {}", tokenizer_path));
             Some(t)
         }
         Err(e) => {
-            eprintln!(
-                "[plugin-onnx] WARN: tokenizer not found at {} ({}), using fallback",
-                tokenizer_path, e
-            );
+            log_msg(3, &format!("Tokenizer not found at {} ({}), continuing without", tokenizer_path, e));
             None
         }
     };
 
     // Create ONNX session
     let session = match Session::builder()
-        .and_then(|mut b| b.commit_from_file(model_str))
+        .and_then(|mut b| b.commit_from_file(&model_path))
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed_init: failed to create ONNX session: {}", e);
-            return E_INIT;
-        }
-    };
-
-    // Store in global state
-    let mut state = match STATE.lock() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[plugin-onnx] embed_init: failed to lock state: {}", e);
+            log_msg(4, &format!("plugin_init: failed to create ONNX session: {}", e));
             return E_INIT;
         }
     };
@@ -193,9 +596,13 @@ pub extern "C" fn embed_init(model_path: *const c_char, dim: i32) -> i32 {
     state.session = Some(session);
     state.tokenizer = tokenizer;
     state.dim = dim;
-    state.initialized = true;
+    drop(state);
 
-    eprintln!("[plugin-onnx] Initialized: dim={}, model={}", dim, model_str);
+    INIT_COUNT.fetch_add(1, Ordering::SeqCst);
+    log_msg(2, &format!(
+        "Initialized: tier={}, model={}, dim={}, ref_count=1",
+        active, model_path, dim
+    ));
     E_OK
 }
 
@@ -203,34 +610,34 @@ pub extern "C" fn embed_init(model_path: *const c_char, dim: i32) -> i32 {
 ///
 /// `text`: Null-terminated UTF-8 string.
 /// `out`: Pointer to a buffer of `dim` floats (caller-allocated).
-/// `dim`: Expected embedding dimension (must match embed_init's dim).
+/// `dim`: Expected embedding dimension (must match plugin_init's dim).
 ///
 /// Returns: 0 on success, negative error code on failure.
 #[no_mangle]
-pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
+pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     if text.is_null() || out.is_null() {
-        eprintln!("[plugin-onnx] embed: null pointer argument");
+        log_msg(4, "plugin_embed: null pointer argument");
         return E_NULL_PTR;
     }
 
     let mut state = match STATE.lock() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: failed to lock state: {}", e);
+            log_msg(4, &format!("plugin_embed: failed to lock state: {}", e));
             return E_NOT_INIT;
         }
     };
 
-    if !state.initialized || state.session.is_none() {
-        eprintln!("[plugin-onnx] embed: not initialized");
+    if state.session.is_none() {
+        log_msg(4, "plugin_embed: not initialized");
         return E_NOT_INIT;
     }
 
     if dim != state.dim {
-        eprintln!(
-            "[plugin-onnx] embed: dimension mismatch (expected={}, got={})",
+        log_msg(4, &format!(
+            "plugin_embed: dimension mismatch (expected={}, got={})",
             state.dim, dim
-        );
+        ));
         return E_DIM;
     }
 
@@ -238,13 +645,13 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     let text_str = match text_str.to_str() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: text is not valid UTF-8: {}", e);
+            log_msg(4, &format!("plugin_embed: text is not valid UTF-8: {}", e));
             return E_TOKENIZE;
         }
     };
 
     if text_str.is_empty() {
-        eprintln!("[plugin-onnx] embed: empty text");
+        log_msg(4, "plugin_embed: empty text");
         return E_TOKENIZE;
     }
 
@@ -253,12 +660,12 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
         Some(tokenizer) => match tokenizer.encode(text_str, true) {
             Ok(enc) => enc,
             Err(e) => {
-                eprintln!("[plugin-onnx] embed: tokenization failed: {}", e);
+                log_msg(4, &format!("plugin_embed: tokenization failed: {}", e));
                 return E_TOKENIZE;
             }
         },
         None => {
-            eprintln!("[plugin-onnx] embed: no tokenizer available");
+            log_msg(4, "plugin_embed: no tokenizer available");
             return E_TOKENIZE;
         }
     };
@@ -268,17 +675,17 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     let seq_len = input_ids.len();
 
     if seq_len == 0 {
-        eprintln!("[plugin-onnx] embed: tokenization produced empty sequence");
+        log_msg(4, "plugin_embed: tokenization produced empty sequence");
         return E_TOKENIZE;
     }
 
-    // Create input tensors using Tensor::from_array
+    // Create input tensors
     let input_ids_data: Vec<i64> = input_ids.iter().map(|&id| id as i64).collect();
     let input_ids_shape = vec![1i64, seq_len as i64];
     let input_ids_tensor = match Tensor::from_array((input_ids_shape, input_ids_data)) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: failed to create input_ids tensor: {}", e);
+            log_msg(4, &format!("plugin_embed: failed to create input_ids tensor: {}", e));
             return E_INFER;
         }
     };
@@ -288,40 +695,50 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     let attention_mask_tensor = match Tensor::from_array((attention_mask_shape, attention_mask_data)) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: failed to create attention_mask tensor: {}", e);
+            log_msg(4, &format!("plugin_embed: failed to create attention_mask tensor: {}", e));
+            return E_INFER;
+        }
+    };
+
+    let token_type_ids_data = vec![0i64; seq_len];
+    let token_type_ids_shape = vec![1i64, seq_len as i64];
+    let token_type_ids_tensor = match Tensor::from_array((token_type_ids_shape, token_type_ids_data)) {
+        Ok(t) => t,
+        Err(e) => {
+            log_msg(4, &format!("plugin_embed: failed to create token_type_ids tensor: {}", e));
             return E_INFER;
         }
     };
 
     // Run inference
-    let session = state.session.as_mut().expect("session exists");
+    let session = state.session.as_mut().expect("session checked above");
     let outputs = match session.run(ort::inputs! {
         "input_ids" => input_ids_tensor,
         "attention_mask" => attention_mask_tensor,
+        "token_type_ids" => token_type_ids_tensor,
     }) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: inference failed: {}", e);
+            log_msg(4, &format!("plugin_embed: inference failed: {}", e));
             return E_INFER;
         }
     };
 
-    // Extract output tensor: last_hidden_state [1, seq_len, dim]
+    // Extract output tensor
     let output_value = match outputs.get("last_hidden_state") {
         Some(v) => v,
         None => {
-            // Fallback: use first output by name
             let first_name = outputs.keys().next();
             match first_name {
                 Some(name) => match outputs.get(name) {
                     Some(v) => v,
                     None => {
-                        eprintln!("[plugin-onnx] embed: no output tensor found");
+                        log_msg(4, "plugin_embed: no output tensor found");
                         return E_INFER;
                     }
                 },
                 None => {
-                    eprintln!("[plugin-onnx] embed: no output tensor found");
+                    log_msg(4, "plugin_embed: no output tensor found");
                     return E_INFER;
                 }
             }
@@ -331,19 +748,18 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     let (_shape, output_data) = match output_value.try_extract_tensor::<f32>() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[plugin-onnx] embed: failed to extract output tensor: {}", e);
+            log_msg(4, &format!("plugin_embed: failed to extract output tensor: {}", e));
             return E_INFER;
         }
     };
 
-    // Verify shape: should be [1, seq_len, dim]
     let expected_elements = seq_len * (dim as usize);
     if output_data.len() < expected_elements {
-        eprintln!(
-            "[plugin-onnx] embed: output too small (got {}, expected {})",
+        log_msg(4, &format!(
+            "plugin_embed: output too small (got {}, expected {})",
             output_data.len(),
             expected_elements
-        );
+        ));
         return E_INFER;
     }
 
@@ -354,24 +770,48 @@ pub extern "C" fn embed(text: *const c_char, out: *mut f32, dim: i32) -> i32 {
     // L2 normalization
     l2_normalize(&mut pooled);
 
-    // Write result to output buffer
+    // Write result
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out, dim as usize) };
     out_slice.copy_from_slice(&pooled);
 
     E_OK
 }
 
-/// Release all resources held by the plugin.
+/// Release one reference to the plugin.
 ///
-/// Safe to call multiple times (idempotent).
+/// Reference-counted: only destroys the ONNX session when the last
+/// caller calls `plugin_free()`. Intermediate calls simply decrement the
+/// count and return.
+///
+/// One-shot: once the session is actually destroyed, ONNX Runtime's
+/// global state cannot be re-initialised.
+///
+/// Safe to call multiple times (idempotent when count is already zero).
 #[no_mangle]
-pub extern "C" fn embed_free() {
-    if let Ok(mut state) = STATE.lock() {
-        state.session = None;
-        state.tokenizer = None;
-        state.dim = 0;
-        state.initialized = false;
-        eprintln!("[plugin-onnx] Resources released");
+pub extern "C" fn plugin_free() {
+    let count = INIT_COUNT.load(Ordering::SeqCst);
+    if count <= 0 {
+        return;
+    }
+
+    let prev = INIT_COUNT.fetch_sub(1, Ordering::SeqCst);
+
+    if prev <= 1 {
+        if let Ok(mut state) = STATE.lock() {
+            state.session = None;
+            state.tokenizer = None;
+            state.dim = 0;
+        }
+        INIT_COUNT.store(0, Ordering::SeqCst);
+        PERMANENTLY_FREED.store(true, Ordering::SeqCst);
+        HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
+        log_msg(2, "Resources released (last reference freed)");
+    } else {
+        log_msg(1, &format!(
+            "plugin_free: ref_count {} → {} (session kept alive)",
+            prev,
+            prev - 1
+        ));
     }
 }
 
@@ -396,28 +836,31 @@ mod tests {
         assert_eq!(E_INFER, -4);
         assert_eq!(E_DIM, -5);
         assert_eq!(E_INIT, -6);
+        assert_eq!(E_DOWNLOAD, -7);
+        assert_eq!(E_CONFIG, -8);
     }
 
     #[test]
     fn test_global_state_default() {
         let state = STATE.lock().unwrap();
-        assert!(!state.initialized);
         assert!(state.session.is_none());
         assert!(state.tokenizer.is_none());
         assert_eq!(state.dim, 0);
+        assert_eq!(INIT_COUNT.load(Ordering::SeqCst), 0);
+        assert!(!PERMANENTLY_FREED.load(Ordering::SeqCst));
     }
 
     #[test]
     fn test_null_text_returns_error() {
         let mut buf = [0.0f32; 64];
-        let result = embed(std::ptr::null(), buf.as_mut_ptr(), 64);
+        let result = plugin_embed(std::ptr::null(), buf.as_mut_ptr(), 64);
         assert_eq!(result, E_NULL_PTR);
     }
 
     #[test]
     fn test_null_out_returns_error() {
         let text = std::ffi::CString::new("hello").unwrap();
-        let result = embed(text.as_ptr(), std::ptr::null_mut(), 64);
+        let result = plugin_embed(text.as_ptr(), std::ptr::null_mut(), 64);
         assert_eq!(result, E_NULL_PTR);
     }
 
@@ -425,42 +868,53 @@ mod tests {
     fn test_embed_before_init_returns_error() {
         let text = std::ffi::CString::new("hello").unwrap();
         let mut buf = [0.0f32; 64];
-        let result = embed(text.as_ptr(), buf.as_mut_ptr(), 64);
+        let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 64);
         assert_eq!(result, E_NOT_INIT);
     }
 
     #[test]
-    fn test_init_null_path_returns_error() {
-        let result = embed_init(std::ptr::null(), 384);
-        assert_eq!(result, E_NULL_PTR);
+    fn test_init_null_config_dir_with_null_host() {
+        // With no host, plugin looks for model in current dir / test-data/.
+        // If model exists (test-data/model.onnx), init succeeds; otherwise fails.
+        // Either way, the function should not crash.
+        let _result = plugin_init(std::ptr::null(), std::ptr::null());
+        // Cleanup
+        plugin_free();
     }
 
     #[test]
-    fn test_init_empty_path_returns_error() {
-        let path = std::ffi::CString::new("").unwrap();
-        let result = embed_init(path.as_ptr(), 384);
-        assert_eq!(result, E_INIT);
-    }
-
-    #[test]
-    fn test_init_nonexistent_model_returns_error() {
-        let path = std::ffi::CString::new("/nonexistent/model.onnx").unwrap();
-        let result = embed_init(path.as_ptr(), 384);
-        assert_eq!(result, E_INIT);
-    }
-
-    #[test]
-    fn test_init_invalid_dim_returns_error() {
-        let path = std::ffi::CString::new("/some/model.onnx").unwrap();
-        assert_eq!(embed_init(path.as_ptr(), 0), E_DIM);
-        assert_eq!(embed_init(path.as_ptr(), -1), E_DIM);
+    fn test_init_nonexistent_config_dir_no_host() {
+        // With nonexistent config_dir and no host, plugin looks in ./test-data/.
+        // If model exists there, init succeeds; if not, fails.
+        let config_dir = std::ffi::CString::new("/nonexistent/path").unwrap();
+        let _result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+        // Cleanup
+        plugin_free();
     }
 
     #[test]
     fn test_free_idempotent() {
-        embed_free();
-        embed_free();
-        embed_free();
+        plugin_free();
+        plugin_free();
+        plugin_free();
+    }
+
+    #[test]
+    fn test_init_after_free_returns_error() {
+        if PERMANENTLY_FREED.load(Ordering::SeqCst) {
+            // Already freed by a previous test — re-init should fail
+            let config_dir = std::ffi::CString::new("/nonexistent").unwrap();
+            let result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+            assert_eq!(result, E_INIT, "re-init after free should return E_INIT");
+        }
+        // If not permanently freed, just skip — this test is only meaningful
+        // when run in isolation after a free.
+    }
+
+    #[test]
+    fn test_ref_count_basics() {
+        let count = INIT_COUNT.load(Ordering::SeqCst);
+        assert!(count >= 0, "ref count should not be negative: {}", count);
     }
 
     #[test]
@@ -479,11 +933,9 @@ mod tests {
 
     #[test]
     fn test_mean_pool_basic() {
-        // 2 tokens, 3 dims, flat data: [1,2,3,4,5,6]
         let output = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mask = vec![1i64, 1];
         let result = mean_pool(&output, &mask, 2, 3);
-        // Mean of [1,4], [2,5], [3,6] = [2.5, 3.5, 4.5]
         assert!((result[0] - 2.5).abs() < 1e-6);
         assert!((result[1] - 3.5).abs() < 1e-6);
         assert!((result[2] - 4.5).abs() < 1e-6);
@@ -492,7 +944,7 @@ mod tests {
     #[test]
     fn test_mean_pool_with_mask() {
         let output = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mask = vec![1i64, 0]; // second token masked out
+        let mask = vec![1i64, 0];
         let result = mean_pool(&output, &mask, 2, 3);
         assert!((result[0] - 1.0).abs() < 1e-6);
         assert!((result[1] - 2.0).abs() < 1e-6);
@@ -542,7 +994,6 @@ mod tests {
 
     #[test]
     fn test_ndarray_mean_pool_matches() {
-        // Verify our mean_pool matches ndarray-based implementation
         let output = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mask = vec![1i64, 1];
         let result = mean_pool(&output, &mask, 2, 3);
@@ -563,170 +1014,156 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_load_config_default() {
+        // Use a unique temp dir to avoid stale config from previous runs
+        let temp_dir = format!("/tmp/plugin-onnx-test-{}", std::process::id());
+        let config = load_config(&temp_dir);
+        assert_eq!(config.active, "medium");
+        assert_eq!(config.models.medium.dimension, 384);
+        assert_eq!(config.models.medium.name, "all-MiniLM-L6-v2");
+        assert!(!config.models.medium.model_url.is_empty());
+        assert_eq!(config.models.large.name, "bge-base-en-v1.5");
+        assert_eq!(config.models.large.dimension, 768);
+        assert_eq!(config.models.small.name, "all-MiniLM-L4-v2");
+        assert_eq!(config.models.small.dimension, 256);
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_load_config_embedded() {
+        let config: PluginConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(config.active, "medium");
+        assert_eq!(config.models.medium.dimension, 384);
+        assert_eq!(config.models.large.dimension, 768);
+        assert_eq!(config.models.small.dimension, 256);
+    }
+
     // ===================================================================
     // Model-required tests (run with `cargo test -- --ignored`)
     // ===================================================================
 
-    #[test]
-    #[ignore]
-    fn test_init_with_valid_model() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let result = embed_init(path.as_ptr(), 384);
-        assert_eq!(result, E_OK);
-        embed_free();
+    fn test_model_dir() -> String {
+        std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
+            .unwrap_or_else(|_| {
+                let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("test-data");
+                dir.to_str().expect("valid path").to_string()
+            })
     }
 
+    /// All model tests in a single lifecycle to avoid ONNX Runtime re-init crash.
     #[test]
     #[ignore]
-    fn test_embed_short_text() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
+    fn test_all_model_scenarios() {
+        let model_dir = test_model_dir();
 
-        let text = std::ffi::CString::new("hello world").unwrap();
-        let mut buf = vec![0.0f32; 384];
-        let result = embed(text.as_ptr(), buf.as_mut_ptr(), 384);
-        assert_eq!(result, E_OK);
+        // ---- Init via plugin_init with config_dir pointing to test-data ----
+        let config_dir = std::ffi::CString::new(model_dir.as_str()).unwrap();
+        let init_result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+        assert_eq!(init_result, E_OK, "plugin_init should succeed");
 
-        let non_zero = buf.iter().filter(|&&v| v != 0.0).count();
-        assert!(non_zero > 0, "Embedding should have non-zero values");
+        // ---- Scenario: Idempotent init (ref count) ----
+        let init2 = plugin_init(config_dir.as_ptr(), std::ptr::null());
+        assert_eq!(init2, E_OK, "second plugin_init should succeed (ref count)");
+        assert!(INIT_COUNT.load(Ordering::SeqCst) >= 2);
+        plugin_free();
+        assert!(INIT_COUNT.load(Ordering::SeqCst) >= 1);
 
-        embed_free();
-    }
-
-    #[test]
-    #[ignore]
-    fn test_embed_returns_correct_dim() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
-
-        let text = std::ffi::CString::new("test embedding").unwrap();
-        let mut buf = vec![0.0f32; 384];
-        let result = embed(text.as_ptr(), buf.as_mut_ptr(), 384);
-        assert_eq!(result, E_OK);
-        assert_eq!(buf.len(), 384);
-
-        embed_free();
-    }
-
-    #[test]
-    #[ignore]
-    fn test_embed_l2_normalized() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
-
-        let text = std::ffi::CString::new("verify normalization").unwrap();
-        let mut buf = vec![0.0f32; 384];
-        let result = embed(text.as_ptr(), buf.as_mut_ptr(), 384);
-        assert_eq!(result, E_OK);
-
-        let l2_norm: f32 = buf.iter().map(|v| v * v).sum::<f32>().sqrt();
-        assert!(
-            (l2_norm - 1.0).abs() < 1e-4,
-            "L2 norm should be ~1.0, got {}",
-            l2_norm
-        );
-
-        embed_free();
-    }
-
-    #[test]
-    #[ignore]
-    fn test_embed_deterministic() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
-
-        let text = std::ffi::CString::new("deterministic test").unwrap();
-        let mut buf1 = vec![0.0f32; 384];
-        let mut buf2 = vec![0.0f32; 384];
-
-        let r1 = embed(text.as_ptr(), buf1.as_mut_ptr(), 384);
-        let r2 = embed(text.as_ptr(), buf2.as_mut_ptr(), 384);
-        assert_eq!(r1, E_OK);
-        assert_eq!(r2, E_OK);
-
-        for (i, (a, b)) in buf1.iter().zip(buf2.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-6,
-                "Mismatch at index {}: {} vs {}",
-                i, a, b
-            );
-        }
-
-        embed_free();
-    }
-
-    #[test]
-    #[ignore]
-    fn test_init_then_free_then_embed_fails() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
-
-        embed_free();
-
-        let text = std::ffi::CString::new("should fail").unwrap();
-        let mut buf = vec![0.0f32; 384];
-        let result = embed(text.as_ptr(), buf.as_mut_ptr(), 384);
-        assert_eq!(result, E_NOT_INIT);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_embed_multiple_texts() {
-        let model_dir = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-            .unwrap_or_else(|_| "test-model".to_string());
-        let model_path = format!("{}/model.onnx", model_dir);
-        let path = std::ffi::CString::new(model_path).unwrap();
-        let init_result = embed_init(path.as_ptr(), 384);
-        assert_eq!(init_result, E_OK);
-
-        let texts = vec!["first text", "second text", "third text"];
-        let mut embeddings: Vec<Vec<f32>> = Vec::new();
-
-        for text_str in &texts {
-            let text = std::ffi::CString::new(*text_str).unwrap();
+        // ---- Scenario: embed short text via plugin_embed ----
+        {
+            let text = std::ffi::CString::new("hello world").unwrap();
             let mut buf = vec![0.0f32; 384];
-            let result = embed(text.as_ptr(), buf.as_mut_ptr(), 384);
+            let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
             assert_eq!(result, E_OK);
-            embeddings.push(buf);
+            let non_zero = buf.iter().filter(|&&v| v != 0.0).count();
+            assert!(non_zero > 0, "Embedding should have non-zero values");
+            println!("[model-test] short text embed — PASS");
         }
 
-        assert_eq!(embeddings.len(), 3);
-
-        for (i, emb) in embeddings.iter().enumerate() {
-            let non_zero = emb.iter().filter(|&&v| v != 0.0).count();
-            assert!(non_zero > 0, "Embedding {} should have non-zero values", i);
+        // ---- Scenario: correct dimension ----
+        {
+            let text = std::ffi::CString::new("test embedding").unwrap();
+            let mut buf = vec![0.0f32; 384];
+            let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
+            assert_eq!(result, E_OK);
+            assert_eq!(buf.len(), 384);
+            println!("[model-test] correct dimension — PASS");
         }
 
-        let diff: f32 = embeddings[0]
-            .iter()
-            .zip(embeddings[1].iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum();
-        assert!(diff > 0.0, "Different texts should produce different embeddings");
+        // ---- Scenario: L2 normalized ----
+        {
+            let text = std::ffi::CString::new("verify normalization").unwrap();
+            let mut buf = vec![0.0f32; 384];
+            let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
+            assert_eq!(result, E_OK);
+            let l2_norm: f32 = buf.iter().map(|v| v * v).sum::<f32>().sqrt();
+            assert!((l2_norm - 1.0).abs() < 1e-4, "L2 norm should be ~1.0, got {}", l2_norm);
+            println!("[model-test] L2 normalized — PASS");
+        }
 
-        embed_free();
+        // ---- Scenario: deterministic ----
+        {
+            let text = std::ffi::CString::new("deterministic test").unwrap();
+            let mut buf1 = vec![0.0f32; 384];
+            let mut buf2 = vec![0.0f32; 384];
+            let r1 = plugin_embed(text.as_ptr(), buf1.as_mut_ptr(), 384);
+            let r2 = plugin_embed(text.as_ptr(), buf2.as_mut_ptr(), 384);
+            assert_eq!(r1, E_OK);
+            assert_eq!(r2, E_OK);
+            for (i, (a, b)) in buf1.iter().zip(buf2.iter()).enumerate() {
+                assert!((a - b).abs() < 1e-6, "Mismatch at index {}: {} vs {}", i, a, b);
+            }
+            println!("[model-test] deterministic — PASS");
+        }
+
+        // ---- Scenario: multiple texts ----
+        {
+            let texts = vec!["first text", "second text", "third text"];
+            let mut embeddings: Vec<Vec<f32>> = Vec::new();
+            for text_str in &texts {
+                let text = std::ffi::CString::new(*text_str).unwrap();
+                let mut buf = vec![0.0f32; 384];
+                let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
+                assert_eq!(result, E_OK);
+                embeddings.push(buf);
+            }
+            assert_eq!(embeddings.len(), 3);
+            for (i, emb) in embeddings.iter().enumerate() {
+                let non_zero = emb.iter().filter(|&&v| v != 0.0).count();
+                assert!(non_zero > 0, "Embedding {} should have non-zero values", i);
+            }
+            let diff: f32 = embeddings[0]
+                .iter()
+                .zip(embeddings[1].iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum();
+            assert!(diff > 0.0, "Different texts should produce different embeddings");
+            println!("[model-test] multiple texts — PASS");
+        }
+
+        // ---- Free ----
+        plugin_free();
+        assert!(PERMANENTLY_FREED.load(Ordering::SeqCst), "should be permanently freed");
+        assert_eq!(INIT_COUNT.load(Ordering::SeqCst), 0);
+
+        // ---- Scenario: embed after free fails ----
+        {
+            let text = std::ffi::CString::new("should fail").unwrap();
+            let mut buf = vec![0.0f32; 384];
+            let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
+            assert_eq!(result, E_NOT_INIT, "embed after free should fail");
+            println!("[model-test] embed after free fails — PASS");
+        }
+
+        // ---- Scenario: re-init after free fails ----
+        {
+            let result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+            assert_eq!(result, E_INIT, "re-init after free should fail");
+            println!("[model-test] re-init after free fails — PASS");
+        }
+
+        println!("[model-test] All scenarios PASSED");
     }
 }

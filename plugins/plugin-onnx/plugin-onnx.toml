@@ -1,0 +1,16 @@
+[plugin]
+name = "plugin-onnx"
+version = "0.1.0"
+
+[embedding]
+dimension = 384
+
+[model]
+filename = "model.onnx"
+url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+size = 90405214
+
+[tokenizer]
+filename = "tokenizer.json"
+url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
+size = 466247

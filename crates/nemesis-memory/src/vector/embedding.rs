@@ -55,6 +55,14 @@ fn try_load_plugin(
 ) -> Result<EmbeddingFunc, crate::vector::plugin_loader::PluginError> {
     let mut plugin = NativePlugin::load(plugin_path)?;
 
+    // For unified interface plugins, set config_dir and host_services
+    if let Some(config_dir) = &config.plugin_config_dir {
+        plugin.set_config_dir(config_dir.clone());
+    }
+    if let Some(host) = &config.host_services {
+        plugin.set_host_services(*host);
+    }
+
     let model_path = config
         .plugin_model_path
         .as_deref()
@@ -85,6 +93,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("hello world").unwrap();
@@ -100,6 +110,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();
@@ -114,6 +126,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test text").unwrap();
@@ -128,6 +142,8 @@ mod tests {
             plugin_path: Some("/nonexistent/plugin.so".to_string()),
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();
@@ -142,6 +158,8 @@ mod tests {
             plugin_path: Some("/does/not/exist.dll".to_string()),
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("hello").unwrap();
@@ -175,6 +193,8 @@ mod tests {
                 plugin_path: None,
                 plugin_model_path: None,
                 api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
             };
             let func = new_embedding_func(&config);
             let result = func("test").unwrap();
@@ -190,6 +210,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let v = func("normalization test").unwrap();
@@ -205,6 +227,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: Some("text-embedding-3-small".to_string()),
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();
@@ -219,6 +243,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("").unwrap();
@@ -234,6 +260,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: Some("text-embedding-3-small".into()),
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();
@@ -248,6 +276,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: Some("model".into()),
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();
@@ -262,6 +292,8 @@ mod tests {
             plugin_path: Some("/nonexistent/plugin.so".into()),
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let result = try_load_plugin("/nonexistent/plugin.so", &config);
         assert!(result.is_err());
@@ -275,6 +307,8 @@ mod tests {
             plugin_path: None,
             plugin_model_path: None,
             api_model: None,
+            plugin_config_dir: None,
+            host_services: None,
         };
         let func = new_embedding_func(&config);
         let result = func("test").unwrap();

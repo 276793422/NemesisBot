@@ -400,6 +400,8 @@ fn run_window(
 /// 2. `<exe_dir>/plugins/plugin-ui.dll`
 ///
 /// The DLL is expected to export C ABI functions:
+/// - `plugin_init(config_dir, host)` → i32 (unified interface, optional)
+/// - `plugin_free()` (unified interface, optional)
 /// - `plugin_create_window(config_json: *const i8) -> i32`
 /// - `plugin_request_bring_to_front()` (optional, used for window dedup)
 ///
@@ -443,6 +445,18 @@ fn load_and_run_plugin_window(
             .map_err(|e| format!("load DLL '{}': {}", dll_path.display(), e))?
     };
 
+    // Try to call plugin_init if the DLL exports it (unified interface)
+    let _init_result: i32 = unsafe {
+        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const i8, *const std::ffi::c_void) -> i32>>(b"plugin_init\0") {
+            let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();
+            let ret = plugin_init_fn(c_config_dir.as_ptr(), std::ptr::null());
+            eprintln!("[Child] plugin_init returned: {}", ret);
+            ret
+        } else {
+            0 // No unified interface, that's OK
+        }
+    };
+
     // Get the plugin_create_window symbol
     let create_window: libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32> = unsafe {
         lib.get(b"plugin_create_window\0")
@@ -461,9 +475,6 @@ fn load_and_run_plugin_window(
 
     // Store the function pointer globally so the WS handler can call it
     if let Some(ref f) = bring_to_front_fn {
-        // SAFETY: We're storing the raw pointer before any WS handler runs.
-        // The DLL (lib) lives for the duration of this function, which is the
-        // entire window lifetime, so the pointer remains valid.
         let raw_fn: unsafe extern "C" fn() = **f;
         BRING_TO_FRONT_FN_PTR.set(raw_fn);
     }
@@ -535,6 +546,14 @@ fn load_and_run_plugin_window(
     // Close the WebSocket client and signal the background thread to exit
     if let Some(handle) = ws_handle.as_ref() {
         handle.close();
+    }
+
+    // Call plugin_free if available (unified interface)
+    unsafe {
+        if let Ok(plugin_free_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn()>>(b"plugin_free\0") {
+            plugin_free_fn();
+            eprintln!("[Child] plugin_free called");
+        }
     }
 
     // lib is dropped here, unloading the DLL

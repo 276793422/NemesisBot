@@ -14,6 +14,8 @@ crate-type = ["cdylib"]
 ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
 ndarray = "0.17"
 tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 # Build: cd plugins/plugin-onnx && cargo build --release
 # Output: target/release/plugin_onnx.dll (or .so/.dylib on other platforms)

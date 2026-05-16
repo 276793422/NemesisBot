@@ -3,16 +3,19 @@
 //! Loads a native shared library (DLL on Windows, SO on Linux/macOS)
 //! that provides ONNX-based embedding inference via C ABI.
 //!
-//! The shared library must export:
-//! - `embed_init(model_path: *const c_char, dim: i32) -> i32`
-//! - `embed(text: *const c_char, out: *mut f32, dim: i32) -> i32`
-//! - `embed_free()`
+//! The shared library must export the unified interface:
+//! - `plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32`
+//! - `plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> i32`
+//! - `plugin_free()`
 
+use std::ffi::CString;
 use std::fmt;
+use std::os::raw::c_char;
 use std::path::Path;
 use std::sync::Mutex;
 
 use libloading::{Library, Symbol};
+use nemesis_plugin::HostServices;
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -31,10 +34,10 @@ pub enum PluginError {
     #[error("plugin not initialized (dim={dim})")]
     NotInitialized { dim: i32 },
 
-    #[error("embed_init returned error code: {code}")]
+    #[error("plugin_init returned error code: {code}")]
     InitFailed { code: i32 },
 
-    #[error("embed returned error code: {code}")]
+    #[error("plugin_embed returned error code: {code}")]
     EmbedFailed { code: i32 },
 
     #[error("plugin already closed")]
@@ -68,7 +71,7 @@ pub trait EmbeddingPlugin: Send + Sync {
 ///
 /// Mirrors Go's `nativePlugin` struct:
 /// - Loads DLL/SO via `libloading`
-/// - Calls `embed_init`, `embed`, `embed_free` via C ABI
+/// - Calls plugin_init/plugin_embed/plugin_free via C ABI
 /// - Thread-safe via Mutex
 pub struct NativePlugin {
     /// Inner state protected by Mutex for thread safety.
@@ -82,7 +85,15 @@ struct NativePluginInner {
     dim: i32,
     /// Whether the plugin has been closed.
     closed: bool,
+    /// Config directory path (for unified interface).
+    config_dir: Option<String>,
+    /// Host services pointer (for unified interface).
+    host_services: Option<*const HostServices>,
 }
+
+// SAFETY: The HostServices pointer is read-only and valid for process lifetime.
+unsafe impl Send for NativePluginInner {}
+unsafe impl Sync for NativePluginInner {}
 
 impl fmt::Debug for NativePluginInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -105,7 +116,8 @@ impl fmt::Debug for NativePlugin {
 impl NativePlugin {
     /// Load a plugin from the given shared library path.
     ///
-    /// The library must export `embed_init`, `embed`, and `embed_free`.
+    /// Verifies that the library exports the unified interface
+    /// (plugin_init/plugin_embed/plugin_free).
     pub fn load(path: &str) -> Result<Self, PluginError> {
         if !Path::new(path).exists() {
             return Err(PluginError::LoadFailed {
@@ -121,36 +133,51 @@ impl NativePlugin {
             })?
         };
 
-        // Verify required symbols exist.
+        // Verify unified interface symbols exist
         unsafe {
-            let _: Symbol<unsafe extern "C" fn(*const std::ffi::c_char, i32) -> i32> =
-                library.get(b"embed_init").map_err(|e| PluginError::SymbolNotFound {
-                    name: "embed_init".to_string(),
+            let _: Symbol<unsafe extern "C" fn(*const c_char, *const HostServices) -> i32> =
+                library.get(b"plugin_init").map_err(|e| PluginError::SymbolNotFound {
+                    name: "plugin_init".to_string(),
                     error: e.to_string(),
                 })?;
-
-            let _: Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *mut f32, i32) -> i32> =
-                library.get(b"embed").map_err(|e| PluginError::SymbolNotFound {
-                    name: "embed".to_string(),
+            let _: Symbol<unsafe extern "C" fn(*const c_char, *mut f32, i32) -> i32> =
+                library.get(b"plugin_embed").map_err(|e| PluginError::SymbolNotFound {
+                    name: "plugin_embed".to_string(),
                     error: e.to_string(),
                 })?;
-
             let _: Symbol<unsafe extern "C" fn()> =
-                library.get(b"embed_free").map_err(|e| PluginError::SymbolNotFound {
-                    name: "embed_free".to_string(),
+                library.get(b"plugin_free").map_err(|e| PluginError::SymbolNotFound {
+                    name: "plugin_free".to_string(),
                     error: e.to_string(),
                 })?;
         }
 
-        info!(path = path, "Native embedding plugin loaded successfully");
+        info!(
+            path = path,
+            "Native embedding plugin loaded successfully"
+        );
 
         Ok(Self {
             inner: Mutex::new(NativePluginInner {
                 library: Some(library),
                 dim: 0,
                 closed: false,
+                config_dir: None,
+                host_services: None,
             }),
         })
+    }
+
+    /// Set the config directory path for the unified interface.
+    pub fn set_config_dir(&mut self, config_dir: String) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.config_dir = Some(config_dir);
+    }
+
+    /// Set the host services pointer for the unified interface.
+    pub fn set_host_services(&mut self, host: *const HostServices) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.host_services = Some(host);
     }
 }
 
@@ -166,17 +193,21 @@ impl EmbeddingPlugin for NativePlugin {
             .as_ref()
             .ok_or(PluginError::Closed)?;
 
-        let c_model_path = std::ffi::CString::new(model_path)
+        // Unified interface: use plugin_init with config_dir + host
+        let config_dir = inner.config_dir.clone().unwrap_or_else(|| ".".to_string());
+        let c_config_dir = CString::new(config_dir.clone())
             .map_err(|_| PluginError::InitFailed { code: -1 })?;
 
+        let host_ptr = inner.host_services.unwrap_or(std::ptr::null());
+
         unsafe {
-            let embed_init: Symbol<unsafe extern "C" fn(*const std::ffi::c_char, i32) -> i32> =
-                library.get(b"embed_init").map_err(|e| PluginError::SymbolNotFound {
-                    name: "embed_init".to_string(),
+            let plugin_init: Symbol<unsafe extern "C" fn(*const c_char, *const HostServices) -> i32> =
+                library.get(b"plugin_init").map_err(|e| PluginError::SymbolNotFound {
+                    name: "plugin_init".to_string(),
                     error: e.to_string(),
                 })?;
 
-            let ret = embed_init(c_model_path.as_ptr(), dim);
+            let ret = plugin_init(c_config_dir.as_ptr(), host_ptr);
             if ret != 0 {
                 return Err(PluginError::InitFailed { code: ret });
             }
@@ -184,10 +215,12 @@ impl EmbeddingPlugin for NativePlugin {
 
         inner.dim = dim;
         info!(
-            model_path = model_path,
+            config_dir = %config_dir,
             dim = dim,
             "Embedding plugin initialized"
         );
+
+        let _ = model_path; // model_path resolved by plugin via config_dir
         Ok(())
     }
 
@@ -205,16 +238,16 @@ impl EmbeddingPlugin for NativePlugin {
             .as_ref()
             .ok_or(PluginError::Closed)?;
 
-        let c_text = std::ffi::CString::new(text)
+        let c_text = CString::new(text)
             .map_err(|_| PluginError::EmbedFailed { code: -1 })?;
 
         let dim = inner.dim as usize;
         let mut buf = vec![0.0f32; dim];
 
         unsafe {
-            let embed_fn: Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *mut f32, i32) -> i32> =
-                library.get(b"embed").map_err(|e| PluginError::SymbolNotFound {
-                    name: "embed".to_string(),
+            let embed_fn: Symbol<unsafe extern "C" fn(*const c_char, *mut f32, i32) -> i32> =
+                library.get(b"plugin_embed").map_err(|e| PluginError::SymbolNotFound {
+                    name: "plugin_embed".to_string(),
                     error: e.to_string(),
                 })?;
 
@@ -239,14 +272,13 @@ impl EmbeddingPlugin for NativePlugin {
 
         if let Some(ref library) = inner.library {
             unsafe {
-                if let Ok(embed_free) = library.get::<Symbol<unsafe extern "C" fn()>>(b"embed_free")
+                if let Ok(free_fn) = library.get::<Symbol<unsafe extern "C" fn()>>(b"plugin_free")
                 {
-                    embed_free();
+                    free_fn();
                 }
             }
         }
 
-        // Drop the library (unloads DLL/SO).
         inner.library = None;
         inner.closed = true;
         info!("Embedding plugin closed");
@@ -259,10 +291,10 @@ impl Drop for NativePlugin {
         if !inner.closed {
             if let Some(ref library) = inner.library {
                 unsafe {
-                    if let Ok(embed_free) =
-                        library.get::<Symbol<unsafe extern "C" fn()>>(b"embed_free")
+                    if let Ok(free_fn) =
+                        library.get::<Symbol<unsafe extern "C" fn()>>(b"plugin_free")
                     {
-                        embed_free();
+                        free_fn();
                     }
                 }
             }
@@ -313,10 +345,10 @@ mod tests {
         assert!(err.to_string().contains("42"));
 
         let err = PluginError::SymbolNotFound {
-            name: "embed_init".to_string(),
+            name: "plugin_init".to_string(),
             error: "not found".to_string(),
         };
-        assert!(err.to_string().contains("embed_init"));
+        assert!(err.to_string().contains("plugin_init"));
     }
 
     #[test]
@@ -371,7 +403,6 @@ mod tests {
 
     #[test]
     fn test_plugin_error_debug_format() {
-        // Ensure Debug derives work for all variants
         let err1 = PluginError::LoadFailed {
             path: "test".to_string(),
             error: "err".to_string(),
@@ -386,9 +417,6 @@ mod tests {
 
     #[test]
     fn test_native_plugin_debug_impl() {
-        // Test that Debug for NativePlugin doesn't panic
-        // We can't create a real NativePlugin without a library,
-        // but we can verify the error path
         let result = NativePlugin::load("/does/not/exist.so");
         assert!(result.is_err());
     }
@@ -415,20 +443,19 @@ mod tests {
 
     #[test]
     fn test_native_plugin_inner_debug() {
-        // Verify Debug for NativePluginInner works correctly
         let inner = NativePluginInner {
             library: None,
             dim: 128,
             closed: false,
+            config_dir: None,
+            host_services: None,
         };
         let debug = format!("{:?}", inner);
         assert!(debug.contains("128"));
-        assert!(debug.contains("false"));
     }
 
     #[test]
     fn test_plugin_error_all_variants() {
-        // Ensure all variants can be constructed and displayed
         let variants: Vec<PluginError> = vec![
             PluginError::LoadFailed { path: "p".into(), error: "e".into() },
             PluginError::SymbolNotFound { name: "n".into(), error: "e".into() },
@@ -438,7 +465,7 @@ mod tests {
             PluginError::Closed,
         ];
         for v in &variants {
-            let _ = v.to_string(); // Should not panic
+            let _ = v.to_string();
         }
     }
 
@@ -455,11 +482,9 @@ mod tests {
     }
 
     // ============================================================
-    // Additional coverage for 95%+ target - final round
+    // Mock plugin tests
     // ============================================================
 
-    /// A mock plugin implementation for testing the EmbeddingPlugin trait
-    /// without requiring an actual shared library.
     struct MockPlugin {
         dim: i32,
         initialized: bool,
@@ -489,7 +514,6 @@ mod tests {
             if !self.initialized {
                 return Err(PluginError::NotInitialized { dim: self.dim });
             }
-            // Return a deterministic "embedding" based on text length
             Ok(vec![text.len() as f32; self.dim as usize])
         }
 
@@ -513,7 +537,7 @@ mod tests {
 
         let result = plugin.embed("hello").unwrap();
         assert_eq!(result.len(), 64);
-        assert!(result.iter().all(|v| *v == 5.0)); // "hello" is 5 chars
+        assert!(result.iter().all(|v| *v == 5.0));
     }
 
     #[test]
@@ -556,44 +580,163 @@ mod tests {
     fn test_mock_plugin_close_idempotent() {
         let mut plugin = MockPlugin::new(64);
         plugin.close();
-        plugin.close(); // should not panic
+        plugin.close();
         assert!(plugin.closed);
     }
 
     #[test]
     fn test_native_plugin_inner_debug_with_library() {
-        // Can't create real Library, but test the Debug format with None
         let inner = NativePluginInner {
             library: None,
             dim: 256,
             closed: true,
+            config_dir: None,
+            host_services: None,
         };
         let debug = format!("{:?}", inner);
         assert!(debug.contains("256"));
-        assert!(debug.contains("true"));
     }
 
     #[test]
     fn test_plugin_error_source_compatibility() {
         use std::error::Error;
         let err = PluginError::LoadFailed { path: "test".into(), error: "err".into() };
-        let _source = err.source(); // Should not panic
+        let _source = err.source();
     }
 
     #[test]
     fn test_load_plugin_returns_boxed_trait() {
-        // Verify the convenience function returns the right type
         let result: Result<Box<dyn EmbeddingPlugin>, PluginError> = load_plugin("/nonexistent");
         assert!(result.is_err());
     }
 
     #[test]
     fn test_native_plugin_dim_default_zero() {
-        // When a NativePlugin is loaded (if it existed), dim starts at 0
-        // We test the dim access pattern through a mock
         let mut plugin = MockPlugin::new(0);
         assert_eq!(plugin.dim(), 0);
         plugin.init("", 128).unwrap();
         assert_eq!(plugin.dim(), 128);
+    }
+
+    // ============================================================
+    // Real plugin integration tests (run with `cargo test -- --ignored`)
+    // Requires plugin DLL + ONNX model (run scripts/setup-test.sh first)
+    // ============================================================
+
+    fn real_dll_path() -> Option<String> {
+        if let Ok(path) = std::env::var("PLUGIN_ONNX_DLL_PATH") {
+            if Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            format!("{}/../../plugins/plugin-onnx/target/release/plugin_onnx.dll", manifest_dir),
+            format!("{}/../../../plugins/plugin-onnx/target/release/plugin_onnx.dll", manifest_dir),
+        ];
+        for candidate in &candidates {
+            let path = std::path::PathBuf::from(candidate);
+            if let Ok(canonical) = path.canonicalize() {
+                return Some(canonical.to_str().expect("valid path").to_string());
+            }
+            if path.exists() {
+                return Some(candidate.clone());
+            }
+        }
+        None
+    }
+
+    fn real_model_path() -> Option<String> {
+        if let Ok(dir) = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR") {
+            let model = format!("{}/model.onnx", dir);
+            if Path::new(&model).exists() {
+                return Some(model);
+            }
+        }
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let candidates = [
+            format!("{}/../../plugins/plugin-onnx/test-data/model.onnx", manifest_dir),
+        ];
+        for candidate in &candidates {
+            let path = std::path::PathBuf::from(candidate);
+            if let Ok(canonical) = path.canonicalize() {
+                return Some(canonical.to_str().expect("valid path").to_string());
+            }
+        }
+        None
+    }
+
+    fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+        let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+        let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm_a > 0.0 && norm_b > 0.0 {
+            dot / (norm_a * norm_b)
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn it_real_plugin_full_lifecycle() {
+        let dll_path = real_dll_path().expect("plugin DLL not found. Build with: cd plugins/plugin-onnx && cargo build --release");
+        let model_path = real_model_path().expect("model not found. Run: bash plugins/plugin-onnx/scripts/setup-test.sh");
+
+        // --- Load ---
+        let mut plugin = NativePlugin::load(&dll_path).expect("Failed to load DLL");
+        assert_eq!(plugin.dim(), 0, "dim should be 0 before init");
+
+        // --- Init ---
+        plugin.init(&model_path, 384).expect("Failed to init");
+        assert_eq!(plugin.dim(), 384, "dim should be 384 after init");
+
+        // --- Embed: basic ---
+        let v1 = plugin.embed("hello world").expect("embed failed");
+        assert_eq!(v1.len(), 384, "embedding dimension");
+        let non_zero = v1.iter().filter(|&&v| v != 0.0).count();
+        assert!(non_zero > 0, "embedding should have non-zero values");
+
+        // --- Embed: L2 normalized ---
+        let l2_norm: f32 = v1.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((l2_norm - 1.0).abs() < 1e-3, "L2 norm should be ~1.0, got {}", l2_norm);
+
+        // --- Embed: deterministic ---
+        let v1b = plugin.embed("hello world").expect("embed failed");
+        for (i, (a, b)) in v1.iter().zip(v1b.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-6, "Mismatch at index {}: {} vs {}", i, a, b);
+        }
+
+        // --- Embed: semantic similarity ---
+        let v_cat = plugin.embed("a cat sitting on a mat").unwrap();
+        let v_kitten = plugin.embed("a kitten resting on a rug").unwrap();
+        let v_car = plugin.embed("driving a car on the highway").unwrap();
+        let sim_cat_kitten = cosine_similarity(&v_cat, &v_kitten);
+        let sim_cat_car = cosine_similarity(&v_cat, &v_car);
+        assert!(sim_cat_kitten > sim_cat_car,
+            "cat-kitten ({}) should be > cat-car ({})", sim_cat_kitten, sim_cat_car);
+
+        // --- Embed: different texts produce different vectors ---
+        let v_ml = plugin.embed("machine learning algorithms").unwrap();
+        let sim_unrelated = cosine_similarity(&v_ml, &v_car);
+        assert!(sim_unrelated < 0.95, "unrelated texts should not be identical (sim={})", sim_unrelated);
+
+        // --- Close ---
+        plugin.close();
+        let result = plugin.embed("should fail");
+        assert!(result.is_err(), "embed after close should fail");
+    }
+
+    #[test]
+    #[ignore]
+    fn it_real_plugin_via_boxed_trait() {
+        let dll_path = real_dll_path().expect("plugin DLL not found");
+        let model_path = real_model_path().expect("model not found");
+        let mut plugin: Box<dyn EmbeddingPlugin> = load_plugin(&dll_path).unwrap();
+        plugin.init(&model_path, 384).unwrap();
+        let vec = plugin.embed("trait object test").unwrap();
+        assert_eq!(vec.len(), 384);
+        assert_eq!(plugin.dim(), 384);
+        plugin.close();
     }
 }

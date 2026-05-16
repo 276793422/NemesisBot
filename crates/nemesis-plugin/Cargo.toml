@@ -10,6 +10,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 parking_lot = { workspace = true }
+nemesis-http-pool = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

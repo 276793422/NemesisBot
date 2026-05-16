@@ -3038,6 +3038,7 @@ dependencies = [
  "image",
  "libloading 0.8.9",
  "nemesis-config",
+ "nemesis-plugin",
  "nemesis-types",
  "parking_lot",
  "serde",
@@ -3165,6 +3166,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "libloading 0.8.9",
+ "nemesis-plugin",
  "nemesis-types",
  "parking_lot",
  "reqwest",
@@ -3219,6 +3221,7 @@ name = "nemesis-plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nemesis-http-pool",
  "parking_lot",
  "serde",
  "serde_json",
