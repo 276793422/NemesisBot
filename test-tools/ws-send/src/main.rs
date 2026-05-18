@@ -36,7 +36,7 @@ struct Args {
     file: Option<PathBuf>,
 
     /// Response timeout in seconds (default 30)
-    #[arg(short, long, default_value = "30")]
+    #[arg(long, default_value = "30")]
     timeout: u64,
 
     /// Print verbose output

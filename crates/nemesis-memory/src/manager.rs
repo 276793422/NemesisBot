@@ -7,10 +7,11 @@
 //! `Manager`: `store`, `query`, `get`, `delete`, `close`, `init_vector_store`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 
 use crate::episodic::{EpisodicStore, Episode, FileEpisodicStore};
 use crate::graph::{GraphEntity, GraphQueryResult, GraphStore, GraphTriple, InMemoryGraphStore};
@@ -18,6 +19,23 @@ use crate::local_store::TfIdfLocalStore;
 use crate::store::{LocalStore, MemoryStore};
 use crate::types::{Entry, MemoryType, SearchResult, ScoredEntry, VectorConfig};
 use crate::vector::{VectorStore, StoreConfig};
+
+// ---------------------------------------------------------------------------
+// Enhanced memory configuration (internal to nemesis-memory)
+// ---------------------------------------------------------------------------
+
+/// Enhanced memory configuration loaded from `config.enhanced_memory.json`.
+///
+/// This type is internal to nemesis-memory — not exposed outside this crate.
+///
+/// The only field is `enabled`: when `true`, the system attempts to load the
+/// ONNX plugin and initialize semantic search.  When `false` (e.g. after a
+/// previous init failure), the system falls back to basic keyword-only memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EnhancedMemoryConfig {
+    #[serde(default)]
+    enabled: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -113,6 +131,141 @@ impl MemoryManager {
         })
     }
 
+    /// Create a `MemoryManager` with config-based enhanced memory auto-detection.
+    ///
+    /// Reads `config.enhanced_memory.json` from `config_dir` for the `enabled`
+    /// flag, then tries to auto-detect and load the ONNX plugin.
+    ///
+    /// Flow:
+    /// - No config file → basic memory (no vector store)
+    /// - Config `enabled: false` → basic memory (previously failed or manually disabled)
+    /// - Config `enabled: true` + plugin DLL found → vector store with semantic search
+    /// - Config `enabled: true` + plugin missing/fails → writes `enabled: false` to disk, basic memory
+    ///
+    /// Never panics or returns an error.
+    pub fn with_config_dir(data_dir: &Path, config_dir: &Path) -> Self {
+        let mut cfg = Config::new(data_dir);
+        cfg.vector.config_dir = Some(config_dir.to_string_lossy().to_string());
+
+        // 1. Load config.enhanced_memory.json
+        let em_config_path = config_dir.join("config.enhanced_memory.json");
+        let em_config = Self::load_enhanced_memory_config(&em_config_path);
+
+        // 2. Create MemoryManager (basic memory always available)
+        let mgr = Self::new(&cfg);
+
+        // 3. Attempt vector store init only when config says enabled
+        if let Some(ref em) = em_config {
+            if !em.enabled {
+                tracing::info!(
+                    "Enhanced memory disabled (config.enhanced_memory.json: enabled = false)"
+                );
+                return mgr;
+            }
+
+            // Auto-detect plugin — it is always at {exe_dir}/plugins/plugin_onnx.dll
+            let plugin_path = match Self::detect_plugin_path() {
+                Some(p) => p,
+                None => {
+                    tracing::warn!(
+                        "Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
+                         Disabling enhanced memory."
+                    );
+                    Self::disable_enhanced_memory_config(&em_config_path);
+                    return mgr;
+                }
+            };
+
+            cfg.vector.plugin_path = Some(plugin_path.clone());
+
+            let storage_path = data_dir.join("vector").join("vector_store.jsonl");
+            let store_config = StoreConfig {
+                embedding_tier: "plugin".into(),
+                plugin_path: Some(plugin_path),
+                config_dir: cfg.vector.config_dir.clone(),
+                max_results: 10,
+                similarity_threshold: 0.7,
+                storage_path: storage_path.to_string_lossy().to_string(),
+            };
+
+            match mgr.init_vector_store(Some(store_config)) {
+                Ok(()) => tracing::info!("Vector store initialized"),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Vector store init failed, disabling enhanced memory"
+                    );
+                    Self::disable_enhanced_memory_config(&em_config_path);
+                }
+            }
+        }
+
+        mgr
+    }
+
+    /// Load enhanced memory config from disk.
+    ///
+    /// Returns `None` if the file doesn't exist or can't be parsed.
+    fn load_enhanced_memory_config(path: &Path) -> Option<EnhancedMemoryConfig> {
+        if !path.exists() {
+            return None;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to parse config.enhanced_memory.json"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    error = %e,
+                    "Cannot read config.enhanced_memory.json"
+                );
+                None
+            }
+        }
+    }
+
+    /// Auto-detect plugin DLL path next to the current executable.
+    ///
+    /// Checks `{exe_dir}/plugins/plugin_onnx.dll`.
+    fn detect_plugin_path() -> Option<String> {
+        let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+        let plugin_dll = exe_dir.join("plugins").join("plugin_onnx.dll");
+        if plugin_dll.exists() {
+            Some(plugin_dll.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Write `enabled: false` to config.enhanced_memory.json so the next
+    /// restart skips the vector store init attempt entirely.
+    fn disable_enhanced_memory_config(path: &Path) {
+        let config = serde_json::json!({ "enabled": false });
+        match serde_json::to_string_pretty(&config) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to write disabled config"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize disabled config");
+            }
+        }
+    }
+
     /// Build a `MemoryManager` with custom store implementations (for testing).
     pub fn with_backends(
         store: Arc<dyn MemoryStore>,
@@ -141,6 +294,9 @@ impl MemoryManager {
     ///
     /// After this call `query_semantic` will delegate to the vector store for
     /// embedding-based similarity search.
+    ///
+    /// If a JSONL persistence file exists at the configured path, previously
+    /// saved entries are loaded into memory so they are available for search.
     pub fn init_vector_store(&self, config: Option<StoreConfig>) -> Result<(), String> {
         let store_cfg = config.unwrap_or_else(|| {
             let default_path = self.data_dir
@@ -153,7 +309,28 @@ impl MemoryManager {
             }
         });
 
-        let vs = Arc::new(VectorStore::new(store_cfg));
+        let vs = Arc::new(VectorStore::new(store_cfg).map_err(|e| e)?);
+
+        // Load previously persisted entries
+        if let Err(e) = vs.load_persisted_sync() {
+            tracing::warn!(error = %e, "Failed to load persisted vector entries");
+        }
+
+        *self.vector_store.write() = Some(vs);
+        Ok(())
+    }
+
+    /// Initialize the vector store with a pre-built embedding function.
+    ///
+    /// This is a test-only method that allows sharing a single ONNX plugin
+    /// across multiple MemoryManager instances via the shared test fixture.
+    #[cfg(any(test, feature = "test-fixture"))]
+    pub fn init_vector_store_with_embed(
+        &self,
+        embed: crate::vector::EmbeddingFunc,
+        config: StoreConfig,
+    ) -> Result<(), String> {
+        let vs = Arc::new(VectorStore::new_from_embed(embed, config));
         *self.vector_store.write() = Some(vs);
         Ok(())
     }
@@ -170,10 +347,14 @@ impl MemoryManager {
         let mut errors: Vec<String> = Vec::new();
 
         // Close vector store.
+        // ONNX plugin drop performs blocking I/O; must not run inside an
+        // async context (tokio panics "Cannot drop a runtime where blocking
+        // is not allowed").  Move the drop to a blocking thread.
         {
             let vs = self.vector_store.write().take();
-            // VectorStore does not expose an async close; dropping is fine.
-            drop(vs);
+            if vs.is_some() {
+                tokio::task::spawn_blocking(move || drop(vs)).await.map_err(|e| e.to_string())?;
+            }
         }
 
         // Close episodic store -- no async close in the trait, so just drop.
@@ -230,6 +411,7 @@ impl MemoryManager {
     }
 
     /// Helper: store an entry in the vector store if it is initialized.
+    /// Also persists to disk so data survives restarts.
     fn store_entry_to_vector(&self, entry: &Entry, id: &str) {
         let vs_guard = self.vector_store.read();
         if let Some(ref vs) = *vs_guard {
@@ -245,6 +427,9 @@ impl MemoryManager {
             };
             if let Err(e) = vs.store_entry(&ve) {
                 tracing::debug!("Failed to store entry in vector store: {}", e);
+            }
+            if let Err(e) = vs.persist_entry_sync(&ve) {
+                tracing::debug!("Failed to persist entry to disk: {}", e);
             }
         }
     }
@@ -456,6 +641,9 @@ impl MemoryManager {
 
     /// Store an episodic memory entry (conversation experience).
     /// Creates an Entry of type Episodic with session metadata.
+    ///
+    /// Routes through the vector store adapter so data is available for
+    /// semantic search when the ONNX plugin is loaded.
     pub async fn store_episodic(
         &self,
         session_key: &str,
@@ -470,10 +658,13 @@ impl MemoryManager {
                 meta
             })
             .with_tags(vec!["conversation".to_string(), role.to_string()]);
-        self.store.store(entry).await
+        self.store_entry(entry).await
     }
 
     /// Store a long-term factual memory.
+    ///
+    /// Routes through the vector store adapter so data is available for
+    /// semantic search when the ONNX plugin is loaded.
     pub async fn store_fact(
         &self,
         content: &str,
@@ -481,14 +672,29 @@ impl MemoryManager {
     ) -> Result<String, String> {
         let entry = Entry::new(MemoryType::LongTerm, content.to_string())
             .with_tags(tags);
-        self.store.store(entry).await
+        self.store_entry(entry).await
     }
 
     // -- Episodic operations -----------------------------------------------
 
     /// Append a conversation episode.
     pub async fn append_episode(&self, episode: Episode) -> Result<String, String> {
-        self.episodic.append(episode).await
+        let id = self.episodic.append(episode.clone()).await?;
+
+        // Also store in vector store for semantic search
+        let entry = Entry {
+            id: id.clone(),
+            typ: MemoryType::Episodic,
+            content: episode.content.clone(),
+            metadata: episode.metadata.clone(),
+            tags: episode.tags.clone(),
+            score: None,
+            created_at: episode.timestamp,
+            updated_at: episode.timestamp,
+        };
+        self.store_entry_to_vector(&entry, &id);
+
+        Ok(id)
     }
 
     /// Retrieve all episodes for a session.
@@ -637,6 +843,10 @@ fn parse_memory_type_from_str(s: &str) -> MemoryType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===================================================================
+    // Non-ignored tests (basic memory, no plugin required)
+    // ===================================================================
 
     #[tokio::test]
     async fn unified_store_and_search() {
@@ -933,6 +1143,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_init_vector_store() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
@@ -945,14 +1156,21 @@ mod tests {
         let results = mgr.query_semantic("Rust", 5).await.unwrap();
         assert_eq!(results.total, 1);
 
-        // Init vector store.
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // query_semantic now uses vector store. The previously stored entry
         // is in the LocalStore, not the VectorStore, so we get 0 results
         // from the vector path.
         let vs_results = mgr.query_semantic("Rust", 5).await.unwrap();
         assert_eq!(vs_results.total, 0); // vector store is empty
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
@@ -992,13 +1210,19 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_vector_store_adapter_stores_and_queries() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
-        // Init vector store first
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Store an entry - should go to both keyword and vector stores
         let id = mgr
@@ -1016,9 +1240,12 @@ mod tests {
         let got = mgr.get(&id).await.unwrap();
         assert!(got.is_some());
         assert_eq!(got.unwrap().content, "Berlin is the capital of Germany");
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_vector_store_adapter_query_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
@@ -1030,8 +1257,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Init vector store - pre-existing entries are only in keyword store
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Store entry AFTER vector store init (in both stores)
         let _id_after = mgr
@@ -1043,6 +1275,8 @@ mod tests {
         // through to keyword store when vector returns empty for "Tokyo")
         let results = mgr.search("Tokyo", None, 10).await.unwrap();
         assert!(results.total >= 1);
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     // ============================================================
@@ -1281,24 +1515,65 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
+    async fn test_append_episode_writes_to_vector_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::new(dir.path());
+        let mgr = MemoryManager::new(&config);
+
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        // Use low threshold so the query always matches
+        let vs_config = StoreConfig {
+            similarity_threshold: 0.3,
+            ..crate::vector::test_fixture::plugin_store_config(
+                &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+            ).expect("plugin DLL + model files required")
+        };
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+
+        // Store an episode — should write to both episodic store AND vector store
+        let episode = Episode::new("vs-ep-test".into(), "user".into(), "episodic vector store write test".into());
+        let id = mgr.append_episode(episode).await.unwrap();
+        assert!(!id.is_empty());
+
+        // Verify: semantic search finds the episodic content via vector store
+        let results = mgr.search("episodic vector store", None, 10).await.unwrap();
+        assert!(
+            results.entries.iter().any(|se| se.entry.content.contains("episodic vector store write test")),
+            "vector store should contain the episodic entry, got: {:?}",
+            results.entries
+        );
+
+        // Do NOT call mgr.close() — shared fixture must not be released
+    }
+
+    #[tokio::test]
+    #[ignore]
     async fn test_init_vector_store_with_custom_config() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
         let custom_vs_config = StoreConfig {
             similarity_threshold: 0.5,
             max_results: 5,
             storage_path: dir.path().join("custom_vectors.jsonl").to_string_lossy().to_string(),
-            ..Default::default()
+            ..crate::vector::test_fixture::plugin_store_config(
+                &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+            ).expect("plugin DLL + model files required")
         };
 
-        mgr.init_vector_store(Some(custom_vs_config)).unwrap();
+        mgr.init_vector_store_with_embed(embed, custom_vs_config).unwrap();
 
         // Store and query - use store_entry which also stores in vector store
         mgr.store_entry(Entry::new(MemoryType::LongTerm, "custom vector test".to_string())).await.unwrap();
         let results = mgr.query_semantic("vector", 3).await.unwrap();
         assert!(results.total >= 1);
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
@@ -1396,13 +1671,19 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_store_and_get_via_vector_store() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
-        // Init vector store first
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Store via store_entry (which also stores to vector)
         let id = mgr.store_entry(Entry::new(MemoryType::LongTerm, "vector store entry".to_string()))
@@ -1412,15 +1693,23 @@ mod tests {
         let got = mgr.get(&id).await.unwrap();
         assert!(got.is_some());
         assert_eq!(got.unwrap().content, "vector store entry");
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_get_falls_back_to_vector_store() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
-        mgr.init_vector_store(None).unwrap();
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Store an entry (goes to both keyword and vector stores)
         let id = mgr.store_entry(Entry::new(MemoryType::LongTerm, "fallback test".to_string()))
@@ -1433,15 +1722,23 @@ mod tests {
         let got = mgr.get(&id).await.unwrap();
         assert!(got.is_some());
         assert_eq!(got.unwrap().content, "fallback test");
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_search_with_vector_store_and_type_filter() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
-        mgr.init_vector_store(None).unwrap();
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Store entries of different types
         mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term vector content".to_string())).await.unwrap();
@@ -1450,9 +1747,12 @@ mod tests {
         // Search with type filter should only return matching type
         let results = mgr.search("vector", Some(MemoryType::LongTerm), 10).await.unwrap();
         assert!(results.entries.iter().all(|e| e.entry.typ == MemoryType::LongTerm));
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_search_vector_store_falls_back_to_keyword() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
@@ -1461,22 +1761,35 @@ mod tests {
         // Store before vector init (only keyword store)
         mgr.store_fact("pre-vector fact about Rust", vec![]).await.unwrap();
 
-        // Init vector store (empty, no entries yet)
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture (empty, no entries yet)
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Search should fall back to keyword store since vector is empty
         let results = mgr.search("Rust", None, 10).await.unwrap();
         assert!(results.total >= 1);
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_store_to_vector_adapter_path() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
         let mgr = MemoryManager::new(&config);
 
-        // Init vector store
-        mgr.init_vector_store(None).unwrap();
+        // Init vector store with shared plugin fixture
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
 
         // Use store() method which also goes through vector adapter
         let entry = Entry::new(MemoryType::Episodic, "episodic via store method".to_string())
@@ -1488,6 +1801,8 @@ mod tests {
         // Should be findable via get
         let got = mgr.get(&id).await.unwrap();
         assert!(got.is_some());
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 
     #[tokio::test]
@@ -1795,5 +2110,223 @@ mod tests {
 
         let results = mgr.search_episodic("Rust", 10).await.unwrap();
         assert!(results.len() >= 2);
+    }
+
+    // ============================================================
+    // Tests for with_config_dir and enhanced memory config loading
+    // ============================================================
+
+    #[test]
+    fn test_load_enhanced_memory_config_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.enhanced_memory.json");
+        let result = MemoryManager::load_enhanced_memory_config(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_enhanced_memory_config_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.enhanced_memory.json");
+        let content = r#"{"enabled": true}"#;
+        std::fs::write(&path, content).unwrap();
+        let cfg = MemoryManager::load_enhanced_memory_config(&path).unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn test_load_enhanced_memory_config_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, "not json").unwrap();
+        let result = MemoryManager::load_enhanced_memory_config(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_enhanced_memory_config_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.enhanced_memory.json");
+        let content = r#"{}"#;
+        std::fs::write(&path, content).unwrap();
+        let cfg = MemoryManager::load_enhanced_memory_config(&path).unwrap();
+        assert!(!cfg.enabled);
+    }
+
+    #[test]
+    fn test_detect_plugin_path_returns_none() {
+        // In test environment, there's no plugin DLL next to the test binary.
+        let result = MemoryManager::detect_plugin_path();
+        // This is environment-dependent; just ensure it doesn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn test_with_config_dir_basic_memory_no_config() {
+        // No config.enhanced_memory.json → basic memory
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+    }
+
+    #[test]
+    fn test_with_config_dir_disabled() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, r#"{"enabled": false}"#).unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // enabled=false → skip vector store init → basic memory
+    }
+
+    #[test]
+    fn test_with_config_dir_enabled_no_plugin() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, r#"{"enabled": true}"#).unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // enabled=true but no plugin DLL → auto-detect fails → config written as disabled
+    }
+
+    // ============================================================
+    // Phase 1: UT — EnhancedMemoryConfig parsing (4 tests)
+    // ============================================================
+
+    #[test]
+    fn test_enhanced_config_enabled_true() {
+        let json = r#"{"enabled": true}"#;
+        let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn test_enhanced_config_extra_fields_ignored() {
+        let json = r#"{"enabled": true, "unknown_field": "value", "another": 42}"#;
+        let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn test_enhanced_config_empty_object() {
+        let json = r#"{}"#;
+        let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.enabled); // default
+    }
+
+    #[test]
+    fn test_enhanced_config_disabled() {
+        let json = r#"{"enabled": false}"#;
+        let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.enabled);
+    }
+
+    // ============================================================
+    // Phase 1: UT — with_config_dir flow (8 tests)
+    // ============================================================
+
+    #[test]
+    fn test_with_config_dir_no_config_basic_memory() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        // No config file at all
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+    }
+
+    #[test]
+    fn test_with_config_dir_disabled_basic_works() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, r#"{"enabled": false}"#).unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // Manager is always enabled (basic memory always works).
+        // enabled field is now only a signal to the caller (gateway.rs).
+        // No vector store since no plugin_path and tier != "api".
+    }
+
+    #[test]
+    fn test_with_config_dir_enabled_but_no_plugin_disables_config() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, r#"{"enabled": true}"#).unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // enabled=true, but no plugin DLL in test env → config written as {enabled: false}
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("false"), "Config should be disabled after failed init");
+    }
+
+    #[test]
+    fn test_with_config_dir_invalid_json_falls_back() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, "NOT VALID JSON!!!").unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // Invalid JSON → load returns None → basic memory
+    }
+
+    #[test]
+    fn test_with_config_dir_plugin_missing_dll_disables_config() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        // enabled=true but no plugin DLL in test env
+        std::fs::write(&path, r#"{"enabled": true}"#).unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // No plugin → config auto-disabled
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert!(updated.contains("false"));
+    }
+
+    #[test]
+    fn test_with_config_dir_corrupted_binary_falls_back() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, b"\x00\x01\x02\x03\xFF\xFE").unwrap();
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+        // Binary content → parse fails → basic memory
+    }
+
+    #[test]
+    fn test_with_config_dir_storage_path_not_created_without_plugin() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let config_dir = tempfile::tempdir().unwrap();
+
+        let path = config_dir.path().join("config.enhanced_memory.json");
+        std::fs::write(&path, r#"{"enabled": true}"#).unwrap();
+
+        let mgr = MemoryManager::with_config_dir(data_dir.path(), config_dir.path());
+        assert!(mgr.is_enabled());
+
+        // No plugin → vector store not created → storage file doesn't exist
+        let expected_storage = data_dir.path().join("vector").join("vector_store.jsonl");
+        assert!(!expected_storage.exists());
+    }
+
+    // ============================================================
+    // Phase 1: UT — Vector Store adapter pattern
+    // (requires real ONNX plugin — see tests/memory_e2e.rs)
+    // ============================================================
+
+    #[test]
+    fn test_vector_adapter_requires_plugin() {
+        // Verify that init_vector_store with no plugin returns an error
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::new(dir.path());
+        let mgr = MemoryManager::new(&config);
+        let result = mgr.init_vector_store(None);
+        assert!(result.is_err(), "init_vector_store without plugin should fail");
     }
 }

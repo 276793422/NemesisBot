@@ -168,6 +168,45 @@ impl MemoryToolExecutor {
 
         let mut output = format!("Memory search results for: {}\n\n", query);
 
+        // Semantic / keyword search over general store (includes vector store)
+        if memory_type == "all" {
+            match self.manager.search(&query, None, limit).await {
+                Ok(results) => {
+                    if results.entries.is_empty() {
+                        output.push_str("No semantic memories found.\n");
+                    } else {
+                        output.push_str(&format!(
+                            "### Semantic Memories ({} results)\n\n",
+                            results.entries.len()
+                        ));
+                        for (i, se) in results.entries.iter().enumerate() {
+                            let score_str = if se.score > 0.0 {
+                                format!(" [{:.0}%]", se.score * 100.0)
+                            } else {
+                                String::new()
+                            };
+                            output.push_str(&format!(
+                                "{}.{} {}\n",
+                                i + 1,
+                                score_str,
+                                truncate_text(&se.entry.content, 200)
+                            ));
+                            if !se.entry.tags.is_empty() {
+                                output.push_str(&format!(
+                                    "   Tags: {}\n",
+                                    se.entry.tags.join(", ")
+                                ));
+                            }
+                        }
+                        output.push('\n');
+                    }
+                }
+                Err(e) => {
+                    output.push_str(&format!("Semantic search error: {}\n", e));
+                }
+            }
+        }
+
         // Search episodic memories
         if memory_type == "all" || memory_type == "episodic" {
             match self.manager.search_episodic(&query, limit).await {
@@ -1999,5 +2038,142 @@ mod tests {
             )
             .await;
         assert!(result.success);
+    }
+
+    // ============================================================
+    // Phase 1: UT — Tool executor with vector store (3 tests)
+    // ============================================================
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_execute_store_and_search_with_vector_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::manager::Config::new(dir.path());
+        let mgr = Arc::new(MemoryManager::new(&config));
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+        let executor = MemoryToolExecutor::new(mgr);
+
+        // Store via tool
+        executor
+            .execute(
+                "memory_store",
+                &serde_json::json!({
+                    "memory_type": "episodic",
+                    "content": "vector store roundtrip test content",
+                    "session_key": "vs-test"
+                }),
+            )
+            .await;
+
+        // Search via tool (default memory_type="all" → includes vector store semantic search)
+        let result = executor
+            .execute(
+                "memory_search",
+                &serde_json::json!({"query": "roundtrip"}),
+            )
+            .await;
+        assert!(result.success, "search should succeed: {}", result.content);
+        // Vector store should find the stored episodic content via semantic search
+        assert!(
+            result.content.contains("vector store roundtrip"),
+            "semantic search should find the stored episodic content, got: {}",
+            result.content
+        );
+
+        // Do NOT call mgr.close() — shared fixture must not be released
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_execute_list_with_vector_store_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::manager::Config::new(dir.path());
+        let mgr = Arc::new(MemoryManager::new(&config));
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+        let executor = MemoryToolExecutor::new(mgr);
+
+        // Store multiple entries
+        for i in 0..3 {
+            executor
+                .execute(
+                    "memory_store",
+                    &serde_json::json!({
+                        "memory_type": "episodic",
+                        "content": format!("entry number {}", i),
+                        "session_key": "list-test"
+                    }),
+                )
+                .await;
+        }
+
+        // List status
+        let result = executor
+            .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+            .await;
+        assert!(result.success);
+        assert!(result.content.contains("Memory Store Status"));
+
+        // Do NOT call mgr.close() — shared fixture must not be released
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_execute_forget_removes_from_vector_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::manager::Config::new(dir.path());
+        let mgr = Arc::new(MemoryManager::new(&config));
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let vs_config = crate::vector::test_fixture::plugin_store_config(
+            &dir.path().join("vector").join("vs.jsonl").to_string_lossy()
+        ).expect("plugin DLL + model files required");
+        mgr.init_vector_store_with_embed(embed, vs_config).unwrap();
+        let executor = MemoryToolExecutor::new(mgr);
+
+        // Store an entry
+        let store_result = executor
+            .execute(
+                "memory_store",
+                &serde_json::json!({
+                    "memory_type": "episodic",
+                    "content": "will be forgotten",
+                    "session_key": "forget-test"
+                }),
+            )
+            .await;
+        assert!(store_result.success);
+
+        // Forget the session
+        let forget_result = executor
+            .execute(
+                "memory_forget",
+                &serde_json::json!({
+                    "action": "delete_session",
+                    "session_key": "forget-test"
+                }),
+            )
+            .await;
+        assert!(forget_result.success);
+
+        // Search should no longer find it
+        let search_result = executor
+            .execute(
+                "memory_search",
+                &serde_json::json!({"query": "forgotten"}),
+            )
+            .await;
+        assert!(search_result.success);
+
+        // Do NOT call mgr.close() — shared fixture must not be released
     }
 }

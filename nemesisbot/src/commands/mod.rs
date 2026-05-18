@@ -8,6 +8,7 @@ pub mod security;
 pub mod skills;
 pub mod workflow;
 pub mod scanner;
+pub mod memory;
 pub mod log;
 pub mod agent;
 pub mod auth;

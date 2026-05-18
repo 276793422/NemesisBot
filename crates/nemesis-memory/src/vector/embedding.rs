@@ -1,82 +1,107 @@
-//! Embedding function factory - selects the appropriate embedding tier.
+//! Embedding function factory — loads ONNX plugin only.
 //!
-//! Priority:
-//!   1. Plugin (ONNX) - best quality, fully offline
-//!   2. API (Provider) - good quality, costs tokens
-//!   3. Local hash - zero cost, fully offline
+//! If the plugin is not configured or fails to load, returns an error.
+//! No silent fallback to local hash or API tier.
+//!
+//! The ONNX plugin runs on a dedicated background thread so that its
+//! blocking operations (including Drop / resource cleanup) never execute
+//! inside a tokio async context (which would cause a panic:
+//! "Cannot drop a runtime in a context where blocking is not allowed").
 
+use std::path::Path;
 use std::sync::Mutex;
 
 use crate::types::VectorConfig;
-use crate::vector::plugin_loader::{NativePlugin, EmbeddingPlugin};
+use crate::vector::embedding_config;
+use crate::vector::plugin_loader::{EmbeddingPlugin, NativePlugin};
 
 /// An embedding function that produces a fixed-dimension vector from text.
 pub type EmbeddingFunc = Box<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync>;
 
 /// Create an embedding function based on configuration.
 ///
-/// The returned function is never nil.
-pub fn new_embedding_func(config: &VectorConfig) -> EmbeddingFunc {
-    let tier = config.embedding_tier.as_str();
-
-    // Tier 1: Plugin (if configured)
-    if (tier == "plugin" || tier == "auto" || tier == "") && config.plugin_path.is_some() {
-        let plugin_path = config.plugin_path.as_ref().unwrap();
-        if std::path::Path::new(plugin_path).exists() {
-            match try_load_plugin(plugin_path, config) {
-                Ok(func) => {
-                    tracing::info!(path = %plugin_path, "Plugin embedding loaded successfully");
-                    return func;
-                }
-                Err(e) => {
-                    tracing::warn!(path = %plugin_path, error = %e, "Plugin embedding failed, falling back");
-                }
-            }
-        }
+/// Requires a valid plugin path pointing to an ONNX plugin DLL.
+/// Returns `Err` if the plugin is missing or fails to load.
+pub fn new_embedding_func(config: &VectorConfig) -> Result<EmbeddingFunc, String> {
+    let plugin_path = config.plugin_path.as_deref().unwrap_or("");
+    if plugin_path.is_empty() {
+        return Err("No plugin path configured. Enhanced memory requires plugin_onnx.dll.".into());
     }
-
-    // Tier 2: API (if configured)
-    if (tier == "api" || tier == "auto" || tier == "") && config.api_model.is_some() {
-        // API embedding would go here - requires provider
-        tracing::info!("API embedding configured but no provider available, falling back");
+    if !Path::new(plugin_path).exists() {
+        return Err(format!("Plugin DLL not found: {}", plugin_path));
     }
-
-    // Tier 3: Local hash (always available)
-    let dim = config.local_dim;
-    Box::new(move |text: &str| {
-        Ok(crate::vector::embedding_local::ngram_hash_embed(text, dim))
-    })
+    try_load_plugin(plugin_path, config)
+        .map_err(|e| format!("Failed to load ONNX plugin: {}. Enhanced memory is unavailable.", e))
 }
 
 /// Attempt to load a native embedding plugin and wrap it as an EmbeddingFunc.
+///
+/// The plugin lives on a dedicated background thread so that its blocking
+/// Drop implementation never runs inside a tokio async context.
 fn try_load_plugin(
     plugin_path: &str,
     config: &VectorConfig,
 ) -> Result<EmbeddingFunc, crate::vector::plugin_loader::PluginError> {
+    // 1. Load embedding config and ensure model files are available
+    let config_dir = config.config_dir.as_deref().unwrap_or(".");
+    let mut emb_config = embedding_config::load_embedding_config(Path::new(config_dir));
+
+    let (model_dir, dim) = embedding_config::ensure_model_files(
+        &mut emb_config,
+        Path::new(config_dir),
+    )
+    .map_err(|_| crate::vector::plugin_loader::PluginError::InitFailed { code: -6 })?;
+
+    // 2. Load plugin DLL
     let mut plugin = NativePlugin::load(plugin_path)?;
 
-    // For unified interface plugins, set config_dir and host_services
-    if let Some(config_dir) = &config.plugin_config_dir {
-        plugin.set_config_dir(config_dir.clone());
-    }
+    // 3. Set host services
     if let Some(host) = &config.host_services {
         plugin.set_host_services(*host);
     }
 
-    let model_path = config
-        .plugin_model_path
-        .as_deref()
-        .unwrap_or("");
-    let dim = config.local_dim as i32;
+    // 4. Init plugin with model directory
+    plugin.init(&model_dir, dim)?;
 
-    plugin.init(model_path, dim)?;
+    // 5. Move plugin to a dedicated background thread.
+    //    The thread runs for the lifetime of the returned EmbeddingFunc.
+    //    When the closure (EmbeddingFunc) is dropped, it sends a shutdown
+    //    signal; the thread then drops the plugin outside any async runtime.
+    let (tx, rx) = std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<Result<Vec<f32>, String>>)>();
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Wrap in Mutex for thread-safe access inside the closure.
-    let plugin = Mutex::new(plugin);
+    let shutdown_clone = shutdown.clone();
+    std::thread::Builder::new()
+        .name("onnx-embed".into())
+        .spawn(move || {
+            let plugin = Mutex::new(plugin);
+            // Process embed requests until channel is closed or shutdown
+            while let Ok((text, reply)) = rx.recv() {
+                let guard = plugin.lock().map_err(|e| e.to_string());
+                let result = match guard {
+                    Ok(g) => g.embed(&text).map_err(|e| e.to_string()),
+                    Err(e) => Err(e),
+                };
+                let _ = reply.send(result);
+            }
+            // Plugin is dropped here, on this dedicated thread — never
+            // inside a tokio runtime.
+            drop(plugin);
+        })
+        .map_err(|_e| crate::vector::plugin_loader::PluginError::InitFailed {
+            code: -99,
+        })?;
 
     Ok(Box::new(move |text: &str| {
-        let guard = plugin.lock().map_err(|e| e.to_string())?;
-        guard.embed(text).map_err(|e| e.to_string())
+        if shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Embedding function has been shut down".into());
+        }
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        tx.send((text.to_string(), reply_tx))
+            .map_err(|_| "Embedding thread has exited".to_string())?;
+        reply_rx
+            .recv()
+            .map_err(|_| "Embedding thread did not respond".to_string())?
     }))
 }
 
@@ -86,232 +111,50 @@ mod tests {
     use crate::types::VectorConfig;
 
     #[test]
-    fn test_new_embedding_func_auto_no_plugin_no_api_returns_local() {
-        let config = VectorConfig {
-            embedding_tier: "auto".to_string(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("hello world").unwrap();
-        assert_eq!(result.len(), 64);
-        assert!(result.iter().any(|v| *v != 0.0));
-    }
-
-    #[test]
-    fn test_new_embedding_func_empty_tier_returns_local() {
-        let config = VectorConfig {
-            embedding_tier: String::new(),
-            local_dim: 128,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 128);
-    }
-
-    #[test]
-    fn test_new_embedding_func_local_tier_returns_local() {
-        let config = VectorConfig {
-            embedding_tier: "local".to_string(),
-            local_dim: 256,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test text").unwrap();
-        assert_eq!(result.len(), 256);
-    }
-
-    #[test]
-    fn test_new_embedding_func_plugin_tier_nonexistent_falls_back() {
+    fn test_new_embedding_func_no_plugin_returns_error() {
         let config = VectorConfig {
             embedding_tier: "plugin".to_string(),
-            local_dim: 64,
-            plugin_path: Some("/nonexistent/plugin.so".to_string()),
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 64);
-    }
-
-    #[test]
-    fn test_new_embedding_func_auto_plugin_nonexistent_falls_back() {
-        let config = VectorConfig {
-            embedding_tier: "auto".to_string(),
-            local_dim: 32,
-            plugin_path: Some("/does/not/exist.dll".to_string()),
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("hello").unwrap();
-        assert_eq!(result.len(), 32);
-    }
-
-    #[test]
-    fn test_local_hash_produces_different_vectors_for_different_text() {
-        let config = VectorConfig::default();
-        let func = new_embedding_func(&config);
-        let v1 = func("cat").unwrap();
-        let v2 = func("dog").unwrap();
-        assert_ne!(v1, v2);
-    }
-
-    #[test]
-    fn test_local_hash_produces_same_vectors_for_same_text() {
-        let config = VectorConfig::default();
-        let func = new_embedding_func(&config);
-        let v1 = func("same text").unwrap();
-        let v2 = func("same text").unwrap();
-        assert_eq!(v1, v2);
-    }
-
-    #[test]
-    fn test_local_hash_correct_dimension() {
-        for dim in &[64, 128, 256, 512] {
-            let config = VectorConfig {
-                embedding_tier: "local".to_string(),
-                local_dim: *dim,
-                plugin_path: None,
-                plugin_model_path: None,
-                api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-            };
-            let func = new_embedding_func(&config);
-            let result = func("test").unwrap();
-            assert_eq!(result.len(), *dim);
-        }
-    }
-
-    #[test]
-    fn test_local_hash_is_l2_normalized() {
-        let config = VectorConfig {
-            embedding_tier: "local".to_string(),
-            local_dim: 128,
             plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
+            config_dir: None,
             host_services: None,
         };
-        let func = new_embedding_func(&config);
-        let v = func("normalization test").unwrap();
-        let norm: f64 = v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-        assert!((norm - 1.0).abs() < 0.01);
+        let result = new_embedding_func(&config);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(
+            err.contains("No plugin path configured"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
-    fn test_new_embedding_func_api_tier_no_provider_falls_back() {
+    fn test_new_embedding_func_nonexistent_plugin_returns_error() {
         let config = VectorConfig {
-            embedding_tier: "api".to_string(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: Some("text-embedding-3-small".to_string()),
-            plugin_config_dir: None,
+            embedding_tier: "plugin".to_string(),
+            plugin_path: Some("/nonexistent/path/plugin_onnx.dll".to_string()),
+            config_dir: None,
             host_services: None,
         };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 64);
-    }
-
-    #[test]
-    fn test_embedding_func_empty_text() {
-        let config = VectorConfig {
-            embedding_tier: "local".to_string(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("").unwrap();
-        assert_eq!(result.len(), 64);
-        assert!(result.iter().all(|v| *v == 0.0));
-    }
-
-    #[test]
-    fn test_new_embedding_func_auto_with_api_model_falls_back() {
-        let config = VectorConfig {
-            embedding_tier: "auto".into(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: Some("text-embedding-3-small".into()),
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 64);
-    }
-
-    #[test]
-    fn test_new_embedding_func_empty_tier_with_api() {
-        let config = VectorConfig {
-            embedding_tier: String::new(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: Some("model".into()),
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 64);
+        let result = new_embedding_func(&config);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(
+            err.contains("Plugin DLL not found"),
+            "unexpected error: {}",
+            err
+        );
     }
 
     #[test]
     fn test_try_load_plugin_nonexistent() {
         let config = VectorConfig {
-            embedding_tier: "plugin".into(),
-            local_dim: 64,
-            plugin_path: Some("/nonexistent/plugin.so".into()),
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
+            embedding_tier: "plugin".to_string(),
+            plugin_path: Some("/nonexistent/path/plugin_onnx.dll".to_string()),
+            config_dir: None,
             host_services: None,
         };
-        let result = try_load_plugin("/nonexistent/plugin.so", &config);
+        let result = try_load_plugin("/nonexistent/path/plugin_onnx.dll", &config);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_new_embedding_func_plugin_tier_no_path_falls_back() {
-        let config = VectorConfig {
-            embedding_tier: "plugin".into(),
-            local_dim: 64,
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
-            host_services: None,
-        };
-        let func = new_embedding_func(&config);
-        let result = func("test").unwrap();
-        assert_eq!(result.len(), 64);
     }
 }

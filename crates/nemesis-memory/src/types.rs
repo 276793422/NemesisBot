@@ -89,29 +89,17 @@ pub struct ScoredEntry {
 /// Configuration for the optional vector search subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorConfig {
-    /// Embedding tier: "auto" | "plugin" | "api" | "local".
+    /// Embedding tier (kept for logging, no longer used for branching).
     #[serde(default = "default_embedding_tier")]
     pub embedding_tier: String,
-
-    /// Dimensionality of the local hash embedding.
-    #[serde(default = "default_local_dim")]
-    pub local_dim: usize,
 
     /// Path to a plugin DLL/SO (ONNX or similar).
     #[serde(default)]
     pub plugin_path: Option<String>,
 
-    /// Path to the ONNX model file.
-    #[serde(default)]
-    pub plugin_model_path: Option<String>,
-
-    /// Provider API embedding model name.
-    #[serde(default)]
-    pub api_model: Option<String>,
-
-    /// Config directory for unified plugin interface (not serialized).
+    /// Config directory containing embedding.toml (not serialized).
     #[serde(skip)]
-    pub plugin_config_dir: Option<String>,
+    pub config_dir: Option<String>,
 
     /// Host services pointer for unified plugin interface (not serialized).
     #[serde(skip)]
@@ -126,22 +114,15 @@ impl Default for VectorConfig {
     fn default() -> Self {
         Self {
             embedding_tier: default_embedding_tier(),
-            local_dim: default_local_dim(),
             plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-            plugin_config_dir: None,
+            config_dir: None,
             host_services: None,
         }
     }
 }
 
 fn default_embedding_tier() -> String {
-    "auto".to_string()
-}
-
-fn default_local_dim() -> usize {
-    256
+    "plugin".to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -190,11 +171,8 @@ mod tests {
     #[test]
     fn vector_config_default_values() {
         let config = VectorConfig::default();
-        assert_eq!(config.embedding_tier, "auto");
-        assert_eq!(config.local_dim, 256);
+        assert_eq!(config.embedding_tier, "plugin");
         assert!(config.plugin_path.is_none());
-        assert!(config.plugin_model_path.is_none());
-        assert!(config.api_model.is_none());
     }
 
     #[test]
@@ -306,34 +284,25 @@ mod tests {
     fn vector_config_custom() {
         let config = VectorConfig {
             embedding_tier: "plugin".to_string(),
-            local_dim: 512,
             plugin_path: Some("/path/to/plugin".to_string()),
-            plugin_model_path: Some("/path/to/model".to_string()),
-            api_model: Some("text-embedding-3-small".to_string()),
-            plugin_config_dir: None,
+            config_dir: None,
             host_services: None,
         };
         assert_eq!(config.embedding_tier, "plugin");
-        assert_eq!(config.local_dim, 512);
         assert!(config.plugin_path.is_some());
     }
 
     #[test]
     fn vector_config_serialization_roundtrip() {
         let config = VectorConfig {
-            embedding_tier: "local".to_string(),
-            local_dim: 128,
+            embedding_tier: "plugin".to_string(),
             plugin_path: None,
-            plugin_model_path: None,
-            api_model: Some("my-model".to_string()),
-            plugin_config_dir: None,
+            config_dir: None,
             host_services: None,
         };
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: VectorConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.embedding_tier, "local");
-        assert_eq!(deserialized.local_dim, 128);
-        assert_eq!(deserialized.api_model, Some("my-model".to_string()));
+        assert_eq!(deserialized.embedding_tier, "plugin");
     }
 
     #[test]

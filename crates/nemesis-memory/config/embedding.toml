@@ -1,0 +1,41 @@
+# embedding.toml — NemesisBot embedding model configuration
+#
+# Three model tiers:
+#   large  — high quality, large model (bge-base-en-v1.5, 768-dim)
+#   medium — balanced quality and size (all-MiniLM-L6-v2, 384-dim, default)
+#   small  — lightweight, fast (all-MiniLM-L4-v2, 256-dim)
+#
+# Change `active` to switch model tier. After downloading a model,
+# the local path is written back to this file automatically.
+
+active = "medium"
+
+[models.large]
+name = "bge-base-en-v1.5"
+dimension = 768
+model_url = "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/onnx/model.onnx"
+model_size = 430000000
+tokenizer_url = "https://hf-mirror.com/BAAI/bge-base-en-v1.5/resolve/main/tokenizer.json"
+tokenizer_size = 700000
+local_model_path = ""
+local_tokenizer_path = ""
+
+[models.medium]
+name = "all-MiniLM-L6-v2"
+dimension = 384
+model_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx"
+model_size = 90405214
+tokenizer_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
+tokenizer_size = 466247
+local_model_path = ""
+local_tokenizer_path = ""
+
+[models.small]
+name = "all-MiniLM-L4-v2"
+dimension = 256
+model_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L4-v2/resolve/main/onnx/model.onnx"
+model_size = 60000000
+tokenizer_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L4-v2/resolve/main/tokenizer.json"
+tokenizer_size = 466000
+local_model_path = ""
+local_tokenizer_path = ""

@@ -64,6 +64,11 @@ pub fn cluster_config_path(home: &Path) -> PathBuf {
     home.join("workspace").join("config").join("config.cluster.json")
 }
 
+/// Get the enhanced memory config file path.
+pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
+    home.join("workspace").join("config").join("config.enhanced_memory.json")
+}
+
 /// Get the CORS config file path.
 pub fn cors_config_path(home: &Path) -> PathBuf {
     home.join("config").join("cors.json")
@@ -602,6 +607,15 @@ mod tests {
         assert_eq!(
             cluster_config_path(&home),
             PathBuf::from("/tmp/test/workspace/config/config.cluster.json")
+        );
+    }
+
+    #[test]
+    fn test_enhanced_memory_config_path() {
+        let home = PathBuf::from("/tmp/test");
+        assert_eq!(
+            enhanced_memory_config_path(&home),
+            PathBuf::from("/tmp/test/workspace/config/config.enhanced_memory.json")
         );
     }
 

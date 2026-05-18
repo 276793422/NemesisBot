@@ -9,25 +9,20 @@ use std::path::PathBuf;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
 
 use crate::types::VectorConfig;
 use crate::vector::embedding::new_embedding_func;
-use crate::vector::embedding_local::cosine_similarity;
 
 /// Configuration for the vector store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreConfig {
     /// Embedding tier.
     pub embedding_tier: String,
-    /// Local hash dimension.
-    pub local_dim: usize,
     /// Plugin path.
     pub plugin_path: Option<String>,
-    /// Plugin model path.
-    pub plugin_model_path: Option<String>,
-    /// API model name.
-    pub api_model: Option<String>,
+    /// Config directory containing embedding.toml.
+    #[serde(skip)]
+    pub config_dir: Option<String>,
     /// Maximum results per query.
     pub max_results: usize,
     /// Similarity threshold [0, 1].
@@ -39,11 +34,9 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            embedding_tier: "local".into(),
-            local_dim: 256,
+            embedding_tier: "plugin".into(),
             plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
+            config_dir: None,
             max_results: 10,
             similarity_threshold: 0.7,
             storage_path: String::new(),
@@ -101,9 +94,35 @@ pub struct VectorStore {
     persist_path: PathBuf,
 }
 
+/// Compute cosine similarity between two vectors.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    let mut dot = 0.0f64;
+    let mut norm_a = 0.0f64;
+    let mut norm_b = 0.0f64;
+
+    for i in 0..a.len() {
+        dot += a[i] as f64 * b[i] as f64;
+        norm_a += a[i] as f64 * a[i] as f64;
+        norm_b += b[i] as f64 * b[i] as f64;
+    }
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
 impl VectorStore {
     /// Create a new vector store.
-    pub fn new(config: StoreConfig) -> Self {
+    ///
+    /// Returns an error if the embedding function cannot be created
+    /// (e.g., plugin DLL not found, model files missing).
+    pub fn new(config: StoreConfig) -> Result<Self, String> {
         let persist_path = if config.storage_path.is_empty() {
             PathBuf::from("memory/vector/vector_store.jsonl")
         } else {
@@ -112,15 +131,13 @@ impl VectorStore {
 
         let vector_config = VectorConfig {
             embedding_tier: config.embedding_tier.clone(),
-            local_dim: config.local_dim,
             plugin_path: config.plugin_path.clone(),
-            plugin_model_path: config.plugin_model_path.clone(),
-            api_model: config.api_model.clone(),
-            plugin_config_dir: None,
+            config_dir: config.config_dir.clone(),
             host_services: None,
         };
 
-        let embed = new_embedding_func(&vector_config);
+        let embed = new_embedding_func(&vector_config)
+            .map_err(|e| format!("Failed to create embedding function: {}", e))?;
 
         let store = Self {
             docs: RwLock::new(Vec::new()),
@@ -133,6 +150,30 @@ impl VectorStore {
         // (In a real async context we'd await this, but since new() is sync
         // we skip auto-loading here and provide load_persisted() separately)
 
+        Ok(store)
+    }
+
+    /// Create a new vector store with a pre-built embedding function.
+    ///
+    /// This is a test-only constructor that allows sharing a single ONNX
+    /// plugin across multiple VectorStore instances.
+    #[cfg(any(test, feature = "test-fixture"))]
+    pub fn new_from_embed(
+        embed: Box<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync>,
+        config: StoreConfig,
+    ) -> Self {
+        let persist_path = if config.storage_path.is_empty() {
+            PathBuf::from("memory/vector/vector_store.jsonl")
+        } else {
+            PathBuf::from(&config.storage_path)
+        };
+        let store = Self {
+            docs: RwLock::new(Vec::new()),
+            embed,
+            config,
+            persist_path,
+        };
+        let _ = store.load_persisted_sync();
         store
     }
 
@@ -260,14 +301,18 @@ impl VectorStore {
         self.docs.read().is_empty()
     }
 
-    /// Load persisted entries from JSONL.
+    /// Load persisted entries from JSONL (async version).
     pub async fn load_persisted(&self) -> Result<(), String> {
+        self.load_persisted_sync()
+    }
+
+    /// Load persisted entries from JSONL (sync version).
+    pub fn load_persisted_sync(&self) -> Result<(), String> {
         if !self.persist_path.exists() {
             return Ok(());
         }
 
-        let content = tokio::fs::read_to_string(&self.persist_path)
-            .await
+        let content = std::fs::read_to_string(&self.persist_path)
             .map_err(|e| e.to_string())?;
 
         for line in content.lines() {
@@ -283,24 +328,35 @@ impl VectorStore {
         Ok(())
     }
 
-    /// Persist an entry to JSONL.
+    /// Persist an entry to JSONL (async version).
     pub async fn persist_entry(&self, entry: &VectorEntry) -> Result<(), String> {
-        if let Some(parent) = self.persist_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| e.to_string())?;
+        Self::persist_entry_sync_inner(&self.persist_path, entry)
+    }
+
+    /// Persist an entry to JSONL (sync version for use from sync contexts).
+    pub fn persist_entry_sync(&self, entry: &VectorEntry) -> Result<(), String> {
+        Self::persist_entry_sync_inner(&self.persist_path, entry)
+    }
+
+    /// Shared implementation for persist.
+    fn persist_entry_sync_inner(
+        persist_path: &std::path::Path,
+        entry: &VectorEntry,
+    ) -> Result<(), String> {
+        if let Some(parent) = persist_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        let mut file = tokio::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.persist_path)
-            .await
+            .open(persist_path)
             .map_err(|e| e.to_string())?;
 
         let mut line = serde_json::to_string(entry).map_err(|e| e.to_string())?;
         line.push('\n');
-        file.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+        use std::io::Write;
+        file.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -323,209 +379,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_store_and_query() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        store.store_entry(&make_entry("1", "The cat sat on the mat")).unwrap();
-        store.store_entry(&make_entry("2", "Dogs love to play fetch")).unwrap();
-        store.store_entry(&make_entry("3", "Cat food is expensive")).unwrap();
-
-        let result = store.query("cat", 10, &[]).unwrap();
-        assert!(result.total >= 2, "Expected at least 2 results for 'cat', got {}", result.total);
-    }
-
-    #[test]
-    fn test_get_by_id() {
-        let store = VectorStore::new(StoreConfig::default());
-        store.store_entry(&make_entry("test-id", "hello")).unwrap();
-
-        let entry = store.get_by_id("test-id").unwrap();
-        assert_eq!(entry.content, "hello");
-    }
-
-    #[test]
-    fn test_delete_entry() {
-        let store = VectorStore::new(StoreConfig::default());
-        store.store_entry(&make_entry("del-me", "bye")).unwrap();
-        assert_eq!(store.len(), 1);
-
-        assert!(store.delete_entry("del-me"));
-        assert!(store.is_empty());
-    }
-
-    #[test]
-    fn test_list_entries() {
-        let store = VectorStore::new(StoreConfig::default());
-        store.store_entry(&make_entry("1", "a")).unwrap();
-        store.store_entry(&make_entry("2", "b")).unwrap();
-        store.store_entry(&make_entry("3", "c")).unwrap();
-
-        let result = store.list_entries(&[], 1, 1);
-        assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.total, 3);
-    }
-
-    #[tokio::test]
-    async fn test_persist_and_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vectors.jsonl");
-        let config = StoreConfig {
-            storage_path: path.to_string_lossy().to_string(),
-            ..Default::default()
-        };
-
-        let store = VectorStore::new(config);
-        let entry = make_entry("persist-1", "persisted content");
-        store.store_entry(&entry).unwrap();
-        store.persist_entry(&entry).await.unwrap();
-
-        assert!(path.exists());
-
-        // Load into a new store
-        let config2 = StoreConfig {
-            storage_path: path.to_string_lossy().to_string(),
-            ..Default::default()
-        };
-        let store2 = VectorStore::new(config2);
-        store2.load_persisted().await.unwrap();
-        assert!(!store2.is_empty());
-    }
-
     // ============================================================
-    // Additional tests for missing coverage
+    // Config and serialization tests (no plugin needed)
     // ============================================================
 
     #[test]
     fn test_store_config_default() {
         let config = StoreConfig::default();
-        assert_eq!(config.embedding_tier, "local");
-        assert_eq!(config.local_dim, 256);
+        assert_eq!(config.embedding_tier, "plugin");
         assert!(config.plugin_path.is_none());
-        assert!(config.api_model.is_none());
         assert_eq!(config.max_results, 10);
         assert!((config.similarity_threshold - 0.7).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_store_is_empty_initially() {
-        let store = VectorStore::new(StoreConfig::default());
-        assert!(store.is_empty());
-        assert_eq!(store.len(), 0);
-    }
-
-    #[test]
-    fn test_store_get_by_id_not_found() {
-        let store = VectorStore::new(StoreConfig::default());
-        assert!(store.get_by_id("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_delete_nonexistent_entry() {
-        let store = VectorStore::new(StoreConfig::default());
-        assert!(!store.delete_entry("nonexistent"));
-    }
-
-    #[test]
-    fn test_query_empty_store() {
-        let store = VectorStore::new(StoreConfig::default());
-        let result = store.query("anything", 10, &[]).unwrap();
-        assert_eq!(result.entries.len(), 0);
-        assert_eq!(result.total, 0);
-        assert_eq!(result.query, "anything");
-    }
-
-    #[test]
-    fn test_query_with_type_filter() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        let mut e1 = make_entry("1", "cat content");
-        e1.entry_type = "long_term".into();
-        let mut e2 = make_entry("2", "cat other");
-        e2.entry_type = "episodic".into();
-
-        store.store_entry(&e1).unwrap();
-        store.store_entry(&e2).unwrap();
-
-        let result = store.query("cat", 10, &["long_term".to_string()]).unwrap();
-        assert!(result.entries.iter().all(|e| e.entry_type == "long_term"));
-    }
-
-    #[test]
-    fn test_query_with_limit_zero_uses_default() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            max_results: 2,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        for i in 0..5 {
-            store.store_entry(&make_entry(&format!("{}", i), "similar content")).unwrap();
-        }
-
-        let result = store.query("content", 0, &[]).unwrap();
-        assert!(result.entries.len() <= 2);
-    }
-
-    #[test]
-    fn test_list_entries_empty() {
-        let store = VectorStore::new(StoreConfig::default());
-        let result = store.list_entries(&[], 0, 10);
-        assert!(result.entries.is_empty());
-        assert_eq!(result.total, 0);
-    }
-
-    #[test]
-    fn test_list_entries_with_type_filter() {
-        let store = VectorStore::new(StoreConfig::default());
-
-        let mut e1 = make_entry("1", "a");
-        e1.entry_type = "long_term".into();
-        let mut e2 = make_entry("2", "b");
-        e2.entry_type = "episodic".into();
-
-        store.store_entry(&e1).unwrap();
-        store.store_entry(&e2).unwrap();
-
-        let result = store.list_entries(&["episodic".to_string()], 0, 10);
-        assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.entries[0].entry_type, "episodic");
-    }
-
-    #[test]
-    fn test_list_entries_pagination() {
-        let store = VectorStore::new(StoreConfig::default());
-        for i in 0..10 {
-            store.store_entry(&make_entry(&format!("{}", i), &format!("entry {}", i))).unwrap();
-        }
-
-        let page1 = store.list_entries(&[], 0, 3);
-        assert_eq!(page1.entries.len(), 3);
-        assert_eq!(page1.total, 10);
-
-        let page2 = store.list_entries(&[], 3, 3);
-        assert_eq!(page2.entries.len(), 3);
-        assert_eq!(page2.total, 10);
-    }
-
-    #[test]
-    fn test_list_entries_no_limit() {
-        let store = VectorStore::new(StoreConfig::default());
-        for i in 0..5 {
-            store.store_entry(&make_entry(&format!("{}", i), &format!("entry {}", i))).unwrap();
-        }
-
-        let result = store.list_entries(&[], 0, 0);
-        assert_eq!(result.entries.len(), 5);
     }
 
     #[test]
@@ -562,146 +426,50 @@ mod tests {
     }
 
     #[test]
-    fn test_store_multiple_entries_same_content() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        store.store_entry(&make_entry("1", "same content")).unwrap();
-        store.store_entry(&make_entry("2", "same content")).unwrap();
-        store.store_entry(&make_entry("3", "same content")).unwrap();
-
-        assert_eq!(store.len(), 3);
-        let result = store.query("same content", 10, &[]).unwrap();
-        assert_eq!(result.entries.len(), 3);
+    fn test_cosine_similarity_same_vector() {
+        let a = vec![1.0f32, 0.0, 0.0];
+        let sim = cosine_similarity(&a, &a);
+        assert!((sim - 1.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_store_similarity_threshold() {
-        let config = StoreConfig {
-            similarity_threshold: 0.99, // Very high threshold
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        store.store_entry(&make_entry("1", "completely unique text about xyz")).unwrap();
-
-        let result = store.query("something entirely different abc", 10, &[]).unwrap();
-        // With 0.99 threshold, unrelated content should not match
-        assert_eq!(result.total, 0);
+    fn test_cosine_similarity_opposite_vectors() {
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![-1.0f32, 0.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((sim - (-1.0)).abs() < 0.01);
     }
 
     #[test]
-    fn test_query_results_sorted_by_score() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-
-        store.store_entry(&make_entry("1", "cat cat cat cat cat")).unwrap();
-        store.store_entry(&make_entry("2", "dog dog dog dog dog")).unwrap();
-        store.store_entry(&make_entry("3", "cat and dog together")).unwrap();
-
-        let result = store.query("cat", 10, &[]).unwrap();
-        for i in 1..result.entries.len() {
-            assert!(result.entries[i - 1].score >= result.entries[i].score);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_persist_multiple_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("multi.jsonl");
-        let config = StoreConfig {
-            storage_path: path.to_string_lossy().to_string(),
-            ..Default::default()
-        };
-
-        let store = VectorStore::new(config);
-        for i in 0..5 {
-            let entry = make_entry(&format!("e{}", i), &format!("content {}", i));
-            store.store_entry(&entry).unwrap();
-            store.persist_entry(&entry).await.unwrap();
-        }
-
-        // Verify file has 5 lines
-        let content = tokio::fs::read_to_string(&path).await.unwrap();
-        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines.len(), 5);
-    }
-
-    #[tokio::test]
-    async fn test_load_nonexistent_file() {
-        let config = StoreConfig {
-            storage_path: "/nonexistent/path/store.jsonl".to_string(),
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-        // Should return Ok since file doesn't exist
-        let result = store.load_persisted().await;
-        assert!(result.is_ok());
-        assert!(store.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_load_corrupted_jsonl() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("corrupt.jsonl");
-
-        // Write a mix of valid and invalid JSON lines
-        tokio::fs::write(&path, "invalid json line\n{\"id\":\"ok\",\"type\":\"t\",\"content\":\"c\",\"created_at\":\"2024-01-01\",\"updated_at\":\"2024-01-01\"}\n\n")
-            .await
-            .unwrap();
-
-        let config = StoreConfig {
-            storage_path: path.to_string_lossy().to_string(),
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-        store.load_persisted().await.unwrap();
-
-        // Only the valid entry should be loaded
-        assert_eq!(store.len(), 1);
-        assert_eq!(store.get_by_id("ok").unwrap().content, "c");
+    fn test_cosine_similarity_orthogonal_vectors() {
+        let a = vec![1.0f32, 0.0, 0.0];
+        let b = vec![0.0f32, 1.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert!((sim - 0.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_delete_entry_updates_len() {
-        let store = VectorStore::new(StoreConfig::default());
-        store.store_entry(&make_entry("1", "a")).unwrap();
-        store.store_entry(&make_entry("2", "b")).unwrap();
-        store.store_entry(&make_entry("3", "c")).unwrap();
-        assert_eq!(store.len(), 3);
-
-        store.delete_entry("2");
-        assert_eq!(store.len(), 2);
-        assert!(store.get_by_id("2").is_none());
+    fn test_cosine_similarity_different_lengths() {
+        let a = vec![1.0f32, 0.0];
+        let b = vec![1.0f32, 0.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
     }
 
     #[test]
-    fn test_store_entry_with_empty_content() {
-        let store = VectorStore::new(StoreConfig::default());
-        let entry = make_entry("empty", "");
-        let result = store.store_entry(&entry);
-        assert!(result.is_ok());
+    fn test_cosine_similarity_empty_vectors() {
+        let a: Vec<f32> = vec![];
+        let b: Vec<f32> = vec![];
+        let sim = cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
     }
 
     #[test]
-    fn test_query_result_fields() {
-        let config = StoreConfig {
-            similarity_threshold: 0.1,
-            ..Default::default()
-        };
-        let store = VectorStore::new(config);
-        store.store_entry(&make_entry("1", "hello world")).unwrap();
-
-        let result = store.query("hello", 5, &[]).unwrap();
-        assert_eq!(result.query, "hello");
-        assert!(result.total >= 1);
-        assert!(result.entries[0].score > 0.0);
+    fn test_cosine_similarity_zero_vectors() {
+        let a = vec![0.0f32, 0.0, 0.0];
+        let b = vec![1.0f32, 0.0, 0.0];
+        let sim = cosine_similarity(&a, &b);
+        assert_eq!(sim, 0.0);
     }
 
     // ============================================================
@@ -714,53 +482,21 @@ mod tests {
     //
     // Requires:
     //   1. plugin_onnx.dll: cd plugins/plugin-onnx && cargo build --release
-    //   2. Test model:       bash plugins/plugin-onnx/scripts/setup-test.sh
+    //   2. Test model:       bash test-tools/plugin-onnx-test/scripts/setup-test.sh
     //
     // Run with:
     //   cargo test -p nemesis-memory -- --ignored --test-threads=1
     // ============================================================
 
-    /// Resolve the real plugin DLL path relative to this crate.
-    fn st_plugin_dll_path() -> String {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
-        let path = std::path::PathBuf::from(&manifest_dir)
-            .join("../../plugins/plugin-onnx/target/release/plugin_onnx.dll");
-        let path = path.canonicalize().unwrap_or(path);
-        assert!(path.exists(), "plugin_onnx.dll not found at {:?}. Run: cd plugins/plugin-onnx && cargo build --release", path);
-        path.to_string_lossy().to_string()
-    }
-
-    /// Resolve the real ONNX model path.
-    fn st_model_path() -> String {
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR not set");
-        let path = std::path::PathBuf::from(&manifest_dir)
-            .join("../../plugins/plugin-onnx/test-data/model.onnx");
-        let path = path.canonicalize().unwrap_or(path);
-        assert!(path.exists(), "model.onnx not found at {:?}. Run: bash plugins/plugin-onnx/scripts/setup-test.sh", path);
-        path.to_string_lossy().to_string()
-    }
-
-    /// Create a StoreConfig pointing to the real plugin.
-    fn st_plugin_store_config() -> StoreConfig {
-        StoreConfig {
-            embedding_tier: "plugin".into(),
-            local_dim: 384,
-            plugin_path: Some(st_plugin_dll_path()),
-            plugin_model_path: Some(st_model_path()),
-            api_model: None,
-            max_results: 10,
-            similarity_threshold: 0.1,
-            storage_path: String::new(),
-        }
-    }
-
     #[test]
     #[ignore]
     fn st_plugin_system_test_all_scenarios() {
-        // Create the plugin store ONCE — ONNX Runtime cannot re-init after free
-        let store = VectorStore::new(st_plugin_store_config());
+        // Use shared plugin fixture — creates VectorStore without loading a new plugin
+        let embed = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let store_config = crate::vector::test_fixture::plugin_store_config("")
+            .expect("plugin DLL + model files required");
+        let store = VectorStore::new_from_embed(embed, store_config);
 
         // === Scenario 1: Store creates and is empty ===
         {
@@ -898,27 +634,19 @@ mod tests {
 
         store.delete_entry("s8-2");
 
-        // === Scenario 9: Plugin produces different embeddings than local hash ===
+        // === Scenario 9: Plugin produces valid embeddings ===
         {
-            use crate::vector::embedding_local::ngram_hash_embed;
-
-            // Get a plugin embedding by storing an entry and querying it
             store.store_entry(&make_entry("s9-1", "The cat sat on the mat")).unwrap();
             let result = store.query("cat", 10, &[]).unwrap();
             assert!(result.total >= 1, "Plugin store should find results for 'cat'");
 
-            // Get a local hash embedding for the same text
-            let local_vec = ngram_hash_embed("The cat sat on the mat", 384);
+            // Verify scores are valid
+            for entry in &result.entries {
+                assert!(entry.score > 0.0, "Score should be positive");
+                assert!(entry.score <= 1.0, "Score should not exceed 1.0");
+            }
 
-            // Local hash should produce a 384-dim vector
-            assert_eq!(local_vec.len(), 384);
-
-            // Local hash should be L2 normalized
-            let local_norm: f64 = local_vec.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-            assert!((local_norm - 1.0).abs() < 0.01, "Local hash should be L2 normalized, norm={}", local_norm);
-
-            // This proves both methods work correctly and produce valid output
-            println!("[P2] Scenario 9: Plugin and local embeddings both valid — PASS");
+            println!("[P2] Scenario 9: Plugin embeddings valid — PASS");
         }
 
         store.delete_entry("s9-1");
@@ -999,7 +727,7 @@ mod tests {
             println!("[P2] Scenario 13: Sequential query stability — PASS");
         }
 
-        // Store is dropped here — ONNX Runtime freed once
+        // Store is dropped here — but shared plugin keeps running
         println!("[P2] All 13 scenarios PASSED");
     }
 
@@ -1011,11 +739,14 @@ mod tests {
 
         let config = StoreConfig {
             storage_path: path.to_string_lossy().to_string(),
-            ..st_plugin_store_config()
+            ..crate::vector::test_fixture::plugin_store_config("")
+                .expect("plugin DLL + model files required")
         };
 
-        // Phase 1: Store and persist
-        let store = VectorStore::new(config.clone());
+        // Phase 1: Store and persist (using shared plugin fixture)
+        let embed1 = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let store = VectorStore::new_from_embed(embed1, config.clone());
         let e1 = make_entry("st-persist-1", "Persistent entry about machine learning");
         let e2 = make_entry("st-persist-2", "Another entry about natural language processing");
         store.store_entry(&e1).unwrap();
@@ -1023,12 +754,12 @@ mod tests {
         store.persist_entry(&e1).await.unwrap();
         store.persist_entry(&e2).await.unwrap();
         assert_eq!(store.len(), 2);
-        drop(store); // Release ONNX Runtime
+        drop(store); // Drop VectorStore, shared plugin keeps running
 
-        // Phase 2: Load into new store
-        // NOTE: This creates a new ONNX session, which works because
-        // the previous session was fully dropped before this
-        let store2 = VectorStore::new(config);
+        // Phase 2: Load into new store (using same shared plugin)
+        let embed2 = crate::vector::test_fixture::shared_embed_func()
+            .expect("shared plugin not available");
+        let store2 = VectorStore::new_from_embed(embed2, config);
         store2.load_persisted().await.unwrap();
         assert_eq!(store2.len(), 2, "Should load 2 persisted entries");
 

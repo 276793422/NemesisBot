@@ -46,6 +46,7 @@ members = [
     "test-tools/ws-send",
     "test-tools/bus-benchmarks",
     "test-tools/approval-test",
+    "test-tools/memory-test",
 ]
 
 [workspace.package]

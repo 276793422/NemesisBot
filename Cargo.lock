@@ -2747,6 +2747,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-harness",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3166,6 +3182,8 @@ dependencies = [
  "chrono",
  "dashmap",
  "libloading 0.8.9",
+ "nemesis-config",
+ "nemesis-memory",
  "nemesis-plugin",
  "nemesis-types",
  "parking_lot",
@@ -3175,6 +3193,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "uuid",
 ]

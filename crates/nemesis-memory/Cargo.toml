@@ -3,6 +3,10 @@ name = "nemesis-memory"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+test-fixture = []
+
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-plugin = { workspace = true }
@@ -18,7 +22,35 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 libloading = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json"] }
+toml = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
+nemesis-config = { workspace = true }
+nemesis-types = { workspace = true }
+nemesis-memory = { path = ".", features = ["test-fixture"] }
+
+[[test]]
+name = "embedding_pipeline"
+path = "tests/embedding_pipeline.rs"
+
+[[test]]
+name = "config_integration"
+path = "tests/config_integration.rs"
+
+[[test]]
+name = "persistence"
+path = "tests/persistence.rs"
+
+[[test]]
+name = "tool_executor"
+path = "tests/tool_executor.rs"
+
+[[test]]
+name = "memory_e2e"
+path = "tests/memory_e2e.rs"
+
+[[test]]
+name = "real_plugin"
+path = "tests/real_plugin.rs"

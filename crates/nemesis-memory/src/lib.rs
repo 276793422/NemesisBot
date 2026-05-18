@@ -15,3 +15,9 @@ pub mod graph;
 pub mod manager;
 pub mod memory_tools;
 pub mod vector;
+
+#[cfg(any(test, feature = "test-fixture"))]
+#[doc(hidden)]
+pub mod __test_fixture {
+    pub use crate::vector::test_fixture::*;
+}

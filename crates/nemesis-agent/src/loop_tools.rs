@@ -2896,6 +2896,8 @@ pub struct SharedToolConfig {
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    /// Memory tool executor for memory_search, memory_store, etc.
+    pub memory_executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
 }
 
 impl Default for SharedToolConfig {
@@ -2911,6 +2913,7 @@ impl Default for SharedToolConfig {
             workspace: None,
             cron_service: None,
             forge_executor: None,
+            memory_executor: None,
         }
     }
 }
@@ -2926,6 +2929,7 @@ impl std::fmt::Debug for SharedToolConfig {
             .field("skills_registry", &self.skills_registry.as_ref().map(|_| "RegistryManager"))
             .field("skills_loader", &self.skills_loader.as_ref().map(|_| "SkillsLoader"))
             .field("workspace", &self.workspace)
+            .field("memory_executor", &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"))
             .finish()
     }
 }
@@ -2977,19 +2981,19 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // Memory tools.
     tools.insert(
         "memory_search".to_string(),
-        Box::new(MemorySearchTool::new(None)),
+        Box::new(MemorySearchTool::new(config.memory_executor.clone())),
     );
     tools.insert(
         "memory_store".to_string(),
-        Box::new(MemoryStoreTool::new(None)),
+        Box::new(MemoryStoreTool::new(config.memory_executor.clone())),
     );
     tools.insert(
         "memory_forget".to_string(),
-        Box::new(MemoryForgetTool::new(None)),
+        Box::new(MemoryForgetTool::new(config.memory_executor.clone())),
     );
     tools.insert(
         "memory_list".to_string(),
-        Box::new(MemoryListTool::new(None)),
+        Box::new(MemoryListTool::new(config.memory_executor.clone())),
     );
 
     // Skills tools: use real loader when available, otherwise use stub.
@@ -3150,6 +3154,7 @@ pub fn register_extended_tools(
         workspace: None,
         cron_service: None,
         forge_executor: None,
+        memory_executor: None,
     };
     register_shared_tools(&shared_config)
 }

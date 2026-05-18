@@ -1818,6 +1818,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         cron_service: Some(cron_service),
         forge_executor,
+        memory_executor: {
+            if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
+                let memory_data_dir = home.join("memory");
+                let config_dir = home.join("workspace").join("config");
+                let mgr = std::sync::Arc::new(
+                    nemesis_memory::manager::MemoryManager::with_config_dir(
+                        &memory_data_dir, &config_dir,
+                    )
+                );
+                info!("Memory manager created (data_dir={})", memory_data_dir.display());
+                Some(std::sync::Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
+            } else {
+                info!("Enhanced memory disabled (config.json: memory.enabled = false)");
+                None
+            }
+        },
         ..Default::default()
     };
     let all_tools = nemesis_agent::register_shared_tools(&shared_config);

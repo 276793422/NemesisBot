@@ -51,15 +51,15 @@ cargo build --release
 
 ```bash
 # Linux/macOS/Git Bash
-bash plugins/plugin-onnx/scripts/setup-test.sh
+bash test-tools/plugin-onnx-test/scripts/setup-test.sh
 
 # PowerShell
-powershell -File plugins/plugin-onnx/scripts/setup-test.ps1
+powershell -File test-tools/plugin-onnx-test/scripts/setup-test.ps1
 ```
 
 **验证**：
-- `plugins/plugin-onnx/test-data/model.onnx` 存在，约 90 MB
-- `plugins/plugin-onnx/test-data/tokenizer.json` 存在，约 470 KB
+- `test-tools/plugin-onnx-test/test-data/model.onnx` 存在，约 90 MB
+- `test-tools/plugin-onnx-test/test-data/tokenizer.json` 存在，约 470 KB
 
 ### 1.4 导出符号验证
 
@@ -277,7 +277,7 @@ Rust 版本：x.xx.x
 
 ```bash
 # 清理测试模型（如需要）
-rm -rf plugins/plugin-onnx/test-data/
+rm -rf test-tools/plugin-onnx-test/test-data/
 
 # 清理构建产物
 cd plugins/plugin-onnx && cargo clean

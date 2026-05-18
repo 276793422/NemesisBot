@@ -20,8 +20,6 @@ pub struct AppConfig {
     #[serde(default)]
     pub workflow: WorkflowConfig,
     #[serde(default)]
-    pub vector: VectorConfig,
-    #[serde(default)]
     pub logging: LoggingConfig,
 }
 
@@ -90,29 +88,6 @@ pub struct WorkflowConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VectorConfig {
-    #[serde(default = "default_embedding_tier")]
-    pub embedding_tier: String,
-    #[serde(default = "default_local_dim")]
-    pub local_dim: usize,
-    pub plugin_path: Option<String>,
-    pub plugin_model_path: Option<String>,
-    pub api_model: Option<String>,
-}
-
-impl Default for VectorConfig {
-    fn default() -> Self {
-        Self {
-            embedding_tier: default_embedding_tier(),
-            local_dim: default_local_dim(),
-            plugin_path: None,
-            plugin_model_path: None,
-            api_model: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LoggingConfig {
     pub level: Option<String>,
@@ -121,14 +96,6 @@ pub struct LoggingConfig {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_embedding_tier() -> String {
-    "auto".to_string()
-}
-
-fn default_local_dim() -> usize {
-    256
 }
 
 #[cfg(test)]
@@ -323,53 +290,7 @@ mod tests {
         assert!(cfg.enabled);
     }
 
-    // --- VectorConfig ---
-
-    #[test]
-    fn test_vector_config_default() {
-        let cfg = VectorConfig::default();
-        assert_eq!(cfg.embedding_tier, "auto");
-        assert_eq!(cfg.local_dim, 256);
-        assert!(cfg.plugin_path.is_none());
-        assert!(cfg.plugin_model_path.is_none());
-        assert!(cfg.api_model.is_none());
-    }
-
-    #[test]
-    fn test_vector_config_deserialize_empty() {
-        let json = "{}";
-        let cfg: VectorConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.embedding_tier, "auto");
-        assert_eq!(cfg.local_dim, 256);
-    }
-
-    #[test]
-    fn test_vector_config_with_values() {
-        let json = r#"{
-            "embedding_tier": "local",
-            "local_dim": 512,
-            "plugin_path": "/path/to/plugin",
-            "plugin_model_path": "/path/to/model",
-            "api_model": "text-embedding-3-small"
-        }"#;
-        let cfg: VectorConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.embedding_tier, "local");
-        assert_eq!(cfg.local_dim, 512);
-        assert_eq!(cfg.plugin_path, Some("/path/to/plugin".to_string()));
-        assert_eq!(cfg.plugin_model_path, Some("/path/to/model".to_string()));
-        assert_eq!(cfg.api_model, Some("text-embedding-3-small".to_string()));
-    }
-
-    #[test]
-    fn test_vector_config_serialize_roundtrip() {
-        let cfg = VectorConfig::default();
-        let json = serde_json::to_string(&cfg).unwrap();
-        let cfg2: VectorConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(cfg.embedding_tier, cfg2.embedding_tier);
-        assert_eq!(cfg.local_dim, cfg2.local_dim);
-    }
-
-    // --- LoggingConfig ---
+    // --- WorkflowConfig ---
 
     #[test]
     fn test_logging_config_default() {
@@ -404,8 +325,6 @@ mod tests {
         assert!(!cfg.cluster.enabled);
         assert!(!cfg.memory.enabled);
         assert!(!cfg.workflow.enabled);
-        assert_eq!(cfg.vector.embedding_tier, "auto");
-        assert_eq!(cfg.vector.local_dim, 256);
     }
 
     #[test]
@@ -415,7 +334,6 @@ mod tests {
         assert!(cfg.security.enabled);
         assert!(!cfg.forge.enabled);
         assert!(!cfg.cluster.enabled);
-        assert_eq!(cfg.vector.embedding_tier, "auto");
     }
 
     #[test]
@@ -428,7 +346,6 @@ mod tests {
             "cluster": {"enabled": true, "name": "node1", "role": "master"},
             "memory": {"enabled": true},
             "workflow": {"enabled": true},
-            "vector": {"embedding_tier": "api", "local_dim": 1024},
             "logging": {"level": "info", "format": "text"}
         }"#;
         let cfg: AppConfig = serde_json::from_str(json).unwrap();
@@ -443,8 +360,6 @@ mod tests {
         assert_eq!(cfg.cluster.role, Some("master".to_string()));
         assert!(cfg.memory.enabled);
         assert!(cfg.workflow.enabled);
-        assert_eq!(cfg.vector.embedding_tier, "api");
-        assert_eq!(cfg.vector.local_dim, 1024);
         assert_eq!(cfg.logging.level, Some("info".to_string()));
         assert_eq!(cfg.logging.format, Some("text".to_string()));
 
@@ -467,7 +382,6 @@ mod tests {
         assert!(!cfg.security.restrict_to_workspace); // serde default for bool is false
         assert!(cfg.forge.enabled);
         assert!(!cfg.cluster.enabled);
-        assert_eq!(cfg.vector.embedding_tier, "auto");
     }
 
     #[test]
@@ -475,7 +389,6 @@ mod tests {
         let cfg = app_config_with_defaults();
         let cfg2 = cfg.clone();
         assert_eq!(cfg.security.enabled, cfg2.security.enabled);
-        assert_eq!(cfg.vector.embedding_tier, cfg2.vector.embedding_tier);
     }
 
     #[test]
@@ -490,7 +403,6 @@ mod tests {
         assert!(json.contains("\"cluster\""));
         assert!(json.contains("\"memory\""));
         assert!(json.contains("\"workflow\""));
-        assert!(json.contains("\"vector\""));
         assert!(json.contains("\"logging\""));
     }
 
@@ -499,15 +411,5 @@ mod tests {
     #[test]
     fn test_default_true_returns_true() {
         assert!(default_true());
-    }
-
-    #[test]
-    fn test_default_embedding_tier_returns_auto() {
-        assert_eq!(default_embedding_tier(), "auto");
-    }
-
-    #[test]
-    fn test_default_local_dim_returns_256() {
-        assert_eq!(default_local_dim(), 256);
     }
 }

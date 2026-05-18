@@ -16,6 +16,7 @@ const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json
 const CONFIG_CLUSTER_DEFAULT: &str = include_str!("../config/config.cluster.default.json");
 const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
 const CONFIG_SCANNER_DEFAULT: &str = include_str!("../config/config.scanner.default.json");
+const CONFIG_ENHANCED_MEMORY_DEFAULT: &str = include_str!("../config/config.enhanced_memory.default.json");
 const CONFIG_SECURITY_WINDOWS: &str = include_str!("../config/config.security.windows.json");
 const CONFIG_SECURITY_LINUX: &str = include_str!("../config/config.security.linux.json");
 const CONFIG_SECURITY_DARWIN: &str = include_str!("../config/config.security.darwin.json");
@@ -147,6 +148,11 @@ enum Commands {
     Scanner {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
+    },
+    /// Manage enhanced memory
+    Memory {
+        #[command(subcommand)]
+        action: commands::memory::MemoryAction,
     },
     /// Graceful shutdown
     Shutdown,
@@ -384,6 +390,11 @@ async fn main() -> Result<()> {
             let scanner_cfg_path = common::scanner_config_path(&home);
             let _ = std::fs::write(&scanner_cfg_path, CONFIG_SCANNER_DEFAULT);
 
+            // --- Step 7.5: Enhanced Memory config (embedded) ---
+            let em_cfg_path = common::enhanced_memory_config_path(&home);
+            let _ = std::fs::write(&em_cfg_path, CONFIG_ENHANCED_MEMORY_DEFAULT);
+            println!("  Enhanced memory config created");
+
             // --- Step 8: Extract embedded workspace templates ---
             // Mirrors Go's copyEmbeddedToTarget() — copies all files from
             // embedded `workspace/` directory (skills, scripts, memory, md files).
@@ -485,6 +496,9 @@ async fn main() -> Result<()> {
         }
         Commands::Scanner { action } => {
             commands::scanner::run(action, cli.local).await?;
+        }
+        Commands::Memory { action } => {
+            commands::memory::run(action, cli.local).await?;
         }
         Commands::Shutdown => {
             commands::shutdown::run(cli.local)?;
@@ -619,6 +633,13 @@ mod tests {
     fn test_config_scanner_default_is_valid_json() {
         let cfg: serde_json::Value = serde_json::from_str(CONFIG_SCANNER_DEFAULT).unwrap();
         assert!(cfg.is_object());
+    }
+
+    #[test]
+    fn test_config_enhanced_memory_default_is_valid_json() {
+        let cfg: serde_json::Value = serde_json::from_str(CONFIG_ENHANCED_MEMORY_DEFAULT).unwrap();
+        assert!(cfg.is_object());
+        assert_eq!(cfg.get("enabled").unwrap().as_bool(), Some(false));
     }
 
     #[test]

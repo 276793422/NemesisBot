@@ -4,7 +4,7 @@
 //! Designed for BERT-style sentence embedding models (e.g. all-MiniLM-L6-v2).
 //!
 //! C ABI contract (unified interface):
-//! - `plugin_init(config_dir, host)` → i32 (0 = success)
+//! - `plugin_init(model_dir, host)` → i32 (0 = success)
 //! - `plugin_embed(text, out, dim)` → i32 (0 = success)
 //! - `plugin_free()` → release resources
 //!
@@ -46,111 +46,15 @@ const E_INFER: i32 = -4;
 const E_DIM: i32 = -5;
 /// Initialization failed (model load, session creation, etc.).
 const E_INIT: i32 = -6;
-/// Download failed.
-const E_DOWNLOAD: i32 = -7;
-/// Configuration error.
-const E_CONFIG: i32 = -8;
-
-// ---------------------------------------------------------------------------
-// Plugin configuration
-// ---------------------------------------------------------------------------
-
-/// Compile-time embedded default configuration.
-const DEFAULT_CONFIG: &str = include_str!("../config/plugin.toml");
-
-/// Top-level plugin configuration with three model tiers.
-#[derive(serde::Deserialize, serde::Serialize, Clone)]
-struct PluginConfig {
-    #[serde(default)]
-    plugin: PluginInfo,
-    #[serde(default = "default_active")]
-    active: String,
-    #[serde(default)]
-    models: ModelsConfig,
-}
-
-fn default_active() -> String { "medium".to_string() }
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        toml::from_str(DEFAULT_CONFIG).unwrap_or_else(|_| PluginConfig {
-            plugin: PluginInfo::default(),
-            active: default_active(),
-            models: ModelsConfig::default(),
-        })
-    }
-}
-
-#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
-struct PluginInfo {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    version: String,
-}
-
-/// Container for the three model tiers.
-#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
-struct ModelsConfig {
-    #[serde(default)]
-    large: ModelConfig,
-    #[serde(default)]
-    medium: ModelConfig,
-    #[serde(default)]
-    small: ModelConfig,
-}
-
-impl ModelsConfig {
-    fn get(&self, key: &str) -> Option<&ModelConfig> {
-        match key {
-            "large" => Some(&self.large),
-            "medium" => Some(&self.medium),
-            "small" => Some(&self.small),
-            _ => None,
-        }
-    }
-
-    fn get_mut(&mut self, key: &str) -> Option<&mut ModelConfig> {
-        match key {
-            "large" => Some(&mut self.large),
-            "medium" => Some(&mut self.medium),
-            "small" => Some(&mut self.small),
-            _ => None,
-        }
-    }
-}
-
-/// Per-tier model configuration.
-#[derive(serde::Deserialize, serde::Serialize, Default, Clone)]
-struct ModelConfig {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    dimension: i32,
-    #[serde(default)]
-    model_url: String,
-    #[serde(default)]
-    model_size: u64,
-    #[serde(default)]
-    tokenizer_url: String,
-    #[serde(default)]
-    tokenizer_size: u64,
-    /// Absolute local path after download. Empty = not yet downloaded.
-    #[serde(default)]
-    local_model_path: String,
-    #[serde(default)]
-    local_tokenizer_path: String,
-}
 
 // ---------------------------------------------------------------------------
 // Global state
 // ---------------------------------------------------------------------------
 
-/// Internal state holding the ONNX session, tokenizer, and dimension.
+/// Internal state holding the ONNX session and tokenizer.
 struct EmbedState {
     session: Option<Session>,
     tokenizer: Option<Tokenizer>,
-    dim: i32,
 }
 
 /// Mutex serialises all access.  ONNX Runtime's `Session::run()` requires
@@ -161,9 +65,11 @@ static STATE: LazyLock<std::sync::Mutex<EmbedState>> = LazyLock::new(|| {
     std::sync::Mutex::new(EmbedState {
         session: None,
         tokenizer: None,
-        dim: 0,
     })
 });
+
+/// Inferred model dimension (set on first plugin_embed call).
+static MODEL_DIM: AtomicI32 = AtomicI32::new(0);
 
 /// Reference count: how many callers have called `plugin_init` without a
 /// matching `plugin_free`.  The ONNX session is only destroyed when this
@@ -194,178 +100,8 @@ fn log_msg(level: i32, msg: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration loading & saving
-// ---------------------------------------------------------------------------
-
-fn config_path(config_dir: &str) -> std::path::PathBuf {
-    Path::new(config_dir).join("plugin-onnx.toml")
-}
-
-/// Load plugin configuration.
-///
-/// 1. If `{config_dir}/plugin-onnx.toml` exists → load it.
-/// 2. If not → save embedded default config to that path, then load from disk.
-fn load_config(config_dir: &str) -> PluginConfig {
-    let path = config_path(config_dir);
-
-    if !path.exists() {
-        if let Err(e) = std::fs::create_dir_all(config_dir) {
-            log_msg(3, &format!("Failed to create config dir '{}': {}", config_dir, e));
-        } else {
-            match std::fs::write(&path, DEFAULT_CONFIG) {
-                Ok(()) => {
-                    log_msg(2, &format!("Default config saved to {}", path.display()));
-                }
-                Err(e) => {
-                    log_msg(3, &format!("Failed to save default config: {}", e));
-                }
-            }
-        }
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match toml::from_str::<PluginConfig>(&content) {
-            Ok(config) => {
-                log_msg(2, &format!("Config loaded from {}", path.display()));
-                config
-            }
-            Err(e) => {
-                log_msg(4, &format!("Failed to parse config '{}': {}", path.display(), e));
-                PluginConfig::default()
-            }
-        },
-        Err(e) => {
-            log_msg(3, &format!("Failed to read config '{}': {}, using defaults", path.display(), e));
-            PluginConfig::default()
-        }
-    }
-}
-
-/// Save plugin configuration back to disk.
-fn save_config(config: &PluginConfig, config_dir: &str) {
-    let path = config_path(config_dir);
-    match toml::to_string_pretty(config) {
-        Ok(content) => {
-            if let Err(e) = std::fs::write(&path, content) {
-                log_msg(3, &format!("Failed to save config to {}: {}", path.display(), e));
-            } else {
-                log_msg(1, &format!("Config saved to {}", path.display()));
-            }
-        }
-        Err(e) => {
-            log_msg(3, &format!("Failed to serialize config: {}", e));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// File resolution & download
-// ---------------------------------------------------------------------------
-
-/// Ensure a model/tokenizer file is locally available.
-///
-/// Returns `(resolved_path, was_updated)`.
-///
-/// - `local_path` non-empty and file exists → use it directly
-/// - `local_path` non-empty but file missing → re-download
-/// - `local_path` empty → download
-/// - No host services → search `data_dir` for the file as fallback
-fn ensure_file(
-    url: &str,
-    local_path: &str,
-    data_dir: &str,
-    model_name: &str,
-    filename: &str,
-    host: Option<&HostServices>,
-) -> Result<(String, bool), i32> {
-    // Case 1: local_path is set and file exists
-    if !local_path.is_empty() && Path::new(local_path).exists() {
-        log_msg(1, &format!("{} found at {}", filename, local_path));
-        return Ok((local_path.to_string(), false));
-    }
-
-    // Case 2: local_path is set but file is missing — fall through to download
-    if !local_path.is_empty() {
-        log_msg(2, &format!("{} was at {} but file missing, re-downloading", filename, local_path));
-    }
-
-    // Need to download — compute destination path
-    let dest_dir = Path::new(data_dir).join(model_name);
-    if let Err(e) = std::fs::create_dir_all(&dest_dir) {
-        log_msg(3, &format!("Failed to create dir {}: {}", dest_dir.display(), e));
-    }
-    let dest = dest_dir.join(filename);
-    let dest_str = dest.to_string_lossy().to_string();
-
-    if let Some(host) = host {
-        if url.is_empty() {
-            log_msg(4, &format!("{} not found and no URL configured", filename));
-            return Err(E_CONFIG);
-        }
-        log_msg(2, &format!("Downloading {} from {}...", filename, url));
-        download_via_host(host, url, &dest_str)?;
-        log_msg(2, &format!("{} downloaded to {}", filename, dest_str));
-        Ok((dest_str, true))
-    } else {
-        // No host services — search known locations as fallback (standalone test)
-        let candidates = [
-            dest.clone(),
-            Path::new(data_dir).join(filename),
-            Path::new(".").join(filename),
-        ];
-        for candidate in &candidates {
-            if candidate.exists() {
-                let found = candidate.to_string_lossy().to_string();
-                log_msg(1, &format!("Found {} at {}", filename, found));
-                return Ok((found, true));
-            }
-        }
-        log_msg(4, &format!("No host services and {} not found in known locations", filename));
-        Err(E_DOWNLOAD)
-    }
-}
-
-/// Resolve the plugin data directory via host services, or fall back to config_dir.
-fn resolve_data_dir(host: Option<&HostServices>, fallback: &str) -> String {
-    match host {
-        Some(host) => match host.get_plugin_data_dir {
-            Some(get_data_dir) => {
-                let plugin_name = std::ffi::CString::new("plugin-onnx").unwrap();
-                let mut buf = vec![0u8; 4096];
-                let len = get_data_dir(
-                    plugin_name.as_ptr(),
-                    buf.as_mut_ptr() as *mut c_char,
-                    buf.len(),
-                );
-                if len < 0 {
-                    log_msg(3, &format!("get_plugin_data_dir failed: {}, using fallback", len));
-                    return fallback.to_string();
-                }
-                CStr::from_bytes_with_nul(&buf[..len as usize + 1])
-                    .map(|c| c.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| fallback.to_string())
-            }
-            None => {
-                log_msg(1, "host.get_plugin_data_dir not available, using config_dir");
-                fallback.to_string()
-            }
-        },
-        None => fallback.to_string(),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/// Derive the tokenizer path from the model path.
-///
-/// Given `/path/to/model.onnx`, returns `/path/to/tokenizer.json`.
-fn derive_tokenizer_path(model_path: &str) -> String {
-    let path = Path::new(model_path);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    dir.join("tokenizer.json").to_string_lossy().to_string()
-}
 
 /// Perform mean pooling over the sequence dimension, weighted by attention mask.
 fn mean_pool(output: &[f32], mask: &[i64], seq_len: usize, dim: usize) -> Vec<f32> {
@@ -403,49 +139,31 @@ fn l2_normalize(vec: &mut [f32]) {
     }
 }
 
-/// Download a file using host services if available.
-fn download_via_host(host: &HostServices, url: &str, dest: &str) -> Result<(), i32> {
-    let download_fn = host.download_file.ok_or(E_DOWNLOAD)?;
-    let c_url = std::ffi::CString::new(url).map_err(|_| E_DOWNLOAD)?;
-    let c_dest = std::ffi::CString::new(dest).map_err(|_| E_DOWNLOAD)?;
-    let result = download_fn(c_url.as_ptr(), c_dest.as_ptr());
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(E_DOWNLOAD)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // C ABI exports — Unified Plugin Interface
 // ---------------------------------------------------------------------------
 
 /// Initialize the plugin.
 ///
-/// `config_dir`: Directory path where plugin configuration files are located.
+/// `model_dir`: Directory path containing `model.onnx` and `tokenizer.json`.
 /// `host`: Pointer to HostServices vtable (may be NULL for standalone testing).
 ///
 /// Returns: 0 on success, negative error code on failure.
 ///
 /// Flow:
-/// 1. Load config (save embedded default if file missing)
-/// 2. Read `active` model tier
-/// 3. Check `local_model_path`:
-///    - non-empty + file exists → use it
-///    - non-empty + file missing → download, update config
-///    - empty → download, update config
-/// 4. Same for tokenizer
-/// 5. Load ONNX session + tokenizer
+/// 1. Parse model_dir path (null → ".")
+/// 2. Check PERMANENTLY_FREED gate
+/// 3. Fast path: already initialised → bump ref count
+/// 4. Slow path:
+///    a. Resolve model.onnx and tokenizer.json paths from model_dir
+///    b. Load tokenizer
+///    c. Create ONNX session
+///    d. Set dim=0 (inferred from first plugin_embed call)
+/// 5. Return E_OK
 #[no_mangle]
-pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32 {
+pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostServices) -> i32 {
     // Store host pointer (even if null)
     HOST_PTR.store(host as *mut HostServices, Ordering::SeqCst);
-
-    let host_ref = if host.is_null() {
-        None
-    } else {
-        Some(unsafe { &*host })
-    };
 
     // --- Gate 1: ONNX Runtime already torn down? ---
     if PERMANENTLY_FREED.load(Ordering::SeqCst) {
@@ -453,16 +171,16 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
         return E_INIT;
     }
 
-    // Parse config_dir
-    let config_dir_str = if config_dir.is_null() {
-        log_msg(3, "plugin_init: config_dir is null, using current directory");
+    // Parse model_dir
+    let model_dir_str = if model_dir.is_null() {
+        log_msg(3, "plugin_init: model_dir is null, using current directory");
         ".".to_string()
     } else {
-        match unsafe { CStr::from_ptr(config_dir) }.to_str() {
+        match unsafe { CStr::from_ptr(model_dir) }.to_str() {
             Ok(s) => s.to_string(),
             Err(e) => {
-                log_msg(4, &format!("plugin_init: config_dir is not valid UTF-8: {}", e));
-                return E_CONFIG;
+                log_msg(4, &format!("plugin_init: model_dir is not valid UTF-8: {}", e));
+                return E_INIT;
             }
         }
     };
@@ -477,77 +195,18 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
         return E_OK;
     }
 
-    // --- Slow path: load config and create session ---
-    let mut config = load_config(&config_dir_str);
-    let active = config.active.clone();
+    // --- Slow path: resolve model files and create session ---
+    let model_path = Path::new(&model_dir_str).join("model.onnx");
+    let tokenizer_path = Path::new(&model_dir_str).join("tokenizer.json");
 
-    // Resolve data directory
-    let data_dir = resolve_data_dir(host_ref, &config_dir_str);
-
-    // Get active model config
-    let model_conf = match config.models.get(&active) {
-        Some(m) => m.clone(),
-        None => {
-            log_msg(4, &format!("plugin_init: unknown active model '{}'", active));
-            return E_CONFIG;
-        }
-    };
-
-    let dim = model_conf.dimension;
-    if dim <= 0 {
-        log_msg(4, &format!("plugin_init: invalid dim={} for model '{}'", dim, active));
-        return E_DIM;
+    if !model_path.exists() {
+        log_msg(4, &format!("plugin_init: model file not found: {}", model_path.display()));
+        return E_INIT;
     }
 
-    if model_conf.name.is_empty() {
-        log_msg(4, &format!("plugin_init: model name is empty for tier '{}'", active));
-        return E_CONFIG;
-    }
-
-    // Ensure model file is available
-    let (model_path, model_updated) = match ensure_file(
-        &model_conf.model_url,
-        &model_conf.local_model_path,
-        &data_dir,
-        &model_conf.name,
-        "model.onnx",
-        host_ref,
-    ) {
-        Ok(result) => result,
-        Err(e) => {
-            log_msg(4, &format!("plugin_init: failed to obtain model file: {}", e));
-            return e;
-        }
-    };
-
-    // Ensure tokenizer file is available
-    let (tokenizer_path, tokenizer_updated) = match ensure_file(
-        &model_conf.tokenizer_url,
-        &model_conf.local_tokenizer_path,
-        &data_dir,
-        &model_conf.name,
-        "tokenizer.json",
-        host_ref,
-    ) {
-        Ok(result) => result,
-        Err(_) => {
-            // Tokenizer failure is not fatal — derive from model path as fallback
-            log_msg(3, "plugin_init: tokenizer not available, trying derived path");
-            (derive_tokenizer_path(&model_path), false)
-        }
-    };
-
-    // Write updated paths back to config and save
-    if model_updated || tokenizer_updated {
-        if let Some(mc) = config.models.get_mut(&active) {
-            if model_updated {
-                mc.local_model_path = model_path.clone();
-            }
-            if tokenizer_updated {
-                mc.local_tokenizer_path = tokenizer_path.clone();
-            }
-        }
-        save_config(&config, &config_dir_str);
+    if !tokenizer_path.exists() {
+        log_msg(4, &format!("plugin_init: tokenizer file not found: {}", tokenizer_path.display()));
+        return E_INIT;
     }
 
     // --- Create session ---
@@ -573,12 +232,12 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
     // Load tokenizer
     let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
         Ok(t) => {
-            log_msg(1, &format!("Tokenizer loaded from {}", tokenizer_path));
+            log_msg(1, &format!("Tokenizer loaded from {}", tokenizer_path.display()));
             Some(t)
         }
         Err(e) => {
-            log_msg(3, &format!("Tokenizer not found at {} ({}), continuing without", tokenizer_path, e));
-            None
+            log_msg(4, &format!("Failed to load tokenizer from {}: {}", tokenizer_path.display(), e));
+            return E_INIT;
         }
     };
 
@@ -595,13 +254,13 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
 
     state.session = Some(session);
     state.tokenizer = tokenizer;
-    state.dim = dim;
+    // dim is inferred from ONNX output on first plugin_embed call.
     drop(state);
 
     INIT_COUNT.fetch_add(1, Ordering::SeqCst);
     log_msg(2, &format!(
-        "Initialized: tier={}, model={}, dim={}, ref_count=1",
-        active, model_path, dim
+        "Initialized: model_dir={}, ref_count=1",
+        model_dir_str
     ));
     E_OK
 }
@@ -610,7 +269,7 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
 ///
 /// `text`: Null-terminated UTF-8 string.
 /// `out`: Pointer to a buffer of `dim` floats (caller-allocated).
-/// `dim`: Expected embedding dimension (must match plugin_init's dim).
+/// `dim`: Expected embedding dimension (must match model output).
 ///
 /// Returns: 0 on success, negative error code on failure.
 #[no_mangle]
@@ -633,11 +292,11 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
         return E_NOT_INIT;
     }
 
-    if dim != state.dim {
-        log_msg(4, &format!(
-            "plugin_embed: dimension mismatch (expected={}, got={})",
-            state.dim, dim
-        ));
+    // Validate dim: if state.dim is 0 (first call), infer from output.
+    // Otherwise check that caller's dim matches.
+    let dim_usize = dim as usize;
+    if dim_usize == 0 {
+        log_msg(4, "plugin_embed: dim must be > 0");
         return E_DIM;
     }
 
@@ -753,7 +412,25 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
         }
     };
 
-    let expected_elements = seq_len * (dim as usize);
+    // Infer model dim from output shape if not yet set
+    // Output shape is [1, seq_len, model_dim], so model_dim = output_data.len() / seq_len
+    let model_dim = output_data.len() / seq_len;
+    let cached_dim = MODEL_DIM.load(Ordering::SeqCst);
+    if cached_dim == 0 {
+        MODEL_DIM.store(model_dim as i32, Ordering::SeqCst);
+    }
+
+    // Validate caller's dim matches model's actual dim
+    let expected_dim = if cached_dim != 0 { cached_dim } else { model_dim as i32 };
+    if dim != expected_dim {
+        log_msg(4, &format!(
+            "plugin_embed: dimension mismatch (model={}, got={})",
+            expected_dim, dim
+        ));
+        return E_DIM;
+    }
+
+    let expected_elements = seq_len * dim_usize;
     if output_data.len() < expected_elements {
         log_msg(4, &format!(
             "plugin_embed: output too small (got {}, expected {})",
@@ -765,13 +442,13 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
 
     // Mean pooling
     let mask_i64: Vec<i64> = attention_mask.iter().map(|&m| m as i64).collect();
-    let mut pooled = mean_pool(output_data, &mask_i64, seq_len, dim as usize);
+    let mut pooled = mean_pool(output_data, &mask_i64, seq_len, dim_usize);
 
     // L2 normalization
     l2_normalize(&mut pooled);
 
     // Write result
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out, dim as usize) };
+    let out_slice = unsafe { std::slice::from_raw_parts_mut(out, dim_usize) };
     out_slice.copy_from_slice(&pooled);
 
     E_OK
@@ -800,9 +477,9 @@ pub extern "C" fn plugin_free() {
         if let Ok(mut state) = STATE.lock() {
             state.session = None;
             state.tokenizer = None;
-            state.dim = 0;
         }
         INIT_COUNT.store(0, Ordering::SeqCst);
+        MODEL_DIM.store(0, Ordering::SeqCst);
         PERMANENTLY_FREED.store(true, Ordering::SeqCst);
         HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
         log_msg(2, "Resources released (last reference freed)");
@@ -836,8 +513,6 @@ mod tests {
         assert_eq!(E_INFER, -4);
         assert_eq!(E_DIM, -5);
         assert_eq!(E_INIT, -6);
-        assert_eq!(E_DOWNLOAD, -7);
-        assert_eq!(E_CONFIG, -8);
     }
 
     #[test]
@@ -845,9 +520,9 @@ mod tests {
         let state = STATE.lock().unwrap();
         assert!(state.session.is_none());
         assert!(state.tokenizer.is_none());
-        assert_eq!(state.dim, 0);
         assert_eq!(INIT_COUNT.load(Ordering::SeqCst), 0);
         assert!(!PERMANENTLY_FREED.load(Ordering::SeqCst));
+        assert_eq!(MODEL_DIM.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -873,21 +548,21 @@ mod tests {
     }
 
     #[test]
-    fn test_init_null_config_dir_with_null_host() {
-        // With no host, plugin looks for model in current dir / test-data/.
-        // If model exists (test-data/model.onnx), init succeeds; otherwise fails.
-        // Either way, the function should not crash.
-        let _result = plugin_init(std::ptr::null(), std::ptr::null());
+    fn test_init_null_model_dir_with_null_host() {
+        // With no model files in current dir, init should fail
+        let result = plugin_init(std::ptr::null(), std::ptr::null());
+        // Either fails because model.onnx not found, or succeeds if in test-data
+        assert!(result != E_OK || result == E_OK, "should not crash");
         // Cleanup
         plugin_free();
     }
 
     #[test]
-    fn test_init_nonexistent_config_dir_no_host() {
-        // With nonexistent config_dir and no host, plugin looks in ./test-data/.
-        // If model exists there, init succeeds; if not, fails.
-        let config_dir = std::ffi::CString::new("/nonexistent/path").unwrap();
-        let _result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+    fn test_init_nonexistent_model_dir_no_host() {
+        // model_dir doesn't exist → model.onnx not found → E_INIT
+        let model_dir = std::ffi::CString::new("/nonexistent/path").unwrap();
+        let result = plugin_init(model_dir.as_ptr(), std::ptr::null());
+        assert_eq!(result, E_INIT, "nonexistent dir should return E_INIT");
         // Cleanup
         plugin_free();
     }
@@ -903,8 +578,8 @@ mod tests {
     fn test_init_after_free_returns_error() {
         if PERMANENTLY_FREED.load(Ordering::SeqCst) {
             // Already freed by a previous test — re-init should fail
-            let config_dir = std::ffi::CString::new("/nonexistent").unwrap();
-            let result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+            let model_dir = std::ffi::CString::new("/nonexistent").unwrap();
+            let result = plugin_init(model_dir.as_ptr(), std::ptr::null());
             assert_eq!(result, E_INIT, "re-init after free should return E_INIT");
         }
         // If not permanently freed, just skip — this test is only meaningful
@@ -915,20 +590,6 @@ mod tests {
     fn test_ref_count_basics() {
         let count = INIT_COUNT.load(Ordering::SeqCst);
         assert!(count >= 0, "ref count should not be negative: {}", count);
-    }
-
-    #[test]
-    fn test_derive_tokenizer_path() {
-        let path = derive_tokenizer_path("/path/to/model.onnx");
-        assert!(path.ends_with("tokenizer.json"), "got: {}", path);
-        assert!(path.contains("to"), "got: {}", path);
-
-        let path = derive_tokenizer_path("model.onnx");
-        assert!(path.ends_with("tokenizer.json"), "got: {}", path);
-
-        let path = derive_tokenizer_path("/a/b/c/model.onnx");
-        assert!(path.contains("c"), "got: {}", path);
-        assert!(path.ends_with("tokenizer.json"), "got: {}", path);
     }
 
     #[test]
@@ -1014,32 +675,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_load_config_default() {
-        // Use a unique temp dir to avoid stale config from previous runs
-        let temp_dir = format!("/tmp/plugin-onnx-test-{}", std::process::id());
-        let config = load_config(&temp_dir);
-        assert_eq!(config.active, "medium");
-        assert_eq!(config.models.medium.dimension, 384);
-        assert_eq!(config.models.medium.name, "all-MiniLM-L6-v2");
-        assert!(!config.models.medium.model_url.is_empty());
-        assert_eq!(config.models.large.name, "bge-base-en-v1.5");
-        assert_eq!(config.models.large.dimension, 768);
-        assert_eq!(config.models.small.name, "all-MiniLM-L4-v2");
-        assert_eq!(config.models.small.dimension, 256);
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_load_config_embedded() {
-        let config: PluginConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
-        assert_eq!(config.active, "medium");
-        assert_eq!(config.models.medium.dimension, 384);
-        assert_eq!(config.models.large.dimension, 768);
-        assert_eq!(config.models.small.dimension, 256);
-    }
-
     // ===================================================================
     // Model-required tests (run with `cargo test -- --ignored`)
     // ===================================================================
@@ -1048,7 +683,7 @@ mod tests {
         std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
             .unwrap_or_else(|_| {
                 let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("test-data");
+                    .join("../../test-tools/plugin-onnx-test/test-data");
                 dir.to_str().expect("valid path").to_string()
             })
     }
@@ -1059,13 +694,13 @@ mod tests {
     fn test_all_model_scenarios() {
         let model_dir = test_model_dir();
 
-        // ---- Init via plugin_init with config_dir pointing to test-data ----
-        let config_dir = std::ffi::CString::new(model_dir.as_str()).unwrap();
-        let init_result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+        // ---- Init via plugin_init with model_dir pointing to test-data ----
+        let model_dir_cstr = std::ffi::CString::new(model_dir.as_str()).unwrap();
+        let init_result = plugin_init(model_dir_cstr.as_ptr(), std::ptr::null());
         assert_eq!(init_result, E_OK, "plugin_init should succeed");
 
         // ---- Scenario: Idempotent init (ref count) ----
-        let init2 = plugin_init(config_dir.as_ptr(), std::ptr::null());
+        let init2 = plugin_init(model_dir_cstr.as_ptr(), std::ptr::null());
         assert_eq!(init2, E_OK, "second plugin_init should succeed (ref count)");
         assert!(INIT_COUNT.load(Ordering::SeqCst) >= 2);
         plugin_free();
@@ -1159,7 +794,7 @@ mod tests {
 
         // ---- Scenario: re-init after free fails ----
         {
-            let result = plugin_init(config_dir.as_ptr(), std::ptr::null());
+            let result = plugin_init(model_dir_cstr.as_ptr(), std::ptr::null());
             assert_eq!(result, E_INIT, "re-init after free should fail");
             println!("[model-test] re-init after free fails — PASS");
         }

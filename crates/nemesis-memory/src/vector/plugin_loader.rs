@@ -4,7 +4,7 @@
 //! that provides ONNX-based embedding inference via C ABI.
 //!
 //! The shared library must export the unified interface:
-//! - `plugin_init(config_dir: *const c_char, host: *const HostServices) -> i32`
+//! - `plugin_init(model_dir: *const c_char, host: *const HostServices) -> i32`
 //! - `plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> i32`
 //! - `plugin_free()`
 
@@ -50,8 +50,8 @@ pub enum PluginError {
 
 /// Trait for embedding plugins.
 pub trait EmbeddingPlugin: Send + Sync {
-    /// Initialize the plugin with a model path and output dimension.
-    fn init(&mut self, model_path: &str, dim: i32) -> Result<(), PluginError>;
+    /// Initialize the plugin with a model directory and output dimension.
+    fn init(&mut self, model_dir: &str, dim: i32) -> Result<(), PluginError>;
 
     /// Compute embedding for the given text.
     fn embed(&self, text: &str) -> Result<Vec<f32>, PluginError>;
@@ -85,8 +85,6 @@ struct NativePluginInner {
     dim: i32,
     /// Whether the plugin has been closed.
     closed: bool,
-    /// Config directory path (for unified interface).
-    config_dir: Option<String>,
     /// Host services pointer (for unified interface).
     host_services: Option<*const HostServices>,
 }
@@ -162,16 +160,9 @@ impl NativePlugin {
                 library: Some(library),
                 dim: 0,
                 closed: false,
-                config_dir: None,
                 host_services: None,
             }),
         })
-    }
-
-    /// Set the config directory path for the unified interface.
-    pub fn set_config_dir(&mut self, config_dir: String) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.config_dir = Some(config_dir);
     }
 
     /// Set the host services pointer for the unified interface.
@@ -182,7 +173,7 @@ impl NativePlugin {
 }
 
 impl EmbeddingPlugin for NativePlugin {
-    fn init(&mut self, model_path: &str, dim: i32) -> Result<(), PluginError> {
+    fn init(&mut self, model_dir: &str, dim: i32) -> Result<(), PluginError> {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             return Err(PluginError::Closed);
@@ -193,9 +184,8 @@ impl EmbeddingPlugin for NativePlugin {
             .as_ref()
             .ok_or(PluginError::Closed)?;
 
-        // Unified interface: use plugin_init with config_dir + host
-        let config_dir = inner.config_dir.clone().unwrap_or_else(|| ".".to_string());
-        let c_config_dir = CString::new(config_dir.clone())
+        // Pass model_dir directly to plugin_init
+        let c_model_dir = CString::new(model_dir)
             .map_err(|_| PluginError::InitFailed { code: -1 })?;
 
         let host_ptr = inner.host_services.unwrap_or(std::ptr::null());
@@ -207,7 +197,7 @@ impl EmbeddingPlugin for NativePlugin {
                     error: e.to_string(),
                 })?;
 
-            let ret = plugin_init(c_config_dir.as_ptr(), host_ptr);
+            let ret = plugin_init(c_model_dir.as_ptr(), host_ptr);
             if ret != 0 {
                 return Err(PluginError::InitFailed { code: ret });
             }
@@ -215,12 +205,11 @@ impl EmbeddingPlugin for NativePlugin {
 
         inner.dim = dim;
         info!(
-            config_dir = %config_dir,
+            model_dir = %model_dir,
             dim = dim,
             "Embedding plugin initialized"
         );
 
-        let _ = model_path; // model_path resolved by plugin via config_dir
         Ok(())
     }
 
@@ -447,7 +436,6 @@ mod tests {
             library: None,
             dim: 128,
             closed: false,
-            config_dir: None,
             host_services: None,
         };
         let debug = format!("{:?}", inner);
@@ -498,7 +486,7 @@ mod tests {
     }
 
     impl EmbeddingPlugin for MockPlugin {
-        fn init(&mut self, _model_path: &str, dim: i32) -> Result<(), PluginError> {
+        fn init(&mut self, _model_dir: &str, dim: i32) -> Result<(), PluginError> {
             if self.closed {
                 return Err(PluginError::Closed);
             }
@@ -532,7 +520,7 @@ mod tests {
         assert_eq!(plugin.dim(), 64);
         assert!(!plugin.initialized);
 
-        plugin.init("model.onnx", 64).unwrap();
+        plugin.init("model_dir", 64).unwrap();
         assert!(plugin.initialized);
 
         let result = plugin.embed("hello").unwrap();
@@ -555,7 +543,7 @@ mod tests {
     fn test_mock_plugin_close_then_init() {
         let mut plugin = MockPlugin::new(64);
         plugin.close();
-        let result = plugin.init("model", 64);
+        let result = plugin.init("model_dir", 64);
         assert!(result.is_err());
         match result.unwrap_err() {
             PluginError::Closed => {},
@@ -566,7 +554,7 @@ mod tests {
     #[test]
     fn test_mock_plugin_close_then_embed() {
         let mut plugin = MockPlugin::new(64);
-        plugin.init("model", 64).unwrap();
+        plugin.init("model_dir", 64).unwrap();
         plugin.close();
         let result = plugin.embed("test");
         assert!(result.is_err());
@@ -590,7 +578,6 @@ mod tests {
             library: None,
             dim: 256,
             closed: true,
-            config_dir: None,
             host_services: None,
         };
         let debug = format!("{:?}", inner);
@@ -646,21 +633,24 @@ mod tests {
         None
     }
 
-    fn real_model_path() -> Option<String> {
+    fn real_model_dir() -> Option<String> {
         if let Ok(dir) = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR") {
-            let model = format!("{}/model.onnx", dir);
-            if Path::new(&model).exists() {
-                return Some(model);
+            if Path::new(&dir).exists() {
+                return Some(dir);
             }
         }
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let candidates = [
-            format!("{}/../../plugins/plugin-onnx/test-data/model.onnx", manifest_dir),
+            format!("{}/models/all-MiniLM-L6-v2", manifest_dir),
+            format!("{}/../../test-data/memory-e2e", manifest_dir),
+            format!("{}/../../test-tools/plugin-onnx-test/test-data", manifest_dir),
         ];
         for candidate in &candidates {
             let path = std::path::PathBuf::from(candidate);
-            if let Ok(canonical) = path.canonicalize() {
-                return Some(canonical.to_str().expect("valid path").to_string());
+            if path.join("model.onnx").exists() {
+                if let Ok(canonical) = path.canonicalize() {
+                    return Some(canonical.to_str().expect("valid path").to_string());
+                }
             }
         }
         None
@@ -681,14 +671,14 @@ mod tests {
     #[ignore]
     fn it_real_plugin_full_lifecycle() {
         let dll_path = real_dll_path().expect("plugin DLL not found. Build with: cd plugins/plugin-onnx && cargo build --release");
-        let model_path = real_model_path().expect("model not found. Run: bash plugins/plugin-onnx/scripts/setup-test.sh");
+        let model_dir = real_model_dir().expect("model dir not found. Run: bash test-tools/plugin-onnx-test/scripts/setup-test.sh");
 
         // --- Load ---
         let mut plugin = NativePlugin::load(&dll_path).expect("Failed to load DLL");
         assert_eq!(plugin.dim(), 0, "dim should be 0 before init");
 
         // --- Init ---
-        plugin.init(&model_path, 384).expect("Failed to init");
+        plugin.init(&model_dir, 384).expect("Failed to init");
         assert_eq!(plugin.dim(), 384, "dim should be 384 after init");
 
         // --- Embed: basic ---
@@ -731,9 +721,9 @@ mod tests {
     #[ignore]
     fn it_real_plugin_via_boxed_trait() {
         let dll_path = real_dll_path().expect("plugin DLL not found");
-        let model_path = real_model_path().expect("model not found");
+        let model_dir = real_model_dir().expect("model dir not found");
         let mut plugin: Box<dyn EmbeddingPlugin> = load_plugin(&dll_path).unwrap();
-        plugin.init(&model_path, 384).unwrap();
+        plugin.init(&model_dir, 384).unwrap();
         let vec = plugin.embed("trait object test").unwrap();
         assert_eq!(vec.len(), 384);
         assert_eq!(plugin.dim(), 384);
