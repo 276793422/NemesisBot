@@ -2546,7 +2546,7 @@ where
 /// being processed (each server is processed in isolation).
 pub async fn register_mcp_tools(
     server_config: &McpServerConfig,
-) -> Result<Vec<Box<dyn Tool>>, String> {
+) -> Result<Vec<(String, Box<dyn Tool>)>, String> {
     // Build the MCP server configuration
     let env_list: Vec<String> = server_config
         .env
@@ -2619,7 +2619,7 @@ pub async fn register_mcp_tools(
 
     // Wrap each MCP tool in an agent-compatible McpTool
     let server_name = server_config.name.clone();
-    let mut tools: Vec<Box<dyn Tool>> = Vec::new();
+    let mut tools: Vec<(String, Box<dyn Tool>)> = Vec::new();
 
     for mcp_tool in &mcp_tools {
         let tool_name = sanitize_mcp_name(&mcp_tool.name);
@@ -2689,14 +2689,14 @@ pub async fn register_mcp_tools(
         );
 
         let tool = McpTool {
-            name: prefixed_name,
+            name: prefixed_name.clone(),
             description,
             server_name: server_name.clone(),
             input_schema: Some(schema),
             executor,
         };
 
-        tools.push(Box::new(tool));
+        tools.push((prefixed_name, Box::new(tool)));
     }
 
     Ok(tools)

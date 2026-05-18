@@ -93,6 +93,8 @@ pub enum ObserverEvent {
         session_key: String,
         channel: String,
         chat_id: String,
+        sender_id: String,
+        content: String,
     },
     /// Conversation ended.
     ConversationEnd {
@@ -100,12 +102,22 @@ pub enum ObserverEvent {
         session_key: String,
         total_rounds: u32,
         duration_ms: u64,
+        content: String,
+        channel: String,
+        chat_id: String,
     },
     /// LLM request sent.
     LlmRequest {
         trace_id: String,
         round: u32,
         model: String,
+        messages: Vec<serde_json::Value>,
+        tools: Vec<serde_json::Value>,
+        messages_count: usize,
+        tools_count: usize,
+        provider_name: String,
+        api_key: String,
+        api_base: String,
     },
     /// LLM response received.
     LlmResponse {
@@ -113,6 +125,10 @@ pub enum ObserverEvent {
         round: u32,
         duration_ms: u64,
         has_tool_calls: bool,
+        content: String,
+        tool_calls: Vec<serde_json::Value>,
+        tool_calls_count: usize,
+        finish_reason: Option<String>,
     },
     /// Tool call executed.
     ToolCall {
@@ -121,12 +137,14 @@ pub enum ObserverEvent {
         success: bool,
         duration_ms: u64,
         round: u32,
+        arguments: String,
+        result: String,
     },
 }
 
 impl ObserverEvent {
     /// Convert to a `nemesis_observer::ConversationEvent`.
-    fn to_conversation_event(&self) -> nemesis_observer::ConversationEvent {
+    pub(crate) fn to_conversation_event(&self) -> nemesis_observer::ConversationEvent {
         use nemesis_observer::*;
         match self {
             ObserverEvent::ConversationStart {
@@ -134,6 +152,8 @@ impl ObserverEvent {
                 session_key,
                 channel,
                 chat_id,
+                sender_id,
+                content,
             } => ConversationEvent {
                 event_type: EventType::ConversationStart,
                 trace_id: trace_id.clone(),
@@ -142,8 +162,8 @@ impl ObserverEvent {
                     session_key: session_key.clone(),
                     channel: channel.clone(),
                     chat_id: chat_id.clone(),
-                    sender_id: String::new(),
-                    content: String::new(),
+                    sender_id: sender_id.clone(),
+                    content: content.clone(),
                 }),
             },
             ObserverEvent::ConversationEnd {
@@ -151,17 +171,20 @@ impl ObserverEvent {
                 session_key,
                 total_rounds,
                 duration_ms,
+                content,
+                channel,
+                chat_id,
             } => ConversationEvent {
                 event_type: EventType::ConversationEnd,
                 trace_id: trace_id.clone(),
                 timestamp: chrono::Utc::now(),
                 data: EventData::ConversationEnd(ConversationEndData {
                     session_key: session_key.clone(),
-                    channel: String::new(),
-                    chat_id: String::new(),
+                    channel: channel.clone(),
+                    chat_id: chat_id.clone(),
                     total_rounds: *total_rounds,
                     total_duration: std::time::Duration::from_millis(*duration_ms),
-                    content: String::new(),
+                    content: content.clone(),
                     error: None,
                 }),
             },
@@ -169,6 +192,13 @@ impl ObserverEvent {
                 trace_id,
                 round,
                 model,
+                messages,
+                tools,
+                messages_count,
+                tools_count,
+                provider_name,
+                api_key,
+                api_base,
             } => ConversationEvent {
                 event_type: EventType::LlmRequest,
                 trace_id: trace_id.clone(),
@@ -176,22 +206,26 @@ impl ObserverEvent {
                 data: EventData::LlmRequest(LlmRequestData {
                     round: *round,
                     model: model.clone(),
-                    provider_name: String::new(),
-                    api_key: String::new(),
-                    api_base: String::new(),
+                    provider_name: provider_name.clone(),
+                    api_key: api_key.clone(),
+                    api_base: api_base.clone(),
                     http_headers: std::collections::HashMap::new(),
                     full_config: None,
-                    messages: vec![],
-                    tools: vec![],
-                    messages_count: 0,
-                    tools_count: 0,
+                    messages: messages.clone(),
+                    tools: tools.clone(),
+                    messages_count: *messages_count,
+                    tools_count: *tools_count,
                 }),
             },
             ObserverEvent::LlmResponse {
                 trace_id,
                 round,
                 duration_ms,
-                has_tool_calls,
+                has_tool_calls: _has_tool_calls,
+                content,
+                tool_calls,
+                tool_calls_count,
+                finish_reason,
             } => ConversationEvent {
                 event_type: EventType::LlmResponse,
                 trace_id: trace_id.clone(),
@@ -199,11 +233,11 @@ impl ObserverEvent {
                 data: EventData::LlmResponse(LlmResponseData {
                     round: *round,
                     duration: std::time::Duration::from_millis(*duration_ms),
-                    content: String::new(),
-                    tool_calls: vec![],
-                    tool_calls_count: if *has_tool_calls { 1 } else { 0 },
+                    content: content.clone(),
+                    tool_calls: tool_calls.clone(),
+                    tool_calls_count: *tool_calls_count,
                     usage: None,
-                    finish_reason: None,
+                    finish_reason: finish_reason.clone(),
                 }),
             },
             ObserverEvent::ToolCall {
@@ -212,20 +246,147 @@ impl ObserverEvent {
                 success,
                 duration_ms,
                 round,
-            } => ConversationEvent {
-                event_type: EventType::ToolCall,
-                trace_id: trace_id.clone(),
-                timestamp: chrono::Utc::now(),
-                data: EventData::ToolCall(ToolCallData {
-                    tool_name: tool_name.clone(),
-                    arguments: std::collections::HashMap::new(),
-                    success: *success,
-                    duration: std::time::Duration::from_millis(*duration_ms),
-                    error: None,
-                    llm_round: *round,
-                    chain_pos: 0,
+                arguments,
+                result,
+            } => {
+                // Parse arguments JSON string into HashMap for ToolCallData.
+                let args_map: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(arguments).unwrap_or_default();
+                ConversationEvent {
+                    event_type: EventType::ToolCall,
+                    trace_id: trace_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                    data: EventData::ToolCall(ToolCallData {
+                        tool_name: tool_name.clone(),
+                        arguments: args_map,
+                        success: *success,
+                        duration: std::time::Duration::from_millis(*duration_ms),
+                        error: if *success { None } else { Some(result.clone()) },
+                        llm_round: *round,
+                        chain_pos: 0,
+                    }),
+                }
+            }
+        }
+    }
+
+    /// Convert to a legacy callback (event_type, JSON data) pair.
+    ///
+    /// Used by `AgentLoop`'s legacy `observer_callback` field to emit
+    /// the same events through the simpler callback interface.
+    pub(crate) fn to_callback_json(&self) -> (&'static str, serde_json::Value) {
+        match self {
+            ObserverEvent::ConversationStart {
+                trace_id,
+                session_key,
+                channel,
+                chat_id,
+                sender_id,
+                content,
+            } => (
+                "conversation_start",
+                serde_json::json!({
+                    "type": "conversation_start",
+                    "trace_id": trace_id,
+                    "session_key": session_key,
+                    "channel": channel,
+                    "chat_id": chat_id,
+                    "sender_id": sender_id,
+                    "content": content,
                 }),
-            },
+            ),
+            ObserverEvent::ConversationEnd {
+                trace_id,
+                session_key,
+                total_rounds,
+                duration_ms,
+                content,
+                channel,
+                chat_id,
+            } => (
+                "conversation_end",
+                serde_json::json!({
+                    "type": "conversation_end",
+                    "trace_id": trace_id,
+                    "session_key": session_key,
+                    "total_rounds": total_rounds,
+                    "duration_ms": duration_ms,
+                    "content": content,
+                    "channel": channel,
+                    "chat_id": chat_id,
+                }),
+            ),
+            ObserverEvent::LlmRequest {
+                trace_id,
+                round,
+                model,
+                messages,
+                tools,
+                messages_count,
+                tools_count,
+                provider_name,
+                api_key,
+                api_base,
+            } => (
+                "llm_request",
+                serde_json::json!({
+                    "type": "llm_request",
+                    "trace_id": trace_id,
+                    "round": round,
+                    "model": model,
+                    "messages_count": messages_count,
+                    "tools_count": tools_count,
+                    "provider_name": provider_name,
+                    "api_key": api_key,
+                    "api_base": api_base,
+                    "messages": messages,
+                    "tools": tools,
+                }),
+            ),
+            ObserverEvent::LlmResponse {
+                trace_id,
+                round,
+                duration_ms,
+                has_tool_calls,
+                content,
+                tool_calls,
+                tool_calls_count,
+                finish_reason,
+            } => (
+                "llm_response",
+                serde_json::json!({
+                    "type": "llm_response",
+                    "trace_id": trace_id,
+                    "round": round,
+                    "duration_ms": duration_ms,
+                    "has_tool_calls": has_tool_calls,
+                    "content": content,
+                    "tool_calls": tool_calls,
+                    "tool_calls_count": tool_calls_count,
+                    "finish_reason": finish_reason,
+                }),
+            ),
+            ObserverEvent::ToolCall {
+                trace_id,
+                tool_name,
+                success,
+                duration_ms,
+                round,
+                arguments,
+                result,
+            } => (
+                "tool_call",
+                serde_json::json!({
+                    "type": "tool_call",
+                    "trace_id": trace_id,
+                    "tool_name": tool_name,
+                    "success": success,
+                    "duration_ms": duration_ms,
+                    "round": round,
+                    "arguments": arguments,
+                    "result": result,
+                }),
+            ),
         }
     }
 }
@@ -820,6 +981,7 @@ impl AgentLoopExecutor {
                     &self.config.model,
                     &self.tools,
                     &self.outbound_tx,
+                    self.observer_manager.clone(),
                 )
                 .await;
             } else {
@@ -885,6 +1047,8 @@ impl AgentLoopExecutor {
             session_key: msg.session_key.clone(),
             channel: msg.channel.clone(),
             chat_id: msg.chat_id.clone(),
+            sender_id: msg.sender_id.clone(),
+            content: msg.content.clone(),
         }).await;
 
         let conversation_start = std::time::Instant::now();
@@ -911,7 +1075,7 @@ impl AgentLoopExecutor {
         instance.set_state(AgentState::Idle);
 
         // Save final assistant message to session.
-        instance.add_assistant_message(&final_content, Vec::new());
+        instance.add_assistant_message(&final_content, Vec::new(), None);
 
         // Save session to disk.
         if let Err(e) = self
@@ -939,6 +1103,9 @@ impl AgentLoopExecutor {
             session_key: msg.session_key.clone(),
             total_rounds: total_iterations,
             duration_ms: conversation_duration.as_millis() as u64,
+            content: final_content.clone(),
+            channel: msg.channel.clone(),
+            chat_id: msg.chat_id.clone(),
         }).await;
 
         // Log response.
@@ -997,17 +1164,6 @@ impl AgentLoopExecutor {
             let messages = self.build_messages(instance);
             debug!("Sending {} messages to LLM", messages.len());
 
-            // Emit LLM request event (asynchronous).
-            self.emit_async_event(ObserverEvent::LlmRequest {
-                trace_id: trace_id.to_string(),
-                round: iteration,
-                model: self.config.model.clone(),
-            });
-
-            // Call LLM with fallback chain and context window retry.
-            instance.set_state(AgentState::Thinking);
-            let round_start = std::time::Instant::now();
-
             // Build tool definitions from registered tools for LLM function calling.
             let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.iter()
                 .map(|(name, tool)| {
@@ -1022,6 +1178,30 @@ impl AgentLoopExecutor {
                 })
                 .collect();
 
+            // Emit LLM request event (asynchronous).
+            let msg_values: Vec<serde_json::Value> = messages.iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect();
+            let tool_values: Vec<serde_json::Value> = tool_defs.iter()
+                .filter_map(|t| serde_json::to_value(t).ok())
+                .collect();
+            self.emit_async_event(ObserverEvent::LlmRequest {
+                trace_id: trace_id.to_string(),
+                round: iteration,
+                model: self.config.model.clone(),
+                messages_count: messages.len(),
+                tools_count: tool_defs.len(),
+                messages: msg_values,
+                tools: tool_values,
+                provider_name: String::new(),
+                api_key: String::new(),
+                api_base: String::new(),
+            });
+
+            // Call LLM with fallback chain and context window retry.
+            instance.set_state(AgentState::Thinking);
+            let round_start = std::time::Instant::now();
+
             let response = self
                 .call_llm_with_retry(instance, messages, max_retries, context, trace_id, iteration, Some(crate::types::ChatOptions::default()), tool_defs)
                 .await;
@@ -1029,11 +1209,19 @@ impl AgentLoopExecutor {
             let round_duration = round_start.elapsed();
 
             // Emit LLM response event (asynchronous).
+            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+                .filter_map(|tc| serde_json::to_value(tc).ok())
+                .collect();
+            let tc_count = response.tool_calls.len();
             self.emit_async_event(ObserverEvent::LlmResponse {
                 trace_id: trace_id.to_string(),
                 round: iteration,
                 duration_ms: round_duration.as_millis() as u64,
                 has_tool_calls: !response.tool_calls.is_empty(),
+                content: response.content.clone(),
+                tool_calls: tc_values,
+                tool_calls_count: tc_count,
+                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
             });
 
             // Check if no tool calls - we're done.
@@ -1056,7 +1244,7 @@ impl AgentLoopExecutor {
             // Build assistant message with tool calls.
             let assistant_content = response.content.clone();
             let tool_calls = response.tool_calls.clone();
-            instance.add_assistant_message(&assistant_content, tool_calls.clone());
+            instance.add_assistant_message(&assistant_content, tool_calls.clone(), response.reasoning_content.clone());
 
             // Execute tool calls with complex result handling.
             instance.set_state(AgentState::ExecutingTool);
@@ -1072,12 +1260,15 @@ impl AgentLoopExecutor {
 
                 // Emit observer event (asynchronous).
                 let success = tool_result.err.is_none();
+                let result_str = tool_result.err.clone().unwrap_or_else(|| tool_result.for_llm.clone());
                 self.emit_async_event(ObserverEvent::ToolCall {
                     trace_id: trace_id.to_string(),
                     tool_name: tc.name.clone(),
                     success,
                     duration_ms: tool_duration.as_millis() as u64,
                     round: iteration,
+                    arguments: tc.arguments.clone(),
+                    result: result_str,
                 });
 
                 // Save continuation snapshot for async tools.
@@ -1263,6 +1454,7 @@ impl AgentLoopExecutor {
                             content: format!("Error: {}", err),
                             tool_calls: Vec::new(),
                             finished: true,
+                            reasoning_content: None,
                         };
                     }
 
@@ -1291,10 +1483,20 @@ impl AgentLoopExecutor {
                     current_messages = self.build_messages(instance);
 
                     // Emit a new LLM request for the retry (asynchronous).
+                    let retry_msg_values: Vec<serde_json::Value> = current_messages.iter()
+                        .filter_map(|m| serde_json::to_value(m).ok())
+                        .collect();
                     self.emit_async_event(ObserverEvent::LlmRequest {
                         trace_id: trace_id.to_string(),
                         round: iteration,
                         model: self.config.model.clone(),
+                        messages_count: current_messages.len(),
+                        tools_count: 0,
+                        messages: retry_msg_values,
+                        tools: vec![],
+                        provider_name: String::new(),
+                        api_key: String::new(),
+                        api_base: String::new(),
                     });
 
                     retry_count += 1;
@@ -1355,6 +1557,8 @@ impl AgentLoopExecutor {
                 success: !result.is_error,
                 duration_ms: tool_duration.as_millis() as u64,
                 round,
+                arguments: tc.arguments.clone(),
+                result: result.result.clone(),
             });
 
             results.push(result);
@@ -1377,6 +1581,7 @@ impl AgentLoopExecutor {
                     Some(turn.tool_calls)
                 },
                 tool_call_id: turn.tool_call_id,
+                reasoning_content: turn.reasoning_content,
             })
             .collect()
     }
@@ -1437,6 +1642,8 @@ impl AgentLoopExecutor {
             session_key: session_key.to_string(),
             channel: context.channel.clone(),
             chat_id: context.chat_id.clone(),
+            sender_id: String::new(),
+            content: user_message.to_string(),
         });
 
         let conv_start = std::time::Instant::now();
@@ -1465,6 +1672,9 @@ impl AgentLoopExecutor {
             session_key: session_key.to_string(),
             total_rounds: turns_used,
             duration_ms: conv_start.elapsed().as_millis() as u64,
+            content: final_content.clone(),
+            channel: context.channel.clone(),
+            chat_id: context.chat_id.clone(),
         });
 
         Ok(final_content)
@@ -1552,6 +1762,7 @@ mod tests {
                     content: "No more responses".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
+                    reasoning_content: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -1633,6 +1844,7 @@ mod tests {
             content: "Hello!".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]));
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
         let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
@@ -1668,12 +1880,14 @@ mod tests {
                     arguments: r#"{"query":"test"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             // Second call: final text.
             LlmResponse {
                 content: "Found results.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
 
@@ -1707,6 +1921,7 @@ mod tests {
             content: "Pong".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -1736,11 +1951,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Tool not found.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
 
@@ -1770,6 +1987,7 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             })
             .collect();
 
@@ -1817,12 +2035,14 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             // Second response: final.
             LlmResponse {
                 content: "Done.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
 
@@ -1859,6 +2079,7 @@ mod tests {
             content: "Hello!".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]));
 
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -1892,6 +2113,7 @@ mod tests {
             content: "Published response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -1964,6 +2186,7 @@ mod tests {
                 content: "success".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }));
 
@@ -2065,6 +2288,7 @@ mod tests {
                 content: "should not reach".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }));
 
@@ -2101,6 +2325,7 @@ mod tests {
                         content: format!("success from {}", m_owned),
                         tool_calls: Vec::new(),
                         finished: true,
+                        reasoning_content: None,
                     })
                 }
             }
@@ -2127,6 +2352,7 @@ mod tests {
                 content: "ok".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }));
 
@@ -2230,6 +2456,8 @@ mod tests {
             session_key: "s1".to_string(),
             channel: "web".to_string(),
             chat_id: "chat1".to_string(),
+            sender_id: "user1".to_string(),
+            content: "hello".to_string(),
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::ConversationStart);
@@ -2242,6 +2470,9 @@ mod tests {
             session_key: "s1".to_string(),
             total_rounds: 3,
             duration_ms: 1500,
+            content: "response".to_string(),
+            channel: "web".to_string(),
+            chat_id: "chat1".to_string(),
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::ConversationEnd);
@@ -2253,6 +2484,13 @@ mod tests {
             trace_id: "t1".to_string(),
             round: 1,
             model: "gpt-4".to_string(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmRequest);
@@ -2265,6 +2503,10 @@ mod tests {
             round: 1,
             duration_ms: 200,
             has_tool_calls: true,
+            content: "response text".to_string(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("stop".to_string()),
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmResponse);
@@ -2278,6 +2520,8 @@ mod tests {
             success: true,
             duration_ms: 50,
             round: 1,
+            arguments: "{}".to_string(),
+            result: "ok".to_string(),
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::ToolCall);
@@ -2289,6 +2533,7 @@ mod tests {
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2350,6 +2595,7 @@ mod tests {
                 content: "hello".to_string(),
                 tool_calls: vec![],
                 finished: true,
+                reasoning_content: None,
             },
             attempts: 1,
         };
@@ -2426,11 +2672,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Tool done.".to_string(),
                 tool_calls: vec![],
                 finished: true,
+                reasoning_content: None,
             },
         ]));
 
@@ -2458,6 +2706,7 @@ mod tests {
             content: "Done.".to_string(),
             tool_calls: vec![],
             finished: true,
+            reasoning_content: None,
         }]));
 
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2493,6 +2742,7 @@ mod tests {
                         content: "Recovered.".to_string(),
                         tool_calls: vec![],
                         finished: true,
+                        reasoning_content: None,
                     })
                 }
             }
@@ -2540,6 +2790,7 @@ mod tests {
                 content: "Agent loop result".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -2565,11 +2816,13 @@ mod tests {
                     arguments: r#"{"expr":"1+1"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             crate::r#loop::LlmResponse {
                 content: "The answer is 2".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -2596,6 +2849,7 @@ mod tests {
                 arguments: "{}".to_string(),
             }],
             finished: false,
+            reasoning_content: None,
         };
         let responses: Vec<_> = (0..15).map(|_| infinite_response.clone()).collect();
         let provider = Arc::new(MockProvider::new(responses));
@@ -2731,6 +2985,7 @@ mod tests {
                 content: "Hello".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
             provider: "provider1".to_string(),
             model: "model1".to_string(),
@@ -2751,6 +3006,7 @@ mod tests {
                 content: "Direct response".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
         let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -2760,6 +3016,7 @@ mod tests {
             content: "Hello".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
         let result = executor.call_llm_with_fallback(&messages, None, vec![]).await;
         assert!(result.is_ok());
@@ -2808,6 +3065,7 @@ mod tests {
                     content: "summary".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
+                    reasoning_content: None,
                 })
             }
         }
@@ -2861,6 +3119,8 @@ mod tests {
             session_key: "s1".to_string(),
             channel: "web".to_string(),
             chat_id: "c1".to_string(),
+            sender_id: "user1".to_string(),
+            content: "hello".to_string(),
         };
         assert!(format!("{:?}", start).contains("t1"));
 
@@ -2869,6 +3129,9 @@ mod tests {
             session_key: "s2".to_string(),
             total_rounds: 5,
             duration_ms: 1000,
+            content: "response".to_string(),
+            channel: "web".to_string(),
+            chat_id: "c1".to_string(),
         };
         assert!(format!("{:?}", end).contains("t2"));
 
@@ -2876,6 +3139,13 @@ mod tests {
             trace_id: "t3".to_string(),
             round: 1,
             model: "gpt-4".to_string(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
         };
         assert!(format!("{:?}", req).contains("gpt-4"));
 
@@ -2884,6 +3154,10 @@ mod tests {
             round: 2,
             duration_ms: 500,
             has_tool_calls: false,
+            content: "text".to_string(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: None,
         };
         assert!(format!("{:?}", resp).contains("t4"));
 
@@ -2893,6 +3167,8 @@ mod tests {
             success: true,
             duration_ms: 10,
             round: 1,
+            arguments: "{}".to_string(),
+            result: "ok".to_string(),
         };
         assert!(format!("{:?}", tool).contains("read_file"));
     }
@@ -2923,6 +3199,7 @@ mod tests {
                         content: "ok".to_string(),
                         tool_calls: Vec::new(),
                         finished: true,
+                        reasoning_content: None,
                     })
                 }
             }
@@ -2960,6 +3237,7 @@ mod tests {
                     content: "summary".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
+                    reasoning_content: None,
                 })
             }
         }
@@ -2988,6 +3266,7 @@ mod tests {
                 content: "Fallback response".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -3000,6 +3279,7 @@ mod tests {
             content: "Hello".to_string(),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
         let result = executor.call_llm_with_fallback(&messages, None, vec![]).await;
         assert!(result.is_ok());
@@ -3013,6 +3293,9 @@ mod tests {
             session_key: "s1".to_string(),
             total_rounds: 5,
             duration_ms: 2000,
+            content: "done".to_string(),
+            channel: "web".to_string(),
+            chat_id: "c1".to_string(),
         };
         let ce = event.to_conversation_event();
         assert_eq!(ce.event_type, nemesis_observer::EventType::ConversationEnd);
@@ -3022,6 +3305,13 @@ mod tests {
             trace_id: "t2".to_string(),
             round: 3,
             model: "gpt-4".to_string(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
         };
         let ce = event.to_conversation_event();
         assert_eq!(ce.event_type, nemesis_observer::EventType::LlmRequest);
@@ -3032,6 +3322,10 @@ mod tests {
             round: 1,
             duration_ms: 100,
             has_tool_calls: false,
+            content: "text".to_string(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: None,
         };
         let ce = event.to_conversation_event();
         assert_eq!(ce.event_type, nemesis_observer::EventType::LlmResponse);
@@ -3043,6 +3337,8 @@ mod tests {
             success: false,
             duration_ms: 50,
             round: 2,
+            arguments: "{}".to_string(),
+            result: "error".to_string(),
         };
         let ce = event.to_conversation_event();
         assert_eq!(ce.event_type, nemesis_observer::EventType::ToolCall);
@@ -3105,6 +3401,7 @@ mod tests {
                 content: "success".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }));
         assert!(result.is_ok());
@@ -3115,6 +3412,7 @@ mod tests {
                 content: "success2".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }));
         assert!(result2.is_ok());

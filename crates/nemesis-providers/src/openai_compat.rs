@@ -225,11 +225,21 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         })
         .unwrap_or_default();
 
+    // Extract reasoning_content from thinking-mode models (DeepSeek R1, GLM, etc.)
+    let reasoning_content = choices
+        .and_then(|c| c.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(|rc| rc.as_str())
+        .map(|s| s.to_string());
+
     LLMResponse {
         content,
         tool_calls,
         finish_reason,
         usage,
+        reasoning_content,
+        extra: HashMap::new(),
     }
 }
 
@@ -456,6 +466,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
 
         let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());

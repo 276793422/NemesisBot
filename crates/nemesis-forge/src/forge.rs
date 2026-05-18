@@ -45,7 +45,7 @@ pub struct Forge {
     deployment_monitor: Option<DeploymentMonitor>,
     cycle_store: Option<CycleStore>,
     running: Mutex<bool>,
-    bridge: Option<Arc<dyn ClusterForgeBridge>>,
+    bridge: Mutex<Option<Arc<dyn ClusterForgeBridge>>>,
     /// Background task handles (collector_loop, reflector_loop, cleanup_loop).
     bg_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// Shared running flag that background loops observe.
@@ -94,7 +94,7 @@ impl Forge {
             deployment_monitor: None,
             cycle_store: None,
             running: Mutex::new(false),
-            bridge: None,
+            bridge: Mutex::new(None),
             bg_tasks: Mutex::new(Vec::new()),
             bg_running: Arc::new(Mutex::new(false)),
         }
@@ -225,11 +225,8 @@ impl Forge {
     }
 
     /// Set the cluster bridge for cross-node communication.
-    pub fn set_bridge(&mut self, bridge: Arc<dyn ClusterForgeBridge>) {
-        self.bridge = Some(bridge.clone());
-        if let Some(ref mut syncer) = self.syncer {
-            syncer.set_bridge(bridge);
-        }
+    pub fn set_bridge(&self, bridge: Arc<dyn ClusterForgeBridge>) {
+        *self.bridge.lock() = Some(bridge);
     }
 
     /// Cascade-set the LLM provider to all subsystems that need it:
@@ -286,8 +283,9 @@ impl Forge {
     }
 
     /// Get the cluster bridge (if configured).
-    pub fn bridge(&self) -> Option<&Arc<dyn ClusterForgeBridge>> {
-        self.bridge.as_ref()
+    pub fn bridge(&self) -> Option<Arc<dyn ClusterForgeBridge>> {
+        let guard = self.bridge.lock();
+        guard.clone()
     }
 
     /// Get the reflector (if initialized).
@@ -354,7 +352,8 @@ impl Forge {
 
     /// Initialize the syncer with the current bridge.
     pub fn init_syncer(&mut self) {
-        if let Some(bridge) = self.bridge.clone() {
+        let bridge_opt = self.bridge.lock().clone();
+        if let Some(bridge) = bridge_opt {
             self.syncer = Some(Syncer::with_forge_dir(bridge, self.forge_dir.clone()));
         }
     }

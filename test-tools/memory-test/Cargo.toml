@@ -1,0 +1,24 @@
+[package]
+name = "memory-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tempfile = "3"
+test-harness = { path = "../test-harness" }
+
+[[test]]
+name = "memory_basic_st"
+path = "src/memory_basic_st.rs"
+
+[[test]]
+name = "memory_enhanced_st"
+path = "src/memory_enhanced_st.rs"

@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-use crate::config::{Config, MessageRulesConfig};
+use crate::config::Config;
 use crate::external_output::ExternalOutput;
 use crate::request_lock::RequestLock;
 
@@ -57,12 +57,13 @@ impl Statistics {
         }
     }
 
+    #[allow(dead_code)]
     pub fn print(&self, config: &Config) {
         if !config.statistics.enabled { return; }
         let sent = self.messages_sent.load(Ordering::Relaxed);
         let received = self.messages_received.load(Ordering::Relaxed);
-        let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
-        let bytes_received = self.bytes_received.load(Ordering::Relaxed);
+        let _bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
+        let _bytes_received = self.bytes_received.load(Ordering::Relaxed);
         let reconnects = self.reconnect_count.load(Ordering::Relaxed);
         println!("\n{}", format!("📊 Sent: {} msgs | Received: {} msgs | Reconnects: {}", sent, received, reconnects).dimmed());
     }
@@ -201,7 +202,7 @@ impl WebSocketClient {
                                             print_received_message(&config, &role, &processed_content, &timestamp);
 
                                             // Log which rule was applied (if any)
-                                            if let Some(rule_name) = rule_applied {
+                                            if let Some(_rule_name) = rule_applied {
                                                 // println!("{}", format!("  🔔 Applied rule: {}", rule_name).dimmed());
                                             }
 
@@ -232,7 +233,7 @@ impl WebSocketClient {
                                 }
                             }
                         }
-                        Some(Ok(Message::Close(close_frame))) => {
+                        Some(Ok(Message::Close(_close_frame))) => {
                             println!("🔌 Server closed connection");
                             break;
                         }
@@ -314,8 +315,11 @@ impl WebSocketClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn stop(&self) { self.running.store(false, Ordering::Relaxed); }
+    #[allow(dead_code)]
     pub fn get_stats(&self) -> &Statistics { &self.stats }
+    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool { self.running.load(Ordering::Relaxed) }
 }
 

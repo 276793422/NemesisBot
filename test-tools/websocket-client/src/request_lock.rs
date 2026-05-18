@@ -49,6 +49,7 @@ impl RequestLock {
     }
 
     /// Check if currently busy
+    #[allow(dead_code)]
     pub async fn is_busy(&self) -> bool {
         let state = self.inner.lock().await;
         state.busy

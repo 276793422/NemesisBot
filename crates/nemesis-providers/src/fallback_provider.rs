@@ -438,6 +438,8 @@ mod tests {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             })
         }
 
@@ -509,6 +511,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let resp = provider
@@ -547,6 +551,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let resp = provider
@@ -585,6 +591,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -604,6 +612,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -644,6 +654,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let resp = provider
@@ -703,6 +715,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -744,6 +758,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -847,6 +863,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -869,6 +887,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -899,6 +919,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -920,6 +942,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -983,6 +1007,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -1045,6 +1071,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider
@@ -1086,6 +1114,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let result = provider

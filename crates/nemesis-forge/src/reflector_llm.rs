@@ -237,6 +237,18 @@ pub fn extract_json(response: &str) -> Option<serde_json::Value> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ProviderBridge: wraps LlmProvider into the LLMCaller interface
+// ---------------------------------------------------------------------------
+
+/// Provider bridge note:
+/// The concrete ProviderBridge adapter is defined in `nemesisbot/src/commands/gateway.rs`
+/// because it needs access to `nemesis_providers::router::LLMProvider` which is only
+/// available at the binary crate level. The adapter wraps the provider and implements
+/// this `LLMCaller` trait.
+///
+/// Mirrors Go's `forgeInstance.SetProvider(s.provider)`.
+
 #[cfg(test)]
 mod tests {
     use super::*;

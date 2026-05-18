@@ -78,6 +78,10 @@ pub struct LLMRequestEventData {
     pub api_base: String,
     pub messages_count: usize,
     pub tools_count: usize,
+    /// Serialized messages sent to LLM.
+    pub messages: Vec<serde_json::Value>,
+    /// Serialized tool definitions sent to LLM.
+    pub tools: Vec<serde_json::Value>,
 }
 
 /// Data for llm_response events.
@@ -88,6 +92,8 @@ pub struct LLMResponseEventData {
     pub content: String,
     pub tool_calls_count: usize,
     pub finish_reason: String,
+    /// Serialized tool call details from the response.
+    pub tool_calls: Vec<serde_json::Value>,
 }
 
 /// Data for tool_call events.
@@ -201,6 +207,11 @@ impl RequestLoggerObserver {
     fn handle_llm_request(&self, trace_id: &str, data: &LLMRequestEventData) {
         let active = self.active.lock().unwrap();
         if let Some(state) = active.get(trace_id) {
+            // Convert serde_json::Value messages to LlmMessage structs.
+            let messages: Vec<crate::r#loop::LlmMessage> = data.messages.iter()
+                .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                .collect();
+
             state.logger.log_llm_request(&LLMRequestInfo {
                 round: data.round,
                 timestamp: Utc::now(),
@@ -210,7 +221,7 @@ impl RequestLoggerObserver {
                 api_base: data.api_base.clone(),
                 messages_count: data.messages_count,
                 tools_count: data.tools_count,
-                messages: Vec::new(),
+                messages,
                 http_headers: Vec::new(),
                 config: std::collections::HashMap::new(),
                 fallback_attempts: Vec::new(),
@@ -221,6 +232,16 @@ impl RequestLoggerObserver {
     fn handle_llm_response(&self, trace_id: &str, data: &LLMResponseEventData) {
         let active = self.active.lock().unwrap();
         if let Some(state) = active.get(trace_id) {
+            // Convert serde_json::Value tool calls to ToolCallDetail structs.
+            let tool_calls: Vec<crate::request_logger::ToolCallDetail> = data.tool_calls.iter()
+                .filter_map(|v| {
+                    let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let name = v.get("name").or_else(|| v.get("function").and_then(|f| f.get("name"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let arguments = v.get("arguments").or_else(|| v.get("function").and_then(|f| f.get("arguments"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if name.is_empty() { None } else { Some(crate::request_logger::ToolCallDetail { id, name, arguments }) }
+                })
+                .collect();
+
             state.logger.log_llm_response(&LLMResponseInfo {
                 round: data.round,
                 timestamp: Utc::now(),
@@ -228,7 +249,7 @@ impl RequestLoggerObserver {
                 content: data.content.clone(),
                 tool_calls_count: data.tool_calls_count,
                 finish_reason: data.finish_reason.clone(),
-                tool_calls: Vec::new(),
+                tool_calls,
                 usage: UsageInfo::default(),
             });
         }
@@ -309,6 +330,107 @@ impl RequestLoggerObserver {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Observer trait implementation — bridges nemesis_observer events to internal
+// request_logger_observer events.
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl nemesis_observer::Observer for RequestLoggerObserver {
+    fn name(&self) -> &str {
+        "request_logger"
+    }
+
+    async fn on_event(&self, event: nemesis_observer::ConversationEvent) {
+        let internal = match convert_event(&event) {
+            Some(e) => e,
+            None => return,
+        };
+        self.on_event(&internal);
+    }
+}
+
+/// Convert a `nemesis_observer::ConversationEvent` into the internal
+/// `ConversationEvent` used by `RequestLoggerObserver`.
+fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<ConversationEvent> {
+    match &src.data {
+        nemesis_observer::EventData::ConversationStart(d) => Some(ConversationEvent {
+            event_type: EventType::ConversationStart,
+            trace_id: src.trace_id.clone(),
+            timestamp: src.timestamp,
+            data: EventData::ConversationStart(ConversationStartData {
+                session_key: d.session_key.clone(),
+                channel: d.channel.clone(),
+                chat_id: d.chat_id.clone(),
+                sender_id: d.sender_id.clone(),
+                content: d.content.clone(),
+            }),
+        }),
+        nemesis_observer::EventData::ConversationEnd(d) => Some(ConversationEvent {
+            event_type: EventType::ConversationEnd,
+            trace_id: src.trace_id.clone(),
+            timestamp: src.timestamp,
+            data: EventData::ConversationEnd(ConversationEndData {
+                session_key: d.session_key.clone(),
+                channel: d.channel.clone(),
+                chat_id: d.chat_id.clone(),
+                total_rounds: d.total_rounds as usize,
+                total_duration_ms: d.total_duration.as_millis() as u64,
+                content: d.content.clone(),
+                is_error: d.error.is_some(),
+            }),
+        }),
+        nemesis_observer::EventData::LlmRequest(d) => Some(ConversationEvent {
+            event_type: EventType::LLMRequest,
+            trace_id: src.trace_id.clone(),
+            timestamp: src.timestamp,
+            data: EventData::LLMRequest(LLMRequestEventData {
+                round: d.round as usize,
+                model: d.model.clone(),
+                provider_name: d.provider_name.clone(),
+                api_key: d.api_key.clone(),
+                api_base: d.api_base.clone(),
+                messages_count: d.messages_count,
+                tools_count: d.tools_count,
+                messages: d.messages.clone(),
+                tools: d.tools.clone(),
+            }),
+        }),
+        nemesis_observer::EventData::LlmResponse(d) => Some(ConversationEvent {
+            event_type: EventType::LLMResponse,
+            trace_id: src.trace_id.clone(),
+            timestamp: src.timestamp,
+            data: EventData::LLMResponse(LLMResponseEventData {
+                round: d.round as usize,
+                duration_ms: d.duration.as_millis() as u64,
+                content: d.content.clone(),
+                tool_calls_count: d.tool_calls_count,
+                finish_reason: d.finish_reason.clone().unwrap_or_default(),
+                tool_calls: d.tool_calls.clone(),
+            }),
+        }),
+        nemesis_observer::EventData::ToolCall(d) => Some(ConversationEvent {
+            event_type: EventType::ToolCall,
+            trace_id: src.trace_id.clone(),
+            timestamp: src.timestamp,
+            data: EventData::ToolCall(ToolCallEventData {
+                tool_name: d.tool_name.clone(),
+                success: d.success,
+                duration_ms: d.duration.as_millis() as u64,
+                error: d.error.clone().unwrap_or_default(),
+                llm_round: d.llm_round as usize,
+                arguments: d
+                    .arguments
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                result: String::new(),
+            }),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +472,13 @@ mod tests {
                 api_base: "https://api.openai.com".to_string(),
                 messages_count: 5,
                 tools_count: 3,
+                messages: vec![
+                    serde_json::json!({"role": "system", "content": "You are helpful"}),
+                    serde_json::json!({"role": "user", "content": "Hello"}),
+                ],
+                tools: vec![
+                    serde_json::json!({"type": "function", "function": {"name": "test_tool"}}),
+                ],
             }),
         }
     }
@@ -365,6 +494,7 @@ mod tests {
                 content: "Hello!".to_string(),
                 tool_calls_count: 0,
                 finish_reason: "stop".to_string(),
+                tool_calls: vec![],
             }),
         }
     }

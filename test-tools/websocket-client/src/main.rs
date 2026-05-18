@@ -13,7 +13,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 use client::WebSocketClient;
@@ -46,6 +45,7 @@ struct Args {
 }
 
 /// CLI State
+#[allow(dead_code)]
 struct CliState {
     running: Arc<AtomicBool>,
     input_buffer: String,
@@ -53,6 +53,7 @@ struct CliState {
     output_program: Option<Arc<ExternalOutput>>,
 }
 
+#[allow(dead_code)]
 impl CliState {
     fn new(running: Arc<AtomicBool>) -> Self {
         Self {
@@ -227,7 +228,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    let mut client_handle = tokio::spawn(async move {
+    let client_handle = tokio::spawn(async move {
         if let Err(e) = ws_client.start().await {
             let error_msg = format!("❌ Client error: {}", e);
             eprintln!("{}", error_msg.red().bold());

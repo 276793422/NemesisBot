@@ -494,6 +494,7 @@ impl ContextBuilder {
             content: system_prompt,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
 
         // History messages: skip ALL orphaned tool messages at the start of history.
@@ -514,6 +515,7 @@ impl ContextBuilder {
                     Some(turn.tool_calls.clone())
                 },
                 tool_call_id: turn.tool_call_id.clone(),
+                reasoning_content: turn.reasoning_content.clone(),
             });
         }
 
@@ -524,6 +526,7 @@ impl ContextBuilder {
                 content: current_message.to_string(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -548,6 +551,7 @@ impl ContextBuilder {
             content: result.to_string(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_string()),
+            reasoning_content: None,
         });
     }
 
@@ -567,6 +571,7 @@ impl ContextBuilder {
                 Some(tool_calls)
             },
             tool_call_id: None,
+            reasoning_content: None,
         });
     }
 }
@@ -699,6 +704,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:00Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "assistant".to_string(),
@@ -706,6 +712,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:01Z".to_string(),
+                reasoning_content: None,
             },
         ];
 
@@ -740,6 +747,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("tc_1".to_string()),
                 timestamp: "2026-04-29T12:00:00Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "user".to_string(),
@@ -747,6 +755,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:01Z".to_string(),
+                reasoning_content: None,
             },
         ];
 
@@ -771,6 +780,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("tc_1".to_string()),
                 timestamp: "2026-04-29T12:00:00Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "tool".to_string(),
@@ -778,6 +788,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("tc_2".to_string()),
                 timestamp: "2026-04-29T12:00:01Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "tool".to_string(),
@@ -785,6 +796,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("tc_3".to_string()),
                 timestamp: "2026-04-29T12:00:02Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "user".to_string(),
@@ -792,6 +804,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:03Z".to_string(),
+                reasoning_content: None,
             },
         ];
 
@@ -1219,6 +1232,7 @@ mod tests {
                 }],
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:00Z".to_string(),
+                reasoning_content: None,
             },
         ];
 
@@ -1241,6 +1255,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: Some("tc_123".to_string()),
                 timestamp: "2026-04-29T12:00:00Z".to_string(),
+                reasoning_content: None,
             },
             crate::types::ConversationTurn {
                 role: "assistant".to_string(),
@@ -1248,6 +1263,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-04-29T12:00:01Z".to_string(),
+                reasoning_content: None,
             },
         ];
 

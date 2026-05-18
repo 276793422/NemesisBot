@@ -126,6 +126,8 @@ impl LLMProvider for GitHubCopilotProvider {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         })
     }
 
@@ -152,6 +154,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
             Message {
                 role: "assistant".to_string(),
@@ -159,6 +163,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
         ];
         let prompt = provider.messages_to_prompt(&messages);
@@ -225,6 +231,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let prompt = provider.messages_to_prompt(&messages);
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&prompt).unwrap();

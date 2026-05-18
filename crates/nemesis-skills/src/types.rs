@@ -198,7 +198,7 @@ pub struct SearchCacheConfig {
     #[serde(default = "default_cache_max_size")]
     pub max_size: usize,
     /// Time-to-live in seconds (default: 300 = 5 minutes).
-    #[serde(default = "default_cache_ttl")]
+    #[serde(default = "default_cache_ttl", alias = "ttl_seconds")]
     pub ttl_secs: u64,
 }
 
@@ -236,7 +236,7 @@ pub struct ClawHubConfig {
     #[serde(default)]
     pub convex_site_url: String,
     /// Timeout in seconds (0 = default 30s).
-    #[serde(default)]
+    #[serde(default, alias = "timeout")]
     pub timeout_secs: u64,
 }
 

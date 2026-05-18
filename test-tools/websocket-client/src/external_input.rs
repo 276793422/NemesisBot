@@ -1,7 +1,6 @@
 // External Input Program Management - Simplified version
 use anyhow::{Context, Result};
 use chrono::Local;
-use colored::Colorize;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use tokio::sync::mpsc;

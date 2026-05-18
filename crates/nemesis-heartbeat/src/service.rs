@@ -164,6 +164,12 @@ impl HeartbeatService {
     }
 
     /// Start the heartbeat service.
+    ///
+    /// Mirrors Go's `runLoop()`:
+    /// - First heartbeat fires after 1 second (`time.AfterFunc(time.Second, ...)`)
+    /// - Subsequent heartbeats fire on the configured interval
+    /// - Each tick calls the full `executeHeartbeat()` flow:
+    ///   build prompt → get last channel → call handler → dispatch result
     pub async fn start(&self) -> Result<(), String> {
         if self.running.load(Ordering::SeqCst) || !self.config.enabled {
             return Ok(());
@@ -175,9 +181,34 @@ impl HeartbeatService {
         let last_beat = self.last_beat.clone();
         let beat_count = self.beat_count.clone();
         let skip_file = self.skip_file.clone();
+
+        // Move handler into task (same pattern as Go's goroutine captures hs.handler).
         let handler = self.handler.lock().take();
 
+        // Clone Arc references needed for execute_heartbeat logic.
+        // These are needed because the spawned task cannot hold &self.
+        let workspace = self.config.workspace.clone();
+        let message_bus = self.message_bus.lock().clone();
+        let state_manager = self.state_manager.lock().clone();
+
         let handle = tokio::spawn(async move {
+            // First heartbeat after 1 second delay.
+            // Mirrors Go's `time.AfterFunc(time.Second, func() { hs.executeHeartbeat() })`.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            if running.load(Ordering::SeqCst) {
+                execute_heartbeat_tick(
+                    &handler,
+                    &workspace,
+                    &message_bus,
+                    &state_manager,
+                    &skip_file,
+                    &last_beat,
+                    &beat_count,
+                );
+            }
+
+            // Regular interval loop.
             let mut ticker = tokio::time::interval(interval);
             loop {
                 ticker.tick().await;
@@ -185,7 +216,7 @@ impl HeartbeatService {
                     break;
                 }
 
-                // Check skip file
+                // Check skip file (BOOTSTRAP.md exists → skip).
                 let skip = {
                     let sf = skip_file.lock();
                     if let Some(ref path) = *sf {
@@ -198,18 +229,15 @@ impl HeartbeatService {
                     continue;
                 }
 
-                let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
-                *last_beat.lock() = Utc::now();
-
-                tracing::debug!("Heartbeat tick #{}", count);
-
-                if let Some(ref handler) = handler {
-                    // Build prompt, get channel info
-                    // Note: in this simplified loop, we call with empty args
-                    // since the full execute_heartbeat logic requires mutable
-                    // access to self which can't be done from a closure.
-                    handler(count.to_string(), String::new(), String::new());
-                }
+                execute_heartbeat_tick(
+                    &handler,
+                    &workspace,
+                    &message_bus,
+                    &state_manager,
+                    &skip_file,
+                    &last_beat,
+                    &beat_count,
+                );
             }
         });
 
@@ -532,6 +560,266 @@ Add your heartbeat tasks below this line:
     }
 }
 
+// ---------------------------------------------------------------------------
+// Free function: execute a single heartbeat tick from the spawned task.
+// Mirrors Go's `HeartbeatService.executeHeartbeat()` exactly.
+// ---------------------------------------------------------------------------
+
+/// Execute a single heartbeat tick inside the spawned task.
+///
+/// This is the full heartbeat flow matching Go's `executeHeartbeat()`:
+/// 1. Check skip file (BOOTSTRAP.md)
+/// 2. Build prompt from HEARTBEAT.md
+/// 3. Get last active channel from state manager
+/// 4. Call handler with (prompt, channel, chatID)
+/// 5. Handle result (5 branches: error, async, silent, for_user, for_llm)
+/// 6. Send response via message bus
+fn execute_heartbeat_tick(
+    handler: &Option<HeartbeatHandler>,
+    workspace: &Option<String>,
+    message_bus: &Option<Arc<dyn MessageBus>>,
+    state_manager: &Option<Arc<dyn StateManager>>,
+    skip_file: &Arc<Mutex<Option<String>>>,
+    last_beat: &Arc<Mutex<chrono::DateTime<Utc>>>,
+    beat_count: &Arc<AtomicU64>,
+) {
+    // Step 1: Check skip file.
+    let skip = {
+        let sf = skip_file.lock();
+        if let Some(ref path) = *sf {
+            std::path::Path::new(path).exists()
+        } else {
+            false
+        }
+    };
+    if skip {
+        tracing::debug!("Heartbeat skipped (BOOTSTRAP.md exists)");
+        return;
+    }
+
+    tracing::debug!("Executing heartbeat");
+
+    // Step 2: Build prompt from HEARTBEAT.md.
+    let prompt = build_prompt_from_workspace(workspace);
+    if prompt.is_empty() {
+        tracing::info!("No heartbeat prompt (HEARTBEAT.md empty or missing)");
+        return;
+    }
+
+    // Step 3: Get last channel from state manager.
+    let (channel, chat_id) = {
+        let state = state_manager.as_ref();
+        match state {
+            Some(s) => {
+                let last = s.get_last_channel();
+                parse_last_channel_static(&last)
+            }
+            None => (String::new(), String::new()),
+        }
+    };
+
+    tracing::debug!("Resolved channel: {}, chatID: {}", channel, chat_id);
+
+    // Update beat tracking.
+    let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
+    *last_beat.lock() = Utc::now();
+    tracing::debug!("Heartbeat tick #{}", count);
+
+    // Step 4: Call handler.
+    let result = match handler {
+        Some(h) => h(prompt, channel, chat_id),
+        None => {
+            tracing::error!("Heartbeat handler not configured");
+            return;
+        }
+    };
+
+    // Step 5: Handle result (matching Go's 5-branch ToolResult logic).
+    let result = match result {
+        Some(r) => r,
+        None => {
+            tracing::debug!("Heartbeat handler returned nil result");
+            return;
+        }
+    };
+
+    if result.is_error {
+        tracing::error!("Heartbeat error: {}", result.for_llm);
+        return;
+    }
+
+    if result.is_async {
+        tracing::info!(message = result.for_llm.as_str(), "Async heartbeat task started");
+        return;
+    }
+
+    if result.silent {
+        tracing::debug!("Heartbeat OK - silent");
+        return;
+    }
+
+    // Step 6: Send result to user via message bus.
+    let response = if !result.for_user.is_empty() {
+        &result.for_user
+    } else {
+        &result.for_llm
+    };
+
+    if response.is_empty() {
+        return;
+    }
+
+    send_response_static(message_bus, state_manager, response);
+}
+
+/// Build the heartbeat prompt from HEARTBEAT.md (standalone version for spawned task).
+fn build_prompt_from_workspace(workspace: &Option<String>) -> String {
+    let workspace = match workspace {
+        Some(w) => w,
+        None => return String::new(),
+    };
+
+    let heartbeat_path = std::path::Path::new(workspace).join("HEARTBEAT.md");
+
+    match std::fs::read(&heartbeat_path) {
+        Ok(data) => {
+            if is_heartbeat_file_empty_static(&data) {
+                tracing::info!("HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
+                return String::new();
+            }
+
+            let content = String::from_utf8_lossy(&data);
+            if content.is_empty() {
+                return String::new();
+            }
+
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            format!(
+                "# Heartbeat Check\n\n\
+                 Current time: {}\n\n\
+                 You are a proactive AI assistant. This is a scheduled heartbeat check.\n\
+                 Review the following tasks and execute any necessary actions using available skills.\n\
+                 If there is nothing that requires attention, respond ONLY with: HEARTBEAT_OK\n\n\
+                 {}",
+                now, content
+            )
+        }
+        Err(_) => {
+            // File does not exist — create default template (matching Go).
+            create_default_heartbeat_template_static(workspace);
+            String::new()
+        }
+    }
+}
+
+/// Check if the heartbeat file is empty (static version).
+fn is_heartbeat_file_empty_static(data: &[u8]) -> bool {
+    let content = String::from_utf8_lossy(data);
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') {
+            return false;
+        }
+    }
+    true
+}
+
+/// Create default HEARTBEAT.md template (static version).
+fn create_default_heartbeat_template_static(workspace: &str) {
+    let heartbeat_path = std::path::Path::new(workspace).join("HEARTBEAT.md");
+    if heartbeat_path.exists() {
+        return;
+    }
+
+    let default_content = r#"# Heartbeat Check List
+
+This file contains tasks for the heartbeat service to check periodically.
+
+## Examples
+
+- Check for unread messages
+- Review upcoming calendar events
+- Check device status (e.g., MaixCam)
+
+## Instructions
+
+- Execute ALL tasks listed below. Do NOT skip any task.
+- For simple tasks (e.g., report current time), respond directly.
+- For complex tasks that may take time, use the spawn tool to create a subagent.
+- The spawn tool is async - subagent results will be sent to the user automatically.
+- After spawning a subagent, CONTINUE to process remaining tasks.
+- Only respond with HEARTBEAT_OK when ALL tasks are done AND nothing needs attention.
+
+---
+
+Add your heartbeat tasks below this line:
+"#;
+
+    if let Err(e) = std::fs::write(&heartbeat_path, default_content) {
+        tracing::warn!("Failed to create default HEARTBEAT.md: {}", e);
+    } else {
+        tracing::info!("Created default HEARTBEAT.md template");
+    }
+}
+
+/// Parse last channel string into (platform, user_id) — static version.
+fn parse_last_channel_static(last_channel: &str) -> (String, String) {
+    if last_channel.is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let parts: Vec<&str> = last_channel.splitn(2, ':').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return (String::new(), String::new());
+    }
+
+    let platform = parts[0].to_string();
+    let user_id = parts[1].to_string();
+
+    // Skip internal channels.
+    if INTERNAL_CHANNELS.contains(&platform.as_str()) {
+        return (String::new(), String::new());
+    }
+
+    (platform, user_id)
+}
+
+/// Send heartbeat response via message bus — static version.
+fn send_response_static(
+    message_bus: &Option<Arc<dyn MessageBus>>,
+    state_manager: &Option<Arc<dyn StateManager>>,
+    response: &str,
+) {
+    let bus = match message_bus {
+        Some(b) => b,
+        None => {
+            tracing::debug!("No message bus configured, heartbeat result not sent");
+            return;
+        }
+    };
+
+    let last_channel = match state_manager {
+        Some(s) => s.get_last_channel(),
+        None => {
+            tracing::debug!("No state manager configured, heartbeat result not sent");
+            return;
+        }
+    };
+
+    if last_channel.is_empty() {
+        tracing::debug!("No last channel recorded, heartbeat result not sent");
+        return;
+    }
+
+    let (platform, user_id) = parse_last_channel_static(&last_channel);
+    if platform.is_empty() || user_id.is_empty() {
+        return;
+    }
+
+    bus.publish_outbound(platform.clone(), user_id, response.to_string());
+    tracing::info!("Heartbeat result sent to {}", platform);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,19 +853,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_stop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().to_string_lossy().to_string();
+
+        // Create a valid HEARTBEAT.md so the heartbeat tick actually executes.
+        std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Test task").unwrap();
+
+        let called = Arc::new(AtomicU64::new(0));
+        let called_clone = called.clone();
+
         let svc = HeartbeatService::new(HeartbeatConfig {
             interval: Duration::from_millis(100),
             enabled: true,
-            workspace: None,
+            workspace: Some(workspace),
             min_interval_minutes: 5,
             default_interval_minutes: 30,
         });
+        svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+            called_clone.fetch_add(1, Ordering::SeqCst);
+            None
+        }));
+
         svc.start().await.unwrap();
         assert!(svc.is_running());
-        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // First heartbeat fires after 1 second (matching Go's time.AfterFunc(1s)).
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
         svc.stop();
         assert!(!svc.is_running());
-        assert!(svc.beat_count() >= 1);
+        // Handler should have been called at least once (first heartbeat).
+        assert!(called.load(Ordering::SeqCst) >= 1);
     }
 
     #[test]

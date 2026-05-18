@@ -309,6 +309,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:00Z".to_string(),
+            reasoning_content: None,
         }
     }
 

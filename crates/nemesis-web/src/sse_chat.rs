@@ -92,6 +92,8 @@ pub async fn handle_chat_stream(
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+            extra: std::collections::HashMap::new(),
         })
         .collect();
 

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::r#loop::{LlmMessage, LlmProvider};
+use crate::loop_executor::ObserverEvent;
 use crate::types::{ChatOptions, ConversationTurn};
 
 // ---------------------------------------------------------------------------
@@ -208,6 +209,8 @@ pub struct StoredMessage {
     pub tool_calls: Vec<StoredToolCall>,
     pub tool_call_id: Option<String>,
     pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
 }
 
 /// Stored tool call info.
@@ -230,6 +233,7 @@ impl From<&ConversationTurn> for StoredMessage {
             }).collect(),
             tool_call_id: turn.tool_call_id.clone(),
             timestamp: turn.timestamp.clone(),
+            reasoning_content: turn.reasoning_content.clone(),
         }
     }
 }
@@ -246,6 +250,7 @@ impl From<StoredMessage> for ConversationTurn {
             }).collect(),
             tool_call_id: msg.tool_call_id,
             timestamp: msg.timestamp,
+            reasoning_content: msg.reasoning_content,
         }
     }
 }
@@ -509,6 +514,8 @@ pub struct Summarizer {
     notifier: Box<dyn SummarizationNotifier>,
     /// Tracks which sessions are currently being summarized to prevent concurrent summarization.
     summarizing: Arc<DashMap<String, bool>>,
+    /// Observer manager for emitting conversation events during summarization LLM calls.
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
 }
 
 impl Summarizer {
@@ -519,6 +526,7 @@ impl Summarizer {
         context_window: usize,
         session_store: Arc<SessionStore>,
         notifier: Box<dyn SummarizationNotifier>,
+        observer_manager: Option<Arc<nemesis_observer::Manager>>,
     ) -> Self {
         Self {
             provider,
@@ -527,6 +535,7 @@ impl Summarizer {
             session_store,
             notifier,
             summarizing: Arc::new(DashMap::new()),
+            observer_manager,
         }
     }
 
@@ -543,6 +552,7 @@ impl Summarizer {
             context_window,
             session_store,
             Box::new(NullNotifier),
+            None,
         )
     }
 
@@ -700,6 +710,7 @@ impl Summarizer {
             content: merge_prompt,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         // Use tokio runtime for the async LLM call.
@@ -710,8 +721,53 @@ impl Summarizer {
             temperature: Some(0.3),
             ..Default::default()
         });
+
+        // Generate trace_id and emit observer events around the LLM call.
+        let trace_id = Self::generate_trace_id("summarize-multipart");
+        self.emit_observer_sync_event(ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: "summarize-multipart".to_string(),
+            channel: String::new(),
+            chat_id: String::new(),
+            sender_id: "summarizer".to_string(),
+            content: String::new(),
+        });
+        self.emit_observer_async_event(ObserverEvent::LlmRequest {
+            trace_id: trace_id.clone(),
+            round: 0,
+            model: self.model.clone(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
+        });
+        let start = std::time::Instant::now();
         let response = tokio_block_on(async {
             self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
+        });
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let response_content = response.as_ref().ok().map(|r| r.content.clone()).unwrap_or_default();
+        self.emit_observer_async_event(ObserverEvent::LlmResponse {
+            trace_id: trace_id.clone(),
+            round: 0,
+            duration_ms,
+            has_tool_calls: false,
+            content: response_content.clone(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("stop".to_string()),
+        });
+        self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
+            trace_id,
+            session_key: "summarize-multipart".to_string(),
+            total_rounds: 1,
+            duration_ms,
+            content: response_content,
+            channel: String::new(),
+            chat_id: String::new(),
         });
 
         match response {
@@ -741,6 +797,7 @@ impl Summarizer {
             content: prompt,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         // Summarization uses conservative parameters matching Go:
@@ -750,13 +807,94 @@ impl Summarizer {
             temperature: Some(0.3),
             ..Default::default()
         });
+
+        // Generate trace_id and emit observer events around the LLM call.
+        let trace_id = Self::generate_trace_id("summarize-batch");
+        self.emit_observer_sync_event(ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: "summarize-batch".to_string(),
+            channel: String::new(),
+            chat_id: String::new(),
+            sender_id: "summarizer".to_string(),
+            content: String::new(),
+        });
+        self.emit_observer_async_event(ObserverEvent::LlmRequest {
+            trace_id: trace_id.clone(),
+            round: 0,
+            model: self.model.clone(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
+        });
+        let start = std::time::Instant::now();
         let response = tokio_block_on(async {
             self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
+        });
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let response_content = response.as_ref().ok().map(|r| r.content.clone()).unwrap_or_default();
+        self.emit_observer_async_event(ObserverEvent::LlmResponse {
+            trace_id: trace_id.clone(),
+            round: 0,
+            duration_ms,
+            has_tool_calls: false,
+            content: response_content.clone(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("stop".to_string()),
+        });
+        self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
+            trace_id,
+            session_key: "summarize-batch".to_string(),
+            total_rounds: 1,
+            duration_ms,
+            content: response_content,
+            channel: String::new(),
+            chat_id: String::new(),
         });
 
         match response {
             Ok(resp) => resp.content,
             Err(_) => String::new(),
+        }
+    }
+
+    /// Generate a trace ID for summarization observer events.
+    fn generate_trace_id(label: &str) -> String {
+        format!(
+            "{}-{}",
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        )
+    }
+
+    /// Emit an observer event synchronously (for ConversationStart/End).
+    fn emit_observer_sync_event(&self, event: ObserverEvent) {
+        if let Some(ref mgr) = self.observer_manager {
+            let conv_event = event.to_conversation_event();
+            tokio_block_on(async { mgr.emit_sync(conv_event).await });
+        }
+    }
+
+    /// Emit an observer event asynchronously (for LlmRequest/Response).
+    fn emit_observer_async_event(&self, event: ObserverEvent) {
+        if let Some(ref mgr) = self.observer_manager {
+            let conv_event = event.to_conversation_event();
+            let mgr = Arc::clone(mgr);
+            // Use tokio_block_on since we may be in a sync context
+            tokio_block_on(async {
+                tokio::spawn(async move {
+                    mgr.emit(conv_event).await;
+                })
+                .await
+                .ok()
+            });
         }
     }
 }
@@ -817,6 +955,7 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
         tool_calls: Vec::new(),
         tool_call_id: None,
         timestamp: chrono::Utc::now().to_rfc3339(),
+        reasoning_content: None,
     });
 
     // Kept conversation.
@@ -948,6 +1087,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                reasoning_content: None,
             },
             StoredMessage {
                 role: "assistant".to_string(),
@@ -955,6 +1095,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:01Z".to_string(),
+                reasoning_content: None,
             },
         ];
 
@@ -991,6 +1132,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                reasoning_content: None,
             })
             .collect();
 
@@ -1017,6 +1159,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                reasoning_content: None,
             },
         ]);
         store.save("disk:key1").unwrap();
@@ -1070,6 +1213,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
             ConversationTurn {
                 role: "assistant".to_string(),
@@ -1077,6 +1221,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         // "Hello" = 5 chars, "World" = 5 chars, total = 10, 10*2/5 = 4
@@ -1094,6 +1239,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
 
@@ -1115,6 +1261,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
 
@@ -1161,6 +1308,7 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
+            reasoning_content: None,
         };
 
         let stored: StoredMessage = (&turn).into();
@@ -1242,6 +1390,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
+            reasoning_content: None,
         }]);
         assert!(store.get_history("nonexistent").is_empty());
     }
@@ -1263,6 +1412,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
+            reasoning_content: None,
         }]);
         store.truncate_history("test:trunc", 10);
         let history = store.get_history("test:trunc");
@@ -1321,6 +1471,7 @@ mod tests {
                 }],
                 tool_call_id: Some("tc_1".to_string()),
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                reasoning_content: None,
             }],
             summary: "test summary".to_string(),
             created: Utc::now(),
@@ -1342,6 +1493,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         let tokens = estimate_tokens_for_messages(&messages);
@@ -1358,6 +1510,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         let result = force_compress_turns(&history);
@@ -1374,6 +1527,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
             ConversationTurn {
                 role: "user".to_string(),
@@ -1381,6 +1535,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         let result = force_compress_turns(&history);
@@ -1453,6 +1608,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
+                reasoning_content: None,
             },
             StoredMessage {
                 role: "assistant".to_string(),
@@ -1460,6 +1616,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: "2026-01-01T00:00:01Z".to_string(),
+                reasoning_content: None,
             },
         ];
         store.set_history("test-key", messages);
@@ -1500,6 +1657,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         let tokens = estimate_tokens_for_turns(&turns);
@@ -1521,6 +1679,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
+            reasoning_content: None,
         };
         let stored: StoredMessage = StoredMessage::from(&turn);
         assert_eq!(stored.role, "user");
@@ -1540,6 +1699,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
+            reasoning_content: None,
         }).collect();
         store.set_history("test-key", msgs);
         store.truncate_history("test-key", 3);
@@ -1567,6 +1727,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
+            reasoning_content: None,
         }).collect();
         store.set_history("test-key", msgs);
         store.truncate_history("test-key", 0);
@@ -1591,6 +1752,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         for i in 0..20 {
@@ -1600,6 +1762,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             });
         }
         let result = force_compress_turns(&history);
@@ -1651,6 +1814,7 @@ mod tests {
                 content: "summary".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             })
         }
     }
@@ -1668,6 +1832,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                reasoning_content: None,
             })
             .collect();
         store.set_history("web:chat1", messages);
@@ -1753,6 +1918,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         store.set_history("key1", msgs);
@@ -1777,6 +1943,7 @@ mod tests {
             }],
             tool_call_id: Some("tc_1".to_string()),
             timestamp: "2026-01-01T00:00:00Z".to_string(),
+            reasoning_content: None,
         };
 
         let stored: StoredMessage = StoredMessage::from(&turn);
@@ -1799,6 +1966,7 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
+            reasoning_content: None,
         };
 
         let turn: ConversationTurn = ConversationTurn::from(stored);
@@ -1834,6 +2002,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: String::new(),
+            reasoning_content: None,
         }];
         let tokens = estimate_tokens_for_messages(&messages);
         assert!(tokens > 0);
@@ -1908,6 +2077,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         assert!(!summarizer.should_summarize(&history, 128000));
@@ -1930,6 +2100,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         // 30 messages > 20 threshold
@@ -1962,6 +2133,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         // Token threshold is 100 * 75 / 100 = 75 tokens
@@ -1998,6 +2170,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         // Only 4 messages (<=4), so summarize_session returns empty
@@ -2021,6 +2194,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         // All system messages -> none pass the user/assistant filter
@@ -2044,6 +2218,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         let result = summarizer.summarize_session("test:basic", &history);
@@ -2071,6 +2246,7 @@ mod tests {
             128000,
             store,
             notifier,
+            None,
         );
         // Internal channels should not trigger notification
         let history: Vec<ConversationTurn> = (0..30)
@@ -2080,6 +2256,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         let result = summarizer.maybe_summarize("test:cli", "cli", "direct", &history, 128000);
@@ -2102,6 +2279,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
         assert!(!summarizer.maybe_summarize("test:short", "web", "chat1", &history, 128000));
@@ -2116,6 +2294,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
             ConversationTurn {
                 role: "user".to_string(),
@@ -2123,6 +2302,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
             ConversationTurn {
                 role: "assistant".to_string(),
@@ -2130,6 +2310,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         // 3 messages (<=4), should return unchanged
@@ -2146,6 +2327,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
         for i in 0..10 {
@@ -2155,6 +2337,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             });
         }
         let result = force_compress_turns(&history);

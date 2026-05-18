@@ -238,6 +238,8 @@ impl HttpProvider {
             // Accumulated tool calls across chunks (index -> partial ToolCall).
             let mut pending_tool_calls: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
+            // Accumulated reasoning content from thinking-mode models.
+            let mut accumulated_reasoning = String::new();
 
             while let Some(chunk_result) = stream.next().await {
                 let bytes = match chunk_result {
@@ -272,6 +274,7 @@ impl HttpProvider {
                                 tool_calls: vec![],
                                 finish_reason: Some("stop".to_string()),
                                 usage: None,
+                                reasoning_content: if accumulated_reasoning.is_empty() { None } else { Some(accumulated_reasoning.clone()) },
                             })).await;
                             return;
                         }
@@ -285,6 +288,11 @@ impl HttpProvider {
                             .as_str()
                             .unwrap_or("")
                             .to_string();
+
+                        // Accumulate reasoning_content from thinking-mode models.
+                        if let Some(rc) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
+                            accumulated_reasoning.push_str(rc);
+                        }
 
                         let finish_reason = parsed["choices"][0]["finish_reason"]
                             .as_str()
@@ -357,8 +365,13 @@ impl HttpProvider {
                         let chunk = StreamChunk {
                             delta: delta_content,
                             tool_calls,
-                            finish_reason,
+                            finish_reason: finish_reason.clone(),
                             usage,
+                            reasoning_content: if finish_reason.is_some() && !accumulated_reasoning.is_empty() {
+                                Some(accumulated_reasoning.clone())
+                            } else {
+                                None
+                            },
                         };
                         if tx.send(Ok(chunk)).await.is_err() {
                             // Receiver dropped, stop streaming.
@@ -392,6 +405,10 @@ pub struct StreamChunk {
     /// Token usage — present only on the final chunk (if provided by the API).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
+    /// Accumulated reasoning content from thinking-mode models.
+    /// Present only on the final chunk (not streamed incrementally).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 #[async_trait]
@@ -496,6 +513,10 @@ impl LLMProvider for HttpProvider {
             tool_calls,
             finish_reason,
             usage,
+            reasoning_content: data["choices"][0]["message"]["reasoning_content"]
+                .as_str()
+                .map(|s| s.to_string()),
+            extra: HashMap::new(),
         })
     }
 
@@ -532,6 +553,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
@@ -945,10 +968,10 @@ mod tests {
         let provider = HttpProvider::new(config);
 
         let messages = vec![
-            Message { role: "system".to_string(), content: "You are helpful".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None },
-            Message { role: "user".to_string(), content: "Hello".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None },
-            Message { role: "assistant".to_string(), content: "Hi".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None },
-            Message { role: "user".to_string(), content: "How are you?".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None },
+            Message { role: "system".to_string(), content: "You are helpful".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None, reasoning_content: None, extra: HashMap::new() },
+            Message { role: "user".to_string(), content: "Hello".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None, reasoning_content: None, extra: HashMap::new() },
+            Message { role: "assistant".to_string(), content: "Hi".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None, reasoning_content: None, extra: HashMap::new() },
+            Message { role: "user".to_string(), content: "How are you?".to_string(), tool_calls: vec![], tool_call_id: None, timestamp: None, reasoning_content: None, extra: HashMap::new() },
         ];
 
         let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
@@ -964,6 +987,7 @@ mod tests {
             tool_calls: vec![],
             finish_reason: None,
             usage: None,
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("Hello"));
@@ -981,6 +1005,7 @@ mod tests {
                 completion_tokens: 20,
                 total_tokens: 30,
             }),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("stop"));
@@ -1003,6 +1028,7 @@ mod tests {
             }],
             finish_reason: Some("tool_calls".to_string()),
             usage: None,
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("call_123"));
@@ -1039,6 +1065,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let mut rx = provider.chat_stream(&messages, &[], "test", &ChatOptions::default());
@@ -1209,6 +1237,8 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
@@ -1239,6 +1269,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
 
         let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());

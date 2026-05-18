@@ -370,6 +370,8 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
         tool_calls,
         finish_reason: finish_reason.to_string(),
         usage,
+        reasoning_content: None,
+        extra: HashMap::new(),
     }
 }
 
@@ -578,6 +580,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         assert_eq!(body["model"], "gpt-4o");
@@ -681,6 +685,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let tools = vec![ToolDefinition {
             tool_type: "function".to_string(),
@@ -718,6 +724,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: HashMap::new(),
             },
             Message {
                 role: "user".to_string(),
@@ -725,6 +733,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: HashMap::new(),
             },
         ];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
@@ -750,6 +760,8 @@ mod tests {
                 }],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: HashMap::new(),
             },
         ];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
@@ -776,6 +788,8 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();
@@ -792,6 +806,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();
@@ -808,6 +824,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();
@@ -824,6 +842,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();
@@ -839,6 +859,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();
@@ -854,6 +876,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(
             &messages,
@@ -878,6 +902,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
         let input = body["input"].as_array().unwrap();

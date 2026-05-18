@@ -105,6 +105,8 @@ impl LlmProvider for ProviderAdapter {
                     .collect(),
                 tool_call_id: m.tool_call_id,
                 timestamp: None,
+                reasoning_content: m.reasoning_content,
+                extra: std::collections::HashMap::new(),
             })
             .collect();
 
@@ -150,6 +152,7 @@ impl LlmProvider for ProviderAdapter {
                     content: resp.content,
                     tool_calls,
                     finished,
+                    reasoning_content: resp.reasoning_content,
                 })
             }
             Err(e) => {
@@ -716,6 +719,7 @@ mod tests {
                 content: "test".to_string(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             };
             assert_eq!(msg.role, *role);
             assert_eq!(msg.content, "test");

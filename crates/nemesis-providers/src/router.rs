@@ -1132,7 +1132,7 @@ mod tests {
         #[async_trait::async_trait]
         impl LLMProvider for MockProvider {
             async fn chat(&self, _: &[Message], _: &[ToolDefinition], _: &str, _: &ChatOptions) -> Result<LLMResponse, FailoverError> {
-                Ok(LLMResponse { content: "mock".into(), tool_calls: vec![], finish_reason: "stop".into(), usage: None })
+                Ok(LLMResponse { content: "mock".into(), tool_calls: vec![], finish_reason: "stop".into(), usage: None, reasoning_content: None, extra: HashMap::new() })
             }
             fn default_model(&self) -> &str { "mock-model" }
             fn name(&self) -> &str { "mock" }

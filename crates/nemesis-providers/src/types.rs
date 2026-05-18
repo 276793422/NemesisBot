@@ -33,6 +33,14 @@ pub struct LLMResponse {
     pub finish_reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Must be passed back to the API in subsequent turns.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
+    /// Passthrough for any unknown fields from the API response.
+    /// Captured via serde flatten so future API fields are never silently dropped.
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Token usage info.
@@ -54,6 +62,14 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Must be passed back to the API in subsequent assistant turns.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
+    /// Passthrough for any unknown fields from the API.
+    /// Captured via serde flatten so future API fields are never silently dropped.
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 /// Tool definition for LLM API.
@@ -163,6 +179,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
@@ -263,6 +281,8 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let deserialized: Message = serde_json::from_str(&json).unwrap();
@@ -277,6 +297,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("call_123".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("call_123"));
@@ -293,6 +315,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: Some(now),
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let deserialized: Message = serde_json::from_str(&json).unwrap();
@@ -307,6 +331,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         // Empty tool_calls should be skipped
@@ -321,6 +347,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("tool_call_id"));
@@ -385,6 +413,8 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("usage"));
@@ -410,6 +440,8 @@ mod tests {
                 completion_tokens: 5,
                 total_tokens: 15,
             }),
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let deserialized: LLMResponse = serde_json::from_str(&json).unwrap();
@@ -589,6 +621,8 @@ mod tests {
                 completion_tokens: 5,
                 total_tokens: 15,
             }),
+            reasoning_content: None,
+    extra: HashMap::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: LLMResponse = serde_json::from_str(&json).unwrap();

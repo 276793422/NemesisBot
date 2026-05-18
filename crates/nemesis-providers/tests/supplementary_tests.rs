@@ -20,6 +20,8 @@ mod types_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"system\""));
@@ -35,6 +37,8 @@ mod types_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -49,6 +53,8 @@ mod types_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -63,6 +69,8 @@ mod types_extra {
             tool_calls: vec![],
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -105,6 +113,8 @@ mod types_extra {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         assert_eq!(resp.finish_reason, "stop");
     }
@@ -125,6 +135,8 @@ mod types_extra {
             }],
             finish_reason: "tool_calls".to_string(),
             usage: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         assert_eq!(resp.finish_reason, "tool_calls");
         assert_eq!(resp.tool_calls.len(), 1);
@@ -234,6 +246,8 @@ mod types_extra {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("tool_calls"));
@@ -250,6 +264,8 @@ mod types_extra {
                 completion_tokens: 5,
                 total_tokens: 15,
             }),
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("usage"));
@@ -1574,6 +1590,8 @@ mod fallback_provider_extra {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             })
         }
 
@@ -1677,6 +1695,8 @@ mod fallback_provider_extra {
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             }),
             attempts: vec![FallbackAttempt {
                 provider: "p1".to_string(),
@@ -1772,6 +1792,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.chat(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.is_err());
@@ -1791,6 +1813,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let resp = provider.chat(&msgs, &[], "", &ChatOptions::default()).await.unwrap();
         assert_eq!(resp.content, "response from p1");
@@ -1814,6 +1838,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let resp = provider.chat(&msgs, &[], "", &ChatOptions::default()).await.unwrap();
         assert_eq!(resp.content, "response from p2");
@@ -1837,6 +1863,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.chat(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.is_err());
@@ -1857,6 +1885,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.execute_detailed(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.response.is_some());
@@ -1884,6 +1914,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.execute_detailed(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.response.is_none());
@@ -1909,6 +1941,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.execute_image(&msgs, &[], "m1", &ChatOptions::default()).await;
         assert!(result.response.is_some());
@@ -1923,6 +1957,8 @@ mod fallback_provider_extra {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let result = provider.execute_image(&msgs, &[], "", &ChatOptions::default()).await;
         assert!(result.response.is_none());

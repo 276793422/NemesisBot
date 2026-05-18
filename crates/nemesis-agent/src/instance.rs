@@ -83,6 +83,7 @@ impl AgentInstance {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: chrono::Utc::now().to_rfc3339(),
+                reasoning_content: None,
             };
             instance.history.lock().unwrap().push(system_turn);
         }
@@ -156,18 +157,20 @@ impl AgentInstance {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
+            reasoning_content: None,
         };
         self.push_turn(turn);
     }
 
     /// Add an assistant message (with optional tool calls) to the history.
-    pub fn add_assistant_message(&self, content: &str, tool_calls: Vec<ToolCallInfo>) {
+    pub fn add_assistant_message(&self, content: &str, tool_calls: Vec<ToolCallInfo>, reasoning_content: Option<String>) {
         let turn = ConversationTurn {
             role: "assistant".to_string(),
             content: content.to_string(),
             tool_calls,
             tool_call_id: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
+            reasoning_content,
         };
         self.push_turn(turn);
     }
@@ -180,6 +183,7 @@ impl AgentInstance {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.to_string()),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            reasoning_content: None,
         };
         self.push_turn(turn);
     }
@@ -252,6 +256,7 @@ impl AgentInstance {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: timestamp.clone(),
+            reasoning_content: None,
         };
         history.push(compression_note);
 
@@ -465,7 +470,7 @@ mod tests {
     fn add_messages_and_get_history() {
         let instance = AgentInstance::new(test_config());
         instance.add_user_message("Hello");
-        instance.add_assistant_message("Hi there!", Vec::new());
+        instance.add_assistant_message("Hi there!", Vec::new(), None);
 
         let history = instance.get_history();
         // system + user + assistant = 3
@@ -484,7 +489,7 @@ mod tests {
             name: "search".to_string(),
             arguments: r#"{"query":"rust"}"#.to_string(),
         }];
-        instance.add_assistant_message("", tool_calls);
+        instance.add_assistant_message("", tool_calls, None);
         instance.add_tool_result("tc_1", "Results for rust");
 
         let history = instance.get_history();
@@ -524,7 +529,7 @@ mod tests {
     fn clear_history_preserves_system_prompt() {
         let instance = AgentInstance::new(test_config());
         instance.add_user_message("Hello");
-        instance.add_assistant_message("Hi!", Vec::new());
+        instance.add_assistant_message("Hi!", Vec::new(), None);
         assert_eq!(instance.get_history().len(), 3);
 
         instance.clear_history();
@@ -538,11 +543,11 @@ mod tests {
         let instance = AgentInstance::new(test_config());
         // Add 6 turns: u1, a1, u2, a2, u3, a3
         instance.add_user_message("u1");
-        instance.add_assistant_message("a1", Vec::new());
+        instance.add_assistant_message("a1", Vec::new(), None);
         instance.add_user_message("u2");
-        instance.add_assistant_message("a2", Vec::new());
+        instance.add_assistant_message("a2", Vec::new(), None);
         instance.add_user_message("u3");
-        instance.add_assistant_message("a3", Vec::new());
+        instance.add_assistant_message("a3", Vec::new(), None);
         // system + 6 turns = 7
         assert_eq!(instance.get_history().len(), 7);
 
@@ -638,7 +643,7 @@ mod tests {
         assert_eq!(instance.message_count(), 0);
         instance.add_user_message("Hello");
         assert_eq!(instance.message_count(), 1);
-        instance.add_assistant_message("Hi", Vec::new());
+        instance.add_assistant_message("Hi", Vec::new(), None);
         assert_eq!(instance.message_count(), 2);
         instance.add_tool_result("tc_1", "Result");
         assert_eq!(instance.message_count(), 3);
@@ -780,6 +785,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
             ConversationTurn {
                 role: "user".to_string(),
@@ -787,6 +793,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
 
@@ -807,7 +814,7 @@ mod tests {
         };
         let instance = AgentInstance::new(config);
         instance.add_user_message("Hello");
-        instance.add_assistant_message("Hi", Vec::new());
+        instance.add_assistant_message("Hi", Vec::new(), None);
 
         instance.clear_history();
         assert!(instance.get_history().is_empty());
@@ -838,7 +845,7 @@ mod tests {
         // Add 20 turns
         for i in 0..20 {
             instance.add_user_message(&format!("u{}", i));
-            instance.add_assistant_message(&format!("a{}", i), Vec::new());
+            instance.add_assistant_message(&format!("a{}", i), Vec::new(), None);
         }
         // system + 40 turns = 41
         assert_eq!(instance.get_history().len(), 41);
@@ -861,7 +868,7 @@ mod tests {
             name: "calculator".to_string(),
             arguments: "{}".to_string(),
         }];
-        instance.add_assistant_message("", tool_calls);
+        instance.add_assistant_message("", tool_calls, None);
         instance.add_tool_result("tc_abc", "42");
 
         let history = instance.get_history();
@@ -885,7 +892,7 @@ mod tests {
                 arguments: r#"{"expr":"2+2"}"#.to_string(),
             },
         ];
-        instance.add_assistant_message("Let me help", tool_calls);
+        instance.add_assistant_message("Let me help", tool_calls, None);
 
         let history = instance.get_history();
         let assistant_msg = history.iter().find(|t| t.role == "assistant").unwrap();

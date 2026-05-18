@@ -309,6 +309,8 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         tool_calls,
         finish_reason: finish_reason.to_string(),
         usage,
+        reasoning_content: None,
+        extra: HashMap::new(),
     }
 }
 
@@ -408,6 +410,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         assert_eq!(body["model"], "claude-3");
@@ -425,6 +429,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: HashMap::new(),
             },
             Message {
                 role: "user".to_string(),
@@ -432,6 +438,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: HashMap::new(),
             },
         ];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
@@ -665,6 +673,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("tu_123".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         let msgs = body["messages"].as_array().unwrap();
@@ -683,6 +693,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: Some("tu_456".to_string()),
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         let msgs = body["messages"].as_array().unwrap();
@@ -701,6 +713,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         let msgs = body["messages"].as_array().unwrap();
@@ -716,6 +730,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         let msgs = body["messages"].as_array().unwrap();
@@ -908,6 +924,8 @@ mod tests {
             }],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: HashMap::new(),
         }];
         let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
         let msgs = body["messages"].as_array().unwrap();

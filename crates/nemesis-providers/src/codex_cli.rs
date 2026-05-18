@@ -228,6 +228,8 @@ impl CodexCliProvider {
             tool_calls,
             finish_reason: finish_reason.to_string(),
             usage,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         })
     }
 }
@@ -336,6 +338,8 @@ mod tests {
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
+            reasoning_content: None,
+    extra: std::collections::HashMap::new(),
         }];
         let prompt = provider.build_prompt(&messages, &[]);
         assert_eq!(prompt, "Hello");
@@ -351,6 +355,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
             Message {
                 role: "user".to_string(),
@@ -358,6 +364,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
         ];
         let prompt = provider.build_prompt(&messages, &[]);
@@ -466,6 +474,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
             Message {
                 role: "user".to_string(),
@@ -473,6 +483,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
         ];
         let tools = vec![ToolDefinition {
@@ -500,6 +512,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
             Message {
                 role: "assistant".to_string(),
@@ -507,6 +521,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
         ];
         let prompt = provider.build_prompt(&messages, &[]);
@@ -524,6 +540,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
             Message {
                 role: "tool".to_string(),
@@ -531,6 +549,8 @@ mod tests {
                 tool_calls: vec![],
                 tool_call_id: Some("call_123".into()),
                 timestamp: None,
+                reasoning_content: None,
+    extra: std::collections::HashMap::new(),
             },
         ];
         let prompt = provider.build_prompt(&messages, &[]);

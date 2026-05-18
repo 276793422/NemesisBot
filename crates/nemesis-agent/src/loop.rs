@@ -42,6 +42,9 @@ pub struct LlmMessage {
     pub content: String,
     pub tool_calls: Option<Vec<ToolCallInfo>>,
     pub tool_call_id: Option<String>,
+    /// Reasoning content from thinking-mode models, passed back to the API.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
 }
 
 /// A simplified LLM response.
@@ -53,6 +56,8 @@ pub struct LlmResponse {
     pub tool_calls: Vec<ToolCallInfo>,
     /// Whether the LLM indicated it is finished (no more tool calls).
     pub finished: bool,
+    /// Reasoning content from thinking-mode models.
+    pub reasoning_content: Option<String>,
 }
 
 /// Trait for LLM providers used by the agent loop.
@@ -560,6 +565,7 @@ impl AgentLoop {
                         let tools = self.tools.clone();             // HashMap of Arc clones (cheap)
                         let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
                         let continuation_manager = self.continuation_manager.clone(); // Option<Arc> clone
+                        let observer_manager = self.observer_manager.clone(); // Option<Arc> clone
 
                         let msg_content = msg.content.clone();
                         let msg_metadata = msg.metadata.clone();
@@ -584,6 +590,7 @@ impl AgentLoop {
                                         &model,
                                         &tools,
                                         tx,
+                                        observer_manager.clone(),
                                     )
                                     .await;
                                 }
@@ -653,6 +660,118 @@ impl AgentLoop {
         self.running.store(false, Ordering::Release);
     }
 
+    /// Same as `run_bus_owned` but takes `Arc<Self>` so the AgentLoop can be
+    /// shared with other components (e.g. heartbeat handler) while the bus
+    /// loop is running.
+    pub async fn run_bus_arc(
+        self: Arc<Self>,
+        mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
+    ) {
+        self.running.store(true, Ordering::Release);
+
+        while self.running.load(Ordering::Acquire) {
+            match inbound_rx.recv().await {
+                Some(msg) => {
+                    let (agent_id, response, err) = self.process_inbound_message(&msg).await;
+
+                    // Check for cluster continuation marker.
+                    if agent_id == "__continuation__" {
+                        let task_id = response;
+                        info!("Handling cluster continuation for task {}", task_id);
+
+                        let provider = self.provider.clone();
+                        let model = self.config.model.clone();
+                        let tools = self.tools.clone();
+                        let outbound_tx = self.outbound_tx.clone();
+                        let continuation_manager = self.continuation_manager.clone();
+                        let observer_manager = self.observer_manager.clone();
+
+                        let msg_content = msg.content.clone();
+                        let msg_metadata = msg.metadata.clone();
+
+                        tokio::spawn(async move {
+                            if let Some(ref mgr) = continuation_manager {
+                                let task_response = &msg_content;
+                                let task_failed = msg_metadata.get("status")
+                                    .map(|s| s == "error")
+                                    .unwrap_or(false);
+                                let task_error = msg_metadata.get("error")
+                                    .map(|s| s.as_str());
+
+                                if let Some(ref tx) = outbound_tx {
+                                    crate::loop_continuation::handle_cluster_continuation(
+                                        mgr.as_ref(),
+                                        &task_id,
+                                        task_response,
+                                        task_failed,
+                                        task_error,
+                                        provider.as_ref(),
+                                        &model,
+                                        &tools,
+                                        tx,
+                                        observer_manager.clone(),
+                                    )
+                                    .await;
+                                }
+                            } else {
+                                warn!(
+                                    "No continuation manager configured, cannot handle continuation for task_id={}",
+                                    task_id
+                                );
+                            }
+                        });
+
+                        continue;
+                    }
+
+                    let response = match err {
+                        Some(e) => format!("Error processing message: {}", e),
+                        None => response,
+                    };
+
+                    if !response.is_empty() {
+                        let already_sent = self.sent_in_round.has_sent_in_round(&msg.session_key);
+                        self.sent_in_round.clear(&msg.session_key);
+
+                        if already_sent {
+                            debug!(
+                                "Skipping outbound publish: message tool already sent response for session {}",
+                                msg.session_key
+                            );
+                        } else if let Some(ref tx) = self.outbound_tx {
+                            let final_content = if msg.channel == "rpc"
+                                && !msg.correlation_id.is_empty()
+                                && !response.starts_with(&format!(
+                                    "[rpc:{}]",
+                                    msg.correlation_id
+                                ))
+                            {
+                                format!("[rpc:{}] {}", msg.correlation_id, response)
+                            } else {
+                                response
+                            };
+
+                            let outbound = nemesis_types::channel::OutboundMessage {
+                                channel: msg.channel.clone(),
+                                chat_id: msg.chat_id.clone(),
+                                content: final_content,
+                                message_type: String::new(),
+                            };
+                            if let Err(e) = tx.send(outbound).await {
+                                warn!("Failed to send outbound message: {}", e);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    break;
+                }
+            }
+        }
+
+        self.running.store(false, Ordering::Release);
+    }
+
     /// Stop the bus consumption loop.
     /// Mirrors Go's `AgentLoop.Stop()`.
     pub fn stop(&self) {
@@ -662,6 +781,42 @@ impl AgentLoop {
     /// Check whether the loop is currently running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
+    }
+
+    // -----------------------------------------------------------------------
+    // Observer event emission helpers
+    // -----------------------------------------------------------------------
+
+    /// Emit an observer event synchronously (for conversation start/end).
+    ///
+    /// Forwards to both the Phase 5 observer manager and the legacy
+    /// `observer_callback`.
+    async fn emit_observer_sync(&self, event: crate::loop_executor::ObserverEvent) {
+        if let Some(ref mgr) = self.observer_manager {
+            let conv_event = event.to_conversation_event();
+            mgr.emit_sync(conv_event).await;
+        }
+        if let Some(ref cb) = self.observer_callback {
+            let (event_type, data) = event.to_callback_json();
+            cb(event_type, &data);
+        }
+    }
+
+    /// Emit an observer event asynchronously (for LLM request/response/tool).
+    ///
+    /// Non-blocking: each observer runs in its own tokio task.
+    fn emit_observer_async(&self, event: crate::loop_executor::ObserverEvent) {
+        if let Some(ref mgr) = self.observer_manager {
+            let conv_event = event.to_conversation_event();
+            let mgr = Arc::clone(mgr);
+            tokio::spawn(async move {
+                mgr.emit(conv_event).await;
+            });
+        }
+        if let Some(ref cb) = self.observer_callback {
+            let (event_type, data) = event.to_callback_json();
+            cb(event_type, &data);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -702,6 +857,7 @@ impl AgentLoop {
                     &self.config.model,
                     &self.tools,
                     tx,
+                    self.observer_manager.clone(),
                 )
                 .await;
             }
@@ -737,10 +893,41 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
+        let trace_id = format!("direct-{}-{}", session_key, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let start_time = std::time::Instant::now();
+
+        // Emit conversation_start observer event.
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: session_key.to_string(),
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+            sender_id: "direct".to_string(),
+            content: content.to_string(),
+        }).await;
+
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "cron", session_key);
 
-        let events = self.run(&instance, content, &context).await;
+        let events = self.run_with_trace(&instance, content, &context, &trace_id).await;
+
+        // Extract final response for the conversation end event.
+        let final_response = events.iter().rev()
+            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else { None })
+            .unwrap_or_default();
+
+        // Emit conversation_end observer event.
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
+            trace_id: trace_id.clone(),
+            session_key: session_key.to_string(),
+            total_rounds: rounds,
+            duration_ms,
+            content: final_response,
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+        }).await;
 
         // Extract final response from events.
         for event in events.iter().rev() {
@@ -765,6 +952,19 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
+        let trace_id = format!("heartbeat-{}-{}", chat_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let start_time = std::time::Instant::now();
+
+        // Emit conversation_start observer event.
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: "heartbeat".to_string(),
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+            sender_id: "heartbeat".to_string(),
+            content: content.to_string(),
+        }).await;
+
         // Heartbeat uses a fresh temporary instance, no history.
         let config = AgentConfig {
             model: self.config.model.clone(),
@@ -775,7 +975,25 @@ impl AgentLoop {
         let instance = AgentInstance::new(config);
         let context = RequestContext::new(channel, chat_id, "heartbeat", "heartbeat");
 
-        let events = self.run(&instance, content, &context).await;
+        let events = self.run_with_trace(&instance, content, &context, &trace_id).await;
+
+        // Extract final response for the conversation end event.
+        let final_response = events.iter().rev()
+            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else { None })
+            .unwrap_or_default();
+
+        // Emit conversation_end observer event.
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
+            trace_id: trace_id.clone(),
+            session_key: "heartbeat".to_string(),
+            total_rounds: rounds,
+            duration_ms,
+            content: final_response,
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+        }).await;
 
         for event in events.iter().rev() {
             if let AgentEvent::Done(msg) = event {
@@ -1250,6 +1468,7 @@ impl AgentLoop {
         let outbound_tx = self.outbound_tx.clone();   // Option<Sender> clone
         let session_store = self.session_store.clone(); // Option<Arc<SessionStore>> clone
         let summarizing_flag = self.summarizing.clone(); // Arc clone for clearing after completion
+        let observer_mgr = self.observer_manager.clone(); // Option<Arc<Manager>> clone
         let history_clone = history;
         let existing_summary = instance.get_summary();
         let session_key_owned = session_key.to_string();
@@ -1280,6 +1499,7 @@ impl AgentLoop {
                 context_window,
                 provider.as_ref(),
                 &model,
+                observer_mgr,
             );
 
             if let Some(summary) = summary {
@@ -1426,6 +1646,7 @@ impl AgentLoop {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
+            reasoning_content: None,
         };
         retained.push(note);
 
@@ -1474,6 +1695,7 @@ impl AgentLoop {
             content: merge_prompt,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         let response = block_on_llm_chat(&*self.provider, &self.config.model, llm_messages);
@@ -1505,6 +1727,7 @@ impl AgentLoop {
             content: prompt,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         let response = block_on_llm_chat(&*self.provider, &self.config.model, messages);
@@ -1567,18 +1790,14 @@ impl AgentLoop {
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
-        if let Some(ref cb) = self.observer_callback {
-            let event_data = serde_json::json!({
-                "type": "conversation_start",
-                "trace_id": trace_id,
-                "session_key": session_key,
-                "channel": channel,
-                "chat_id": chat_id,
-                "sender_id": "user",
-                "content": user_message,
-            });
-            cb("conversation_start", &event_data);
-        }
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: session_key.to_string(),
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+            sender_id: "agent".to_string(),
+            content: user_message.to_string(),
+        }).await;
 
         // Record last channel (skip internal channels).
         if !channel.is_empty() && !chat_id.is_empty() && !is_internal_channel(channel) {
@@ -1589,7 +1808,7 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "agent", session_key);
 
-        let events = self.run(&instance, user_message, &context).await;
+        let events = self.run_with_trace(&instance, user_message, &context, &trace_id).await;
 
         // Maybe trigger summarization.
         self.maybe_summarize(&instance, session_key, channel, chat_id);
@@ -1613,18 +1832,20 @@ impl AgentLoop {
         }
 
         // Emit conversation_end observer event.
-        if let Some(ref cb) = self.observer_callback {
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-            let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
-            let event_data = serde_json::json!({
-                "type": "conversation_end",
-                "trace_id": trace_id,
-                "session_key": session_key,
-                "total_rounds": rounds,
-                "duration_ms": duration_ms,
-            });
-            cb("conversation_end", &event_data);
-        }
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
+        let final_response = events.iter().rev()
+            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else if let AgentEvent::Error(msg) = e { Some(msg.clone()) } else { None })
+            .unwrap_or_default();
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
+            trace_id: trace_id.clone(),
+            session_key: session_key.to_string(),
+            total_rounds: rounds,
+            duration_ms,
+            content: final_response,
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+        }).await;
 
         // Extract final response.
         for event in events.iter().rev() {
@@ -1653,6 +1874,23 @@ impl AgentLoop {
         instance: &AgentInstance,
         user_message: &str,
         context: &RequestContext,
+    ) -> Vec<AgentEvent> {
+        let trace_id = format!("run-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        self.run_with_trace(instance, user_message, context, &trace_id).await
+    }
+
+    /// Run the agent loop with a specific trace ID for observer event correlation.
+    ///
+    /// This is the actual implementation that emits observer events for:
+    /// - LLM request (before calling the provider)
+    /// - LLM response (after receiving the response)
+    /// - Tool call (after each tool execution)
+    async fn run_with_trace(
+        &self,
+        instance: &AgentInstance,
+        user_message: &str,
+        context: &RequestContext,
+        trace_id: &str,
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
@@ -1701,8 +1939,29 @@ impl AgentLoop {
                 .collect();
             debug!("Sending {} tool definitions to LLM", tool_defs.len());
 
+            // Emit LLM request observer event.
+            let msg_values: Vec<serde_json::Value> = messages.iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect();
+            let tool_values: Vec<serde_json::Value> = tool_defs.iter()
+                .filter_map(|t| serde_json::to_value(t).ok())
+                .collect();
+            self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmRequest {
+                trace_id: trace_id.to_string(),
+                round: turns_used + 1,
+                model: self.config.model.clone(),
+                messages_count: messages.len(),
+                tools_count: tool_defs.len(),
+                messages: msg_values,
+                tools: tool_values,
+                provider_name: String::new(),
+                api_key: String::new(),
+                api_base: String::new(),
+            });
+
             // Call LLM.
             instance.set_state(crate::types::AgentState::Thinking);
+            let round_start = std::time::Instant::now();
             let response = match self.provider.chat(&self.config.model, messages, Some(chat_opts.clone()), tool_defs).await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -1771,6 +2030,7 @@ impl AgentLoop {
                                 instance.add_assistant_message(
                                     &format!("Error: {}", retry_err),
                                     Vec::new(),
+                                    None,
                                 );
                                 let formatted = context.format_rpc_message(&format!("Error: {}", retry_err));
                                 events.push(AgentEvent::Error(formatted));
@@ -1779,7 +2039,7 @@ impl AgentLoop {
                         }
                     } else {
                         warn!("LLM call failed: {}", err);
-                        instance.add_assistant_message(&format!("Error: {}", err), Vec::new());
+                        instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
                         let formatted = context.format_rpc_message(&format!("Error: {}", err));
                         events.push(AgentEvent::Error(formatted));
                         break;
@@ -1788,10 +2048,27 @@ impl AgentLoop {
             };
             turns_used += 1;
 
+            // Emit LLM response observer event.
+            let round_duration = round_start.elapsed();
+            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+                .filter_map(|tc| serde_json::to_value(tc).ok())
+                .collect();
+            let tc_count = response.tool_calls.len();
+            self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+                trace_id: trace_id.to_string(),
+                round: turns_used,
+                duration_ms: round_duration.as_millis() as u64,
+                has_tool_calls: !response.tool_calls.is_empty(),
+                content: response.content.clone(),
+                tool_calls: tc_values,
+                tool_calls_count: tc_count,
+                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+            });
+
             if response.tool_calls.is_empty() || response.finished {
                 // No tool calls: this is the final response.
                 let content = response.content.clone();
-                instance.add_assistant_message(&content, Vec::new());
+                instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
 
                 // Apply RPC correlation ID formatting if needed.
                 let formatted = context.format_rpc_message(&content);
@@ -1802,14 +2079,27 @@ impl AgentLoop {
             // Record the assistant's response with tool calls.
             let tool_calls = response.tool_calls.clone();
             let assistant_content = response.content.clone();
-            instance.add_assistant_message(&assistant_content, tool_calls.clone());
+            instance.add_assistant_message(&assistant_content, tool_calls.clone(), response.reasoning_content.clone());
             events.push(AgentEvent::ToolCall(tool_calls.clone()));
 
             // Execute each tool call.
             instance.set_state(crate::types::AgentState::ExecutingTool);
             let mut hit_async = false;
             for tc in &tool_calls {
+                let tool_start = std::time::Instant::now();
                 let result = self.handle_tool_call(tc, context).await;
+                let tool_duration = tool_start.elapsed();
+
+                // Emit tool call observer event.
+                self.emit_observer_async(crate::loop_executor::ObserverEvent::ToolCall {
+                    trace_id: trace_id.to_string(),
+                    tool_name: tc.name.clone(),
+                    success: true, // If we got here, the tool didn't panic
+                    duration_ms: tool_duration.as_millis() as u64,
+                    round: turns_used,
+                    arguments: tc.arguments.clone(),
+                    result: result.clone(),
+                });
 
                 // Check for async cluster_rpc result — save continuation snapshot.
                 // The cluster_rpc tool returns "__ASYNC__:task_id:target" when
@@ -1947,6 +2237,7 @@ impl AgentLoop {
                     Some(turn.tool_calls)
                 },
                 tool_call_id: turn.tool_call_id,
+                reasoning_content: turn.reasoning_content,
             })
             .collect()
     }
@@ -2154,6 +2445,7 @@ fn summarize_history_owned(
     context_window: usize,
     provider: &dyn LlmProvider,
     model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> Option<String> {
     // Keep last 4 messages for continuity.
     if history.len() <= 4 {
@@ -2185,9 +2477,9 @@ fn summarize_history_owned(
 
     // Multi-part summarization.
     let final_summary = if valid_messages.len() > 10 {
-        summarize_multipart_owned(&valid_messages, provider, model)
+        summarize_multipart_owned(&valid_messages, provider, model, observer_manager)
     } else {
-        summarize_batch_owned(&valid_messages, existing_summary, provider, model)
+        summarize_batch_owned(&valid_messages, existing_summary, provider, model, observer_manager)
     };
 
     let final_summary = if omitted && !final_summary.is_empty() {
@@ -2211,13 +2503,14 @@ fn summarize_multipart_owned(
     messages: &[&crate::types::ConversationTurn],
     provider: &dyn LlmProvider,
     model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> String {
     let mid = messages.len() / 2;
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
-    let s1 = summarize_batch_owned(part1, "", provider, model);
-    let s2 = summarize_batch_owned(part2, "", provider, model);
+    let s1 = summarize_batch_owned(part1, "", provider, model, observer_manager.clone());
+    let s2 = summarize_batch_owned(part2, "", provider, model, observer_manager.clone());
 
     // Merge via LLM.
     let merge_prompt = format!(
@@ -2230,9 +2523,15 @@ fn summarize_multipart_owned(
         content: merge_prompt,
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
     }];
 
-    let response = block_on_llm_chat(provider, model, llm_messages);
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-multipart-merge",
+        model,
+        || block_on_llm_chat(provider, model, llm_messages),
+    );
 
     match response {
         Some(Ok(resp)) if !resp.content.is_empty() => resp.content,
@@ -2246,6 +2545,7 @@ fn summarize_batch_owned(
     existing_summary: &str,
     provider: &dyn LlmProvider,
     model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> String {
     let mut prompt = String::from(
         "Provide a concise summary of this conversation segment, preserving core context and key points.\n",
@@ -2263,9 +2563,15 @@ fn summarize_batch_owned(
         content: prompt,
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
     }];
 
-    let response = block_on_llm_chat(provider, model, messages);
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-batch",
+        model,
+        || block_on_llm_chat(provider, model, messages),
+    );
 
     match response {
         Some(Ok(resp)) => resp.content,
@@ -2302,6 +2608,136 @@ fn block_on_llm_chat(
             Some(rt.block_on(provider.chat(model, messages, None, vec![])))
         }
     }
+}
+
+/// Emit observer events (ConversationStart, LlmRequest, LlmResponse, ConversationEnd)
+/// around a synchronous LLM call closure. Used by standalone summarization functions.
+fn emit_observer_events_around_llm<F>(
+    observer_manager: Option<&Arc<nemesis_observer::Manager>>,
+    label: &str,
+    model: &str,
+    llm_call: F,
+) -> Option<Result<LlmResponse, String>>
+where
+    F: FnOnce() -> Option<Result<LlmResponse, String>>,
+{
+    use crate::loop_executor::ObserverEvent;
+
+    // Generate trace_id for this summarization LLM call.
+    let trace_id = format!(
+        "{}-{}",
+        label,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    // Emit ConversationStart and LlmRequest before the call.
+    if let Some(mgr) = observer_manager {
+        let start_event = ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: label.to_string(),
+            channel: String::new(),
+            chat_id: String::new(),
+            sender_id: "summarizer".to_string(),
+            content: String::new(),
+        };
+        let conv_event = start_event.to_conversation_event();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.block_on(mgr.emit_sync(conv_event));
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(mgr.emit_sync(conv_event));
+            }
+        }
+
+        let request_event = ObserverEvent::LlmRequest {
+            trace_id: trace_id.clone(),
+            round: 0,
+            model: model.to_string(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
+        };
+        let conv_event = request_event.to_conversation_event();
+        let mgr_clone = Arc::clone(mgr);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    mgr_clone.emit(conv_event).await;
+                });
+            }
+            Err(_) => {
+                // No runtime available, just skip async emit for request
+            }
+        }
+    }
+
+    // Execute the LLM call.
+    let start = std::time::Instant::now();
+    let response = llm_call();
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    // Extract response content for observer events.
+    let response_content = response.as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .map(|r| r.content.clone())
+        .unwrap_or_default();
+
+    // Emit LlmResponse and ConversationEnd after the call.
+    if let Some(mgr) = observer_manager {
+        let response_event = ObserverEvent::LlmResponse {
+            trace_id: trace_id.clone(),
+            round: 0,
+            duration_ms,
+            has_tool_calls: false,
+            content: response_content.clone(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("stop".to_string()),
+        };
+        let conv_event = response_event.to_conversation_event();
+        let mgr_clone = Arc::clone(mgr);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    mgr_clone.emit(conv_event).await;
+                });
+            }
+            Err(_) => {
+                // No runtime available, just skip async emit for response
+            }
+        }
+
+        let end_event = ObserverEvent::ConversationEnd {
+            trace_id,
+            session_key: label.to_string(),
+            total_rounds: 1,
+            duration_ms,
+            content: response_content,
+            channel: String::new(),
+            chat_id: String::new(),
+        };
+        let conv_event = end_event.to_conversation_event();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.block_on(mgr.emit_sync(conv_event));
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(mgr.emit_sync(conv_event));
+            }
+        }
+    }
+
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -2532,6 +2968,7 @@ mod tests {
                     content: "No more responses".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
+                    reasoning_content: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -2566,6 +3003,7 @@ mod tests {
             content: "Hello!".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let instance = AgentInstance::new(test_config());
@@ -2597,12 +3035,14 @@ mod tests {
                     arguments: r#"{"expr":"2+2"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             // Second call: LLM returns final text.
             LlmResponse {
                 content: "The answer is 4.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -2639,6 +3079,7 @@ mod tests {
             content: "Pong".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let instance = AgentInstance::new(test_config());
@@ -2668,11 +3109,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "I couldn't find that tool.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -2706,6 +3149,7 @@ mod tests {
                 arguments: "{}".to_string(),
             }],
             finished: false,
+            reasoning_content: None,
         };
         // Create enough responses to exceed max_turns=3.
         let responses: Vec<LlmResponse> = (0..10).map(|_| infinite_response.clone()).collect();
@@ -2831,12 +3275,14 @@ mod tests {
                 content: "You are helpful.".to_string(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             },
             LlmMessage {
                 role: "user".to_string(),
                 content: "Hello".to_string(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             },
             LlmMessage {
                 role: "assistant".to_string(),
@@ -2847,12 +3293,14 @@ mod tests {
                     arguments: r#"{"expr":"2+2"}"#.to_string(),
                 }]),
                 tool_call_id: None,
+                reasoning_content: None,
             },
             LlmMessage {
                 role: "tool".to_string(),
                 content: "4".to_string(),
                 tool_calls: None,
                 tool_call_id: Some("tc_1".to_string()),
+                reasoning_content: None,
             },
         ];
 
@@ -2874,6 +3322,7 @@ mod tests {
             content: long_content,
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }];
 
         let result = format_messages_for_log(&messages);
@@ -3216,6 +3665,7 @@ mod tests {
             content: "Direct response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3234,6 +3684,7 @@ mod tests {
             content: "Heartbeat OK".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3259,6 +3710,7 @@ mod tests {
                 arguments: r#"{"q":"test"}"#.to_string(),
             }]),
             tool_call_id: None,
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -3274,6 +3726,7 @@ mod tests {
             content: "Hello".to_string(),
             tool_calls: None,
             tool_call_id: Some("tc_1".to_string()),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -3291,6 +3744,7 @@ mod tests {
                 arguments: "{}".to_string(),
             }],
             finished: false,
+            reasoning_content: None,
         };
         let cloned = resp.clone();
         assert_eq!(cloned.content, "Hello");
@@ -3380,6 +3834,7 @@ mod tests {
                         content: "Recovered!".to_string(),
                         tool_calls: Vec::new(),
                         finished: true,
+                        reasoning_content: None,
                     })
                 }
             }
@@ -3523,11 +3978,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "I see the error.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -3556,7 +4013,7 @@ mod tests {
         let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
         let instance = AgentInstance::new(test_config());
         instance.add_user_message("Hello");
-        instance.add_assistant_message("Hi", Vec::new());
+        instance.add_assistant_message("Hi", Vec::new(), None);
 
         let messages = agent_loop.build_messages(&instance);
 
@@ -3763,6 +4220,7 @@ mod tests {
             content: "Response with channel".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3800,11 +4258,13 @@ mod tests {
                     },
                 ],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Both results: 4 and 6.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -3866,6 +4326,7 @@ mod tests {
                 arguments: "{}".to_string(),
             }],
             finished: true,
+            reasoning_content: None,
         }]);
 
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4032,6 +4493,7 @@ mod tests {
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4138,9 +4600,9 @@ mod tests {
             id: "tc_1".to_string(),
             name: "calculator".to_string(),
             arguments: "{}".to_string(),
-        }]);
+        }], None);
         instance.add_tool_result("tc_1", "42");
-        instance.add_assistant_message("The answer is 42", vec![]);
+        instance.add_assistant_message("The answer is 42", vec![], None);
 
         let messages = agent_loop.build_messages(&instance);
         // system + user + assistant(tool_calls) + tool + assistant = 5
@@ -4174,6 +4636,7 @@ mod tests {
             content: "heartbeat ok".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -4257,6 +4720,7 @@ mod tests {
             content: "Processed subagent result".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4314,6 +4778,7 @@ mod tests {
             content: "Mock response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4349,6 +4814,7 @@ mod tests {
             content: "Routed response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4367,6 +4833,7 @@ mod tests {
             content: "Agent scoped".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4392,6 +4859,7 @@ mod tests {
             content: "Fallback response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         // Use AgentLoop::new (standalone) which has no route resolver
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4412,6 +4880,7 @@ mod tests {
             content: "Bus response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4437,6 +4906,7 @@ mod tests {
             content: "RPC response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4476,6 +4946,7 @@ mod tests {
             content: "System processed".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4500,6 +4971,7 @@ mod tests {
             content: "Direct content".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4527,9 +4999,10 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             },
         ];
-        let result = summarize_history_owned(&history, "", 128000, &provider, "test-model");
+        let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
         assert!(result.is_none()); // Too short to summarize
     }
 
@@ -4544,9 +5017,10 @@ mod tests {
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: String::new(),
+                reasoning_content: None,
             })
             .collect();
-        let result = summarize_history_owned(&history, "", 128000, &provider, "test-model");
+        let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
         assert!(result.is_none());
     }
 
@@ -4562,7 +5036,7 @@ mod tests {
         // Add many messages without system prompt
         for i in 0..20 {
             instance.add_user_message(&format!("User message {}", i));
-            instance.add_assistant_message(&format!("Response {}", i), Vec::new());
+            instance.add_assistant_message(&format!("Response {}", i), Vec::new(), None);
         }
 
         let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
@@ -4577,7 +5051,7 @@ mod tests {
         let instance = AgentInstance::new(test_config());
         for i in 0..20 {
             instance.add_user_message(&format!("User {}", i));
-            instance.add_assistant_message(&format!("Response {}", i), Vec::new());
+            instance.add_assistant_message(&format!("Response {}", i), Vec::new(), None);
         }
         // Add a final user message
         instance.add_user_message("Final message");
@@ -4664,6 +5138,7 @@ mod tests {
             content: String::new(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -4681,6 +5156,7 @@ mod tests {
             content: "Heartbeat response".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -4774,6 +5250,7 @@ mod tests {
                 arguments: r#"{"key":"value"}"#.to_string(),
             }]),
             tool_call_id: Some("tc_1".to_string()),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let deserialized: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -4790,6 +5267,7 @@ mod tests {
             content: "Result".to_string(),
             tool_calls: None,
             tool_call_id: Some("tc_42".to_string()),
+            reasoning_content: None,
         }];
         let log = format_messages_for_log(&messages);
         assert!(log.contains("tc_42"));
@@ -4803,7 +5281,7 @@ mod tests {
         // Add many messages to trigger summarization
         for i in 0..30 {
             instance.add_user_message(&format!("Message {} with enough content to make it long enough for token estimation to exceed threshold in some way", i));
-            instance.add_assistant_message(&format!("Response {} with similar padding content to increase estimated tokens", i), Vec::new());
+            instance.add_assistant_message(&format!("Response {} with similar padding content to increase estimated tokens", i), Vec::new(), None);
         }
         // Should not panic even without session store
         agent_loop.maybe_summarize(&instance, "test-session", "web", "chat1");
@@ -4816,12 +5294,13 @@ mod tests {
             content: "Summary".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
         let instance = AgentInstance::new(test_config());
         for i in 0..30 {
             instance.add_user_message(&format!("Long user message {} with padding to increase tokens", i));
-            instance.add_assistant_message(&format!("Long response {} with padding", i), Vec::new());
+            instance.add_assistant_message(&format!("Long response {} with padding", i), Vec::new(), None);
         }
 
         // First call triggers summarization
@@ -4846,11 +5325,13 @@ mod tests {
                     arguments: r#"{"expr":"1+1"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "The answer is 2.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -4916,6 +5397,7 @@ mod tests {
                     arguments: r#"{"query":"test"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: String::new(),
@@ -4925,11 +5407,13 @@ mod tests {
                     arguments: r#"{"expr":"42"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Combined result: found and calculated.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -4959,6 +5443,7 @@ mod tests {
                 content: "".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -4999,11 +5484,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "I see the tool failed, let me explain.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -5091,11 +5578,13 @@ mod tests {
                 content: "Response 1".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Response 2".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
@@ -5123,6 +5612,7 @@ mod tests {
             content: "Routed!".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         let config = nemesis_routing::RouteConfig {
@@ -5273,11 +5763,13 @@ mod tests {
                     arguments: r#"{"expr":"3*7"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "The answer is 21".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -5294,7 +5786,7 @@ mod tests {
         let instance = AgentInstance::new(test_config());
 
         instance.add_user_message("First");
-        instance.add_assistant_message("Second", vec![]);
+        instance.add_assistant_message("Second", vec![], None);
         instance.add_user_message("Third");
 
         let messages = agent_loop.build_messages(&instance);
@@ -5345,6 +5837,7 @@ mod tests {
                     arguments: r#"{"path":"/test.txt"}"#.to_string(),
                 }]),
                 tool_call_id: None,
+                reasoning_content: None,
             },
         ];
         let result = format_messages_for_log(&messages);
@@ -5362,6 +5855,7 @@ mod tests {
                 content: "file contents here".to_string(),
                 tool_calls: None,
                 tool_call_id: Some("call_abc".to_string()),
+                reasoning_content: None,
             },
         ];
         let result = format_messages_for_log(&messages);
@@ -5377,6 +5871,7 @@ mod tests {
                 content: long_content.clone(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             },
         ];
         let result = format_messages_for_log(&messages);
@@ -5396,6 +5891,7 @@ mod tests {
                     arguments: long_args.clone(),
                 }]),
                 tool_call_id: None,
+                reasoning_content: None,
             },
         ];
         let result = format_messages_for_log(&messages);

@@ -42,6 +42,10 @@ pub struct ConversationTurn {
     pub tool_call_id: Option<String>,
     /// Timestamp of the turn (ISO 8601).
     pub timestamp: String,
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Stored for passing back to the API in subsequent turns.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reasoning_content: Option<String>,
 }
 
 /// Information about a single tool call within a conversation turn.
@@ -214,6 +218,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:00Z".to_string(),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&turn).unwrap();
         let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -265,6 +270,7 @@ mod tests {
             ],
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:00Z".to_string(),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&turn).unwrap();
         let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -307,6 +313,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: Some("tc_123".to_string()),
             timestamp: "2026-04-29T12:00:00Z".to_string(),
+            reasoning_content: None,
         };
         let json = serde_json::to_string(&turn).unwrap();
         let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -436,6 +443,7 @@ mod tests {
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: "2026-04-29T12:00:00Z".to_string(),
+            reasoning_content: None,
         };
         let cloned = turn.clone();
         assert_eq!(cloned.role, "user");

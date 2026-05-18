@@ -555,7 +555,24 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     model: &str,
     tools: &T,
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) {
+    // Generate trace_id for observer event correlation.
+    let trace_id = format!("continuation-{}-{}", task_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+    let start_time = std::time::Instant::now();
+
+    // Emit conversation_start observer event.
+    if let Some(ref mgr) = observer_manager {
+        let event = crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: format!("continuation-{}", task_id),
+            channel: String::new(),
+            chat_id: String::new(),
+            sender_id: "continuation".to_string(),
+            content: format!("cluster_continuation:{}", task_id),
+        }.to_conversation_event();
+        mgr.emit_sync(event).await;
+    }
     // 1. Load continuation snapshot.
     let cont_data = match manager.load_continuation(task_id).await {
         Some(data) => data,
@@ -588,6 +605,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         content: tool_result_content,
         tool_calls: None,
         tool_call_id: Some(cont_data.tool_call_id.clone()),
+        reasoning_content: None,
     });
 
     // 5. Run the continuation LLM + tool loop.
@@ -600,6 +618,28 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             iteration, max_iterations, task_id
         );
 
+        // Emit LLM request observer event.
+        if let Some(ref mgr) = observer_manager {
+            let msg_values: Vec<serde_json::Value> = messages.iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect();
+            let event = crate::loop_executor::ObserverEvent::LlmRequest {
+                trace_id: trace_id.clone(),
+                round: iteration as u32,
+                model: model.to_string(),
+                messages_count: messages.len(),
+                tools_count: 0,
+                messages: msg_values,
+                tools: vec![],
+                provider_name: String::new(),
+                api_key: String::new(),
+                api_base: String::new(),
+            }.to_conversation_event();
+            let mgr = Arc::clone(mgr);
+            tokio::spawn(async move { mgr.emit(event).await });
+        }
+
+        let round_start = std::time::Instant::now();
         let response = match provider.chat(model, messages.clone(), None, vec![]).await {
             Ok(resp) => resp,
             Err(e) => {
@@ -608,6 +648,27 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 break;
             }
         };
+
+        // Emit LLM response observer event.
+        let round_duration = round_start.elapsed();
+        if let Some(ref mgr) = observer_manager {
+            let tc_values: Vec<serde_json::Value> = response.tool_calls.iter()
+                .filter_map(|tc| serde_json::to_value(tc).ok())
+                .collect();
+            let tc_count = response.tool_calls.len();
+            let event = crate::loop_executor::ObserverEvent::LlmResponse {
+                trace_id: trace_id.clone(),
+                round: iteration as u32,
+                duration_ms: round_duration.as_millis() as u64,
+                has_tool_calls: !response.tool_calls.is_empty(),
+                content: response.content.clone(),
+                tool_calls: tc_values,
+                tool_calls_count: tc_count,
+                finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+            }.to_conversation_event();
+            let mgr = Arc::clone(mgr);
+            tokio::spawn(async move { mgr.emit(event).await });
+        }
 
         if response.tool_calls.is_empty() {
             final_content = response.content.clone();
@@ -620,11 +681,13 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             content: response.content.clone(),
             tool_calls: Some(response.tool_calls.clone()),
             tool_call_id: None,
+            reasoning_content: response.reasoning_content.clone(),
         };
         messages.push(assistant_msg);
 
         // Execute tool calls.
         for tc in &response.tool_calls {
+            let tool_start = std::time::Instant::now();
             let tool_result = execute_tool_for_continuation(
                 tools,
                 tc,
@@ -632,6 +695,24 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 &cont_data.chat_id,
             )
             .await;
+            let tool_duration = tool_start.elapsed();
+
+            // Emit tool call observer event.
+            if let Some(ref mgr) = observer_manager {
+                let result_str = tool_result.error.clone()
+                    .unwrap_or_else(|| tool_result.for_llm.clone());
+                let event = crate::loop_executor::ObserverEvent::ToolCall {
+                    trace_id: trace_id.clone(),
+                    tool_name: tc.name.clone(),
+                    success: tool_result.error.is_none(),
+                    duration_ms: tool_duration.as_millis() as u64,
+                    round: iteration as u32,
+                    arguments: tc.arguments.clone(),
+                    result: result_str,
+                }.to_conversation_event();
+                let mgr = Arc::clone(mgr);
+                tokio::spawn(async move { mgr.emit(event).await });
+            }
 
             // Send ForUser content if not silent.
             if !tool_result.silent && !tool_result.for_user.is_empty() {
@@ -673,6 +754,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 content: content_for_llm,
                 tool_calls: None,
                 tool_call_id: Some(tc.id.clone()),
+                reasoning_content: None,
             });
         }
     }
@@ -695,6 +777,21 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             final_content.len(),
             cont_data.channel
         );
+    }
+
+    // Emit conversation_end observer event.
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+    if let Some(ref mgr) = observer_manager {
+        let event = crate::loop_executor::ObserverEvent::ConversationEnd {
+            trace_id: trace_id.clone(),
+            session_key: format!("continuation-{}", task_id),
+            total_rounds: max_iterations as u32,
+            duration_ms,
+            content: final_content.clone(),
+            channel: cont_data.channel.clone(),
+            chat_id: cont_data.chat_id.clone(),
+        }.to_conversation_event();
+        mgr.emit_sync(event).await;
     }
 }
 
@@ -741,6 +838,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -1382,6 +1480,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
         // No outbound should be sent
@@ -1403,6 +1502,7 @@ mod tests {
             content: "Continuation result".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         handle_cluster_continuation(
@@ -1415,6 +1515,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
 
@@ -1440,6 +1541,7 @@ mod tests {
             content: "Error handled".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         handle_cluster_continuation(
@@ -1452,6 +1554,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
 
@@ -1480,11 +1583,13 @@ mod tests {
                     arguments: r#"{"text":"hello"}"#.to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Tool executed".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -1509,6 +1614,7 @@ mod tests {
             "test-model",
             &tools,
             &outbound_tx,
+            None,
         )
         .await;
 
@@ -1539,6 +1645,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
 
@@ -1566,11 +1673,13 @@ mod tests {
                     arguments: "{}".to_string(),
                 }],
                 finished: false,
+                reasoning_content: None,
             },
             LlmResponse {
                 content: "Handled unknown tool".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
+                reasoning_content: None,
             },
         ]);
 
@@ -1584,6 +1693,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
 
@@ -1706,6 +1816,7 @@ mod tests {
                     content: "No more responses".to_string(),
                     tool_calls: Vec::new(),
                     finished: true,
+                    reasoning_content: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -1835,6 +1946,7 @@ mod tests {
             content: "Error handled".to_string(),
             tool_calls: Vec::new(),
             finished: true,
+            reasoning_content: None,
         }]);
 
         // task_failed = true but error is None
@@ -1848,6 +1960,7 @@ mod tests {
             "test-model",
             &HashMap::<String, Arc<dyn Tool>>::new(),
             &outbound_tx,
+            None,
         )
         .await;
 
