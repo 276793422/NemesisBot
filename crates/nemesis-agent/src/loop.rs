@@ -2208,6 +2208,12 @@ impl AgentLoop {
             }
         }
 
+        // Inject channel/chat_id into context-aware tools before execution.
+        // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
+        if let Some(tool) = self.tools.get(&tool_call.name) {
+            tool.set_context(&context.channel, &context.chat_id);
+        }
+
         match self.tools.get(&tool_call.name) {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {

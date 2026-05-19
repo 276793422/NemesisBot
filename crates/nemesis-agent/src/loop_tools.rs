@@ -824,7 +824,7 @@ impl Tool for CronTool {
         serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"One of: create, delete, list"},"at_seconds":{"type":"integer","description":"Seconds from now for one-time execution"},"every_seconds":{"type":"integer","description":"Interval in seconds for recurring execution"},"cron_expr":{"type":"string","description":"Cron expression for complex schedules"},"command":{"type":"string","description":"Command or message to execute"},"message":{"type":"string","description":"Reminder message"}}})
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let val: serde_json::Value = serde_json::from_str(args)
             .map_err(|e| format!("Invalid arguments: {}", e))?;
 
@@ -890,8 +890,17 @@ impl Tool for CronTool {
                     }
                 };
 
-                let channel = self.channel.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let chat_id = self.chat_id.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // Use context first, fallback to stored values (mirrors MessageTool pattern).
+                let channel = if context.channel.is_empty() {
+                    self.channel.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                } else {
+                    context.channel.clone()
+                };
+                let chat_id = if context.chat_id.is_empty() {
+                    self.chat_id.lock().unwrap_or_else(|e| e.into_inner()).clone()
+                } else {
+                    context.chat_id.clone()
+                };
 
                 let job = svc.add_job(
                     name,
@@ -2959,7 +2968,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // Web fetch tool (always available).
     tools.insert(
         "web_fetch".to_string(),
-        Box::new(WebFetchTool::new(50000)),
+        Box::new(WebFetchTool::new(1024 * 1024)),
     );
 
     // Cluster RPC tool (bot-to-bot communication).
