@@ -80,6 +80,16 @@ const BUSY_MESSAGE: &str = "AI is processing a previous request, please try agai
 // Observer events (wrapping nemesis-observer types for async emission)
 // ===========================================================================
 
+/// Token usage info carried through observer events.
+#[derive(Debug, Clone, Default)]
+pub struct ObserverUsageInfo {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    /// Cached prompt tokens (DeepSeek/OpenAI prefix caching).
+    pub cached_tokens: Option<i64>,
+}
+
 /// An event emitted by the observer system.
 ///
 /// This wraps the `nemesis_observer::ConversationEvent` types into a
@@ -129,6 +139,8 @@ pub enum ObserverEvent {
         tool_calls: Vec<serde_json::Value>,
         tool_calls_count: usize,
         finish_reason: Option<String>,
+        /// Token usage from the provider response.
+        usage: Option<ObserverUsageInfo>,
     },
     /// Tool call executed.
     ToolCall {
@@ -226,6 +238,7 @@ impl ObserverEvent {
                 tool_calls,
                 tool_calls_count,
                 finish_reason,
+                usage,
             } => ConversationEvent {
                 event_type: EventType::LlmResponse,
                 trace_id: trace_id.clone(),
@@ -236,7 +249,12 @@ impl ObserverEvent {
                     content: content.clone(),
                     tool_calls: tool_calls.clone(),
                     tool_calls_count: *tool_calls_count,
-                    usage: None,
+                    usage: usage.as_ref().map(|u| nemesis_observer::UsageInfo {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                        cached_tokens: u.cached_tokens,
+                    }),
                     finish_reason: finish_reason.clone(),
                 }),
             },
@@ -352,6 +370,7 @@ impl ObserverEvent {
                 tool_calls,
                 tool_calls_count,
                 finish_reason,
+                usage,
             } => (
                 "llm_response",
                 serde_json::json!({
@@ -364,6 +383,12 @@ impl ObserverEvent {
                     "tool_calls": tool_calls,
                     "tool_calls_count": tool_calls_count,
                     "finish_reason": finish_reason,
+                    "usage": usage.as_ref().map(|u| serde_json::json!({
+                        "prompt_tokens": u.prompt_tokens,
+                        "completion_tokens": u.completion_tokens,
+                        "total_tokens": u.total_tokens,
+                        "cached_tokens": u.cached_tokens,
+                    })),
                 }),
             ),
             ObserverEvent::ToolCall {
@@ -1222,6 +1247,7 @@ impl AgentLoopExecutor {
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                usage: response.usage.clone(),
             });
 
             // Check if no tool calls - we're done.
@@ -1455,6 +1481,7 @@ impl AgentLoopExecutor {
                             tool_calls: Vec::new(),
                             finished: true,
                             reasoning_content: None,
+                            usage: None,
                         };
                     }
 
@@ -1763,6 +1790,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     finished: true,
                     reasoning_content: None,
+                    usage: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -1845,6 +1873,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
         let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
@@ -1881,6 +1910,7 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             // Second call: final text.
             LlmResponse {
@@ -1888,6 +1918,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
 
@@ -1922,6 +1953,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -1952,12 +1984,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Tool not found.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
 
@@ -1988,6 +2022,7 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             })
             .collect();
 
@@ -2036,6 +2071,7 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             // Second response: final.
             LlmResponse {
@@ -2043,6 +2079,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
 
@@ -2080,6 +2117,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
 
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2114,6 +2152,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2187,6 +2226,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }));
 
@@ -2289,6 +2329,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }));
 
@@ -2326,6 +2367,7 @@ mod tests {
                         tool_calls: Vec::new(),
                         finished: true,
                         reasoning_content: None,
+                        usage: None,
                     })
                 }
             }
@@ -2353,6 +2395,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }));
 
@@ -2507,6 +2550,7 @@ mod tests {
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
+            usage: None,
         };
         let conv_event = event.to_conversation_event();
         assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmResponse);
@@ -2534,6 +2578,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
 
         let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2596,6 +2641,7 @@ mod tests {
                 tool_calls: vec![],
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
             attempts: 1,
         };
@@ -2673,12 +2719,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Tool done.".to_string(),
                 tool_calls: vec![],
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
 
@@ -2707,6 +2755,7 @@ mod tests {
             tool_calls: vec![],
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]));
 
         let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -2743,6 +2792,7 @@ mod tests {
                         tool_calls: vec![],
                         finished: true,
                         reasoning_content: None,
+                        usage: None,
                     })
                 }
             }
@@ -2791,6 +2841,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -2817,12 +2868,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             crate::r#loop::LlmResponse {
                 content: "The answer is 2".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -2850,6 +2903,7 @@ mod tests {
             }],
             finished: false,
             reasoning_content: None,
+            usage: None,
         };
         let responses: Vec<_> = (0..15).map(|_| infinite_response.clone()).collect();
         let provider = Arc::new(MockProvider::new(responses));
@@ -2986,6 +3040,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
             provider: "provider1".to_string(),
             model: "model1".to_string(),
@@ -3007,6 +3062,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
         let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -3066,6 +3122,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     finished: true,
                     reasoning_content: None,
+                    usage: None,
                 })
             }
         }
@@ -3158,6 +3215,7 @@ mod tests {
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: None,
+            usage: None,
         };
         assert!(format!("{:?}", resp).contains("t4"));
 
@@ -3200,6 +3258,7 @@ mod tests {
                         tool_calls: Vec::new(),
                         finished: true,
                         reasoning_content: None,
+                        usage: None,
                     })
                 }
             }
@@ -3238,6 +3297,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     finished: true,
                     reasoning_content: None,
+                    usage: None,
                 })
             }
         }
@@ -3267,6 +3327,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]));
         let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -3326,6 +3387,7 @@ mod tests {
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: None,
+            usage: None,
         };
         let ce = event.to_conversation_event();
         assert_eq!(ce.event_type, nemesis_observer::EventType::LlmResponse);
@@ -3402,6 +3464,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }));
         assert!(result.is_ok());
@@ -3413,6 +3476,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }));
         assert!(result2.is_ok());

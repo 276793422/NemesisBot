@@ -179,6 +179,7 @@ impl ClaudeCliProvider {
                     + resp.usage.cache_creation_input_tokens
                     + resp.usage.cache_read_input_tokens
                     + resp.usage.output_tokens,
+                cached_tokens: None,
             })
         } else {
             None

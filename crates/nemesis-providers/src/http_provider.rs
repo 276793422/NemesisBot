@@ -8,6 +8,23 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Extract UsageInfo from a usage JSON value, including cached token metrics.
+fn extract_usage(u: &serde_json::Value) -> UsageInfo {
+    let cached = u.get("prompt_cache_hit_tokens")
+        .and_then(|v| v.as_i64())
+        .or_else(|| {
+            u.get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_i64())
+        });
+    UsageInfo {
+        prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
+        completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
+        total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
+        cached_tokens: cached,
+    }
+}
+
 /// HTTP provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpProviderConfig {
@@ -351,13 +368,7 @@ impl HttpProvider {
                         }
 
                         let usage = if finish_reason.is_some() {
-                            parsed.get("usage").and_then(|u| {
-                                Some(UsageInfo {
-                                    prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
-                                    completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
-                                    total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
-                                })
-                            })
+                            parsed.get("usage").map(|u| extract_usage(u))
                         } else {
                             None
                         };
@@ -478,15 +489,7 @@ impl LLMProvider for HttpProvider {
             .unwrap_or("stop")
             .to_string();
 
-        let usage = if let Some(usage_val) = data.get("usage") {
-            Some(UsageInfo {
-                prompt_tokens: usage_val["prompt_tokens"].as_i64().unwrap_or(0),
-                completion_tokens: usage_val["completion_tokens"].as_i64().unwrap_or(0),
-                total_tokens: usage_val["total_tokens"].as_i64().unwrap_or(0),
-            })
-        } else {
-            None
-        };
+        let usage = data.get("usage").map(|u| extract_usage(u));
 
         let tool_calls = if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
             tc_array
@@ -1004,6 +1007,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 20,
                 total_tokens: 30,
+                cached_tokens: None,
             }),
             reasoning_content: None,
         };

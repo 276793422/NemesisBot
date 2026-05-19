@@ -141,6 +141,8 @@ pub struct UsageInfo {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens).
+    pub cached_tokens: u32,
 }
 
 /// Information about an LLM response.
@@ -468,6 +470,17 @@ impl RequestLogger {
                 info.usage.completion_tokens,
                 info.usage.total_tokens,
             ));
+            if info.usage.cached_tokens > 0 {
+                let cache_pct = if info.usage.prompt_tokens > 0 {
+                    info.usage.cached_tokens * 100 / info.usage.prompt_tokens
+                } else {
+                    0
+                };
+                content.push_str(&format!(
+                    " - **Cached Tokens**: {} ({ }% cache hit)\n",
+                    info.usage.cached_tokens, cache_pct,
+                ));
+            }
         }
 
         content.push_str(&format!("\n## Finish Reason\n\n{}\n", info.finish_reason));
@@ -945,6 +958,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
+                cached_tokens: 0,
             },
         });
 

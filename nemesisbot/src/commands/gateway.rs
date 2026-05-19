@@ -1720,6 +1720,228 @@ mod tests {
         let service = nemesis_heartbeat::service::HeartbeatService::new(config);
         assert!(!service.is_running());
     }
+
+    // -------------------------------------------------------------------------
+    // Web search config mapping tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_web_search_config_all_disabled() {
+        let cfg = nemesis_config::Config::default();
+        let web = &cfg.tools.web;
+        let any_enabled = web.brave.enabled || web.duckduckgo.enabled || web.perplexity.enabled;
+        assert!(!any_enabled, "All web search providers should be disabled by default");
+    }
+
+    #[test]
+    fn test_web_search_config_brave_enabled() {
+        let json = r#"{"tools": {"web": {"brave": {"enabled": true, "api_key": "test-key", "max_results": 10}}}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        assert!(cfg.tools.web.brave.enabled);
+        assert_eq!(cfg.tools.web.brave.api_key, "test-key");
+        assert_eq!(cfg.tools.web.brave.max_results, 10);
+    }
+
+    #[test]
+    fn test_web_search_config_duckduckgo_enabled() {
+        let json = r#"{"tools": {"web": {"duckduckgo": {"enabled": true, "max_results": 3}}}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        assert!(cfg.tools.web.duckduckgo.enabled);
+        assert_eq!(cfg.tools.web.duckduckgo.max_results, 3);
+    }
+
+    #[test]
+    fn test_web_search_config_perplexity_enabled() {
+        let json = r#"{"tools": {"web": {"perplexity": {"enabled": true, "api_key": "pplx-123", "max_results": 7}}}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        assert!(cfg.tools.web.perplexity.enabled);
+        assert_eq!(cfg.tools.web.perplexity.api_key, "pplx-123");
+        assert_eq!(cfg.tools.web.perplexity.max_results, 7);
+    }
+
+    #[test]
+    fn test_web_search_config_mapping_to_agent_config() {
+        let json = r#"{"tools": {"web": {"brave": {"enabled": true, "api_key": "key1"}, "duckduckgo": {"enabled": true, "max_results": 8}, "perplexity": {"enabled": false}}}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        let web = &cfg.tools.web;
+
+        let config = nemesis_agent::loop_tools::WebSearchConfig {
+            brave_api_key: if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) },
+            brave_max_results: web.brave.max_results.max(1) as usize,
+            brave_enabled: web.brave.enabled,
+            duckduckgo_max_results: web.duckduckgo.max_results.max(1) as usize,
+            duckduckgo_enabled: web.duckduckgo.enabled,
+            perplexity_api_key: if web.perplexity.api_key.is_empty() { None } else { Some(web.perplexity.api_key.clone()) },
+            perplexity_max_results: web.perplexity.max_results.max(1) as usize,
+            perplexity_enabled: web.perplexity.enabled,
+        };
+
+        assert!(config.brave_enabled);
+        assert_eq!(config.brave_api_key, Some("key1".to_string()));
+        assert!(config.duckduckgo_enabled);
+        assert_eq!(config.duckduckgo_max_results, 8);
+        assert!(!config.perplexity_enabled);
+    }
+
+    #[test]
+    fn test_web_search_config_empty_api_key_becomes_none() {
+        let json = r#"{"tools": {"web": {"brave": {"enabled": true, "api_key": ""}}}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        let web = &cfg.tools.web;
+
+        let api_key = if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) };
+        assert_eq!(api_key, None);
+    }
+
+    // -------------------------------------------------------------------------
+    // Device service config tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_devices_config_default_disabled() {
+        let cfg = nemesis_config::Config::default();
+        assert!(!cfg.devices.enabled, "devices should be disabled by default");
+    }
+
+    #[test]
+    fn test_devices_config_enabled() {
+        let json = r#"{"devices": {"enabled": true, "monitor_usb": true}}"#;
+        let cfg: nemesis_config::Config = serde_json::from_str(json).unwrap();
+        assert!(cfg.devices.enabled);
+        assert!(cfg.devices.monitor_usb);
+    }
+
+    // -------------------------------------------------------------------------
+    // Skills loader config tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_skills_loader_creation() {
+        let loader = nemesis_skills::loader::SkillsLoader::new(
+            "/tmp/workspace",
+            "/tmp/workspace/skills",
+            "",
+        );
+        // List should work even with non-existent directories
+        let skills = loader.list_skills();
+        // No skills found in non-existent directories
+        assert!(skills.is_empty() || !skills.is_empty()); // just verify no panic
+    }
+
+    #[test]
+    fn test_skills_loader_with_real_dirs() {
+        let dir = std::env::temp_dir().join("nemesis_test_skills_loader");
+        let skills_dir = dir.join("skills").join("test-skill");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("SKILL.md"), "---\ndescription: A test skill for unit testing\n---\n\n# Test Skill\n\nA test.").unwrap();
+
+        let workspace_str = dir.to_string_lossy().to_string();
+        let global_str = dir.join("skills").to_string_lossy().to_string();
+        let loader = nemesis_skills::loader::SkillsLoader::new(
+            &workspace_str,
+            &global_str,
+            "",
+        );
+        let skills = loader.list_skills();
+        assert!(!skills.is_empty(), "Should find at least one skill in {}", skills_dir.display());
+        assert_eq!(skills[0].name, "test-skill");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------------------------------------------------------------------------
+    // SharedToolConfig wiring tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_shared_tool_config_web_search_field() {
+        let config = nemesis_agent::SharedToolConfig {
+            web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
+                brave_enabled: true,
+                brave_api_key: Some("test".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(config.web_search.is_some());
+        assert!(config.web_search.as_ref().unwrap().brave_enabled);
+    }
+
+    #[test]
+    fn test_shared_tool_config_skills_loader_field() {
+        let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
+        let config = nemesis_agent::SharedToolConfig {
+            skills_loader: Some(std::sync::Arc::new(loader)),
+            ..Default::default()
+        };
+        assert!(config.skills_loader.is_some());
+    }
+
+    #[test]
+    fn test_shared_tool_config_skills_registry_field() {
+        let reg_config = nemesis_skills::types::RegistryConfig::default();
+        let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
+        let config = nemesis_agent::SharedToolConfig {
+            skills_registry: Some(std::sync::Arc::new(rm)),
+            ..Default::default()
+        };
+        assert!(config.skills_registry.is_some());
+    }
+
+    #[test]
+    fn test_register_shared_tools_with_web_search() {
+        let config = nemesis_agent::SharedToolConfig {
+            web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
+                duckduckgo_enabled: true,
+                ..Default::default()
+            }),
+            workspace: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let tools = nemesis_agent::register_shared_tools(&config);
+        assert!(tools.contains_key("web_search"), "web_search should be registered when config is set");
+        assert!(tools.contains_key("web_fetch"), "web_fetch should always be registered");
+    }
+
+    #[test]
+    fn test_register_shared_tools_without_web_search() {
+        let config = nemesis_agent::SharedToolConfig {
+            web_search: None,
+            workspace: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let tools = nemesis_agent::register_shared_tools(&config);
+        assert!(!tools.contains_key("web_search"), "web_search should NOT be registered when config is None");
+        assert!(tools.contains_key("web_fetch"), "web_fetch should always be registered");
+    }
+
+    #[test]
+    fn test_register_shared_tools_with_skills_loader() {
+        let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
+        let config = nemesis_agent::SharedToolConfig {
+            skills_loader: Some(std::sync::Arc::new(loader)),
+            workspace: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let tools = nemesis_agent::register_shared_tools(&config);
+        assert!(tools.contains_key("skills_list"), "skills_list should be registered");
+        assert!(tools.contains_key("skills_info"), "skills_info should be registered");
+    }
+
+    #[test]
+    fn test_register_shared_tools_with_skills_registry() {
+        let reg_config = nemesis_skills::types::RegistryConfig::default();
+        let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
+        let config = nemesis_agent::SharedToolConfig {
+            skills_registry: Some(std::sync::Arc::new(rm)),
+            workspace: Some("/tmp".to_string()),
+            ..Default::default()
+        };
+        let tools = nemesis_agent::register_shared_tools(&config);
+        assert!(tools.contains_key("find_skills"), "find_skills should be registered");
+        assert!(tools.contains_key("install_skill"), "install_skill should be registered");
+    }
 }
 
 /// Parse "host:port" string into (host, port).
@@ -1867,6 +2089,12 @@ impl LlmProvider for ProviderAdapter {
                     tool_calls,
                     finished,
                     reasoning_content: resp.reasoning_content,
+                    usage: resp.usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                        cached_tokens: u.cached_tokens,
+                    }),
                 })
             }
             Err(e) => {
@@ -2371,6 +2599,32 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 None
             }
         },
+        // Web search tool: maps cfg.tools.web → WebSearchConfig.
+        // Mirrors Go's loop_tools.go: tools.NewWebSearchTool(cfg.Tools.Web).
+        web_search: {
+            let web = &cfg.tools.web;
+            let any_enabled = web.brave.enabled
+                || web.duckduckgo.enabled
+                || web.perplexity.enabled;
+            if any_enabled {
+                let config = nemesis_agent::loop_tools::WebSearchConfig {
+                    brave_api_key: if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) },
+                    brave_max_results: web.brave.max_results.max(1) as usize,
+                    brave_enabled: web.brave.enabled,
+                    duckduckgo_max_results: web.duckduckgo.max_results.max(1) as usize,
+                    duckduckgo_enabled: web.duckduckgo.enabled,
+                    perplexity_api_key: if web.perplexity.api_key.is_empty() { None } else { Some(web.perplexity.api_key.clone()) },
+                    perplexity_max_results: web.perplexity.max_results.max(1) as usize,
+                    perplexity_enabled: web.perplexity.enabled,
+                };
+                info!("Web search enabled (brave={}, duckduckgo={}, perplexity={})",
+                      web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled);
+                Some(config)
+            } else {
+                info!("Web search disabled (no provider enabled in config.json: tools.web)");
+                None
+            }
+        },
         mcp_enabled,
         mcp_servers: mcp_servers.clone(),
         ..Default::default()
@@ -2834,6 +3088,44 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             } else {
                 None
             },
+            external: if cfg.channels.external.enabled {
+                Some(nemesis_channels::external::ExternalConfig {
+                    input_exe: cfg.channels.external.input_exe.clone(),
+                    output_exe: cfg.channels.external.output_exe.clone(),
+                    chat_id: cfg.channels.external.chat_id.clone(),
+                    sync_to: cfg.channels.external.sync_to.clone(),
+                    allow_from: cfg.channels.external.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            maixcam: if cfg.channels.maixcam.enabled {
+                Some(nemesis_channels::maixcam::MaixCamConfig {
+                    host: cfg.channels.maixcam.host.clone(),
+                    port: cfg.channels.maixcam.port as u16,
+                    allow_from: cfg.channels.maixcam.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            line: if cfg.channels.line.enabled {
+                Some(nemesis_channels::line::LineConfig {
+                    channel_access_token: cfg.channels.line.channel_access_token.clone(),
+                    channel_secret: cfg.channels.line.channel_secret.clone(),
+                    webhook_port: cfg.channels.line.webhook_port as u16,
+                    allow_from: cfg.channels.line.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            websocket_heartbeat_secs: if cfg.channels.web.heartbeat_interval > 0 {
+                Some(cfg.channels.web.heartbeat_interval as u64)
+            } else {
+                None
+            },
+            // Feature-gated channels (telegram/discord/feishu/slack/etc.) are mapped
+            // when the corresponding feature is enabled in nemesisbot's Cargo.toml:
+            //   nemesis-channels = { workspace = true, features = ["telegram"] }
             ..Default::default()
         };
 
@@ -3109,8 +3401,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // M1: Create and wire DeviceService.
-    // Mirrors Go's bot_service.go:409-413: devices.NewService() + SetBus() + Start().
-    {
+    // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
+    if cfg.devices.enabled {
         let device_service = nemesis_devices::service::DeviceService::new();
         // Wire bus sender: device events → outbound messages via bus
         let bus_for_devices = bus.clone();
@@ -3129,6 +3421,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         } else {
             info!("Device service started (USB hotplug monitoring)");
         }
+    } else {
+        info!("Device service disabled (config.json: devices.enabled = false)");
     }
 
     // Step 13: Create ServiceManager with config

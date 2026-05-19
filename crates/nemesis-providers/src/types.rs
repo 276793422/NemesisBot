@@ -44,11 +44,17 @@ pub struct LLMResponse {
 }
 
 /// Token usage info.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageInfo {
+    #[serde(default)]
     pub prompt_tokens: i64,
+    #[serde(default)]
     pub completion_tokens: i64,
+    #[serde(default)]
     pub total_tokens: i64,
+    /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens in prompt_tokens_details).
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "prompt_cache_hit_tokens")]
+    pub cached_tokens: Option<i64>,
 }
 
 /// A message in the conversation.
@@ -439,6 +445,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                cached_tokens: None,
             }),
             reasoning_content: None,
     extra: HashMap::new(),
@@ -455,6 +462,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            cached_tokens: None,
         };
         let json = serde_json::to_string(&usage).unwrap();
         let deserialized: UsageInfo = serde_json::from_str(&json).unwrap();
@@ -620,6 +628,7 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                cached_tokens: None,
             }),
             reasoning_content: None,
     extra: HashMap::new(),

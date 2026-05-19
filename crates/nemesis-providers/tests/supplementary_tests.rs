@@ -148,6 +148,7 @@ mod types_extra {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            cached_tokens: None,
         };
         assert_eq!(usage.prompt_tokens + usage.completion_tokens, usage.total_tokens);
     }
@@ -158,6 +159,7 @@ mod types_extra {
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
+            cached_tokens: None,
         };
         assert_eq!(usage.total_tokens, 0);
     }
@@ -263,6 +265,7 @@ mod types_extra {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
+                cached_tokens: None,
             }),
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
@@ -270,6 +273,37 @@ mod types_extra {
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("usage"));
         assert!(json.contains("prompt_tokens"));
+    }
+
+    #[test]
+    fn test_usage_info_with_cached_tokens_deepseek() {
+        // DeepSeek returns prompt_cache_hit_tokens at top level of usage
+        let json = r#"{"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050, "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200}"#;
+        let usage: UsageInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 1000);
+        assert_eq!(usage.cached_tokens, Some(800));
+    }
+
+    #[test]
+    fn test_usage_info_with_cached_tokens_openai() {
+        // OpenAI returns cached_tokens inside prompt_tokens_details.
+        // The serde struct doesn't parse nested prompt_tokens_details,
+        // but extract_usage() handles it in http_provider.rs.
+        // Here we just verify the cached_tokens field works.
+        let usage = UsageInfo {
+            prompt_tokens: 1000,
+            completion_tokens: 50,
+            total_tokens: 1050,
+            cached_tokens: Some(600),
+        };
+        assert_eq!(usage.cached_tokens, Some(600));
+    }
+
+    #[test]
+    fn test_usage_info_no_cache() {
+        let json = r#"{"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}"#;
+        let usage: UsageInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.cached_tokens, None);
     }
 }
 

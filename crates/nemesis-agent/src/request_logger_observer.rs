@@ -14,7 +14,7 @@ use tracing::warn;
 
 use crate::request_logger::{
     FinalResponseInfo, LLMRequestInfo, LLMResponseInfo, LocalOperationInfo, LoggingConfig,
-    OperationInfo, RequestLogger, UsageInfo, UserRequestInfo,
+    OperationInfo, RequestLogger, UserRequestInfo,
 };
 
 /// Conversation event types emitted during the agent loop.
@@ -94,6 +94,11 @@ pub struct LLMResponseEventData {
     pub finish_reason: String,
     /// Serialized tool call details from the response.
     pub tool_calls: Vec<serde_json::Value>,
+    /// Token usage from the provider response.
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub cached_tokens: Option<i64>,
 }
 
 /// Data for tool_call events.
@@ -250,7 +255,12 @@ impl RequestLoggerObserver {
                 tool_calls_count: data.tool_calls_count,
                 finish_reason: data.finish_reason.clone(),
                 tool_calls,
-                usage: UsageInfo::default(),
+                usage: crate::request_logger::UsageInfo {
+                    prompt_tokens: data.prompt_tokens as u32,
+                    completion_tokens: data.completion_tokens as u32,
+                    total_tokens: data.total_tokens as u32,
+                    cached_tokens: data.cached_tokens.unwrap_or(0) as u32,
+                },
             });
         }
     }
@@ -407,6 +417,10 @@ fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<Conversati
                 tool_calls_count: d.tool_calls_count,
                 finish_reason: d.finish_reason.clone().unwrap_or_default(),
                 tool_calls: d.tool_calls.clone(),
+                prompt_tokens: d.usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+                completion_tokens: d.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+                total_tokens: d.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+                cached_tokens: d.usage.as_ref().and_then(|u| u.cached_tokens),
             }),
         }),
         nemesis_observer::EventData::ToolCall(d) => Some(ConversationEvent {
@@ -495,6 +509,10 @@ mod tests {
                 tool_calls_count: 0,
                 finish_reason: "stop".to_string(),
                 tool_calls: vec![],
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                cached_tokens: None,
             }),
         }
     }
@@ -625,6 +643,174 @@ mod tests {
         assert_eq!(observer.active_count(), 1);
 
         observer.on_event(&make_end_event("trace-b", 1));
+        assert_eq!(observer.active_count(), 0);
+    }
+
+    #[test]
+    fn full_lifecycle_with_tool_calls_and_response() {
+        let tmp = TempDir::new().unwrap();
+        let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+        let trace = "trace-full";
+        observer.on_event(&make_start_event(trace, "Calculate 2+2"));
+
+        // Round 1: LLM request → response with tool calls
+        observer.on_event(&make_llm_request_event(trace, 1));
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::LLMResponse,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::LLMResponse(LLMResponseEventData {
+                round: 1,
+                duration_ms: 2000,
+                content: "".to_string(),
+                tool_calls_count: 2,
+                finish_reason: "tool_calls".to_string(),
+                tool_calls: vec![
+                    serde_json::json!({"id": "tc1", "function": {"name": "calculator", "arguments": "{\"expr\": \"2+2\"}"}}),
+                ],
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                cached_tokens: None,
+            }),
+        });
+
+        // Tool call: success
+        observer.on_event(&make_tool_call_event(trace, 1, "calculator", true));
+        // Tool call: failure
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::ToolCall,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::ToolCall(ToolCallEventData {
+                tool_name: "search".to_string(),
+                success: false,
+                duration_ms: 500,
+                error: "Network timeout".to_string(),
+                llm_round: 1,
+                arguments: "{\"query\": \"test\"}".to_string(),
+                result: "Error: Network timeout".to_string(),
+            }),
+        });
+
+        // Round 2: LLM request → response
+        observer.on_event(&make_llm_request_event(trace, 2));
+        observer.on_event(&make_llm_response_event(trace, 2));
+
+        // End conversation with error
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::ConversationEnd,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::ConversationEnd(ConversationEndData {
+                session_key: "test:chat1".to_string(),
+                channel: "web".to_string(),
+                chat_id: "chat1".to_string(),
+                total_rounds: 2,
+                total_duration_ms: 5000,
+                content: "The answer is 4.".to_string(),
+                is_error: false,
+            }),
+        });
+
+        assert_eq!(observer.active_count(), 0);
+    }
+
+    #[test]
+    fn conversation_end_with_error_flag() {
+        let tmp = TempDir::new().unwrap();
+        let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+        let trace = "trace-err";
+        observer.on_event(&make_start_event(trace, "Do something"));
+
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::ConversationEnd,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::ConversationEnd(ConversationEndData {
+                session_key: "test:chat1".to_string(),
+                channel: "web".to_string(),
+                chat_id: "chat1".to_string(),
+                total_rounds: 1,
+                total_duration_ms: 1000,
+                content: "Error: something went wrong".to_string(),
+                is_error: true,
+            }),
+        });
+
+        assert_eq!(observer.active_count(), 0);
+    }
+
+    #[test]
+    fn llm_response_with_tool_call_details() {
+        let tmp = TempDir::new().unwrap();
+        let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+        let trace = "trace-tc";
+        observer.on_event(&make_start_event(trace, "Search for info"));
+        observer.on_event(&make_llm_request_event(trace, 1));
+
+        // Response with tool calls
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::LLMResponse,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::LLMResponse(LLMResponseEventData {
+                round: 1,
+                duration_ms: 3000,
+                content: "Let me search for that.".to_string(),
+                tool_calls_count: 1,
+                finish_reason: "tool_calls".to_string(),
+                tool_calls: vec![
+                    serde_json::json!({
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": "{\"query\": \"test query\"}"
+                        }
+                    }),
+                ],
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+                cached_tokens: None,
+            }),
+        });
+
+        observer.on_event(&make_end_event(trace, 1));
+        assert_eq!(observer.active_count(), 0);
+    }
+
+    #[test]
+    fn tool_call_with_arguments_and_result() {
+        let tmp = TempDir::new().unwrap();
+        let observer = RequestLoggerObserver::new(test_config(), tmp.path());
+
+        let trace = "trace-args";
+        observer.on_event(&make_start_event(trace, "List files"));
+        observer.on_event(&make_llm_request_event(trace, 1));
+        observer.on_event(&make_llm_response_event(trace, 1));
+
+        // Tool call with full data
+        observer.on_event(&ConversationEvent {
+            event_type: EventType::ToolCall,
+            trace_id: trace.to_string(),
+            timestamp: Utc::now(),
+            data: EventData::ToolCall(ToolCallEventData {
+                tool_name: "list_dir".to_string(),
+                success: true,
+                duration_ms: 50,
+                error: String::new(),
+                llm_round: 1,
+                arguments: "{\"path\": \"/tmp\"}".to_string(),
+                result: "file1.txt\nfile2.txt".to_string(),
+            }),
+        });
+
+        observer.on_event(&make_end_event(trace, 1));
         assert_eq!(observer.active_count(), 0);
     }
 }

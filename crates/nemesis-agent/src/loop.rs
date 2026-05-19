@@ -58,6 +58,8 @@ pub struct LlmResponse {
     pub finished: bool,
     /// Reasoning content from thinking-mode models.
     pub reasoning_content: Option<String>,
+    /// Token usage from the provider response.
+    pub usage: Option<crate::loop_executor::ObserverUsageInfo>,
 }
 
 /// Trait for LLM providers used by the agent loop.
@@ -2063,6 +2065,7 @@ impl AgentLoop {
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                usage: response.usage.clone(),
             });
 
             if response.tool_calls.is_empty() || response.finished {
@@ -2094,7 +2097,7 @@ impl AgentLoop {
                 self.emit_observer_async(crate::loop_executor::ObserverEvent::ToolCall {
                     trace_id: trace_id.to_string(),
                     tool_name: tc.name.clone(),
-                    success: true, // If we got here, the tool didn't panic
+                    success: !result.starts_with("Error:") && !result.starts_with("Tool error:"),
                     duration_ms: tool_duration.as_millis() as u64,
                     round: turns_used,
                     arguments: tc.arguments.clone(),
@@ -2702,6 +2705,7 @@ where
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
+            usage: None,
         };
         let conv_event = response_event.to_conversation_event();
         let mgr_clone = Arc::clone(mgr);
@@ -2969,6 +2973,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     finished: true,
                     reasoning_content: None,
+                    usage: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -3004,6 +3009,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let instance = AgentInstance::new(test_config());
@@ -3036,6 +3042,7 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             // Second call: LLM returns final text.
             LlmResponse {
@@ -3043,6 +3050,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -3080,6 +3088,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let instance = AgentInstance::new(test_config());
@@ -3110,12 +3119,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "I couldn't find that tool.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -3150,6 +3161,7 @@ mod tests {
             }],
             finished: false,
             reasoning_content: None,
+            usage: None,
         };
         // Create enough responses to exceed max_turns=3.
         let responses: Vec<LlmResponse> = (0..10).map(|_| infinite_response.clone()).collect();
@@ -3666,6 +3678,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3685,6 +3698,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3745,6 +3759,7 @@ mod tests {
             }],
             finished: false,
             reasoning_content: None,
+            usage: None,
         };
         let cloned = resp.clone();
         assert_eq!(cloned.content, "Hello");
@@ -3835,6 +3850,7 @@ mod tests {
                         tool_calls: Vec::new(),
                         finished: true,
                         reasoning_content: None,
+                        usage: None,
                     })
                 }
             }
@@ -3979,12 +3995,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "I see the error.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -4221,6 +4239,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -4259,12 +4278,14 @@ mod tests {
                 ],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Both results: 4 and 6.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -4327,6 +4348,7 @@ mod tests {
             }],
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4494,6 +4516,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4637,6 +4660,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -4721,6 +4745,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4779,6 +4804,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4815,6 +4841,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4834,6 +4861,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4860,6 +4888,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         // Use AgentLoop::new (standalone) which has no route resolver
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -4881,6 +4910,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4907,6 +4937,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4947,6 +4978,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -4972,6 +5004,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -5139,6 +5172,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -5157,6 +5191,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new(Box::new(provider), test_config());
         let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -5295,6 +5330,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
         let instance = AgentInstance::new(test_config());
@@ -5326,12 +5362,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "The answer is 2.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -5398,6 +5436,7 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: String::new(),
@@ -5408,12 +5447,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Combined result: found and calculated.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -5444,6 +5485,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -5485,12 +5527,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "I see the tool failed, let me explain.".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -5579,12 +5623,14 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Response 2".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
         let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
@@ -5613,6 +5659,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         let config = nemesis_routing::RouteConfig {
@@ -5764,12 +5811,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "The answer is 21".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 

@@ -119,11 +119,13 @@ pub struct LlmResponseData {
 }
 
 /// Token usage information, mirroring Go's `providers.UsageInfo`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UsageInfo {
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
     pub total_tokens: i64,
+    /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens).
+    pub cached_tokens: Option<i64>,
 }
 
 /// Data for tool call events.
@@ -566,6 +568,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
+            cached_tokens: None,
         };
 
         let tool_calls = vec![
@@ -618,6 +621,7 @@ mod tests {
             prompt_tokens: 500,
             completion_tokens: 200,
             total_tokens: 700,
+            cached_tokens: None,
         };
         assert_eq!(usage.prompt_tokens, 500);
         assert_eq!(usage.completion_tokens, 200);
@@ -698,6 +702,7 @@ mod tests {
                     prompt_tokens: 10,
                     completion_tokens: 5,
                     total_tokens: 15,
+                    cached_tokens: None,
                 }),
                 finish_reason: Some("stop".to_string()),
             }),

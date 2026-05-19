@@ -182,10 +182,23 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         .unwrap_or("stop")
         .to_string();
 
-    let usage = data.get("usage").map(|u| UsageInfo {
-        prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
-        completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
-        total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
+    let usage = data.get("usage").map(|u| {
+        // Extract cached tokens from provider-specific fields:
+        // - DeepSeek: prompt_cache_hit_tokens
+        // - OpenAI: prompt_tokens_details.cached_tokens
+        let cached = u.get("prompt_cache_hit_tokens")
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                u.get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_i64())
+            });
+        UsageInfo {
+            prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
+            completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
+            total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
+            cached_tokens: cached,
+        }
     });
 
     let tool_calls = choices

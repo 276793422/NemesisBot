@@ -665,6 +665,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 tool_calls: tc_values,
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
+                usage: response.usage.clone(),
             }.to_conversation_event();
             let mgr = Arc::clone(mgr);
             tokio::spawn(async move { mgr.emit(event).await });
@@ -1503,6 +1504,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         handle_cluster_continuation(
@@ -1542,6 +1544,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         handle_cluster_continuation(
@@ -1584,12 +1587,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Tool executed".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -1674,12 +1679,14 @@ mod tests {
                 }],
                 finished: false,
                 reasoning_content: None,
+                usage: None,
             },
             LlmResponse {
                 content: "Handled unknown tool".to_string(),
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             },
         ]);
 
@@ -1817,6 +1824,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     finished: true,
                     reasoning_content: None,
+                    usage: None,
                 })
             } else {
                 Ok(responses.remove(0))
@@ -1947,6 +1955,7 @@ mod tests {
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
+            usage: None,
         }]);
 
         // task_failed = true but error is None

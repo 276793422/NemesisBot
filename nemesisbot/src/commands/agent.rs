@@ -153,6 +153,12 @@ impl LlmProvider for ProviderAdapter {
                     tool_calls,
                     finished,
                     reasoning_content: resp.reasoning_content,
+                    usage: resp.usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                        cached_tokens: u.cached_tokens,
+                    }),
                 })
             }
             Err(e) => {

@@ -759,6 +759,7 @@ impl Summarizer {
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
+            usage: None,
         });
         self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
             trace_id,
@@ -845,6 +846,7 @@ impl Summarizer {
             tool_calls: vec![],
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
+            usage: None,
         });
         self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
             trace_id,
@@ -1815,6 +1817,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 finished: true,
                 reasoning_content: None,
+                usage: None,
             })
         }
     }

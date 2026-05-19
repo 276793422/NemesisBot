@@ -299,6 +299,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
+            cached_tokens: None,
         })
     } else {
         None
