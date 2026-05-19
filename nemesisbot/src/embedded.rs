@@ -186,8 +186,7 @@ mod tests {
         let files = list_embedded_files();
         assert!(!files.is_empty());
         assert!(files.iter().any(|f| f.contains("index.html")));
-        assert!(files.iter().any(|f| f.contains("css/")));
-        assert!(files.iter().any(|f| f.contains("js/")));
+        assert!(files.iter().any(|f| f.contains("assets/")));
     }
 
     #[test]
@@ -196,41 +195,21 @@ mod tests {
         extract_dir(&EMBEDDED_STATIC, temp.path()).unwrap();
 
         assert!(temp.path().join("index.html").exists());
-        assert!(temp.path().join("css").is_dir());
-        assert!(temp.path().join("js").is_dir());
+        assert!(temp.path().join("assets").is_dir());
         assert!(temp.path().join("fonts").is_dir());
 
-        // Verify files are at the correct depth (not nested like css/css/theme.css)
-        assert!(
-            temp.path().join("css/theme.css").exists(),
-            "css/theme.css should exist at correct depth"
-        );
-        assert!(
-            temp.path().join("css/layout.css").exists(),
-            "css/layout.css should exist at correct depth"
-        );
-        assert!(
-            temp.path().join("css/components.css").exists(),
-            "css/components.css should exist at correct depth"
-        );
-        assert!(
-            temp.path().join("js/app.js").exists(),
-            "js/app.js should exist at correct depth"
-        );
-        assert!(
-            temp.path().join("js/api.js").exists(),
-            "js/api.js should exist at correct depth"
-        );
-
-        // Verify files are NOT at doubled paths
-        assert!(
-            !temp.path().join("css/css/theme.css").exists(),
-            "css/css/theme.css should NOT exist (path nesting bug)"
-        );
-        assert!(
-            !temp.path().join("js/js/app.js").exists(),
-            "js/js/app.js should NOT exist (path nesting bug)"
-        );
+        // Verify assets contain JS and CSS bundles
+        let assets_dir = temp.path().join("assets");
+        let js_files: Vec<_> = std::fs::read_dir(&assets_dir).unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "js").unwrap_or(false))
+            .collect();
+        let css_files: Vec<_> = std::fs::read_dir(&assets_dir).unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "css").unwrap_or(false))
+            .collect();
+        assert!(!js_files.is_empty(), "assets/ should contain JS bundles");
+        assert!(!css_files.is_empty(), "assets/ should contain CSS bundles");
     }
 
     // ============================================================
@@ -245,24 +224,24 @@ mod tests {
 
     #[test]
     fn test_get_embedded_file_css() {
-        let content = get_embedded_file("css/theme.css");
-        assert!(content.is_some());
-        let css = std::str::from_utf8(content.unwrap()).unwrap();
-        assert!(!css.is_empty());
+        // Vue build puts CSS into assets/ directory
+        let files = list_embedded_files();
+        assert!(files.iter().any(|f| f.contains("assets/") && f.ends_with(".css")));
     }
 
     #[test]
     fn test_get_embedded_file_js() {
-        let content = get_embedded_file("js/app.js");
-        assert!(content.is_some());
+        // Vue build puts JS into assets/ directory
+        let files = list_embedded_files();
+        assert!(files.iter().any(|f| f.contains("assets/") && f.ends_with(".js")));
     }
 
     #[test]
     fn test_list_embedded_files_contains_known_paths() {
         let files = list_embedded_files();
         assert!(files.iter().any(|f| f == "index.html" || f.contains("index.html")));
-        assert!(files.iter().any(|f| f.contains("css/")));
-        assert!(files.iter().any(|f| f.contains("js/")));
+        assert!(files.iter().any(|f| f.contains("assets/")));
+        assert!(files.iter().any(|f| f.contains("fonts/")));
     }
 
     #[test]

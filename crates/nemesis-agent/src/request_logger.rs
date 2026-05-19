@@ -380,17 +380,26 @@ impl RequestLogger {
             }
         }
 
-        // Messages section with full content (mirrors Go's formatMessagesForLog).
-        content.push_str(&format!("\n## Messages\n\n{} messages included\n", info.messages_count));
+        // Tools count — part of the request metadata.
+        content.push_str(&format!("\n## Tools\n\n{} tools available\n", info.tools_count));
+
+        // Messages section — placed as a separate h1 section at the end of the file.
+        // This prevents markdown headers inside system prompts from polluting
+        // the file's own structure.
         if !info.messages.is_empty() {
-            content.push_str("\n### Message Details\n\n");
+            content.push_str(&format!(
+                "\n# Messages\n\n{} messages included\n",
+                info.messages_count,
+            ));
             for (i, msg) in info.messages.iter().enumerate() {
-                let msg_preview = if self.config.detail_level == DetailLevel::Truncated && msg.content.len() > TRUNCATE_MESSAGE_LIMIT {
+                let msg_preview = if self.config.detail_level == DetailLevel::Truncated
+                    && msg.content.len() > TRUNCATE_MESSAGE_LIMIT
+                {
                     utils::truncate(&msg.content, TRUNCATE_MESSAGE_LIMIT)
                 } else {
                     msg.content.clone()
                 };
-                content.push_str(&format!("**[{}] {}**: {}\n", i, msg.role, msg_preview));
+                content.push_str(&format!("\n## [{}] {}\n\n```text\n{}\n```\n", i, msg.role, msg_preview));
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
                         let args_preview = if tc.arguments.len() > TRUNCATE_ARGS_LIMIT {
@@ -398,13 +407,14 @@ impl RequestLogger {
                         } else {
                             tc.arguments.clone()
                         };
-                        content.push_str(&format!("  - ToolCall: {} ({}) args: {}\n", tc.name, tc.id, args_preview));
+                        content.push_str(&format!(
+                            "\n> ToolCall: `{}` ({})\n> ```json\n> {}\n> ```\n",
+                            tc.name, tc.id, args_preview,
+                        ));
                     }
                 }
             }
         }
-
-        content.push_str(&format!("\n## Tools\n\n{} tools available\n", info.tools_count));
 
         let _ = self.write_file(&filename, &content);
     }

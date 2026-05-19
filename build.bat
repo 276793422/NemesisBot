@@ -77,7 +77,7 @@ REM ============================================
 REM Step 1: Clean (optional)
 REM ============================================
 if "%CLEAN%"=="1" (
-    echo [Step 1/4] Cleaning target...
+    echo [Step 1/5] Cleaning target...
     cargo clean 2>nul
     if errorlevel 1 (
         echo   WARN cargo clean had issues, continuing...
@@ -86,14 +86,48 @@ if "%CLEAN%"=="1" (
     )
     echo.
 ) else (
-    echo [Step 1/4] Clean skipped ^(use --clean to enable^)
+    echo [Step 1/5] Clean skipped ^(use --clean to enable^)
     echo.
 )
 
 REM ============================================
-REM Step 2: Build main workspace (release)
+REM Step 2: Build Vue frontend (web dashboard)
 REM ============================================
-echo [Step 2/4] Building release...
+echo [Step 2/5] Building Vue frontend...
+
+if exist "web\package.json" (
+    pushd web
+    if not exist "node_modules" (
+        echo   Installing npm dependencies...
+        call npm install --silent 2>nul
+        if errorlevel 1 (
+            popd
+            echo   WARN npm install failed, skipping Vue build
+            echo.
+            goto step3
+        )
+    )
+    echo   Running Vite build...
+    call npm run build 2>nul
+    if errorlevel 1 (
+        popd
+        echo   WARN Vue build failed, using existing static files
+        echo.
+        goto step3
+    )
+    popd
+    echo   OK Vue frontend built
+) else (
+    echo   SKIP web\package.json not found
+)
+echo.
+
+:step3
+
+REM ============================================
+REM Step 3: Build main workspace (release)
+REM ============================================
+echo [Step 3/5] Building release...
 
 cargo build --release
 if errorlevel 1 (
@@ -107,15 +141,15 @@ echo   OK Build completed
 echo.
 
 REM ============================================
-REM Step 3: Build plugin DLLs (release)
+REM Step 4: Build plugin DLLs (release)
 REM ============================================
 if "%SKIP_PLUGIN%"=="1" (
-    echo [Step 3/4] Plugin DLLs skipped ^(--skip-plugin^)
+    echo [Step 4/5] Plugin DLLs skipped ^(--skip-plugin^)
     echo.
-    goto step4
+    goto step5
 )
 
-echo [Step 3/4] Building plugin DLLs...
+echo [Step 4/5] Building plugin DLLs...
 
 REM --- plugin-ui ---
 if exist "plugins\plugin-ui\Cargo.toml" (
@@ -144,7 +178,7 @@ if exist "plugins\plugin-onnx\Cargo.toml" (
         popd
         echo   WARN Plugin-onnx DLL build failed ^(non-fatal, continuing without plugin^)
         echo.
-        goto step4
+        goto step5
     )
     popd
     echo   OK Plugin-onnx DLL built
@@ -153,12 +187,12 @@ if exist "plugins\plugin-onnx\Cargo.toml" (
 )
 echo.
 
-:step4
+:step5
 
 REM ============================================
-REM Step 4: Copy to bin\
+REM Step 5: Copy to bin\
 REM ============================================
-echo [Step 4/4] Copying to bin\...
+echo [Step 5/5] Copying to bin\...
 
 if not exist "bin" mkdir bin
 

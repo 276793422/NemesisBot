@@ -77,19 +77,46 @@ echo ""
 # Step 1: Clean (optional)
 # ============================================
 if [ "$CLEAN" = true ]; then
-    echo "[Step 1/4] Cleaning target..."
+    echo "[Step 1/5] Cleaning target..."
     cargo clean 2>/dev/null || true
     echo "  OK Cleaned"
     echo ""
 else
-    echo "[Step 1/4] Clean skipped (use --clean to enable)"
+    echo "[Step 1/5] Clean skipped (use --clean to enable)"
     echo ""
 fi
 
 # ============================================
-# Step 2: Build main workspace (release)
+# Step 2: Build Vue frontend (web dashboard)
 # ============================================
-echo "[Step 2/4] Building release..."
+echo "[Step 2/5] Building Vue frontend..."
+
+if [ -f "web/package.json" ]; then
+    if [ ! -d "web/node_modules" ]; then
+        echo "  Installing npm dependencies..."
+        (cd web && npm install --silent 2>/dev/null) || {
+            echo "  WARN npm install failed, skipping Vue build"
+            echo ""
+            # fall through to step 3
+        }
+    fi
+    if [ -d "web/node_modules" ]; then
+        echo "  Running Vite build..."
+        if (cd web && npm run build 2>/dev/null); then
+            echo "  OK Vue frontend built"
+        else
+            echo "  WARN Vue build failed, using existing static files"
+        fi
+    fi
+else
+    echo "  SKIP web/package.json not found"
+fi
+echo ""
+
+# ============================================
+# Step 3: Build main workspace (release)
+# ============================================
+echo "[Step 3/5] Building release..."
 START_TIME=$SECONDS
 
 if ! cargo build --release 2>&1; then
@@ -106,10 +133,10 @@ echo ""
 # Step 3: Build plugin DLLs (release)
 # ============================================
 if [ "$SKIP_PLUGIN" = true ]; then
-    echo "[Step 3/4] Plugin DLLs skipped (--skip-plugin)"
+    echo "[Step 4/5] Plugin DLLs skipped (--skip-plugin)"
     echo ""
 else
-    echo "[Step 3/4] Building plugin DLLs..."
+    echo "[Step 4/5] Building plugin DLLs..."
 
     # --- plugin-ui ---
     PLUGIN_UI_DIR="plugins/plugin-ui"
@@ -144,9 +171,9 @@ else
 fi
 
 # ============================================
-# Step 4: Copy to bin/
+# Step 5: Copy to bin/
 # ============================================
-echo "[Step 4/4] Copying to bin/..."
+echo "[Step 5/5] Copying to bin/..."
 
 BIN_DIR="bin"
 mkdir -p "$BIN_DIR"
