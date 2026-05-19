@@ -363,10 +363,12 @@ fn load_security_rules(
         let exec_rules = parse_rules(proc_rules.get("exec").unwrap_or(&serde_json::Value::Null));
         let spawn_rules = parse_rules(proc_rules.get("spawn").unwrap_or(&serde_json::Value::Null));
         let kill_rules = parse_rules(proc_rules.get("kill").unwrap_or(&serde_json::Value::Null));
+        let suspend_rules = parse_rules(proc_rules.get("suspend").unwrap_or(&serde_json::Value::Null));
 
         plugin.set_rules(OperationType::ProcessExec, exec_rules);
         plugin.set_rules(OperationType::ProcessSpawn, spawn_rules);
         plugin.set_rules(OperationType::ProcessKill, kill_rules);
+        plugin.set_rules(OperationType::ProcessSuspend, suspend_rules);
         info!("Security process_rules loaded");
     }
 
@@ -380,6 +382,30 @@ fn load_security_rules(
         plugin.set_rules(OperationType::NetworkDownload, download_rules);
         plugin.set_rules(OperationType::NetworkUpload, upload_rules);
         info!("Security network_rules loaded");
+    }
+
+    // Hardware rules
+    if let Some(hw_rules) = config.get("hardware_rules") {
+        let i2c_rules = parse_rules(hw_rules.get("i2c").unwrap_or(&serde_json::Value::Null));
+        let spi_rules = parse_rules(hw_rules.get("spi").unwrap_or(&serde_json::Value::Null));
+        let gpio_rules = parse_rules(hw_rules.get("gpio").unwrap_or(&serde_json::Value::Null));
+
+        plugin.set_rules(OperationType::HardwareI2C, i2c_rules);
+        plugin.set_rules(OperationType::HardwareSPI, spi_rules);
+        plugin.set_rules(OperationType::HardwareGPIO, gpio_rules);
+        info!("Security hardware_rules loaded");
+    }
+
+    // Registry rules
+    if let Some(reg_rules) = config.get("registry_rules") {
+        let read_rules = parse_rules(reg_rules.get("read").unwrap_or(&serde_json::Value::Null));
+        let write_rules = parse_rules(reg_rules.get("write").unwrap_or(&serde_json::Value::Null));
+        let delete_rules = parse_rules(reg_rules.get("delete").unwrap_or(&serde_json::Value::Null));
+
+        plugin.set_rules(OperationType::RegistryRead, read_rules);
+        plugin.set_rules(OperationType::RegistryWrite, write_rules);
+        plugin.set_rules(OperationType::RegistryDelete, delete_rules);
+        info!("Security registry_rules loaded");
     }
 
     info!("Security config loaded from {}", config_path.display());
@@ -417,8 +443,9 @@ fn load_scanner_full_config(
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         std::process::Command::new("cmd")
-            .args(["/c", "start", url])
+            .raw_arg(format!("/c start {}", url))
             .spawn()
             .map_err(|e| format!("opening browser: {}", e))?;
         Ok(())
@@ -2408,6 +2435,26 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         8,
     );
 
+    // Replace the default in-memory SessionStore with a disk-persisted one.
+    // This ensures conversation history survives restarts.
+    {
+        let sess_dir = common::sessions_dir(&home);
+        let store = std::sync::Arc::new(
+            nemesis_agent::session::SessionStore::new_with_storage(&sess_dir),
+        );
+        agent_loop.set_session_store(store);
+        info!("Session store initialized with disk persistence: {}", sess_dir.display());
+    }
+
+    // Create and inject WorkspaceStateManager for crash recovery.
+    // Mirrors Go's bot_service.go:376 `state.NewManager(s.workspace)`.
+    {
+        let workspace_dir = home.join("workspace");
+        let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
+        agent_loop.set_state_manager(state_mgr);
+        info!("State manager initialized: {}", workspace_dir.display());
+    }
+
     // Register all tools (mirrors Go's bot_service.go initComponents):
     //   default tools + web + cluster + spawn + memory + skills + hardware + exec + cron
     let cron_store_path = common::cron_store_path(&home);
@@ -3135,7 +3182,32 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             warn!("ChannelManager init_channels note: {} (non-fatal)", e);
         }
 
-        // Start the outbound dispatch loop (bus outbound → channels).
+        // Bridge: bus outbound broadcast → ChannelManager mpsc.
+        // Mirrors Go's manager.go: dispatchOutbound reading from bus.OutboundChannel().
+        // Without this, non-web channel outbound is silently dropped.
+        let bus_for_cm = bus.clone();
+        let cm_outbound_tx = channel_manager.outbound_sender();
+        let _cm_bridge_handle = tokio::spawn(async move {
+            let mut rx = bus_for_cm.subscribe_outbound();
+            loop {
+                match rx.recv().await {
+                    Ok(msg) => {
+                        if cm_outbound_tx.send(msg).await.is_err() {
+                            break; // ChannelManager dispatch loop stopped
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("ChannelManager outbound bridge lagged {} messages", n);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+        });
+        info!("Bus outbound → ChannelManager bridge connected");
+
+        // Start the outbound dispatch loop (reads from internal mpsc, dispatches to channels).
         if let Err(e) = channel_manager.start_dispatch_loop() {
             warn!("ChannelManager start_dispatch_loop note: {} (non-fatal)", e);
         }
@@ -3164,6 +3236,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Load security rules from config.security.json (mirrors Go's config loading)
         let sec_config_path = common::security_config_path(&home);
         load_security_rules(&plugin, &sec_config_path);
+
+        // Initialize audit log file.
+        // The JSON config field is "audit_log_file_enabled"; default is true.
+        // Log directory is always `{home}/workspace/logs/security_logs/`.
+        let audit_dir = format!("{}/workspace/logs/security_logs", home.display());
+        if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
+            warn!("Failed to initialize security audit log: {}", e);
+        } else {
+            info!("Security audit log initialized: {}", audit_dir);
+        }
 
         let auditor = plugin.auditor();
         agent_loop.set_security_plugin(plugin.clone());
@@ -3254,11 +3336,37 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
     let web_port = cfg.channels.web.port;
 
+    // Load CORS origins from cors.json (mirrors Go's CORSManager loading).
+    let cors_origins = {
+        let cors_path = common::cors_config_path(&home);
+        if cors_path.exists() {
+            match nemesis_web::cors::CORSManager::new(&cors_path) {
+                Ok(mgr) => {
+                    let cfg = mgr.config();
+                    if cfg.development_mode {
+                        info!("CORS: development_mode enabled, allowing all origins");
+                        vec![]
+                    } else {
+                        let origins = mgr.list_origins();
+                        info!("CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
+                        origins
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to load CORS config: {}, using permissive defaults", e);
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        }
+    };
+
     let static_dir = crate::embedded::resolve_embedded_static_dir();
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_host, web_port),
         auth_token: cfg.channels.web.auth_token.clone(),
-        cors_origins: vec![],
+        cors_origins,
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         version: crate::common::VERSION_INFO.version.to_string(),
@@ -3403,7 +3511,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // M1: Create and wire DeviceService.
     // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
     if cfg.devices.enabled {
-        let device_service = nemesis_devices::service::DeviceService::new();
+        let device_config = nemesis_devices::service::DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 30,
+            monitor_usb: cfg.devices.monitor_usb,
+        };
+        let device_service = nemesis_devices::service::DeviceService::with_config(device_config);
         // Wire bus sender: device events → outbound messages via bus
         let bus_for_devices = bus.clone();
         device_service.set_bus_sender(Box::new(move |channel: &str, chat_id: &str, content: &str| {

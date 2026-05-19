@@ -233,7 +233,9 @@ impl From<&ConversationTurn> for StoredMessage {
             }).collect(),
             tool_call_id: turn.tool_call_id.clone(),
             timestamp: turn.timestamp.clone(),
-            reasoning_content: turn.reasoning_content.clone(),
+            // Do NOT persist reasoning_content — Go's session does not store it,
+            // and including it bloats session files with internal model thinking.
+            reasoning_content: None,
         }
     }
 }
@@ -323,6 +325,22 @@ impl SessionStore {
     pub fn set_history(&self, key: &str, messages: Vec<StoredMessage>) {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.messages = messages;
+            session.updated = Utc::now();
+        }
+    }
+
+    /// Append a single message to a session's history.
+    /// Mirrors Go's `agent.Sessions.AddMessage(sessionKey, role, content)`.
+    pub fn add_message(&self, key: &str, role: &str, content: &str) {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            session.messages.push(StoredMessage {
+                role: role.to_string(),
+                content: content.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                reasoning_content: None,
+            });
             session.updated = Utc::now();
         }
     }

@@ -607,14 +607,28 @@ impl Tool for ExecTool {
             }
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new(if cfg!(target_os = "windows") { "cmd" } else { "sh" })
-                .arg(if cfg!(target_os = "windows") { "/C" } else { "-c" })
-                .arg(command)
-                .current_dir(cwd)
-                .output(),
-        ).await;
+        let output = {
+            #[cfg(target_os = "windows")]
+            let mut cmd = {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                let mut c = tokio::process::Command::new("cmd");
+                // On Windows, .arg() auto-quotes arguments containing spaces,
+                // which garbles cmd.exe's own quote handling (e.g. "if exist"
+                // paths with inner quotes). Use raw_arg to pass the command
+                // verbatim so cmd.exe parses it correctly.
+                c.raw_arg(format!("/C {}", command));
+                c
+            };
+            #[cfg(not(target_os = "windows"))]
+            let mut cmd = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(command);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                cmd.current_dir(cwd).output(),
+            ).await
+        };
 
         match output {
             Ok(Ok(out)) => {
@@ -686,17 +700,25 @@ impl Tool for AsyncExecTool {
             }
         }
 
-        let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-        let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
-
-        let mut child = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(command)
-            .current_dir(cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to start command: {}", e))?;
+        let mut child = {
+            #[cfg(target_os = "windows")]
+            let mut c = {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                let mut c = tokio::process::Command::new("cmd");
+                c.raw_arg(format!("/C {}", command));
+                c
+            };
+            #[cfg(not(target_os = "windows"))]
+            let mut c = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(command);
+            c.current_dir(cwd)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Failed to start command: {}", e))?
+        };
 
         // Wait briefly to confirm startup
         let result = tokio::time::timeout(
@@ -2968,7 +2990,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // Web fetch tool (always available).
     tools.insert(
         "web_fetch".to_string(),
-        Box::new(WebFetchTool::new(1024 * 1024)),
+        Box::new(WebFetchTool::new(50000)),
     );
 
     // Cluster RPC tool (bot-to-bot communication).

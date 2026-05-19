@@ -705,12 +705,13 @@ fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
                 // Try PowerShell on Windows
                 #[cfg(target_os = "windows")]
                 {
+                    use std::os::windows::process::CommandExt;
+                    let ps_cmd = format!(
+                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                        archive_path.display(), target_dir.display()
+                    );
                     let ps_output = std::process::Command::new("powershell")
-                        .args([
-                            "-NoProfile", "-Command",
-                            &format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                                archive_path.display(), target_dir.display())
-                        ])
+                        .raw_arg(format!("-NoProfile -Command {}", ps_cmd))
                         .output();
                     match ps_output {
                         Ok(o) if o.status.success() => {

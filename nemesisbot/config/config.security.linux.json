@@ -108,6 +108,10 @@
       {
         "pattern": "/root/**",
         "action": "deny"
+      },
+      {
+        "pattern": "*",
+        "action": "ask"
       }
     ]
   },

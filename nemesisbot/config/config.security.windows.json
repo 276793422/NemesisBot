@@ -88,6 +88,10 @@
       {
         "pattern": "C:/Boot/**",
         "action": "deny"
+      },
+      {
+        "pattern": "*",
+        "action": "ask"
       }
     ]
   },

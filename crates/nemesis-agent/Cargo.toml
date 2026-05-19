@@ -24,6 +24,7 @@ dashmap = { workspace = true }
 futures = { workspace = true }
 nemesis-observer = { workspace = true }
 nemesis-security = { workspace = true }
+nemesis-state = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }

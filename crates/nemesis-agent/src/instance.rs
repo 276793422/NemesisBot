@@ -267,8 +267,17 @@ impl AgentInstance {
     }
 
     /// Replace the entire history with a new set of turns.
+    ///
+    /// Preserves the system prompt that was set during `AgentInstance::new()`.
+    /// When session data is loaded from disk (which only contains user + assistant
+    /// messages), the system prompt must not be lost.
     pub fn set_history(&self, new_history: Vec<ConversationTurn>) {
-        *self.history.lock().unwrap() = new_history;
+        let mut history = self.history.lock().unwrap();
+        let system_prompt = history.first().filter(|t| t.role == "system").cloned();
+        *history = new_history;
+        if let Some(sp) = system_prompt {
+            history.insert(0, sp);
+        }
     }
 
     /// Truncate history to keep only the last N messages.

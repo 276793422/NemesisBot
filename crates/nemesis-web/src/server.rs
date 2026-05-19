@@ -179,7 +179,11 @@ impl WebServer {
             // SSE chat streaming endpoint
             .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream))
             // CORS layer
-            .layer(dev_cors_layer())
+            .layer(if self.config.cors_origins.is_empty() {
+                dev_cors_layer()
+            } else {
+                crate::cors::production_cors_layer(&self.config.cors_origins)
+            })
             .with_state(state.clone());
 
         // Add static file serving if configured

@@ -12,6 +12,28 @@ use crate::auditor::{AuditFilter, OperationRequest, SecurityAuditor};
 use crate::types::*;
 use std::collections::HashMap;
 
+/// Build a `tokio::process::Command` that executes a shell command.
+///
+/// On Windows, uses `raw_arg` to avoid C-runtime quoting that garbles
+/// cmd.exe's own quote handling (e.g. `if exist "path"` commands).
+/// On Unix, uses standard `.arg()` which works correctly with `sh -c`.
+fn shell_command(command: &str) -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        let mut cmd = tokio::process::Command::new("cmd");
+        cmd.raw_arg(format!("/C {}", command));
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    }
+}
+
 /// Permission preset for security operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionPreset {
@@ -759,19 +781,10 @@ impl<'a> SecureProcessWrapper<'a> {
     pub async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<String, String> {
         self.check_process_exec(command)?;
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
         let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
         let result = tokio::time::timeout(
             timeout,
-            tokio::process::Command::new(shell)
-                .arg(flag)
-                .arg(command)
-                .output(),
+            shell_command(command).output(),
         )
         .await;
 
@@ -800,15 +813,7 @@ impl<'a> SecureProcessWrapper<'a> {
     pub async fn spawn(&self, command: &str) -> Result<u32, String> {
         self.check_process_spawn(command)?;
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
-        let mut child = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(command)
+        let mut child = shell_command(command)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -833,21 +838,13 @@ impl<'a> SecureProcessWrapper<'a> {
     pub async fn kill(&self, pid: u32) -> Result<(), String> {
         self.check_process_kill(&pid.to_string())?;
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
         let kill_cmd = if cfg!(target_os = "windows") {
             format!("taskkill /F /PID {}", pid)
         } else {
             format!("kill -9 {}", pid)
         };
 
-        let output = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(&kill_cmd)
+        let output = shell_command(&kill_cmd)
             .output()
             .await
             .map_err(|e| format!("failed to execute kill command: {}", e))?;
@@ -876,21 +873,13 @@ impl<'a> SecureProcessWrapper<'a> {
     pub async fn terminate(&self, pid: u32) -> Result<(), String> {
         self.check_process_kill(&pid.to_string())?;
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
         let term_cmd = if cfg!(target_os = "windows") {
             format!("taskkill /PID {}", pid)
         } else {
             format!("kill {}", pid)
         };
 
-        let output = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(&term_cmd)
+        let output = shell_command(&term_cmd)
             .output()
             .await
             .map_err(|e| format!("failed to execute terminate command: {}", e))?;
@@ -922,21 +911,13 @@ impl<'a> SecureProcessWrapper<'a> {
 
         loop {
             // Check if process is still running
-            let (shell, flag) = if cfg!(target_os = "windows") {
-                ("cmd", "/C")
-            } else {
-                ("sh", "-c")
-            };
-
             let check_cmd = if cfg!(target_os = "windows") {
                 format!("tasklist /FI \"PID eq {}\" /NH", pid)
             } else {
                 format!("ps -p {} -o pid=", pid)
             };
 
-            let output = tokio::process::Command::new(shell)
-                .arg(flag)
-                .arg(&check_cmd)
+            let output = shell_command(&check_cmd)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .output()
@@ -1012,19 +993,10 @@ impl<'a> SecureProcessWrapper<'a> {
     ) -> Result<ProcessOutput, String> {
         self.check_process_exec(command)?;
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
         let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
         let result = tokio::time::timeout(
             timeout,
-            tokio::process::Command::new(shell)
-                .arg(flag)
-                .arg(command)
-                .output(),
+            shell_command(command).output(),
         )
         .await;
 
@@ -1367,15 +1339,7 @@ impl<'a> SecureHardwareWrapper<'a> {
             bus_num, address, register
         );
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
-        let output = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(&i2cget_cmd)
+        let output = shell_command(&i2cget_cmd)
             .output()
             .await
             .map_err(|e| format!("failed to execute i2cget: {}", e))?;
@@ -1443,15 +1407,7 @@ impl<'a> SecureHardwareWrapper<'a> {
             bus_num, address, register, value
         );
 
-        let (shell, flag) = if cfg!(target_os = "windows") {
-            ("cmd", "/C")
-        } else {
-            ("sh", "-c")
-        };
-
-        let output = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(&i2cset_cmd)
+        let output = shell_command(&i2cset_cmd)
             .output()
             .await
             .map_err(|e| format!("failed to execute i2cset: {}", e))?;

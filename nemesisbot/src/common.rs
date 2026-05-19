@@ -87,6 +87,11 @@ pub fn cron_store_path(home: &Path) -> PathBuf {
     home.join("workspace").join("cron").join("jobs.json")
 }
 
+/// Get the sessions directory path (`{home}/workspace/sessions/`).
+pub fn sessions_dir(home: &Path) -> PathBuf {
+    home.join("workspace").join("sessions")
+}
+
 /// Print a check mark or cross.
 pub fn status_icon(ok: bool) -> &'static str {
     if ok { "OK" } else { "MISSING" }

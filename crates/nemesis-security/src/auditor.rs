@@ -328,7 +328,10 @@ impl SecurityAuditor {
                 self.denied_count.fetch_add(1, Ordering::SeqCst);
                 (
                     false,
-                    Some(format!("operation denied: {}", reason)),
+                    Some(format!(
+                        "Security policy denied {} on '{}' ({})",
+                        req.op_type, req.target, reason
+                    )),
                     req.id.clone(),
                 )
             }
@@ -360,7 +363,10 @@ impl SecurityAuditor {
                                 self.denied_count.fetch_add(1, Ordering::SeqCst);
                                 return (
                                     false,
-                                    Some(format!("operation denied by user: {}", reason)),
+                                    Some(format!(
+                                        "User rejected {} on '{}' ({})",
+                                        req.op_type, req.target, reason
+                                    )),
                                     req.id.clone(),
                                 );
                             }
@@ -2371,7 +2377,7 @@ mod tests {
 
         let (allowed, err, _) = auditor.request_permission(&req);
         assert!(!allowed);
-        assert!(err.unwrap().contains("denied by user"));
+        assert!(err.unwrap().contains("User rejected"));
     }
 
     #[test]

@@ -96,6 +96,10 @@
       {
         "pattern": "/private/etc/**",
         "action": "deny"
+      },
+      {
+        "pattern": "*",
+        "action": "ask"
       }
     ]
   },

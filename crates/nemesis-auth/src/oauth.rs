@@ -752,8 +752,9 @@ fn url_encode(s: &str) -> String {
 fn open_browser_impl(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         std::process::Command::new("cmd")
-            .args(["/c", "start", url])
+            .raw_arg(format!("/c start {}", url))
             .spawn()
             .map_err(|e| format!("opening browser: {}", e))?;
         Ok(())

@@ -304,8 +304,8 @@ pub struct AgentLoop {
     outbound_tx: Option<tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>>,
     /// Agent registry for multi-agent routing.
     registry: Option<Arc<AgentRegistry>>,
-    /// State manager for recording last channel/chat ID.
-    state_manager: Option<Arc<crate::session::SessionManager>>,
+    /// State manager for recording last channel/chat ID (persistent on disk).
+    state_manager: Option<Arc<nemesis_state::workspace_state::WorkspaceStateManager>>,
     /// Session store for persistent history.
     session_store: Option<Arc<SessionStore>>,
     /// Running flag for the bus consumption loop.
@@ -454,7 +454,8 @@ impl AgentLoop {
     }
 
     /// Set the state manager for recording last channel/chat ID.
-    pub fn set_state_manager(&mut self, mgr: Arc<crate::session::SessionManager>) {
+    /// Mirrors Go's `state.NewManager(workspace)`.
+    pub fn set_state_manager(&mut self, mgr: Arc<nemesis_state::workspace_state::WorkspaceStateManager>) {
         self.state_manager = Some(mgr);
     }
 
@@ -500,6 +501,12 @@ impl AgentLoop {
     /// Mirrors Go's SecurityPlugin registered via PluginManager.
     pub fn set_security_plugin(&mut self, plugin: Arc<nemesis_security::pipeline::SecurityPlugin>) {
         self.security_plugin = Some(plugin);
+    }
+
+    /// Set the session store, replacing the default in-memory store.
+    /// Call this to enable disk-persisted conversation history.
+    pub fn set_session_store(&mut self, store: Arc<crate::session::SessionStore>) {
+        self.session_store = Some(store);
     }
 
     /// Set the continuation manager for async cluster RPC callbacks.
@@ -1353,18 +1360,22 @@ impl AgentLoop {
     // -----------------------------------------------------------------------
 
     /// Record the last active channel for crash recovery.
-    /// Mirrors Go's `RecordLastChannel()`.
+    /// Mirrors Go's `state.Manager.SetLastChannel()`.
     pub fn record_last_channel(&self, channel: &str) {
         if let Some(ref mgr) = self.state_manager {
-            mgr.set_last_channel("_default", channel);
+            if let Err(e) = mgr.set_last_channel(channel) {
+                tracing::warn!("Failed to persist last channel: {}", e);
+            }
         }
     }
 
     /// Record the last active chat ID for crash recovery.
-    /// Mirrors Go's `RecordLastChatID()`.
+    /// Mirrors Go's `state.Manager.SetLastChatID()`.
     pub fn record_last_chat_id(&self, chat_id: &str) {
         if let Some(ref mgr) = self.state_manager {
-            mgr.set_last_chat_id("_default", chat_id);
+            if let Err(e) = mgr.set_last_chat_id(chat_id) {
+                tracing::warn!("Failed to persist last chat ID: {}", e);
+            }
         }
     }
 
@@ -1815,19 +1826,35 @@ impl AgentLoop {
         // Maybe trigger summarization.
         self.maybe_summarize(&instance, session_key, channel, chat_id);
 
-        // Persist instance history back to session store.
-        // Mirrors Go's `agent.Sessions.Save(opts.SessionKey)`.
+        // Persist to session store — mirrors Go's runAgentLoop exactly:
+        //   Line 104: agent.Sessions.AddMessage(sessionKey, "user", userMessage)
+        //   Line 151: agent.Sessions.AddMessage(sessionKey, "assistant", finalContent)
+        //   Line 152: agent.Sessions.Save(sessionKey)
+        //
+        // Session file only stores user + final assistant (conversation log).
+        // Instance history (in-memory) keeps all messages for LLM context.
+        // These are intentionally separate, matching Go's architecture.
         if let Some(ref store) = self.session_store {
-            let history = instance.get_history();
-            let stored_messages: Vec<crate::session::StoredMessage> = history
-                .iter()
-                .map(|m| crate::session::StoredMessage::from(m))
-                .collect();
+            // Ensure session exists in store.
+            store.get_or_create(session_key);
+
+            // Add user message.
+            store.add_message(session_key, "user", user_message);
+
+            // Add final assistant response.
+            let final_response = events.iter().rev()
+                .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) }
+                              else if let AgentEvent::Error(msg) = e { Some(msg.clone()) }
+                              else { None })
+                .unwrap_or_default();
+            store.add_message(session_key, "assistant", &final_response);
+
+            // Save summary if available.
             let summary = instance.get_summary();
-            store.set_history(session_key, stored_messages);
             if !summary.is_empty() {
                 store.set_summary(session_key, &summary);
             }
+
             if let Err(e) = store.save(session_key) {
                 warn!("Failed to persist session history for {}: {}", session_key, e);
             }
@@ -2204,7 +2231,13 @@ impl AgentLoop {
             if !allowed {
                 let reason_str = reason.unwrap_or_else(|| "operation denied by security policy".to_string());
                 warn!("Security blocked tool {}: {}", tool_call.name, reason_str);
-                return format!("Error: {}", reason_str);
+                // Use a very explicit prefix so the LLM cannot misinterpret this
+                // as a generic error (e.g. "file not found"). The LLM must
+                // understand that the USER or SECURITY POLICY blocked the action.
+                return format!(
+                    "⛔ SECURITY BLOCKED: {} — The user or security policy denied this operation. Do NOT retry. Inform the user that the operation was rejected.",
+                    reason_str
+                );
             }
         }
 
@@ -2654,8 +2687,12 @@ where
         };
         let conv_event = start_event.to_conversation_event();
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.block_on(mgr.emit_sync(conv_event));
+            Ok(_handle) => {
+                // Inside a tokio runtime — must use block_in_place to avoid
+                // "Cannot start a runtime from within a runtime" panic.
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
+                });
             }
             Err(_) => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2737,8 +2774,12 @@ where
         };
         let conv_event = end_event.to_conversation_event();
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.block_on(mgr.emit_sync(conv_event));
+            Ok(_handle) => {
+                // Inside a tokio runtime — must use block_in_place to avoid
+                // "Cannot start a runtime from within a runtime" panic.
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
+                });
             }
             Err(_) => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -3604,16 +3645,15 @@ mod tests {
         agent_loop.record_last_channel("web");
         agent_loop.record_last_chat_id("chat42");
 
-        // With state manager.
-        let mgr = Arc::new(crate::session::SessionManager::with_default_timeout());
-        mgr.get_or_create("_default", "cli", "direct");
+        // With state manager (uses WorkspaceStateManager for disk persistence).
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(tmp.path());
         agent_loop.set_state_manager(mgr.clone());
         agent_loop.record_last_channel("discord");
         agent_loop.record_last_chat_id("chat99");
 
-        let session = mgr.get_or_create("_default", "cli", "direct");
-        assert_eq!(session.last_channel.as_deref(), Some("discord"));
-        assert_eq!(session.last_chat_id.as_deref(), Some("chat99"));
+        assert_eq!(mgr.get_last_channel(), "discord");
+        assert_eq!(mgr.get_last_chat_id(), "chat99");
     }
 
     #[test]
