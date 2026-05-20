@@ -1048,7 +1048,7 @@ impl AgentLoop {
         // History request.
         if let Some(request_type) = msg.metadata.get("request_type") {
             if request_type == "history" {
-                self.handle_history_request(msg);
+                self.handle_history_request(msg).await;
                 return (String::new(), String::new(), None);
             }
         }
@@ -1230,7 +1230,7 @@ impl AgentLoop {
 
     /// Handle a history request by reading from session and publishing response.
     /// Mirrors Go's `handleHistoryRequest()`.
-    fn handle_history_request(&self, msg: &nemesis_types::channel::InboundMessage) {
+    async fn handle_history_request(&self, msg: &nemesis_types::channel::InboundMessage) {
         #[derive(Deserialize)]
         struct HistoryRequest {
             #[serde(default)]
@@ -1251,7 +1251,7 @@ impl AgentLoop {
                     false,
                     0,
                     0,
-                );
+                ).await;
                 return;
             }
         };
@@ -1305,12 +1305,12 @@ impl AgentLoop {
             has_more,
             oldest_index,
             total_count,
-        );
+        ).await;
     }
 
     /// Publish a history response via the outbound channel.
     /// Mirrors Go's `publishHistoryResponse()`.
-    fn publish_history_response(
+    async fn publish_history_response(
         &self,
         chat_id: &str,
         request_id: &str,
@@ -1342,11 +1342,11 @@ impl AgentLoop {
                 content,
                 message_type: "history".to_string(),
             };
-            // Best-effort send (non-blocking context).
-            let tx = tx.clone();
-            let _ = futures::executor::block_on(async {
-                tx.send(outbound).await
-            });
+            if let Err(e) = tx.send(outbound).await {
+                warn!("Failed to send history response: {}", e);
+            }
+        } else {
+            warn!("publish_history_response: no outbound_tx available");
         }
 
         debug!(
@@ -6138,5 +6138,167 @@ mod tests {
         };
         let output = resolve_route(&input);
         assert_eq!(output.agent_id, "main");
+    }
+
+    // -----------------------------------------------------------------------
+    // History loading tests
+    // -----------------------------------------------------------------------
+
+    /// Build an InboundMessage that mimics a WS history request.
+    fn make_history_inbound(
+        chat_id: &str,
+        limit: Option<usize>,
+        before_index: Option<usize>,
+    ) -> nemesis_types::channel::InboundMessage {
+        let payload = serde_json::json!({
+            "request_id": format!("hist_test_{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+            "limit": limit,
+            "before_index": before_index,
+        });
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("request_type".to_string(), "history".to_string());
+        nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: format!("web:{}", chat_id),
+            chat_id: chat_id.to_string(),
+            content: payload.to_string(),
+            media: vec![],
+            session_key: format!("web:{}", chat_id),
+            correlation_id: String::new(),
+            metadata,
+        }
+    }
+
+    /// Pre-populate session store with N user+assistant pairs under "agent:main:main".
+    fn populate_history(store: &crate::session::SessionStore, count: usize) {
+        let key = "agent:main:main";
+        store.get_or_create(key);
+        for i in 0..count {
+            store.add_message(key, "user", &format!("User msg {}", i));
+            store.add_message(key, "assistant", &format!("Reply {}", i));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_history_returns_all_messages() {
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(64);
+        let mut al = AgentLoop::new_bus(
+            Box::new(MockLlmProvider::new(vec![])),
+            test_config(),
+            outbound_tx,
+            ConcurrentMode::Reject,
+            8,
+        );
+        let store = crate::session::SessionStore::new_in_memory();
+        populate_history(&store, 3);
+        al.set_session_store(std::sync::Arc::new(store));
+        let al = Arc::new(al);
+
+        let msg = make_history_inbound("web:sess1", Some(20), None);
+        let (_, resp, err) = al.process_inbound_message(&msg).await;
+        assert_eq!(resp, "");
+        assert!(err.is_none());
+
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timeout").expect("closed");
+        assert_eq!(out.channel, "web");
+        assert_eq!(out.chat_id, "web:sess1");
+        assert_eq!(out.message_type, "history");
+
+        let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        let msgs = data["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 6, "3 user + 3 assistant = 6");
+        assert_eq!(data["has_more"], false);
+        assert_eq!(data["total_count"], 6);
+    }
+
+    #[tokio::test]
+    async fn test_history_pagination() {
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(64);
+        let mut al = AgentLoop::new_bus(
+            Box::new(MockLlmProvider::new(vec![])),
+            test_config(),
+            outbound_tx,
+            ConcurrentMode::Reject,
+            8,
+        );
+        let store = crate::session::SessionStore::new_in_memory();
+        populate_history(&store, 25); // 50 messages total
+        al.set_session_store(std::sync::Arc::new(store));
+        let al = Arc::new(al);
+
+        let msg = make_history_inbound("web:sess1", Some(10), None);
+        al.process_inbound_message(&msg).await;
+
+        let out = outbound_rx.recv().await.unwrap();
+        let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        assert_eq!(data["messages"].as_array().unwrap().len(), 10);
+        assert_eq!(data["has_more"], true);
+        assert_eq!(data["oldest_index"], 40);
+        assert_eq!(data["total_count"], 50);
+    }
+
+    #[tokio::test]
+    async fn test_history_empty_store() {
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(64);
+        let mut al = AgentLoop::new_bus(
+            Box::new(MockLlmProvider::new(vec![])),
+            test_config(),
+            outbound_tx,
+            ConcurrentMode::Reject,
+            8,
+        );
+        let store = crate::session::SessionStore::new_in_memory();
+        al.set_session_store(std::sync::Arc::new(store));
+        let al = Arc::new(al);
+
+        let msg = make_history_inbound("web:sess1", Some(20), None);
+        al.process_inbound_message(&msg).await;
+
+        let out = outbound_rx.recv().await.unwrap();
+        let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        assert_eq!(data["messages"].as_array().unwrap().len(), 0);
+        assert_eq!(data["has_more"], false);
+    }
+
+    #[tokio::test]
+    async fn test_history_e2e_via_bus_arc() {
+        let (outbound_tx, mut outbound_rx) =
+            tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(64);
+        let mut al = AgentLoop::new_bus(
+            Box::new(MockLlmProvider::new(vec![])),
+            test_config(),
+            outbound_tx,
+            ConcurrentMode::Reject,
+            8,
+        );
+        let store = crate::session::SessionStore::new_in_memory();
+        populate_history(&store, 2);
+        al.set_session_store(std::sync::Arc::new(store));
+        let (inbound_tx, inbound_rx) =
+            tokio::sync::mpsc::channel::<nemesis_types::channel::InboundMessage>(64);
+        let al = Arc::new(al);
+
+        let al_clone = al.clone();
+        let handle = tokio::spawn(async move { al_clone.run_bus_arc(inbound_rx).await });
+
+        // Give loop time to start
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        inbound_tx.send(make_history_inbound("web:s1", Some(20), None)).await.unwrap();
+
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+            .await.expect("timeout").expect("closed");
+        assert_eq!(out.message_type, "history");
+        let data: serde_json::Value = serde_json::from_str(&out.content).unwrap();
+        assert_eq!(data["messages"].as_array().unwrap().len(), 4);
+
+        al.stop();
+        drop(inbound_tx);
+        let _ = handle.await;
     }
 }

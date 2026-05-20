@@ -99,7 +99,7 @@ if exist "web\package.json" (
     pushd web
     if not exist "node_modules" (
         echo   Installing npm dependencies...
-        call npm install --silent 2>nul
+        call npm install --silent
         if errorlevel 1 (
             popd
             echo   WARN npm install failed, skipping Vue build
@@ -108,12 +108,13 @@ if exist "web\package.json" (
         )
     )
     echo   Running Vite build...
-    call npm run build 2>nul
+    call npm run build
     if errorlevel 1 (
         popd
-        echo   WARN Vue build failed, using existing static files
+        echo   ERROR Vue build failed! See errors above.
         echo.
-        goto step3
+        pause
+        exit /b 1
     )
     popd
     echo   OK Vue frontend built

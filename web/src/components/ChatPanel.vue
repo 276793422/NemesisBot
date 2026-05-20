@@ -3,7 +3,7 @@ import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
-import { connect, send, sendHistoryRequest, onMessage, wsStatus } from '../composables/useWebSocket'
+import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.min.css'
@@ -32,12 +32,24 @@ function renderMarkdown(text: string): string {
         if (lang && hljs.getLanguage(lang)) {
           try { return hljs.highlight(code, { language: lang }).value } catch {}
         }
-        return hljs.highlightAuto(code).value
+        // Skip highlightAuto — too expensive for large code blocks.
+        // renderCodeBlocks() will handle untagged blocks after DOM insertion.
+        return code
       },
     })
   } catch {
     return text.replace(/\n/g, '<br>')
   }
+}
+
+// Cache rendered HTML to avoid re-computing markdown on every Vue re-render.
+const renderedHtmlCache = new WeakMap<ChatMessage, string>()
+
+function getRenderedHtml(msg: ChatMessage): string {
+  if (!renderedHtmlCache.has(msg)) {
+    renderedHtmlCache.set(msg, renderMarkdown(msg.content))
+  }
+  return renderedHtmlCache.get(msg)!
 }
 
 function getAvatar(role: string): string {
@@ -216,6 +228,11 @@ onMounted(() => {
     if (token) {
       connect(null, token)
     }
+    // Auth store may have already connected WS before this component mounted.
+    // The watcher only fires on value changes, so check current status directly.
+    if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
+      loadHistory()
+    }
   }
 })
 
@@ -223,6 +240,7 @@ onUnmounted(() => {
   if (chatMessages.value && scrollHandler) {
     chatMessages.value.removeEventListener('scroll', scrollHandler)
   }
+  removeMessageHandler(handleWSMessage)
   unwatchStatus()
 })
 </script>
@@ -251,7 +269,7 @@ onUnmounted(() => {
         <div class="message-avatar">{{ getAvatar(msg.role) }}</div>
         <div class="message-content">
           <div class="message-bubble">
-            <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="renderMarkdown(msg.content)"></div>
+            <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <span v-else>{{ msg.content }}</span>
           </div>
           <div class="message-time">{{ formatTime(msg.timestamp) }}</div>

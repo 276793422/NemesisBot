@@ -69,7 +69,8 @@ function reconnect() {
 }
 
 export function connect(host?: string | null, authToken?: string | null) {
-  if (ws && ws.readyState === WebSocket.OPEN) return
+  // Skip if already open or connecting (prevents orphaned WebSocket connections)
+  if (ws && ws.readyState < WebSocket.CLOSING) return
 
   if (authToken) token = authToken
   manualClose = false
@@ -229,9 +230,12 @@ export function onMessage(cb: (data: any) => void) {
 
 /**
  * Add a message handler to the dispatch list.
+ * Prevents duplicate registration of the same function reference.
  */
 export function addMessageHandler(handler: MessageHandler) {
-  messageHandlers.push(handler)
+  if (!messageHandlers.includes(handler)) {
+    messageHandlers.push(handler)
+  }
 }
 
 /**
