@@ -4,12 +4,22 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 /// Protocol message with three-level dispatch.
+///
+/// Extended with `req_id` and `error` fields for request/response correlation.
+/// Both new fields are `Option` with `skip_serializing_if` for full backward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
     pub module: String,
     pub cmd: String,
+
+    // ---- Extended fields (all Option, backward compatible) ----
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "reqId")]
+    pub req_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,9 +50,78 @@ impl ProtocolMessage {
             msg_type: msg_type.to_string(),
             module: module.to_string(),
             cmd: cmd.to_string(),
+            req_id: None,
+            error: None,
             data,
             timestamp: Some(Utc::now().to_rfc3339()),
         }
+    }
+
+    /// Build an API request message (type="request").
+    pub fn request(module: &str, cmd: &str, req_id: &str, data: Option<serde_json::Value>) -> Self {
+        Self {
+            msg_type: "request".to_string(),
+            module: module.to_string(),
+            cmd: cmd.to_string(),
+            req_id: Some(req_id.to_string()),
+            error: None,
+            data,
+            timestamp: Some(Utc::now().to_rfc3339()),
+        }
+    }
+
+    /// Build a successful API response message (type="response").
+    pub fn response_ok(module: &str, cmd: &str, req_id: &str, data: Option<serde_json::Value>) -> Self {
+        Self {
+            msg_type: "response".to_string(),
+            module: module.to_string(),
+            cmd: cmd.to_string(),
+            req_id: Some(req_id.to_string()),
+            error: None,
+            data,
+            timestamp: Some(Utc::now().to_rfc3339()),
+        }
+    }
+
+    /// Build an error API response message (type="response" with error).
+    pub fn response_err(module: &str, cmd: &str, req_id: &str, error: &str) -> Self {
+        Self {
+            msg_type: "response".to_string(),
+            module: module.to_string(),
+            cmd: cmd.to_string(),
+            req_id: Some(req_id.to_string()),
+            error: Some(error.to_string()),
+            data: None,
+            timestamp: Some(Utc::now().to_rfc3339()),
+        }
+    }
+
+    /// Build a server push message (type="push").
+    pub fn push(module: &str, cmd: &str, data: Option<serde_json::Value>) -> Self {
+        Self {
+            msg_type: "push".to_string(),
+            module: module.to_string(),
+            cmd: cmd.to_string(),
+            req_id: None,
+            error: None,
+            data,
+            timestamp: Some(Utc::now().to_rfc3339()),
+        }
+    }
+
+    /// Check if this is an API request message.
+    pub fn is_request(&self) -> bool {
+        self.msg_type == "request"
+    }
+
+    /// Check if this is an API response message.
+    pub fn is_response(&self) -> bool {
+        self.msg_type == "response"
+    }
+
+    /// Check if this is a server push message.
+    pub fn is_push(&self) -> bool {
+        self.msg_type == "push"
     }
 
     /// Serialize to JSON bytes.
@@ -318,5 +397,108 @@ mod tests {
         let msg = ProtocolMessage::parse(json).unwrap();
         // timestamp is not in the original JSON, so it should be None
         assert!(msg.timestamp.is_none());
+    }
+
+    // ============================================================
+    // Extended protocol tests: req_id, error, request/response/push
+    // ============================================================
+
+    #[test]
+    fn test_request_builder() {
+        let msg = ProtocolMessage::request("models", "list", "req-001", Some(serde_json::json!({})));
+        assert_eq!(msg.msg_type, "request");
+        assert_eq!(msg.module, "models");
+        assert_eq!(msg.cmd, "list");
+        assert_eq!(msg.req_id.as_deref(), Some("req-001"));
+        assert!(msg.error.is_none());
+        assert!(msg.timestamp.is_some());
+        assert!(msg.is_request());
+        assert!(!msg.is_response());
+        assert!(!msg.is_push());
+    }
+
+    #[test]
+    fn test_response_ok_builder() {
+        let msg = ProtocolMessage::response_ok(
+            "models", "list", "req-001",
+            Some(serde_json::json!([{"name": "gpt-4"}])),
+        );
+        assert_eq!(msg.msg_type, "response");
+        assert_eq!(msg.req_id.as_deref(), Some("req-001"));
+        assert!(msg.error.is_none());
+        assert!(msg.data.is_some());
+        assert!(msg.is_response());
+        assert!(!msg.is_request());
+    }
+
+    #[test]
+    fn test_response_err_builder() {
+        let msg = ProtocolMessage::response_err("models", "list", "req-002", "not found");
+        assert_eq!(msg.msg_type, "response");
+        assert_eq!(msg.req_id.as_deref(), Some("req-002"));
+        assert_eq!(msg.error.as_deref(), Some("not found"));
+        assert!(msg.data.is_none());
+    }
+
+    #[test]
+    fn test_push_builder() {
+        let msg = ProtocolMessage::push("logs", "append", Some(serde_json::json!({"line": "test"})));
+        assert_eq!(msg.msg_type, "push");
+        assert!(msg.req_id.is_none());
+        assert!(msg.error.is_none());
+        assert!(msg.is_push());
+    }
+
+    #[test]
+    fn test_request_response_roundtrip() {
+        let req = ProtocolMessage::request("models", "list", "req-100", Some(serde_json::json!({"detail": true})));
+        let bytes = req.to_json().unwrap();
+        let parsed = ProtocolMessage::parse(&bytes).unwrap();
+        assert_eq!(parsed.msg_type, "request");
+        assert_eq!(parsed.req_id.as_deref(), Some("req-100"));
+        assert_eq!(parsed.data.unwrap()["detail"], true);
+    }
+
+    #[test]
+    fn test_error_response_roundtrip() {
+        let resp = ProtocolMessage::response_err("test", "cmd", "err-1", "something failed");
+        let bytes = resp.to_json().unwrap();
+        let json_str = String::from_utf8(bytes).unwrap();
+        // Should contain "error" field
+        assert!(json_str.contains("\"error\""));
+        assert!(json_str.contains("something failed"));
+        // Should NOT contain "data" (None is skipped)
+        assert!(!json_str.contains("\"data\""));
+
+        let parsed = ProtocolMessage::parse(json_str.as_bytes()).unwrap();
+        assert_eq!(parsed.error.as_deref(), Some("something failed"));
+    }
+
+    #[test]
+    fn test_backward_compat_old_messages() {
+        // Old messages without req_id/error should parse fine
+        let old = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#;
+        let msg = ProtocolMessage::parse(old).unwrap();
+        assert!(msg.req_id.is_none());
+        assert!(msg.error.is_none());
+        assert_eq!(msg.module, "chat");
+    }
+
+    #[test]
+    fn test_is_request_helpers() {
+        assert!(ProtocolMessage::request("m", "c", "r", None).is_request());
+        assert!(ProtocolMessage::response_ok("m", "c", "r", None).is_response());
+        assert!(ProtocolMessage::push("m", "c", None).is_push());
+        // Old-style messages
+        assert!(!ProtocolMessage::new("message", "m", "c", None).is_request());
+        assert!(!ProtocolMessage::new("system", "m", "c", None).is_response());
+    }
+
+    #[test]
+    fn test_skip_serializing_none_req_id_and_error() {
+        let msg = ProtocolMessage::new("message", "chat", "send", None);
+        let json_str = String::from_utf8(msg.to_json().unwrap()).unwrap();
+        assert!(!json_str.contains("\"reqId\""));
+        assert!(!json_str.contains("\"error\""));
     }
 }

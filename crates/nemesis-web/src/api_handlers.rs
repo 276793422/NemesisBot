@@ -56,6 +56,8 @@ pub struct AppState {
     pub inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>,
     /// Streaming LLM provider for SSE chat endpoint (optional — set via set_streaming_provider).
     pub streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
+    /// WS API Router for request/response dispatch (optional — set during server setup).
+    pub ws_router: Option<Arc<crate::ws_router::WsRouter>>,
 }
 
 impl AppState {
@@ -978,6 +980,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -1181,6 +1184,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -1281,6 +1285,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         })
     }
 

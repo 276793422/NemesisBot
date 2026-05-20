@@ -23,6 +23,7 @@ pub mod protocol;
 pub mod session;
 pub mod sse_chat;
 pub mod websocket_handler;
+pub mod ws_router;
 
 pub use events::EventHub;
 pub use protocol::ProtocolMessage;
@@ -30,5 +31,8 @@ pub use session::SessionManager;
 pub use server::WebServer;
 pub use server::WebServerConfig;
 pub use websocket_handler::IncomingMessage;
+pub use ws_router::WsRouter;
+pub use ws_router::ModuleHandler;
+pub use ws_router::RequestContext;
 pub use cors::CORSConfig;
 pub use cors::CORSManager;

@@ -3460,6 +3460,7 @@ name = "nemesis-web"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "async-trait",
  "axum",
  "chrono",
  "dashmap",

@@ -141,6 +141,7 @@ impl WebServer {
             session_manager: self.session_manager.clone(),
             inbound_tx: Some(inbound_tx),
             streaming_provider: self.streaming_provider.clone(),
+            ws_router: Some(Arc::new(crate::ws_router::WsRouter::new())),
         };
 
         let state = Arc::new(state);
@@ -1210,6 +1211,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         });
         let resp = handle_health(AxumState(state)).await;
         let json = resp.0;
@@ -1232,6 +1234,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         });
         let resp = handle_health(AxumState(state)).await;
         let json = resp.0;
@@ -1712,6 +1715,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
+            ws_router: None,
         });
         let resp = handle_health(AxumState(state)).await;
         let json = resp.0;

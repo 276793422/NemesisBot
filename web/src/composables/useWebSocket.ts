@@ -1,4 +1,6 @@
 import { ref, onUnmounted } from 'vue'
+import { handleWSResponse } from './wsResponseHandler'
+import { initWSAPI } from './useWSAPI'
 
 export type WSStatus = 'connecting' | 'connected' | 'disconnected'
 
@@ -12,7 +14,9 @@ const messageQueue: string[] = []
 let manualClose = false
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 
-let onMessageCallback: ((data: any) => void) | null = null
+// Multi-handler support (replaces single onMessageCallback)
+type MessageHandler = (data: any) => void
+const messageHandlers: MessageHandler[] = []
 
 function buildWSUrl(): string {
   if (window.__DASHBOARD_BACKEND__) {
@@ -25,7 +29,7 @@ function buildWSUrl(): string {
 function flushQueue() {
   while (messageQueue.length > 0) {
     const msg = messageQueue.shift()!
-    send(msg)
+    sendRaw({ type: 'message', module: 'chat', cmd: 'send', data: { content: msg } })
   }
 }
 
@@ -91,7 +95,18 @@ export function connect(host?: string | null, authToken?: string | null) {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        if (onMessageCallback) onMessageCallback(data)
+
+        // 1. Handle response-type messages (useWSAPI Promise routing)
+        if (handleWSResponse(data)) return
+
+        // 2. Dispatch to all registered handlers (chat, logs, etc.)
+        for (const handler of messageHandlers) {
+          try {
+            handler(data)
+          } catch (e) {
+            console.error('[NemesisAPI] Handler error:', e)
+          }
+        }
       } catch (e) {
         console.error('[NemesisAPI] Parse error:', e)
       }
@@ -122,38 +137,42 @@ export function connect(host?: string | null, authToken?: string | null) {
   }
 }
 
+/**
+ * Send a raw WS message object. Handles queuing when disconnected.
+ */
+export function sendRaw(msg: object) {
+  const payload = { ...msg, timestamp: new Date().toISOString() }
+  const json = JSON.stringify(payload)
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(json)
+  } else {
+    messageQueue.push(json)
+    connect()
+  }
+}
+
+// Initialize useWSAPI with sendRaw (breaks circular dependency)
+initWSAPI(sendRaw)
+
 export function send(content: string) {
-  const message = {
+  sendRaw({
     type: 'message',
     module: 'chat',
     cmd: 'send',
     data: { content },
-    timestamp: new Date().toISOString(),
-  }
-
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message))
-  } else {
-    messageQueue.push(content)
-    connect()
-  }
+  })
 }
 
 export function sendHistoryRequest(requestId: string, limit: number, beforeIndex?: number | null) {
   const data: any = { request_id: requestId, limit }
   if (beforeIndex != null) data.before_index = beforeIndex
 
-  const message = {
+  sendRaw({
     type: 'message',
     module: 'chat',
     cmd: 'history_request',
     data,
-    timestamp: new Date().toISOString(),
-  }
-
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message))
-  }
+  })
 }
 
 export function disconnect() {
@@ -200,8 +219,27 @@ export function httpGet<T = any>(path: string): Promise<T> {
   })
 }
 
+/**
+ * Register a message handler. Backward compatible — internally adds to
+ * the multi-handler list. Multiple calls add multiple handlers.
+ */
 export function onMessage(cb: (data: any) => void) {
-  onMessageCallback = cb
+  addMessageHandler(cb)
+}
+
+/**
+ * Add a message handler to the dispatch list.
+ */
+export function addMessageHandler(handler: MessageHandler) {
+  messageHandlers.push(handler)
+}
+
+/**
+ * Remove a previously registered message handler.
+ */
+export function removeMessageHandler(handler: MessageHandler) {
+  const idx = messageHandlers.indexOf(handler)
+  if (idx >= 0) messageHandlers.splice(idx, 1)
 }
 
 export function useWebSocket() {
@@ -213,10 +251,13 @@ export function useWebSocket() {
     status: wsStatus,
     connect,
     send,
+    sendRaw,
     sendHistoryRequest,
     disconnect,
     testConnection,
     httpGet,
     onMessage,
+    addMessageHandler,
+    removeMessageHandler,
   }
 }

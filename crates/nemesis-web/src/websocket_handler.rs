@@ -194,6 +194,48 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                         state.session_manager_ref().touch_session(&session_id);
 
                         let raw = text.as_bytes();
+
+                        // Try to detect request-type messages for WS API Router dispatch.
+                        // Parse first, check type, then decide: request -> router, else -> legacy path.
+                        let parsed = ProtocolMessage::parse(raw);
+                        if let Ok(ref pm) = parsed {
+                            if pm.is_request() {
+                                // Dispatch to WS API Router
+                                let req_id = pm.req_id.as_deref().unwrap_or("");
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    module = %pm.module,
+                                    cmd = %pm.cmd,
+                                    req_id = %req_id,
+                                    "WS API request received"
+                                );
+                                if let Some(ref router) = state.ws_router {
+                                    let ctx = crate::ws_router::RequestContext {
+                                        session_id: session_id.clone(),
+                                        workspace: state.workspace.clone(),
+                                        state: state.clone(),
+                                    };
+                                    let router = router.clone();
+                                    let sq = send_queue.clone();
+                                    let msg = pm.clone();
+                                    tokio::spawn(async move {
+                                        router.dispatch(&msg, &ctx, &sq).await;
+                                    });
+                                } else {
+                                    // No router configured — send error response
+                                    let err = ProtocolMessage::response_err(
+                                        &pm.module, &pm.cmd, req_id, "ws router not configured",
+                                    );
+                                    if let Ok(bytes) = err.to_json() {
+                                        let _ = send_queue.send(bytes).await;
+                                    }
+                                }
+                                // Request handled, skip legacy dispatch
+                                continue;
+                            }
+                        }
+
+                        // Legacy path: message / system types
                         match handle_text_message(&session_id, &sender_id, &chat_id, raw) {
                             Ok(Some(incoming)) => {
                                 // Forward to the bus bridge via the inbound channel
@@ -310,6 +352,7 @@ pub fn handle_text_message(
     match msg.msg_type.as_str() {
         "message" => handle_message_module(session_id, sender_id, chat_id, &msg),
         "system" => handle_system_module(&msg),
+        "request" => Ok(None), // Handled by WsRouter in the main loop; should not reach here
         _ => Err(format!("unknown protocol type: {}", msg.msg_type)),
     }
 }

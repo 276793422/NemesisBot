@@ -11,3 +11,4 @@ archive/
 /bin
 /plugins/*/target
 /web/node_modules/
+/crates/nemesis-web/static
