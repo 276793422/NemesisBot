@@ -19,6 +19,7 @@ use crate::session::SessionManager;
 use crate::websocket_handler::handle_websocket_upgrade;
 use axum::extract::State as AxumState;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::stream::Stream;
@@ -38,7 +39,7 @@ use tower_http::services::ServeDir;
 // ---------------------------------------------------------------------------
 
 /// Web server configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebServerConfig {
     pub listen_addr: String,
     pub auth_token: String,
@@ -49,10 +50,28 @@ pub struct WebServerConfig {
     pub workspace: Option<String>,
     /// Application version string.
     pub version: String,
-    /// Optional path to static files directory for serving the Web UI.
+    /// Optional path to static files directory for serving the Web UI (legacy disk-based).
     pub static_dir: Option<String>,
+    /// Optional in-memory static file provider (preferred over `static_dir`).
+    pub static_files: Option<Arc<dyn StaticFiles>>,
     /// Optional index file name (default: "index.html").
     pub index_file: String,
+}
+
+impl std::fmt::Debug for WebServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebServerConfig")
+            .field("listen_addr", &self.listen_addr)
+            .field("auth_token", &self.auth_token)
+            .field("cors_origins", &self.cors_origins)
+            .field("ws_path", &self.ws_path)
+            .field("workspace", &self.workspace)
+            .field("version", &self.version)
+            .field("static_dir", &self.static_dir)
+            .field("static_files", &self.static_files.as_ref().map(|_| "..."))
+            .field("index_file", &self.index_file)
+            .finish()
+    }
 }
 
 impl Default for WebServerConfig {
@@ -65,6 +84,7 @@ impl Default for WebServerConfig {
             workspace: None,
             version: String::new(),
             static_dir: None,
+            static_files: None,
             index_file: "index.html".to_string(),
         }
     }
@@ -188,7 +208,15 @@ impl WebServer {
             .with_state(state.clone());
 
         // Add static file serving if configured
-        if let Some(ref static_dir) = self.config.static_dir {
+        if let Some(ref files) = self.config.static_files {
+            // In-memory static file serving (zero disk IO)
+            let files = files.clone();
+            tracing::info!("Serving static files from embedded memory");
+            router = router.fallback(move |req: axum::extract::Request| {
+                let files = files.clone();
+                async move { serve_embedded_static(files, req).await }
+            });
+        } else if let Some(ref static_dir) = self.config.static_dir {
             let dir_path = PathBuf::from(static_dir);
             if dir_path.exists() && dir_path.is_dir() {
                 tracing::info!(
@@ -309,6 +337,71 @@ impl WebServer {
 // ---------------------------------------------------------------------------
 // Static files utility
 // ---------------------------------------------------------------------------
+
+/// Determine Content-Type for a static file path.
+fn content_type_for(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    let ct = match ext.as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "xml" => "application/xml; charset=utf-8",
+        "svg" => "image/svg+xml; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "ico" => "image/x-icon",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "eot" => "application/vnd.ms-fontobject",
+        "wasm" => "application/wasm",
+        "map" => "application/json; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    ct.to_string()
+}
+
+/// Serve a static file request from an in-memory `StaticFiles` provider.
+///
+/// 1. Exact path match
+/// 2. SPA fallback: paths without a file extension → index.html
+/// 3. 404
+async fn serve_embedded_static(
+    files: Arc<dyn StaticFiles>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    let path = req.uri().path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    // 1. Exact match
+    if let Some(content) = files.get_file(path) {
+        let ct = content_type_for(path);
+        return (
+            axum::http::StatusCode::OK,
+            [(http::header::CONTENT_TYPE, ct)],
+            content,
+        ).into_response();
+    }
+
+    // 2. SPA fallback: no file extension → serve index.html
+    if !path.contains('.') {
+        if let Some(content) = files.get_file("index.html") {
+            return (
+                axum::http::StatusCode::OK,
+                [(http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string())],
+                content,
+            ).into_response();
+        }
+    }
+
+    // 3. 404
+    (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
+}
 
 /// Resolve the static files directory.
 ///
@@ -699,6 +792,7 @@ mod tests {
             workspace: None,
             version: String::new(),
             static_dir: None,
+            static_files: None,
             index_file: "index.html".to_string(),
         };
         let server = WebServer::new(config);
@@ -716,6 +810,7 @@ mod tests {
             workspace: None,
             version: String::new(),
             static_dir: Some(dir.path().to_string_lossy().to_string()),
+            static_files: None,
             index_file: "index.html".to_string(),
         };
         let server = WebServer::new(config);
@@ -732,6 +827,7 @@ mod tests {
             workspace: None,
             version: String::new(),
             static_dir: Some("/nonexistent/path".to_string()),
+            static_files: None,
             index_file: "index.html".to_string(),
         };
         let server = WebServer::new(config);
@@ -963,6 +1059,7 @@ mod tests {
             workspace: Some("/data".to_string()),
             version: "2.0.0".to_string(),
             static_dir: Some("/static".to_string()),
+            static_files: None,
             index_file: "home.html".to_string(),
         };
         assert_eq!(config.listen_addr, "0.0.0.0:9090");
@@ -1145,6 +1242,7 @@ mod tests {
             workspace: Some("/tmp/ws".to_string()),
             version: "1.0.0".to_string(),
             static_dir: None,
+            static_files: None,
             index_file: "app.html".to_string(),
         };
         let server = WebServer::new(config);
@@ -1350,6 +1448,7 @@ mod tests {
             workspace: Some("/tmp".to_string()),
             version: "1.0".to_string(),
             static_dir: None,
+            static_files: None,
             index_file: "index.html".to_string(),
         };
         let cloned = config.clone();

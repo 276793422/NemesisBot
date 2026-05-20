@@ -30,6 +30,8 @@ pub use protocol::ProtocolMessage;
 pub use session::SessionManager;
 pub use server::WebServer;
 pub use server::WebServerConfig;
+pub use server::StaticFiles;
+pub use server::DirectoryStaticFiles;
 pub use websocket_handler::IncomingMessage;
 pub use ws_router::WsRouter;
 pub use ws_router::ModuleHandler;

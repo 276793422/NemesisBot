@@ -3362,7 +3362,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     };
 
-    let static_dir = crate::embedded::resolve_embedded_static_dir();
+    let static_files = crate::embedded::resolve_static_files();
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_host, web_port),
         auth_token: cfg.channels.web.auth_token.clone(),
@@ -3370,15 +3370,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         version: crate::common::VERSION_INFO.version.to_string(),
-        static_dir: static_dir.clone(),
+        static_dir: None,
+        static_files: Some(static_files),
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
     web_server.set_message_bus(bus.clone());
     web_server.set_model_name(&model_name);
-    if let Some(dir) = static_dir {
-        web_server.set_workspace(std::path::PathBuf::from(dir));
-    }
 
     // Wire streaming provider for SSE chat endpoint.
     // Create an HttpProvider from the same config used for the main provider.

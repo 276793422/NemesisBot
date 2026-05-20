@@ -4,9 +4,10 @@
 //! - Web UI static files at compile time
 //! - Workspace templates (skills, scripts, memory, md files)
 //!
-//! Falls back to filesystem at runtime when static files are on disk.
+//! Static files are served directly from memory — zero disk IO.
 
 use include_dir::{include_dir, Dir};
+use std::sync::Arc;
 
 /// Embedded static files from `crates/nemesis-web/static/`.
 ///
@@ -21,15 +22,72 @@ static EMBEDDED_STATIC: Dir = include_dir!("$CARGO_MANIFEST_DIR/../crates/nemesi
 /// built-in skills, scripts, memory template, etc.
 static EMBEDDED_WORKSPACE: Dir = include_dir!("$CARGO_MANIFEST_DIR/workspace");
 
-/// Resolve the static files directory for the web server.
+// ---------------------------------------------------------------------------
+// In-memory static file serving
+// ---------------------------------------------------------------------------
+
+/// Static file provider backed by compile-time embedded `include_dir::Dir`.
 ///
-/// Checks in order:
-/// 1. Files on disk next to the executable (`<exe_dir>/static/`)
-/// 2. Embedded static files extracted to a temp location
+/// Files are served directly from the binary — zero disk IO.
+pub struct EmbeddedStaticFiles(&'static Dir<'static>);
+
+impl EmbeddedStaticFiles {
+    pub fn new(dir: &'static Dir<'static>) -> Self {
+        Self(dir)
+    }
+}
+
+impl nemesis_web::StaticFiles for EmbeddedStaticFiles {
+    fn get_file(&self, path: &str) -> Option<Vec<u8>> {
+        let path = path.trim_start_matches('/');
+        if path.contains("..") {
+            return None;
+        }
+        self.0.get_file(path).map(|f| f.contents().to_vec())
+    }
+
+    fn list_files(&self) -> Vec<String> {
+        let mut files = Vec::new();
+        collect_files(self.0, &mut files);
+        files
+    }
+}
+
+/// Resolve the static files provider for the web server.
 ///
-/// Returns the path to serve static files from.
+/// Priority:
+/// 1. `static/` directory next to the executable (development override)
+/// 2. Compile-time embedded files served from memory (production)
+pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
+    // Development override: disk directory next to executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let disk_static = exe_dir.join("static");
+            if disk_static.exists() && disk_static.is_dir() {
+                tracing::info!(
+                    path = %disk_static.display(),
+                    "Serving static files from disk (development override)"
+                );
+                return Arc::new(nemesis_web::DirectoryStaticFiles::new(disk_static));
+            }
+        }
+    }
+
+    // Production: serve directly from embedded memory
+    tracing::info!("Serving static files from embedded memory (zero disk IO)");
+    Arc::new(EmbeddedStaticFiles::new(&EMBEDDED_STATIC))
+}
+
+/// Resolve the static files directory for the web server (legacy).
+///
+/// **Deprecated**: Use [`resolve_static_files`] instead, which serves files
+/// directly from memory without extracting to disk.
+///
+/// Only returns a disk path when `static/` exists next to the executable.
+#[deprecated(note = "Use resolve_static_files() instead for in-memory serving")]
+#[allow(dead_code)]
 pub fn resolve_embedded_static_dir() -> Option<String> {
-    // Prefer on-disk files next to executable
+    // Only check disk — no more temp extraction
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let disk_static = exe_dir.join("static");
@@ -38,41 +96,7 @@ pub fn resolve_embedded_static_dir() -> Option<String> {
             }
         }
     }
-
-    // Fall back to embedded files — extract to temp directory
-    // Use an extraction marker that changes when the extraction logic is
-    // fixed, so stale/broken directories are re-extracted automatically.
-    let temp_dir = std::env::temp_dir().join("nemesisbot-static");
-    const EXTRACTION_VERSION: &str = "v2";
-    let marker = temp_dir.join(".embedded-version");
-    let current_marker = format!("{}-{}", env!("CARGO_PKG_VERSION"), EXTRACTION_VERSION);
-    let needs_extract = !temp_dir.exists()
-        || !marker.exists()
-        || std::fs::read_to_string(&marker).unwrap_or_default() != current_marker;
-
-    if !needs_extract {
-        return Some(temp_dir.to_string_lossy().to_string());
-    }
-
-    // Remove old extracted directory to avoid stale nested paths
-    if temp_dir.exists() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    // Extract embedded files to temp directory
-    if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-        tracing::warn!("Failed to create static dir: {}", e);
-        return None;
-    }
-    if let Err(e) = extract_dir(&EMBEDDED_STATIC, &temp_dir) {
-        tracing::warn!("Failed to extract embedded static files: {}", e);
-        return None;
-    }
-
-    // Write version marker
-    let _ = std::fs::write(temp_dir.join(".embedded-version"), &current_marker);
-
-    Some(temp_dir.to_string_lossy().to_string())
+    None
 }
 
 /// Recursively extract an embedded directory to disk.
@@ -166,6 +190,7 @@ fn collect_files(dir: &Dir, files: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nemesis_web::StaticFiles;
 
     #[test]
     fn test_embedded_static_exists() {
@@ -253,12 +278,46 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_resolve_embedded_static_dir_returns_path() {
-        // This tests the full resolve logic - may create temp extraction
+        // Legacy function only returns disk path now
         let result = resolve_embedded_static_dir();
-        assert!(result.is_some());
-        let path = result.unwrap();
-        assert!(!path.is_empty());
+        // Result depends on whether static/ exists next to exe
+        let _ = result;
+    }
+
+    #[test]
+    fn test_resolve_static_files_returns_provider() {
+        let provider = resolve_static_files();
+        // Should be able to get index.html from either disk or memory
+        let content = provider.get_file("index.html");
+        assert!(content.is_some());
+        let content = content.unwrap();
+        let html = std::str::from_utf8(&content).unwrap();
+        assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
+    }
+
+    #[test]
+    fn test_resolve_static_files_list() {
+        let provider = resolve_static_files();
+        let files = provider.list_files();
+        assert!(!files.is_empty());
+        assert!(files.iter().any(|f| f.contains("index.html")));
+    }
+
+    #[test]
+    fn test_embedded_static_files_get_file() {
+        let provider = EmbeddedStaticFiles::new(&EMBEDDED_STATIC);
+        let content = provider.get_file("index.html");
+        assert!(content.is_some());
+        assert!(provider.get_file("nonexistent.html").is_none());
+    }
+
+    #[test]
+    fn test_embedded_static_files_path_traversal() {
+        let provider = EmbeddedStaticFiles::new(&EMBEDDED_STATIC);
+        assert!(provider.get_file("../Cargo.toml").is_none());
+        assert!(provider.get_file("../../secret").is_none());
     }
 
     #[test]
