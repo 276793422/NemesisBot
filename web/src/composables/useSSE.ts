@@ -52,7 +52,9 @@ export function on(eventType: string, handler: EventHandler) {
   if (!eventHandlers[eventType]) {
     eventHandlers[eventType] = []
   }
-  eventHandlers[eventType].push(handler)
+  if (!eventHandlers[eventType].includes(handler)) {
+    eventHandlers[eventType].push(handler)
+  }
 }
 
 export function off(eventType: string, handler?: EventHandler) {

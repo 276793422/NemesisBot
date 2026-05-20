@@ -142,6 +142,13 @@ function loadHistory() {
   const requestId = 'hist_' + Date.now()
   const limit = 20
   sendHistoryRequest(requestId, limit, chatStore.oldestIndex)
+
+  // Safety timeout: reset loading flag if no response in 10s
+  setTimeout(() => {
+    if (chatStore.historyLoading) {
+      chatStore.historyLoading = false
+    }
+  }, 10000)
 }
 
 function sendMessage() {
@@ -208,6 +215,10 @@ const unwatchStatus = watch(wsStatus, (val) => {
     appStore.connected = val === 'connected'
     if (val === 'connected' && !chatStore.historyLoaded) {
       loadHistory()
+    }
+    // Reset streaming flag on disconnect to prevent stuck UI
+    if (val === 'disconnected' && chatStore.streaming) {
+      chatStore.streaming = false
     }
   }
 })

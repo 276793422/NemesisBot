@@ -28,8 +28,11 @@ function buildWSUrl(): string {
 
 function flushQueue() {
   while (messageQueue.length > 0) {
-    const msg = messageQueue.shift()!
-    sendRaw({ type: 'message', module: 'chat', cmd: 'send', data: { content: msg } })
+    const json = messageQueue.shift()!
+    // Send raw queued JSON as-is (preserves original type/module/cmd)
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(json)
+    }
   }
 }
 
@@ -120,9 +123,7 @@ export function connect(host?: string | null, authToken?: string | null) {
 
       if (!manualClose) {
         notifyStatus('disconnected')
-        if (event.code === 1008 || event.code === 4001) {
-          notifyStatus('disconnected')
-        } else {
+        if (event.code !== 1008 && event.code !== 4001) {
           reconnect()
         }
       }
