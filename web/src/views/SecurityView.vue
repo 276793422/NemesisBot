@@ -91,7 +91,7 @@ onMounted(async () => {
             </div>
             <div class="card-body">
               <div v-if="editing">
-                <textarea class="form-textarea" style="min-height: 500px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
+                <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
               </div>
               <div v-else>
                 <div class="settings-grid">

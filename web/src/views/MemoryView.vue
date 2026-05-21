@@ -124,9 +124,9 @@ onMounted(async () => {
                 <p>从左侧选择一个文件查看内容</p>
               </div>
               <div v-else-if="editing">
-                <textarea class="form-textarea" style="min-height: 400px; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
+                <textarea class="form-textarea" style="min-height: 55vh; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
               </div>
-              <div v-else class="markdown-body" style="max-height: 500px; overflow-y: auto;">
+              <div v-else class="markdown-body" style="max-height: 60vh; overflow-y: auto;">
                 <pre style="white-space: pre-wrap; word-break: break-word;">{{ docContent }}</pre>
               </div>
             </div>

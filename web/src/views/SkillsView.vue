@@ -184,7 +184,7 @@ onMounted(loadInstalled)
           </div>
           <div class="card-body">
             <div v-if="configEditing">
-              <textarea class="form-textarea" style="min-height: 400px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="configEditContent"></textarea>
+              <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="configEditContent"></textarea>
             </div>
             <div v-else>
               <div class="settings-grid">

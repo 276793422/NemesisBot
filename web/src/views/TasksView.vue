@@ -125,7 +125,7 @@ onMounted(async () => {
               {{ activeTab === 'boot' ? 'Agent 每次启动时执行的检查清单' : 'Agent 心跳轮询时执行的任务' }}
             </p>
             <div v-if="editing">
-              <textarea class="form-textarea" style="min-height: 400px; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
+              <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
             </div>
             <div v-else class="markdown-body">
               <pre style="white-space: pre-wrap;">{{ (activeTab === 'boot' ? bootContent : heartbeatContent) || '（空文件）' }}</pre>

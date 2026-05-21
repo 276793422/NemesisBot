@@ -204,7 +204,7 @@ onUnmounted(() => {
             <div class="card-header"><h3>请求详情</h3></div>
             <div class="card-body">
               <div v-if="!requestDetail" class="empty-state" style="padding: var(--space-4);"><p>选择一个会话查看详情</p></div>
-              <pre v-else style="white-space: pre-wrap; font-size: var(--text-xs); max-height: 400px; overflow-y: auto;">{{ JSON.stringify(requestDetail, null, 2) }}</pre>
+              <pre v-else style="white-space: pre-wrap; font-size: var(--text-xs); max-height: 60vh; overflow-y: auto;">{{ JSON.stringify(requestDetail, null, 2) }}</pre>
             </div>
           </div>
         </div>

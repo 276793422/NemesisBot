@@ -67,7 +67,7 @@ onMounted(loadTools)
               此文件用于记录本地环境特有信息，如摄像头名称、SSH 别名、TTS 偏好、扬声器名称、设备昵称等。Agent 运行时可以读取这些信息。
             </p>
             <div v-if="editing">
-              <textarea class="form-textarea" style="min-height: 400px; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
+              <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
             </div>
             <div v-else class="markdown-body">
               <pre style="white-space: pre-wrap; word-break: break-word;">{{ content || '（空文件 — 点击编辑添加工具使用笔记）' }}</pre>

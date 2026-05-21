@@ -97,9 +97,9 @@ onMounted(async () => {
           </div>
           <div class="card-body">
             <div v-if="editing">
-              <textarea class="form-textarea" style="min-height: 500px; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
+              <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-sm);" v-model="editContent"></textarea>
             </div>
-            <div v-else class="markdown-body" style="max-height: 600px; overflow-y: auto;">
+            <div v-else class="markdown-body" style="max-height: 65vh; overflow-y: auto;">
               <pre style="white-space: pre-wrap; word-break: break-word;">{{ docContent || '（空文件）' }}</pre>
             </div>
           </div>

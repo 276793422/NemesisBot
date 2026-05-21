@@ -7,6 +7,7 @@ const routes: RouteRecordRaw[] = [
   // Management
   { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue') },
   { path: '/models', name: 'models', component: () => import('../views/ModelsView.vue') },
+  { path: '/local-models', name: 'local-models', component: () => import('../views/LocalModelsView.vue') },
   { path: '/memory', name: 'memory', component: () => import('../views/MemoryView.vue') },
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
