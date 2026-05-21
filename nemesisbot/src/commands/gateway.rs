@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
+use nemesis_services::LifecycleService;
 use tracing::{info, warn, error};
 
 use crate::adapters;
@@ -2359,42 +2360,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     //            AgentLoop → mpsc outbound → bus outbound (broadcast)
     //
     // Capacity is 1024 (up from 256) to reduce message loss under load.
-    // The inbound bridge also tracks dropped messages for observability.
-    let (agent_inbound_tx, agent_inbound_rx) = tokio::sync::mpsc::channel::<nemesis_types::channel::InboundMessage>(1024);
+    // The inbound bridge is created inside AgentLoopServiceAdapter::start().
     let (agent_outbound_tx, mut agent_outbound_rx) = tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(1024);
-
-    // Bridge: bus inbound broadcast → agent inbound mpsc
-    let bus_inbound = bus.subscribe_inbound();
-    let bridge_inbound_handle = tokio::spawn(async move {
-        let mut rx = bus_inbound;
-        let mut total_dropped: u64 = 0;
-        loop {
-            match rx.recv().await {
-                Ok(msg) => {
-                    if agent_inbound_tx.send(msg).await.is_err() {
-                        break; // Agent receiver dropped
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    total_dropped += n as u64;
-                    tracing::warn!(
-                        "Agent inbound bridge lagged by {} messages (total dropped: {})",
-                        n, total_dropped
-                    );
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    if total_dropped > 0 {
-                        tracing::warn!(
-                            "Agent inbound bridge closing with {} total dropped messages",
-                            total_dropped
-                        );
-                    }
-                    break;
-                }
-            }
-        }
-    });
 
     // Bridge: agent outbound mpsc → bus outbound broadcast
     let bus_out = bus.clone();
@@ -3329,6 +3296,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Wrap agent_loop in Arc for shared access (heartbeat handler, etc.)
     let agent_loop = Arc::new(agent_loop);
 
+    // Create AgentLoopServiceAdapter for tray start/stop control.
+    // The adapter manages the inbound bridge + agent spawn internally.
+    let agent_adapter = Arc::new(adapters::AgentLoopServiceAdapter::new(
+        agent_loop.clone(),
+        bus.clone(),
+    ));
+
     // Step 10: Create WebServer
     let web_host = {
         let h = &cfg.channels.web.host;
@@ -3466,6 +3440,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 });
             }
 
+            // If the agent loop is not running (stopped via tray), skip the
+            // heartbeat LLM call. Heartbeat is part of the agent's proactive
+            // behavior — it should not consume API quota when the agent is idle.
+            if !agent_loop_for_hb.is_running() {
+                tracing::debug!("Agent not running, skipping heartbeat");
+                return Some(nemesis_heartbeat::service::HeartbeatResult {
+                    is_error: false,
+                    is_async: false,
+                    silent: true,
+                    for_user: String::new(),
+                    for_llm: "HEARTBEAT_OK".to_string(),
+                });
+            }
+
             // Use cli:direct as fallback (matching Go).
             if channel.is_empty() || chat_id.is_empty() {
                 channel = "cli".to_string();
@@ -3558,6 +3546,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let bot = svc_mgr.get_bot_service();
         bot.inject_health(Arc::new(adapters::HealthServerAdapter::new(health_server.clone())));
         bot.inject_heartbeat(Arc::new(adapters::HeartbeatServiceAdapter::new(heartbeat_service.clone())));
+        // Agent is NOT injected into BotService — its lifecycle is managed directly
+        // by AgentLoopServiceAdapter (tray start/stop, gateway shutdown).
     }
 
     // Step 14: Start basic services
@@ -3619,11 +3609,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // via start_services() → services.health.start(). No separate spawn needed here.
     info!("Health server will be started by bot service on {}:{}", &cfg.gateway.host, health_port);
 
-    // Step 18: Start AgentLoop's bus processing in background
-    let agent_handle = tokio::spawn(async move {
-        agent_loop.run_bus_arc(agent_inbound_rx).await
-    });
-    info!("Agent loop started, listening on bus");
+    // Step 18: Start AgentLoop's bus processing via adapter
+    if let Err(e) = agent_adapter.start() {
+        warn!("Agent adapter start note: {}", e);
+    }
+    info!("Agent loop started via adapter, listening on bus");
 
     // Step 19: Start bot service (for state tracking)
     if let Err(e) = svc_mgr.start_bot() {
@@ -3681,14 +3671,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         let mut tray = PlatformTray::new();
 
-        let start_svc = Arc::clone(&svc_mgr);
+        let start_adapter = Arc::clone(&agent_adapter);
         tray.set_on_start(Box::new(move || {
-            let _ = start_svc.start_bot();
+            if let Err(e) = start_adapter.start() {
+                tracing::warn!("Tray: failed to start agent: {}", e);
+            }
         }));
 
-        let stop_svc = Arc::clone(&svc_mgr);
+        let stop_adapter = Arc::clone(&agent_adapter);
         tray.set_on_stop(Box::new(move || {
-            stop_svc.shutdown();
+            if let Err(e) = stop_adapter.stop() {
+                tracing::warn!("Tray: failed to stop agent: {}", e);
+            }
         }));
 
         let pm = Arc::clone(&process_manager);
@@ -3733,8 +3727,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Abort background tasks
     web_handle.abort();
-    agent_handle.abort();
-    bridge_inbound_handle.abort();
+    agent_adapter.stop().ok();
     bridge_outbound_handle.abort();
     dispatch_handle.abort();
 

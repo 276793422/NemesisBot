@@ -792,6 +792,24 @@ impl AgentLoop {
         self.running.load(Ordering::Acquire)
     }
 
+    /// Clear all session busy states.
+    ///
+    /// Called after a forced stop (task abort) to release sessions that were
+    /// mid-processing when the agent was killed.  Without this, those sessions
+    /// remain permanently locked ("busy") and all subsequent messages for them
+    /// are rejected.
+    pub fn clear_session_busy(&self) {
+        let mut map = self.session_busy.lock();
+        let count = map.len();
+        map.clear();
+        if count > 0 {
+            tracing::warn!(
+                "Cleared {} session busy states (agent was stopped mid-processing)",
+                count
+            );
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Observer event emission helpers
     // -----------------------------------------------------------------------
