@@ -1,31 +1,25 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
 const routes: RouteRecordRaw[] = [
-  {
-    path: '/',
-    name: 'chat',
-    component: () => import('../views/ChatView.vue'),
-  },
-  {
-    path: '/overview',
-    name: 'overview',
-    component: () => import('../views/OverviewView.vue'),
-  },
-  {
-    path: '/logs',
-    name: 'logs',
-    component: () => import('../views/LogsView.vue'),
-  },
-  {
-    path: '/scanner',
-    name: 'scanner',
-    component: () => import('../views/ScannerView.vue'),
-  },
-  {
-    path: '/settings',
-    name: 'settings',
-    component: () => import('../views/SettingsView.vue'),
-  },
+  // Main
+  { path: '/', name: 'chat', component: () => import('../views/ChatView.vue') },
+  { path: '/overview', name: 'overview', component: () => import('../views/OverviewView.vue') },
+  // Management
+  { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue') },
+  { path: '/models', name: 'models', component: () => import('../views/ModelsView.vue') },
+  { path: '/memory', name: 'memory', component: () => import('../views/MemoryView.vue') },
+  { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
+  { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
+  { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
+  { path: '/forge', name: 'forge', component: () => import('../views/ForgeView.vue') },
+  // Configuration
+  { path: '/settings', name: 'settings', component: () => import('../views/SettingsView.vue') },
+  { path: '/identity', name: 'identity', component: () => import('../views/IdentityView.vue') },
+  { path: '/tools', name: 'tools', component: () => import('../views/ToolsView.vue') },
+  { path: '/tasks', name: 'tasks', component: () => import('../views/TasksView.vue') },
+  { path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') },
+  { path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') },
+  { path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') },
 ]
 
 export const router = createRouter({
