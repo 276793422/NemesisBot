@@ -1,0 +1,158 @@
+//! Channels handler — list/get/update/test channel configurations.
+
+use crate::handlers::{mask_sensitive, require_workspace};
+use crate::ws_router::{ModuleHandler, RequestContext};
+use std::path::PathBuf;
+
+pub struct ChannelsHandler {
+    _priv: (),
+}
+
+impl ChannelsHandler {
+    pub fn new() -> Self {
+        Self { _priv: () }
+    }
+}
+
+#[async_trait::async_trait]
+impl ModuleHandler for ChannelsHandler {
+    fn module_name(&self) -> &str {
+        "channels"
+    }
+
+    async fn handle_cmd(
+        &self,
+        cmd: &str,
+        data: Option<serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        match cmd {
+            "list" => self.list(workspace),
+            "get" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.get(workspace, &name)
+            }
+            "update" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.update(workspace, &name, &data)
+            }
+            "test" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.test(&name)
+            }
+            _ => Err(format!("unknown command: channels.{}", cmd)),
+        }
+    }
+}
+
+fn load_config(workspace: &str) -> Result<nemesis_config::Config, String> {
+    let path = PathBuf::from(workspace).join("config.json");
+    nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
+}
+
+fn save_config(workspace: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    let path = PathBuf::from(workspace).join("config.json");
+    nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
+}
+
+impl ChannelsHandler {
+    fn list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(workspace)?;
+        let json = serde_json::to_value(&config.channels)
+            .map_err(|e| format!("failed to serialize channels: {}", e))?;
+        // Return the channels object with enabled status summary
+        let empty_map = serde_json::Map::new();
+        let channels_map = json.as_object().unwrap_or(&empty_map);
+        let summary: Vec<serde_json::Value> = channels_map
+            .iter()
+            .map(|(name, value)| {
+                let enabled = value
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                serde_json::json!({
+                    "name": name,
+                    "enabled": enabled,
+                })
+            })
+            .collect();
+        Ok(Some(serde_json::json!({ "channels": summary })))
+    }
+
+    fn get(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(workspace)?;
+        let json = serde_json::to_value(&config.channels)
+            .map_err(|e| format!("failed to serialize channels: {}", e))?;
+        let channel = json
+            .get(name)
+            .ok_or_else(|| format!("channel '{}' not found", name))?
+            .clone();
+        // Mask sensitive fields
+        let masked = mask_sensitive_fields(channel);
+        Ok(Some(serde_json::json!({ "name": name, "config": masked })))
+    }
+
+    fn update(
+        &self,
+        workspace: &str,
+        name: &str,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let channel_config = data
+            .get("config")
+            .ok_or("missing config field")?
+            .clone();
+        let mut config = load_config(workspace)?;
+
+        // Serialize channels to a mutable JSON object, update the channel, then re-parse
+        let mut channels_json = serde_json::to_value(&config.channels)
+            .map_err(|e| format!("failed to serialize channels: {}", e))?;
+        if channels_json.get(name).is_none() {
+            return Err(format!("channel '{}' not found", name));
+        }
+        channels_json[name] = channel_config;
+        config.channels = serde_json::from_value(channels_json)
+            .map_err(|e| format!("failed to parse updated channels: {}", e))?;
+
+        save_config(workspace, &mut config)?;
+        Ok(Some(serde_json::json!({ "updated": true, "name": name })))
+    }
+
+    fn test(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(Some(serde_json::json!({
+            "name": name,
+            "status": "not_implemented",
+            "message": "Channel test not yet supported"
+        })))
+    }
+}
+
+/// Recursively mask known sensitive field names in a JSON value.
+fn mask_sensitive_fields(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let new_map: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| {
+                    if crate::handlers::is_sensitive_field(&k) {
+                        if let Some(s) = v.as_str() {
+                            if !s.is_empty() {
+                                return (k, serde_json::Value::String(mask_sensitive(s)));
+                            }
+                        }
+                    }
+                    (k, mask_sensitive_fields(v))
+                })
+                .collect();
+            serde_json::Value::Object(new_map)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(mask_sensitive_fields).collect())
+        }
+        other => other,
+    }
+}

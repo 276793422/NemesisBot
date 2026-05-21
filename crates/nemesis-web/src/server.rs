@@ -161,7 +161,11 @@ impl WebServer {
             session_manager: self.session_manager.clone(),
             inbound_tx: Some(inbound_tx),
             streaming_provider: self.streaming_provider.clone(),
-            ws_router: Some(Arc::new(crate::ws_router::WsRouter::new())),
+            ws_router: {
+                let mut ws_router = crate::ws_router::WsRouter::new();
+                crate::handlers::register_all(&mut ws_router);
+                Some(Arc::new(ws_router))
+            },
         };
 
         let state = Arc::new(state);
