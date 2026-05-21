@@ -20,7 +20,7 @@ const loading = ref(true)
 async function loadStatus() {
   try {
     const data = await request('memory', 'status')
-    vectorEnabled.value = data?.vector_enabled || false
+    vectorEnabled.value = data?.vector_memory?.enabled || false
   } catch { /* ignore */ }
 }
 

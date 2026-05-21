@@ -9,7 +9,7 @@ const toast = useToast()
 const activeTab = ref('status')
 const status = ref<any>({})
 const config = ref<any>({})
-const peers = ref<any[]>([])
+const peersContent = ref('')
 const loading = ref(true)
 const editing = ref(false)
 const editConfig = ref('')
@@ -32,7 +32,7 @@ async function loadConfig() {
 async function loadPeers() {
   try {
     const data = await request('cluster', 'peers')
-    peers.value = data?.peers || []
+    peersContent.value = data?.peers || ''
   } catch { /* ignore */ }
 }
 
@@ -74,11 +74,11 @@ onMounted(async () => {
           <div class="stats-grid">
             <div class="stat-card">
               <div class="stat-label">启用状态</div>
-              <div class="stat-value"><span class="badge" :class="status.enabled ? 'badge-success' : 'badge-neutral'">{{ status.enabled ? '已启用' : '未启用' }}</span></div>
+              <div class="stat-value"><span class="badge" :class="status.config?.enabled ? 'badge-success' : 'badge-neutral'">{{ status.config?.enabled ? '已启用' : '未启用' }}</span></div>
             </div>
             <div class="stat-card">
               <div class="stat-label">节点数</div>
-              <div class="stat-value">{{ status.node_count || 0 }}</div>
+              <div class="stat-value">{{ status.peers_count || 0 }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">角色</div>
@@ -122,22 +122,15 @@ onMounted(async () => {
 
         <!-- Peers -->
         <div v-if="activeTab === 'peers'">
-          <div v-if="peers.length === 0" class="empty-state">
+          <div v-if="!peersContent" class="empty-state">
             <h3>暂无节点</h3>
             <p>使用 CLI 命令添加集群节点</p>
           </div>
-          <div v-if="peers.length > 0" class="table-wrap">
-            <table>
-              <thead><tr><th>名称</th><th>地址</th><th>角色</th><th>状态</th></tr></thead>
-              <tbody>
-                <tr v-for="(p, idx) in peers" :key="idx">
-                  <td style="font-weight: 500;">{{ p.name || '--' }}</td>
-                  <td>{{ p.address || '--' }}</td>
-                  <td>{{ p.role || '--' }}</td>
-                  <td><span class="badge badge-info">{{ p.status || 'unknown' }}</span></td>
-                </tr>
-              </tbody>
-            </table>
+          <div v-if="peersContent" class="card">
+            <div class="card-header"><h3>peers.toml</h3></div>
+            <div class="card-body">
+              <pre style="white-space: pre-wrap; font-family: var(--font-mono); font-size: var(--text-sm);">{{ peersContent }}</pre>
+            </div>
           </div>
         </div>
       </div>

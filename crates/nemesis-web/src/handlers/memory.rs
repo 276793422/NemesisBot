@@ -89,8 +89,7 @@ impl MemoryHandler {
     }
 
     fn document_get(&self, workspace: &str, path: &str) -> Result<Option<serde_json::Value>, String> {
-        let relative = format!("memory/{}", path);
-        let content = read_workspace_file(workspace, &relative)?;
+        let content = read_workspace_file(workspace, path)?;
         Ok(Some(serde_json::json!({
             "path": path,
             "content": content,
@@ -103,8 +102,7 @@ impl MemoryHandler {
         path: &str,
         content: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let relative = format!("memory/{}", path);
-        write_workspace_file(workspace, &relative, content)?;
+        write_workspace_file(workspace, path, content)?;
         Ok(Some(serde_json::json!({ "saved": true, "path": path })))
     }
 

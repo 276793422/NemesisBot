@@ -180,9 +180,50 @@ impl LogsHandler {
         risk_level: Option<&str>,
     ) -> Result<Option<serde_json::Value>, String> {
         let dir = security_log_dir(workspace);
-        let (entries, total) = read_jsonl_entries(&dir, limit, offset, risk_level, "risk_level")?;
+        if !dir.exists() {
+            return Ok(Some(serde_json::json!({
+                "entries": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+            })));
+        }
+
+        let mut entries = Vec::new();
+        let read_dir = std::fs::read_dir(&dir)
+            .map_err(|e| format!("failed to read security log dir: {}", e))?;
+
+        for entry in read_dir {
+            let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for line in content.lines() {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                            if let Some(filter) = risk_level {
+                                let entry_level = super::security::extract_risk_level(&val);
+                                if !entry_level.eq_ignore_ascii_case(filter) {
+                                    continue;
+                                }
+                            }
+                            entries.push(super::security::flatten_audit_entry(&val));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp descending
+        entries.sort_by(|a, b| {
+            let ts_a = a.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+            let ts_b = b.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+            ts_b.cmp(ts_a)
+        });
+
+        let total = entries.len();
+        let page: Vec<_> = entries.into_iter().skip(offset).take(limit).collect();
         Ok(Some(serde_json::json!({
-            "entries": entries,
+            "entries": page,
             "total": total,
             "limit": limit,
             "offset": offset,

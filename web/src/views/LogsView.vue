@@ -92,7 +92,7 @@ async function loadRequestLogs() {
   reqLoading.value = true
   try {
     const data = await request('logs', 'requests', { limit: 50 })
-    requestSessions.value = data?.sessions || []
+    requestSessions.value = data?.entries || []
   } catch { /* ignore */ }
   reqLoading.value = false
 }

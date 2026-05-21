@@ -60,6 +60,34 @@ fn security_log_dir(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join("logs/security_logs")
 }
 
+/// Flatten a nested AuditEvent JSON into the flat format expected by the frontend.
+/// JSONL structure: {event_id, request: {op_type, danger_level, target, ...}, decision, reason, timestamp}
+/// Frontend expects: {timestamp, action, risk_level, target, result, reason, ...}
+pub(crate) fn flatten_audit_entry(val: &serde_json::Value) -> serde_json::Value {
+    let req = val.get("request");
+    serde_json::json!({
+        "event_id": val.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
+        "timestamp": val.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
+        "action": req.and_then(|r| r.get("op_type")).and_then(|v| v.as_str()).unwrap_or(""),
+        "risk_level": req.and_then(|r| r.get("danger_level")).and_then(|v| v.as_str()).unwrap_or(""),
+        "target": req.and_then(|r| r.get("target")).and_then(|v| v.as_str()).unwrap_or(""),
+        "source": req.and_then(|r| r.get("source")).and_then(|v| v.as_str()).unwrap_or(""),
+        "user": req.and_then(|r| r.get("user")).and_then(|v| v.as_str()).unwrap_or(""),
+        "result": val.get("decision").and_then(|v| v.as_str()).unwrap_or(""),
+        "reason": val.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
+        "policy_rule": val.get("policy_rule").and_then(|v| v.as_str()).unwrap_or(""),
+    })
+}
+
+/// Extract risk_level from a raw JSONL audit entry (nested in request.danger_level).
+pub(crate) fn extract_risk_level(val: &serde_json::Value) -> &str {
+    val.get("request")
+        .and_then(|r| r.get("danger_level"))
+        .and_then(|v| v.as_str())
+        .or_else(|| val.get("risk_level").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+}
+
 impl SecurityHandler {
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path = security_config_path(workspace);
@@ -105,7 +133,7 @@ impl SecurityHandler {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     for line in content.lines().rev() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                            entries.push(val);
+                            entries.push(flatten_audit_entry(&val));
                         }
                     }
                 }
@@ -151,12 +179,7 @@ impl SecurityHandler {
                     for line in content.lines() {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                             total += 1;
-                            let level = val
-                                .get("risk_level")
-                                .or_else(|| val.get("level"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown")
-                                .to_string();
+                            let level = extract_risk_level(&val).to_string();
                             *by_level.entry(level).or_insert(0) += 1;
                         }
                     }

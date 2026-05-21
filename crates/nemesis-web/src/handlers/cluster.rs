@@ -60,18 +60,49 @@ impl ClusterHandler {
         };
 
         let peers_path = peers_path(workspace);
-        let peers_count = if peers_path.exists() {
+        let mut peers_count: usize = 0;
+        let mut node_role: Option<String> = None;
+        let mut node_name: Option<String> = None;
+        if peers_path.exists() {
             let content = std::fs::read_to_string(&peers_path).unwrap_or_default();
-            // Count peer entries in TOML (lines that look like [[peers]] or peer sections)
-            content.lines().filter(|l| l.starts_with('[') && !l.starts_with("[[")).count()
-        } else {
-            0
-        };
+            // Count [peers.xxx] sections only
+            peers_count = content
+                .lines()
+                .filter(|l| l.starts_with("[peers.") && l.ends_with(']'))
+                .count();
+            // Extract node role and name from [node] section
+            let mut in_node = false;
+            for line in content.lines() {
+                if line.trim() == "[node]" {
+                    in_node = true;
+                    continue;
+                }
+                if in_node {
+                    if line.starts_with('[') {
+                        break; // next section
+                    }
+                    if let Some(val) = line.strip_prefix("role") {
+                        let val = val.trim().trim_start_matches('=').trim().trim_matches('"');
+                        if !val.is_empty() {
+                            node_role = Some(val.to_string());
+                        }
+                    }
+                    if let Some(val) = line.strip_prefix("name") {
+                        let val = val.trim().trim_start_matches('=').trim().trim_matches('"');
+                        if !val.is_empty() {
+                            node_name = Some(val.to_string());
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Some(serde_json::json!({
             "config": config,
             "peers_count": peers_count,
             "config_exists": config_path.exists(),
+            "role": node_role,
+            "node_name": node_name,
         })))
     }
 

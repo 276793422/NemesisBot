@@ -53,10 +53,10 @@ async function saveDoc() {
 }
 
 const docLabels: Record<string, string> = {
-  AGENT: 'AGENT.md — 行为指南',
-  IDENTITY: 'IDENTITY.md — 身份定义',
-  SOUL: 'SOUL.md — 核心原则',
-  USER: 'USER.md — 用户偏好',
+  'AGENT.md': '行为指南',
+  'IDENTITY.md': '身份定义',
+  'SOUL.md': '核心原则',
+  'USER.md': '用户偏好',
 }
 
 onMounted(async () => {
@@ -78,13 +78,13 @@ onMounted(async () => {
       <div v-if="!loading">
         <div class="tabs">
           <button v-for="d in docs" :key="d.name" class="tab" :class="{ active: activeDoc === d.name }" @click="loadDoc(d.name)">
-            {{ d.name }}
+            {{ docLabels[d.name] || d.name }}
           </button>
         </div>
 
         <div class="card">
           <div class="card-header">
-            <h3>{{ docLabels[activeDoc] || activeDoc }}</h3>
+            <h3>{{ activeDoc }} — {{ docLabels[activeDoc] || '文档' }}</h3>
             <div style="display: flex; gap: var(--space-2);">
               <template v-if="!editing">
                 <button class="btn btn-sm" @click="startEdit">编辑</button>

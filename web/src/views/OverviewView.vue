@@ -14,7 +14,7 @@ interface StatusData {
   ws_connected?: boolean
   session_count?: number
   model?: string
-  scanner_status?: { enabled: boolean; engines?: string[] } | null
+  scanner_status?: { enabled: boolean; engines?: { name: string; config?: any }[] } | null
   cluster_status?: { enabled: boolean; node_count?: number } | null
   running?: boolean
 }
@@ -49,9 +49,13 @@ async function loadAgentStatus() {
 async function startAgent() {
   agentLoading.value = true
   try {
-    await request('agent', 'start')
-    agentRunning.value = true
-    toast.success('Agent 已启动')
+    const data = await request('agent', 'start')
+    if (data?.started) {
+      agentRunning.value = true
+      toast.success('Agent 已启动')
+    } else {
+      toast.info(data?.message || 'Agent 启动功能尚未集成')
+    }
   } catch (e: any) {
     toast.error('启动失败: ' + e)
   }
@@ -62,9 +66,13 @@ async function stopAgent() {
   if (!confirm('确定停止 Agent Loop 吗？\n\nGateway 和 Web UI 将继续运行，但 Agent 将暂停处理消息。')) return
   agentLoading.value = true
   try {
-    await request('agent', 'stop')
-    agentRunning.value = false
-    toast.success('Agent 已暂停')
+    const data = await request('agent', 'stop')
+    if (data?.stopped) {
+      agentRunning.value = false
+      toast.success('Agent 已暂停')
+    } else {
+      toast.info(data?.message || 'Agent 停止功能尚未集成')
+    }
   } catch (e: any) {
     toast.error('停止失败: ' + e)
   }
@@ -155,7 +163,7 @@ onUnmounted(() => {
             <template v-if="status.scanner_status">
               <span class="badge" :class="status.scanner_status.enabled ? 'badge-success' : 'badge-neutral'">{{ status.scanner_status.enabled ? '已启用' : '未启用' }}</span>
               <div v-if="status.scanner_status.engines && status.scanner_status.engines.length > 0" style="margin-top: var(--space-2); display: flex; gap: var(--space-2);">
-                <span v-for="e in status.scanner_status.engines" :key="e" class="badge badge-info">{{ e }}</span>
+                <span v-for="e in status.scanner_status.engines" :key="e.name" class="badge badge-info">{{ e.name }}</span>
               </div>
             </template>
             <template v-else><span class="badge badge-neutral">未知</span></template>

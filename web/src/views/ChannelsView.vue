@@ -95,6 +95,9 @@ onMounted(loadChannels)
               <p>从左侧选择一个通道查看配置</p>
             </div>
             <div v-else-if="editing">
+              <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--warning-bg, #fef3cd); border: 1px solid var(--warning, #e5a00d); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+                注意：敏感字段（如 API Key、Token）已被遮蔽显示（含 **** ）。如需修改，请将遮蔽值替换为真实值；如保持遮蔽值不变，保存后该字段将被覆盖为遮蔽值。
+              </div>
               <textarea class="form-textarea" style="min-height: 350px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
               <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end; gap: var(--space-2);">
                 <button class="btn" @click="editing = false; loadChannelDetail(selectedChannel!)">取消</button>

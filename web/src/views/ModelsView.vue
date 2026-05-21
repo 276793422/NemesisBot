@@ -6,11 +6,12 @@ import { useToast } from '../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
+// Backend returns: model_name, model, api_base, api_key (masked), proxy, is_default
 interface Model {
-  name: string
-  provider?: string
+  model_name: string
+  model: string
+  api_base?: string
   api_key?: string
-  base_url?: string
   proxy?: string
   is_default?: boolean
 }
@@ -18,7 +19,8 @@ interface Model {
 const models = ref<Model[]>([])
 const loading = ref(true)
 const showAdd = ref(false)
-const addForm = ref({ name: '', provider: '', api_key: '', base_url: '', proxy: '' })
+// Backend add expects: name, model, key, base_url?, proxy?
+const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '' })
 const testing = ref<string | null>(null)
 
 async function loadModels() {
@@ -33,16 +35,20 @@ async function loadModels() {
 
 async function addModel() {
   if (!addForm.value.name) { toast.warn('请输入模型名称'); return }
+  if (!addForm.value.model) { toast.warn('请输入模型 ID'); return }
+  if (!addForm.value.key) { toast.warn('请输入 API Key'); return }
   try {
-    const payload: any = { name: addForm.value.name }
-    if (addForm.value.provider) payload.provider = addForm.value.provider
-    if (addForm.value.api_key) payload.api_key = addForm.value.api_key
+    const payload: any = {
+      name: addForm.value.name,
+      model: addForm.value.model,
+      key: addForm.value.key,
+    }
     if (addForm.value.base_url) payload.base_url = addForm.value.base_url
     if (addForm.value.proxy) payload.proxy = addForm.value.proxy
     await request('models', 'add', payload)
     toast.success('模型已添加')
     showAdd.value = false
-    addForm.value = { name: '', provider: '', api_key: '', base_url: '', proxy: '' }
+    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '' }
     await loadModels()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
@@ -74,7 +80,11 @@ async function testModel(name: string) {
   testing.value = name
   try {
     const data = await request('models', 'test', { name })
-    toast.success(data?.message || '测试完成')
+    if (data?.status === 'not_implemented') {
+      toast.info('模型测试功能尚未实现')
+    } else {
+      toast.success(data?.message || '测试通过')
+    }
   } catch (e: any) {
     toast.error('测试失败: ' + e)
   }
@@ -99,21 +109,25 @@ onMounted(loadModels)
         <div class="card-body">
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
             <div class="form-group">
-              <label class="form-label">模型名称 *</label>
-              <input class="form-input" v-model="addForm.name" placeholder="例如: gpt-4o / zhipu/glm-4">
+              <label class="form-label">名称 *（显示名称）</label>
+              <input class="form-input" v-model="addForm.name" placeholder="例如: 我的GPT4">
             </div>
             <div class="form-group">
-              <label class="form-label">Provider</label>
-              <input class="form-input" v-model="addForm.provider" placeholder="例如: openai / zhipu">
+              <label class="form-label">模型 ID *（实际调用）</label>
+              <input class="form-input" v-model="addForm.model" placeholder="例如: gpt-4o / zhipu/glm-4">
             </div>
             <div class="form-group">
-              <label class="form-label">API Key</label>
-              <input class="form-input" type="password" v-model="addForm.api_key" placeholder="sk-...">
+              <label class="form-label">API Key *</label>
+              <input class="form-input" type="password" v-model="addForm.key" placeholder="sk-...">
             </div>
             <div class="form-group">
               <label class="form-label">Base URL</label>
               <input class="form-input" v-model="addForm.base_url" placeholder="https://api.openai.com/v1">
             </div>
+          </div>
+          <div class="form-group" style="margin-top: var(--space-3);">
+            <label class="form-label">代理</label>
+            <input class="form-input" v-model="addForm.proxy" placeholder="http://proxy:port" style="max-width: 300px;">
           </div>
           <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end; gap: var(--space-2);">
             <button class="btn" @click="showAdd = false">取消</button>
@@ -133,14 +147,14 @@ onMounted(loadModels)
         <p>点击上方"添加模型"按钮配置第一个 AI 模型</p>
       </div>
 
-      <!-- Model list -->
+      <!-- Model list — backend returns: model_name, model, api_base, api_key, proxy, is_default -->
       <div v-if="!loading && models.length > 0" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--space-4);">
-        <div v-for="m in models" :key="m.name" class="card">
+        <div v-for="m in models" :key="m.model_name" class="card">
           <div class="card-header">
-            <h3>{{ m.name }}</h3>
+            <h3>{{ m.model_name }}</h3>
             <div style="display: flex; gap: var(--space-2); align-items: center;">
               <span v-if="m.is_default" class="badge badge-success">默认</span>
-              <span v-if="m.provider" class="badge badge-info">{{ m.provider }}</span>
+              <span v-if="m.model" class="badge badge-info">{{ m.model }}</span>
             </div>
           </div>
           <div class="card-body">
@@ -148,16 +162,18 @@ onMounted(loadModels)
               <span class="settings-key">API Key</span>
               <span class="settings-value">{{ m.api_key || '--' }}</span>
               <span class="settings-key">Base URL</span>
-              <span class="settings-value">{{ m.base_url || '--' }}</span>
+              <span class="settings-value">{{ m.api_base || '--' }}</span>
+              <span class="settings-key">代理</span>
+              <span class="settings-value">{{ m.proxy || '--' }}</span>
             </div>
           </div>
           <div class="card-footer">
-            <button class="btn btn-sm btn-ghost" @click="testModel(m.name)" :disabled="testing === m.name">
-              <span v-if="testing === m.name" class="spinner" style="width:14px;height:14px;"></span>
-              {{ testing === m.name ? '测试中...' : '测试' }}
+            <button class="btn btn-sm btn-ghost" @click="testModel(m.model_name)" :disabled="testing === m.model_name">
+              <span v-if="testing === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
+              {{ testing === m.model_name ? '测试中...' : '测试' }}
             </button>
-            <button v-if="!m.is_default" class="btn btn-sm" @click="setDefault(m.name)">设为默认</button>
-            <button class="btn btn-sm btn-danger" @click="deleteModel(m.name)">删除</button>
+            <button v-if="!m.is_default" class="btn btn-sm" @click="setDefault(m.model_name)">设为默认</button>
+            <button class="btn btn-sm btn-danger" @click="deleteModel(m.model_name)">删除</button>
           </div>
         </div>
       </div>

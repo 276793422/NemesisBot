@@ -759,9 +759,9 @@ mod tests {
         std::fs::create_dir_all(&log_dir).unwrap();
 
         let entries = vec![
-            serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "risk_level": "HIGH", "action": "file_write" }),
-            serde_json::json!({ "timestamp": "2026-01-02T00:00:00Z", "risk_level": "LOW", "action": "file_read" }),
-            serde_json::json!({ "timestamp": "2026-01-03T00:00:00Z", "risk_level": "HIGH", "action": "process_exec" }),
+            serde_json::json!({"event_id":"evt-1","request":{"op_type":"FileWrite","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-01T00:00:00Z","policy_rule":"test"}),
+            serde_json::json!({"event_id":"evt-2","request":{"op_type":"FileRead","danger_level":"LOW","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-02T00:00:00Z","policy_rule":"test"}),
+            serde_json::json!({"event_id":"evt-3","request":{"op_type":"ProcessExec","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"denied","reason":"test","timestamp":"2026-01-03T00:00:00Z","policy_rule":"test"}),
         ];
         let jsonl: String = entries.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
         std::fs::write(log_dir.join("2026-01.jsonl"), jsonl).unwrap();
@@ -773,7 +773,8 @@ mod tests {
         assert_eq!(page.len(), 3);
         // Should be sorted by timestamp desc
         assert_eq!(page[0]["risk_level"], "HIGH");
-        assert_eq!(page[0]["action"], "process_exec");
+        assert_eq!(page[0]["action"], "ProcessExec");
+        assert_eq!(page[0]["result"], "denied");
 
         // Stats
         let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
@@ -1049,15 +1050,17 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["path"], "memory/notes.md");
 
-        // Document get
-        let data = serde_json::json!({ "path": "notes.md" });
+        // Document get (frontend sends full path from documents list)
+        let data = serde_json::json!({ "path": "memory/notes.md" });
         let result = handler.handle_cmd("document.get", Some(data), &ctx).await.unwrap().unwrap();
         assert_eq!(result["content"], "# Notes");
 
-        // Document save
-        let data = serde_json::json!({ "path": "new.md", "content": "# New" });
+        // Document save (frontend sends full path)
+        let data = serde_json::json!({ "path": "memory/new.md", "content": "# New" });
         let result = handler.handle_cmd("document.save", Some(data), &ctx).await.unwrap().unwrap();
         assert!(result["saved"].as_bool().unwrap());
+        // Verify file was written to correct location
+        assert!(std::fs::read_to_string(ws.join("memory/new.md")).unwrap() == "# New");
     }
 
     // -----------------------------------------------------------------------

@@ -401,8 +401,17 @@ fn load_scanner_status(workspace: &str) -> serde_json::Value {
         .engines
         .into_iter()
         .map(|(name, config)| {
+            let is_enabled = cfg.enabled.iter().any(|e| e.eq_ignore_ascii_case(&name));
+            let state = if is_enabled { "ready" } else { "disabled" };
+            let description = config
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|_| "病毒扫描引擎")
+                .unwrap_or("扫描引擎");
             serde_json::json!({
                 "name": name,
+                "state": state,
+                "description": description,
                 "config": config,
             })
         })

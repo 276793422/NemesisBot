@@ -18,6 +18,11 @@ const searchQuery = ref('')
 const searchResults = ref<SearchResult[]>([])
 const searching = ref(false)
 
+// Config tab state
+const skillsConfig = ref<any>({})
+const configEditing = ref(false)
+const configEditContent = ref('')
+
 async function loadInstalled() {
   try {
     const data = await request('skills', 'installed')
@@ -56,10 +61,36 @@ async function searchSkills() {
   try {
     const data = await request('skills', 'search', { query: searchQuery.value })
     searchResults.value = data?.results || []
+    if (data?.message) toast.info(data.message)
   } catch (e: any) {
     toast.error('搜索失败: ' + e)
   }
   searching.value = false
+}
+
+async function loadConfig() {
+  try {
+    const data = await request('skills', 'config.get')
+    skillsConfig.value = data || {}
+    configEditContent.value = JSON.stringify(data, null, 2)
+  } catch { /* ignore */ }
+}
+
+async function saveConfig() {
+  try {
+    const parsed = JSON.parse(configEditContent.value)
+    await request('skills', 'config.save', parsed)
+    toast.success('配置已保存')
+    configEditing.value = false
+    await loadConfig()
+  } catch (e: any) {
+    toast.error('保存失败: ' + e)
+  }
+}
+
+function switchTab(tab: string) {
+  activeTab.value = tab
+  if (tab === 'config' && !configEditing.value) loadConfig()
 }
 
 onMounted(loadInstalled)
@@ -72,7 +103,7 @@ onMounted(loadInstalled)
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'installed' }" @click="activeTab = 'installed'">已安装</button>
         <button class="tab" :class="{ active: activeTab === 'shop' }" @click="activeTab = 'shop'">商店</button>
-        <button class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">配置</button>
+        <button class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">配置</button>
       </div>
 
       <!-- Installed tab -->
@@ -139,9 +170,32 @@ onMounted(loadInstalled)
       <!-- Config tab -->
       <div v-if="activeTab === 'config'">
         <div class="card">
-          <div class="card-header"><h3>Skills 配置</h3></div>
+          <div class="card-header">
+            <h3>Skills 配置</h3>
+            <div style="display: flex; gap: var(--space-2);">
+              <template v-if="!configEditing">
+                <button class="btn btn-sm" @click="configEditing = true; configEditContent = JSON.stringify(skillsConfig, null, 2)">编辑</button>
+              </template>
+              <template v-else>
+                <button class="btn btn-sm" @click="configEditing = false">取消</button>
+                <button class="btn btn-sm btn-primary" @click="saveConfig">保存</button>
+              </template>
+            </div>
+          </div>
           <div class="card-body">
-            <p style="color: var(--text-muted); font-size: var(--text-sm);">Skills 配置文件: config/config.skills.json</p>
+            <div v-if="configEditing">
+              <textarea class="form-textarea" style="min-height: 400px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="configEditContent"></textarea>
+            </div>
+            <div v-else>
+              <div class="settings-grid">
+                <template v-for="(value, key) in skillsConfig" :key="key">
+                  <template v-if="typeof value !== 'object'">
+                    <span class="settings-key">{{ key }}</span>
+                    <span class="settings-value">{{ typeof value === 'boolean' ? (value ? '是' : '否') : String(value) }}</span>
+                  </template>
+                </template>
+              </div>
+            </div>
           </div>
         </div>
       </div>

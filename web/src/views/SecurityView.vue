@@ -144,12 +144,20 @@ onMounted(async () => {
               <div class="stat-value">{{ stats.total_events || 0 }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">高危事件</div>
-              <div class="stat-value" style="color: var(--error);">{{ stats.high_risk || 0 }}</div>
+              <div class="stat-label">CRITICAL</div>
+              <div class="stat-value" style="color: var(--error);">{{ stats.by_level?.CRITICAL || 0 }}</div>
             </div>
             <div class="stat-card">
-              <div class="stat-label">拦截次数</div>
-              <div class="stat-value">{{ stats.blocked || 0 }}</div>
+              <div class="stat-label">HIGH</div>
+              <div class="stat-value" style="color: var(--warning, #e5a00d);">{{ stats.by_level?.HIGH || 0 }}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">MEDIUM</div>
+              <div class="stat-value">{{ stats.by_level?.MEDIUM || 0 }}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">LOW</div>
+              <div class="stat-value">{{ stats.by_level?.LOW || 0 }}</div>
             </div>
           </div>
         </div>

@@ -127,7 +127,7 @@ onMounted(async () => {
           <div class="card-body">
             <div class="form-group">
               <label class="form-label">默认模型</label>
-              <input class="form-input" :value="config.agents?.defaults?.model || '--'" disabled style="max-width: 300px;">
+              <input class="form-input" :value="config.agents?.defaults?.llm || '--'" disabled style="max-width: 300px;">
               <span class="form-hint">在模型页面修改</span>
             </div>
             <div class="form-group">
@@ -142,9 +142,9 @@ onMounted(async () => {
             </div>
             <div class="form-group">
               <label class="form-label">工作空间限制</label>
-              <div class="toggle" :class="{ active: config.security?.restrict_to_workspace !== false }"
-                @click="toggleService('security.restrict_to_workspace', config.security?.restrict_to_workspace === false)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.security?.restrict_to_workspace !== false ? '已启用' : '已禁用' }}</span>
+              <div class="toggle" :class="{ active: config.agents?.defaults?.restrict_to_workspace !== false }"
+                @click="toggleService('agents.defaults.restrict_to_workspace', config.agents?.defaults?.restrict_to_workspace !== false)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.agents?.defaults?.restrict_to_workspace !== false ? '已启用' : '已禁用' }}</span>
             </div>
           </div>
         </div>
@@ -169,19 +169,21 @@ onMounted(async () => {
           <div class="card-header"><h3>工具配置</h3></div>
           <div class="card-body">
             <div class="form-group">
-              <label class="form-label">Web 搜索引擎</label>
-              <select class="form-select" style="max-width: 200px;"
-                :value="config.tools?.web_search?.engine || 'none'"
-                @change="(e: any) => saveField('tools.web_search.engine', e.target.value)">
-                <option value="none">禁用</option>
-                <option value="brave">Brave</option>
-                <option value="duckduckgo">DuckDuckGo</option>
-              </select>
+              <label class="form-label">Brave 搜索</label>
+              <div class="toggle" :class="{ active: config.tools?.web?.brave?.enabled === true }"
+                @click="toggleService('tools.web.brave.enabled', config.tools?.web?.brave?.enabled === true)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.tools?.web?.brave?.enabled === true ? '已启用' : '已禁用' }}</span>
             </div>
             <div class="form-group">
-              <label class="form-label">Cron 超时（秒）</label>
-              <input class="form-input" type="number" :value="config.cron?.timeout_secs ?? 60"
-                @change="(e: any) => saveField('cron.timeout_secs', parseInt(e.target.value))" style="max-width: 200px;">
+              <label class="form-label">DuckDuckGo 搜索</label>
+              <div class="toggle" :class="{ active: config.tools?.web?.duckduckgo?.enabled === true }"
+                @click="toggleService('tools.web.duckduckgo.enabled', config.tools?.web?.duckduckgo?.enabled === true)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.tools?.web?.duckduckgo?.enabled === true ? '已启用' : '已禁用' }}</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Cron 执行超时（分钟）</label>
+              <input class="form-input" type="number" :value="config.tools?.cron?.exec_timeout_minutes ?? 60"
+                @change="(e: any) => saveField('tools.cron.exec_timeout_minutes', parseInt(e.target.value))" style="max-width: 200px;">
             </div>
           </div>
         </div>
@@ -190,10 +192,16 @@ onMounted(async () => {
         <div v-if="activeTab === 'services'" class="card">
           <div class="card-header"><h3>系统服务开关</h3></div>
           <div class="card-body">
-            <div v-for="(val, key) in { heartbeat: config.heartbeat?.enabled, 'device monitor': config.devices?.monitor_enabled, security: config.security?.enabled, forge: config.forge?.enabled, mcp: config.mcp?.enabled }" :key="key"
+            <div v-for="svc in [
+              { label: 'Heartbeat', path: 'heartbeat.enabled', value: config.heartbeat?.enabled },
+              { label: 'USB 监控', path: 'devices.monitor_usb', value: config.devices?.monitor_usb },
+              { label: 'Security', path: 'security.enabled', value: config.security?.enabled },
+              { label: 'Forge', path: 'forge.enabled', value: config.forge?.enabled },
+              { label: 'MCP', path: 'mcp.enabled', value: config.mcp?.enabled },
+            ]" :key="svc.path"
               style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) 0; border-bottom: 1px solid var(--border-light);">
-              <span style="font-size: var(--text-sm); font-weight: 500; text-transform: capitalize;">{{ key }}</span>
-              <div class="toggle" :class="{ active: val !== false }" @click="toggleService(key + '.enabled', val === false)"></div>
+              <span style="font-size: var(--text-sm); font-weight: 500;">{{ svc.label }}</span>
+              <div class="toggle" :class="{ active: svc.value !== false }" @click="toggleService(svc.path, svc.value !== false)"></div>
             </div>
           </div>
         </div>
@@ -203,20 +211,33 @@ onMounted(async () => {
           <div class="card-header"><h3>日志配置</h3></div>
           <div class="card-body">
             <div class="form-group">
-              <label class="form-label">控制台日志</label>
-              <div class="toggle" :class="{ active: config.logging?.console?.enabled !== false }"
-                @click="toggleService('logging.console.enabled', config.logging?.console?.enabled === false)"></div>
+              <label class="form-label">通用日志</label>
+              <div class="toggle" :class="{ active: config.logging?.general?.enabled !== false }"
+                @click="toggleService('logging.general.enabled', config.logging?.general?.enabled !== false)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.general?.enabled !== false ? '已启用' : '已禁用' }}</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label">控制台输出</label>
+              <div class="toggle" :class="{ active: config.logging?.general?.enable_console !== false }"
+                @click="toggleService('logging.general.enable_console', config.logging?.general?.enable_console !== false)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.general?.enable_console !== false ? '已启用' : '已禁用' }}</span>
             </div>
             <div class="form-group">
               <label class="form-label">日志级别</label>
               <select class="form-select" style="max-width: 200px;"
-                :value="config.logging?.console?.level || 'info'"
-                @change="(e: any) => saveField('logging.console.level', e.target.value)">
+                :value="config.logging?.general?.level || 'info'"
+                @change="(e: any) => saveField('logging.general.level', e.target.value)">
                 <option value="debug">DEBUG</option>
                 <option value="info">INFO</option>
                 <option value="warn">WARN</option>
                 <option value="error">ERROR</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">LLM 通信日志</label>
+              <div class="toggle" :class="{ active: config.logging?.llm?.enabled === true }"
+                @click="toggleService('logging.llm.enabled', config.logging?.llm?.enabled === true)"></div>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.llm?.enabled === true ? '已启用' : '已禁用' }}</span>
             </div>
           </div>
         </div>
@@ -229,9 +250,12 @@ onMounted(async () => {
               <div class="toggle" :class="{ active: corsEnabled }" @click="toggleCors(!corsEnabled)"></div>
             </div>
             <div class="card-body">
+              <div style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--accent-muted, #e8f0fe); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+                CORS 管理功能当前通过 WebSocket API 不可用，请使用 CLI 命令 <code>nemesisbot cors</code> 进行管理。
+              </div>
               <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
-                <input class="form-input" v-model="newOrigin" placeholder="例如: http://localhost:3000" style="max-width: 400px;">
-                <button class="btn btn-primary" @click="addCorsOrigin">添加</button>
+                <input class="form-input" v-model="newOrigin" placeholder="例如: http://localhost:3000" style="max-width: 400px;" disabled>
+                <button class="btn btn-primary" @click="addCorsOrigin" disabled>添加</button>
               </div>
               <div v-if="corsOrigins.length === 0" style="color: var(--text-muted); font-size: var(--text-sm);">暂无 CORS 规则</div>
               <div v-for="origin in corsOrigins" :key="origin" style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-light); border-radius: var(--radius-md); margin-bottom: var(--space-2);">
@@ -259,6 +283,9 @@ onMounted(async () => {
             </div>
             <div class="card-body">
               <div v-if="editing">
+                <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--warning-bg, #fef3cd); border: 1px solid var(--warning, #e5a00d); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+                  注意：敏感字段（如 API Key、Token）已被遮蔽显示（含 **** ）。如需修改，请将遮蔽值替换为真实值；如保持遮蔽值不变，保存后该字段将被覆盖为遮蔽值。
+                </div>
                 <textarea class="form-textarea" style="min-height: 500px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
               </div>
               <div v-else>

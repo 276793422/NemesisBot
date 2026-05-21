@@ -38,7 +38,11 @@ async function toggleForge() {
 async function triggerReflect() {
   try {
     const data = await request('forge', 'reflect')
-    toast.success(data?.message || '反思已触发')
+    if (data?.triggered) {
+      toast.success(data?.message || '反思已触发')
+    } else {
+      toast.info(data?.message || '反思功能尚未集成')
+    }
   } catch (e: any) {
     toast.error('触发失败: ' + e)
   }
@@ -88,13 +92,12 @@ onMounted(async () => {
             </div>
             <div v-else class="table-wrap">
               <table>
-                <thead><tr><th>名称</th><th>类型</th><th>版本</th><th>状态</th></tr></thead>
+                <thead><tr><th>名称</th><th>类型</th><th>大小</th></tr></thead>
                 <tbody>
                   <tr v-for="(a, idx) in artifacts" :key="idx">
                     <td>{{ a.name || '--' }}</td>
-                    <td>{{ a.type || '--' }}</td>
-                    <td>{{ a.version || '--' }}</td>
-                    <td><span class="badge badge-info">{{ a.status || 'active' }}</span></td>
+                    <td><span class="badge badge-info">{{ a.type || '--' }}</span></td>
+                    <td>{{ a.type === 'file' ? (a.size ? (a.size < 1024 ? a.size + ' B' : (a.size / 1024).toFixed(1) + ' KB') : '--') : '--' }}</td>
                   </tr>
                 </tbody>
               </table>
