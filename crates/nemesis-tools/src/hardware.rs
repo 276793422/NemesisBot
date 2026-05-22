@@ -552,6 +552,7 @@ impl SPITool {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::*;
+    use std::os::unix::io::AsRawFd;
 
     // I2C ioctl constants from <linux/i2c-dev.h>, <linux/i2c.h>
     const I2C_SLAVE: u64 = 0x0703;
@@ -615,7 +616,6 @@ mod linux_impl {
 
     /// Perform an ioctl call on a file descriptor.
     fn do_ioctl(fd: std::fs::File, request: u64, arg: usize) -> Result<i32, String> {
-        use std::os::unix::io::AsRawFd;
         let raw_fd = fd.as_raw_fd();
         let ret = unsafe { libc::ioctl(raw_fd, request as u64 as _, arg) };
         if ret < 0 {
@@ -671,8 +671,6 @@ mod linux_impl {
 
     /// I2C bus scan using ioctl SMBus probes.
     pub fn linux_i2c_scan(dev_path: &str) -> Result<ToolResult, String> {
-        use std::os::unix::io::AsRawFd;
-
         let fd = open_i2c(dev_path)?;
 
         // Query adapter capabilities
@@ -746,8 +744,6 @@ mod linux_impl {
         args: &serde_json::Value,
         length: usize,
     ) -> Result<ToolResult, String> {
-        use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-
         let fd = open_i2c(dev_path)?;
 
         // Set slave address
@@ -786,8 +782,6 @@ mod linux_impl {
 
     /// I2C write using ioctl.
     pub fn linux_i2c_write(dev_path: &str, addr: u8, data: &[u8]) -> Result<ToolResult, String> {
-        use std::os::unix::io::AsRawFd;
-
         let fd = open_i2c(dev_path)?;
 
         // Set slave address
@@ -797,7 +791,7 @@ mod linux_impl {
         }
 
         // Write data
-        let n = std::os::unix::fs::FileExt::write_all_at(&fd, data, 0)
+        std::os::unix::fs::FileExt::write_all_at(&fd, data, 0)
             .map_err(|e| format!("failed to write to device 0x{:02x}: {}", addr, e))?;
 
         Ok(ToolResult::silent(&format!(
@@ -808,8 +802,6 @@ mod linux_impl {
 
     /// Configure SPI device (open + set mode, bits, speed).
     fn configure_spi(dev_path: &str, mode: u8, bits: u8, speed: u32) -> Result<std::fs::File, String> {
-        use std::os::unix::io::AsRawFd;
-
         let fd = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -848,8 +840,6 @@ mod linux_impl {
         speed: u32,
         tx_buf: &[u8],
     ) -> Result<ToolResult, String> {
-        use std::os::unix::io::AsRawFd;
-
         let fd = configure_spi(dev_path, mode, bits, speed)?;
 
         let mut rx_buf = vec![0u8; tx_buf.len()];
@@ -901,8 +891,6 @@ mod linux_impl {
         speed: u32,
         length: usize,
     ) -> Result<ToolResult, String> {
-        use std::os::unix::io::AsRawFd;
-
         let fd = configure_spi(dev_path, mode, bits, speed)?;
 
         let tx_buf = vec![0u8; length];

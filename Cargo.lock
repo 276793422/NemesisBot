@@ -3519,6 +3519,7 @@ dependencies = [
  "dirs 5.0.1",
  "getrandom 0.2.17",
  "include_dir",
+ "libc",
  "nemesis-agent",
  "nemesis-auth",
  "nemesis-bus",

@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+#[cfg(not(target_os = "windows"))]
+use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------

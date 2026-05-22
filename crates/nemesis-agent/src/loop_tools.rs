@@ -621,9 +621,11 @@ impl Tool for ExecTool {
                 c
             };
             #[cfg(not(target_os = "windows"))]
-            let mut cmd = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command);
+            let mut cmd = {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg("-c").arg(command);
+                c
+            };
             tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
                 cmd.current_dir(cwd).output(),
@@ -710,9 +712,11 @@ impl Tool for AsyncExecTool {
                 c
             };
             #[cfg(not(target_os = "windows"))]
-            let mut c = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command);
+            let mut c = {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg("-c").arg(command);
+                c
+            };
             c.current_dir(cwd)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
