@@ -231,6 +231,7 @@ pub trait PlatformExecutor: Send + Sync {
 /// On Windows, supports CREATE_NO_WINDOW flag to hide console windows.
 /// Provides graceful terminate-then-kill with configurable timeout.
 pub struct DefaultPlatformExecutor {
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     config: ExecutorConfig,
 }
 
@@ -336,6 +337,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
             .stderr(Stdio::piped());
 
         // Determine if this is a GUI process (has --window-type argument)
+        #[allow(unused_variables)]
         let is_gui_process = args.windows(2).any(|w| w[0] == "--window-type");
 
         // Platform-specific window hiding (Windows only)

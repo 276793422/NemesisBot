@@ -9,10 +9,12 @@
 
 use crate::{
     is_close_requested,
-    set_active_hwnd, set_approval_result, take_bring_to_front_requested, bring_window_to_foreground,
+    set_approval_result, take_bring_to_front_requested, bring_window_to_foreground,
     WindowConfig,
     PLUGIN_ERR_WINDOW,
 };
+#[cfg(target_os = "windows")]
+use crate::set_active_hwnd;
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, WindowEvent};
@@ -281,6 +283,7 @@ fn run_event_loop(mut event_loop: EventLoop<()>) {
 // ---------------------------------------------------------------------------
 
 /// Extract the native window handle (HWND on Windows) and store it globally.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
 fn capture_hwnd(window: &tao::window::Window) {
     #[cfg(target_os = "windows")]
     {

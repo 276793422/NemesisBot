@@ -614,18 +614,6 @@ mod linux_impl {
             .map_err(|e| format!("failed to open {}: {} (check permissions and i2c-dev module)", dev_path, e))
     }
 
-    /// Perform an ioctl call on a file descriptor.
-    fn do_ioctl(fd: std::fs::File, request: u64, arg: usize) -> Result<i32, String> {
-        let raw_fd = fd.as_raw_fd();
-        let ret = unsafe { libc::ioctl(raw_fd, request as u64 as _, arg) };
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
-            Err(format!("ioctl failed: {}", err))
-        } else {
-            Ok(ret)
-        }
-    }
-
     /// Probe a single I2C address using SMBus.
     fn smbus_probe(fd: &std::fs::File, addr: usize, has_quick: bool) -> bool {
         // EEPROM ranges: use read byte (quick write can corrupt AT24RF08)
@@ -862,9 +850,8 @@ mod linux_impl {
             libc::ioctl(fd.as_raw_fd(), SPI_IOC_MESSAGE_1 as _, &xfer as *const _ as usize)
         };
 
-        // Keep buffers alive until after ioctl
-        std::mem::drop(tx_buf);
-        std::mem::drop(&rx_buf);
+        let _ = tx_buf;
+        let _ = &rx_buf;
 
         if ret < 0 {
             return Err(format!("SPI transfer failed: {}", std::io::Error::last_os_error()));
@@ -914,8 +901,8 @@ mod linux_impl {
             libc::ioctl(fd.as_raw_fd(), SPI_IOC_MESSAGE_1 as _, &xfer as *const _ as usize)
         };
 
-        std::mem::drop(tx_buf);
-        std::mem::drop(&rx_buf);
+        let _ = tx_buf;
+        let _ = &rx_buf;
 
         if ret < 0 {
             return Err(format!("SPI read failed: {}", std::io::Error::last_os_error()));
