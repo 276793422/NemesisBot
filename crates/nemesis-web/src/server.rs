@@ -290,7 +290,6 @@ impl WebServer {
         );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // Spawn the periodic status publish loop
         let _status_handle = start_publish_status_loop(
             self.event_hub.clone(),
             self.session_count.clone(),
@@ -324,15 +323,19 @@ impl WebServer {
     }
 
     /// Start the web server with graceful shutdown signal.
-    /// Returns the actual bound address (useful when port 0 is used for OS-assigned random port).
-    pub async fn start_with_shutdown(&self, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> Result<SocketAddr, String> {
+    /// `bound_tx`: if provided, the actual bound address is sent immediately after bind
+    /// (before the serve loop blocks), so callers can discover the real port when using port 0.
+    pub async fn start_with_shutdown(
+        &self,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+        bound_tx: Option<tokio::sync::oneshot::Sender<SocketAddr>>,
+    ) -> Result<(), String> {
         tracing::info!(
             listen_addr = %self.config.listen_addr,
             "[Web] Starting web server with graceful shutdown"
         );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        // Spawn the periodic status publish loop
         let _status_handle = start_publish_status_loop(
             self.event_hub.clone(),
             self.session_count.clone(),
@@ -355,18 +358,23 @@ impl WebServer {
 
         let actual_addr = listener.local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
+
+        // Send the actual address immediately so the caller knows the real port.
+        if let Some(tx) = bound_tx {
+            let _ = tx.send(actual_addr);
+        }
+
         tracing::info!("Web server listening on {}", actual_addr);
 
         tokio::select! {
             result = axum::serve(listener, app) => {
                 result.map_err(|e| format!("server error: {}", e))?;
-                Ok(actual_addr)
             }
             _ = shutdown_rx.recv() => {
                 tracing::info!("Web server shutdown signal received");
-                Ok(actual_addr)
             }
         }
+        Ok(())
     }
 
     /// Stop the web server.

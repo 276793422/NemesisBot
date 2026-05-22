@@ -3595,20 +3595,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 17: Start WebServer in background
     let web_shutdown_rx = svc_mgr.subscribe_shutdown();
-    let actual_port = Arc::new(std::sync::Mutex::new(None::<u16>));
-    let actual_port_clone = actual_port.clone();
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
     let web_handle = tokio::spawn(async move {
-        match web_server.start_with_shutdown(web_shutdown_rx).await {
-            Ok(addr) => {
-                *actual_port_clone.lock().unwrap() = Some(addr.port());
-            }
-            Err(e) => error!("Web server error: {}", e),
+        if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx, Some(bound_tx)).await {
+            error!("Web server error: {}", e);
         }
     });
     info!("Web server starting on {}:{}", web_host, web_port);
 
-    // Give the web server a moment to bind
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Wait for the actual bound address (sent immediately after TcpListener::bind)
+    let real_port: i64 = match bound_rx.await {
+        Ok(addr) => {
+            info!("Web server bound to {}", addr);
+            addr.port() as i64
+        }
+        Err(_) => {
+            warn!("Failed to receive web server bound address, using config port");
+            web_port
+        }
+    };
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)
     // via start_services() → services.health.start(). No separate spawn needed here.
@@ -3626,10 +3631,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Non-fatal: the real services are already started above
     }
 
-    // Step 20: Compute display URLs (use actual bound port when port 0 was used)
-    let real_port: i64 = actual_port.lock().unwrap()
-        .map(|p| p as i64)
-        .unwrap_or(web_port);
+    // Step 20: Compute display URLs (real_port already resolved via oneshot in Step 17)
     let web_url = format!("http://{}:{}", web_host, real_port);
     let _chat_url = format!("http://{}:{}/chat/", web_host, real_port);
 
