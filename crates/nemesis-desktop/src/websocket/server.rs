@@ -215,7 +215,7 @@ impl WebSocketServer {
     /// Binds to 127.0.0.1:0 and starts accepting connections in a background task.
     /// Returns the assigned port number.
     pub async fn start(&self) -> Result<u16, String> {
-        info!("WebSocketServer: Starting...");
+        info!("[WebSocketServer] Starting...");
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -229,7 +229,7 @@ impl WebSocketServer {
         self.port
             .store(port, std::sync::atomic::Ordering::SeqCst);
 
-        info!("WebSocketServer: Listening on 127.0.0.1:{}", port);
+        info!("[WebSocketServer] Listening on 127.0.0.1:{}", port);
 
         // Spawn the accept loop
         let mut shutdown_rx = self.shutdown_tx.subscribe();
@@ -241,18 +241,18 @@ impl WebSocketServer {
                 let accept_result = tokio::select! {
                     result = listener.accept() => result,
                     _ = shutdown_rx.recv() => {
-                        info!("WebSocketServer: Accept loop shutting down");
+                        info!("[WebSocketServer] Accept loop shutting down");
                         return;
                     }
                 };
 
                 match accept_result {
                     Ok((stream, addr)) => {
-                        debug!("WebSocketServer: New connection from {}", addr);
+                        debug!("[WebSocketServer] New connection from {}", addr);
                         Self::handle_new_connection(stream, &state, &key_gen).await;
                     }
                     Err(e) => {
-                        warn!("WebSocketServer: Accept error: {}", e);
+                        warn!("[WebSocketServer] Accept error: {}", e);
                     }
                 }
             }
@@ -272,7 +272,7 @@ impl WebSocketServer {
         let ws_stream = match ws_stream {
             Ok(s) => s,
             Err(e) => {
-                warn!("WebSocketServer: WebSocket upgrade failed: {}", e);
+                warn!("[WebSocketServer] WebSocket upgrade failed: {}", e);
                 return;
             }
         };
@@ -283,7 +283,7 @@ impl WebSocketServer {
         let auth_msg = match ws_read.next().await {
             Some(Ok(WsMessage::Text(text))) => text,
             _ => {
-                warn!("WebSocketServer: Failed to read auth message");
+                warn!("[WebSocketServer] Failed to read auth message");
                 return;
             }
         };
@@ -291,7 +291,7 @@ impl WebSocketServer {
         let auth: serde_json::Value = match serde_json::from_str(&auth_msg) {
             Ok(v) => v,
             Err(e) => {
-                warn!("WebSocketServer: Auth JSON parse error: {}", e);
+                warn!("[WebSocketServer] Auth JSON parse error: {}", e);
                 return;
             }
         };
@@ -299,7 +299,7 @@ impl WebSocketServer {
         let key = match auth.get("key").and_then(|v| v.as_str()) {
             Some(k) => k.to_string(),
             None => {
-                warn!("WebSocketServer: No key in auth message");
+                warn!("[WebSocketServer] No key in auth message");
                 return;
             }
         };
@@ -308,13 +308,13 @@ impl WebSocketServer {
         let validated = match key_gen.validate(&key) {
             Ok(v) => v,
             Err(e) => {
-                warn!("WebSocketServer: Auth failed: {}", e);
+                warn!("[WebSocketServer] Auth failed: {}", e);
                 return;
             }
         };
 
         info!(
-            "WebSocketServer: Child authenticated: PID={}, ChildID={:?}",
+            "[WebSocketServer] Child authenticated: PID={}, ChildID={:?}",
             validated.child_pid, validated.child_id
         );
 
@@ -345,7 +345,7 @@ impl WebSocketServer {
         }
 
         info!(
-            "WebSocketServer: Connection registered: UUID={}, ChildID={:?}",
+            "[WebSocketServer] Connection registered: UUID={}, ChildID={:?}",
             validated.key, validated.child_id
         );
 
@@ -354,11 +354,11 @@ impl WebSocketServer {
         tokio::spawn(async move {
             while let Some(data) = msg_rx.recv().await {
                 if let Err(e) = ws_write.send(WsMessage::Text(data.into())).await {
-                    warn!("WebSocketServer: Write error for {}: {}", write_key, e);
+                    warn!("[WebSocketServer] Write error for {}: {}", write_key, e);
                     break;
                 }
             }
-            debug!("WebSocketServer: Write loop ended for {}", write_key);
+            debug!("[WebSocketServer] Write loop ended for {}", write_key);
         });
 
         // Spawn read loop
@@ -373,13 +373,13 @@ impl WebSocketServer {
                         let msg: Message = match serde_json::from_str(&text) {
                             Ok(m) => m,
                             Err(e) => {
-                                debug!("WebSocketServer: JSON decode error: {}", e);
+                                debug!("[WebSocketServer] JSON decode error: {}", e);
                                 continue;
                             }
                         };
 
                         if msg.jsonrpc != crate::websocket::protocol::VERSION {
-                            debug!("WebSocketServer: Non-protocol message ignored");
+                            debug!("[WebSocketServer] Non-protocol message ignored");
                             continue;
                         }
 
@@ -418,11 +418,11 @@ impl WebSocketServer {
                         }
                     }
                     Ok(WsMessage::Close(_)) => {
-                        info!("WebSocketServer: Close frame from {}", read_key);
+                        info!("[WebSocketServer] Close frame from {}", read_key);
                         break;
                     }
                     Err(e) => {
-                        warn!("WebSocketServer: Read error for {}: {}", read_key, e);
+                        warn!("[WebSocketServer] Read error for {}: {}", read_key, e);
                         break;
                     }
                     _ => {}
@@ -438,13 +438,13 @@ impl WebSocketServer {
                 }
             }
 
-            debug!("WebSocketServer: Connection removed: {}", read_key);
+            debug!("[WebSocketServer] Connection removed: {}", read_key);
         });
     }
 
     /// Stop the WebSocket server.
     pub fn stop(&self) {
-        info!("WebSocketServer: Stopping...");
+        info!("[WebSocketServer] Stopping...");
         let _ = self.shutdown_tx.send(());
 
         // Clear all connections and pending

@@ -298,7 +298,7 @@ impl HeartbeatService {
             Ok(data) => {
                 // Check if file is empty (only comments or blank lines)
                 if self.is_heartbeat_file_empty(&data) {
-                    tracing::info!("HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
+                    tracing::info!("[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
                     return String::new();
                 }
 
@@ -455,11 +455,11 @@ Add your heartbeat tasks below this line:
             return;
         }
 
-        tracing::debug!("Executing heartbeat");
+        tracing::debug!("[Heartbeat] Executing heartbeat");
 
         let prompt = self.build_prompt();
         if prompt.is_empty() {
-            tracing::info!("No heartbeat prompt (HEARTBEAT.md empty or missing)");
+            tracing::info!("[Heartbeat] No heartbeat prompt (HEARTBEAT.md empty or missing)");
             return;
         }
 
@@ -505,7 +505,7 @@ Add your heartbeat tasks below this line:
 
         if result.is_async {
             self.log_info(&format!("Async task started: {}", result.for_llm));
-            tracing::info!(message = result.for_llm.as_str(), "Async heartbeat task started");
+            tracing::info!(message = result.for_llm.as_str(), "[Heartbeat] Async heartbeat task started");
             return;
         }
 
@@ -593,16 +593,16 @@ fn execute_heartbeat_tick(
         }
     };
     if skip {
-        tracing::debug!("Heartbeat skipped (BOOTSTRAP.md exists)");
+        tracing::debug!("[Heartbeat] Heartbeat skipped (BOOTSTRAP.md exists)");
         return;
     }
 
-    tracing::debug!("Executing heartbeat");
+    tracing::debug!("[Heartbeat] Executing heartbeat");
 
     // Step 2: Build prompt from HEARTBEAT.md.
     let prompt = build_prompt_from_workspace(workspace);
     if prompt.is_empty() {
-        tracing::info!("No heartbeat prompt (HEARTBEAT.md empty or missing)");
+        tracing::info!("[Heartbeat] No heartbeat prompt (HEARTBEAT.md empty or missing)");
         return;
     }
 
@@ -618,18 +618,18 @@ fn execute_heartbeat_tick(
         }
     };
 
-    tracing::debug!("Resolved channel: {}, chatID: {}", channel, chat_id);
+    tracing::debug!("[Heartbeat] Resolved channel: {}, chatID: {}", channel, chat_id);
 
     // Update beat tracking.
     let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
     *last_beat.lock() = Utc::now();
-    tracing::debug!("Heartbeat tick #{}", count);
+    tracing::debug!("[Heartbeat] Heartbeat tick #{}", count);
 
     // Step 4: Call handler.
     let result = match handler {
         Some(h) => h(prompt, channel, chat_id),
         None => {
-            tracing::error!("Heartbeat handler not configured");
+            tracing::error!("[Heartbeat] Heartbeat handler not configured");
             return;
         }
     };
@@ -638,23 +638,23 @@ fn execute_heartbeat_tick(
     let result = match result {
         Some(r) => r,
         None => {
-            tracing::debug!("Heartbeat handler returned nil result");
+            tracing::debug!("[Heartbeat] Heartbeat handler returned nil result");
             return;
         }
     };
 
     if result.is_error {
-        tracing::error!("Heartbeat error: {}", result.for_llm);
+        tracing::error!("[Heartbeat] Heartbeat error: {}", result.for_llm);
         return;
     }
 
     if result.is_async {
-        tracing::info!(message = result.for_llm.as_str(), "Async heartbeat task started");
+        tracing::info!(message = result.for_llm.as_str(), "[Heartbeat] Async heartbeat task started");
         return;
     }
 
     if result.silent {
-        tracing::debug!("Heartbeat OK - silent");
+        tracing::debug!("[Heartbeat] Heartbeat OK - silent");
         return;
     }
 
@@ -684,7 +684,7 @@ fn build_prompt_from_workspace(workspace: &Option<String>) -> String {
     match std::fs::read(&heartbeat_path) {
         Ok(data) => {
             if is_heartbeat_file_empty_static(&data) {
-                tracing::info!("HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
+                tracing::info!("[Heartbeat] HEARTBEAT.md is empty (only comments/blank lines) - skipping LLM");
                 return String::new();
             }
 
@@ -756,9 +756,9 @@ Add your heartbeat tasks below this line:
 "#;
 
     if let Err(e) = std::fs::write(&heartbeat_path, default_content) {
-        tracing::warn!("Failed to create default HEARTBEAT.md: {}", e);
+        tracing::warn!("[Heartbeat] Failed to create default HEARTBEAT.md: {}", e);
     } else {
-        tracing::info!("Created default HEARTBEAT.md template");
+        tracing::info!("[Heartbeat] Created default HEARTBEAT.md template");
     }
 }
 
@@ -793,7 +793,7 @@ fn send_response_static(
     let bus = match message_bus {
         Some(b) => b,
         None => {
-            tracing::debug!("No message bus configured, heartbeat result not sent");
+            tracing::debug!("[Heartbeat] No message bus configured, heartbeat result not sent");
             return;
         }
     };
@@ -801,13 +801,13 @@ fn send_response_static(
     let last_channel = match state_manager {
         Some(s) => s.get_last_channel(),
         None => {
-            tracing::debug!("No state manager configured, heartbeat result not sent");
+            tracing::debug!("[Heartbeat] No state manager configured, heartbeat result not sent");
             return;
         }
     };
 
     if last_channel.is_empty() {
-        tracing::debug!("No last channel recorded, heartbeat result not sent");
+        tracing::debug!("[Heartbeat] No last channel recorded, heartbeat result not sent");
         return;
     }
 
@@ -817,7 +817,7 @@ fn send_response_static(
     }
 
     bus.publish_outbound(platform.clone(), user_id, response.to_string());
-    tracing::info!("Heartbeat result sent to {}", platform);
+    tracing::info!("[Heartbeat] Heartbeat result sent to {}", platform);
 }
 
 #[cfg(test)]

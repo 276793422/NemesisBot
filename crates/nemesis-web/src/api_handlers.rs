@@ -201,7 +201,7 @@ pub async fn handle_api_config(
     let data = match std::fs::read_to_string(&config_path) {
         Ok(d) => d,
         Err(_) => {
-            tracing::debug!(path = %config_path.display(), "Config file not found");
+            tracing::debug!(path = %config_path.display(), "[WebServer] Config file not found");
             return Err((
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"error": "configuration not found"})),

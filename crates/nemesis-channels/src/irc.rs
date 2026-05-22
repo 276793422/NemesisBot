@@ -227,7 +227,7 @@ impl IRCChannel {
                 .flush()
                 .await
                 .map_err(|e| NemesisError::Channel(format!("IRC flush failed: {e}")))?;
-            debug!(command = %command, "IRC sent command");
+            debug!(command = %command, "[IRCChannel] sent command");
             // Put writer back
             *self.writer.lock() = Some(w);
             Ok(())
@@ -259,7 +259,7 @@ impl IRCChannel {
             line.clear();
             match reader.read_line(&mut line).await {
                 Ok(0) => {
-                    warn!("IRC connection closed by server");
+                    warn!("[IRCChannel] connection closed by server");
                     break;
                 }
                 Ok(_) => {
@@ -268,7 +268,7 @@ impl IRCChannel {
                         continue;
                     }
 
-                    debug!(line = %trimmed, "IRC recv");
+                    debug!(line = %trimmed, "[IRCChannel] recv");
 
                     // Handle PING
                     if let Some(pong) = Self::handle_ping(trimmed) {
@@ -281,13 +281,13 @@ impl IRCChannel {
                     match command {
                         "001" => {
                             // RPL_WELCOME - join channel
-                            info!(channel = %self.config.channel, "IRC registered, joining channel");
+                            info!(channel = %self.config.channel, "[IRCChannel] registered, joining channel");
                             self.send_raw(&format!("JOIN {}", self.config.channel))
                                 .await?;
                         }
                         "433" => {
                             // Nick already in use
-                            warn!("IRC nick in use, appending _");
+                            warn!("[IRCChannel] nick in use, appending _");
                             let new_nick = format!("{}_", self.config.nick);
                             self.send_raw(&format!("NICK {new_nick}")).await?;
                         }
@@ -302,32 +302,32 @@ impl IRCChannel {
                                     sender = %sender,
                                     target = %target,
                                     content = %content,
-                                    "IRC received PRIVMSG"
+                                    "[IRCChannel] received PRIVMSG"
                                 );
                             }
                         }
                         "JOIN" => {
                             if let Some(nick) = prefix.map(Self::extract_nick_from_prefix) {
                                 if nick == self.config.nick {
-                                    info!(channel = %params.trim(), "IRC joined channel");
+                                    info!(channel = %params.trim(), "[IRCChannel] joined channel");
                                 }
                             }
                         }
                         "KICK" => {
-                            warn!(params = %params, "IRC kicked from channel");
+                            warn!(params = %params, "[IRCChannel] kicked from channel");
                             // Rejoin
                             self.send_raw(&format!("JOIN {}", self.config.channel))
                                 .await?;
                         }
                         "ERROR" => {
-                            error!(params = %params, "IRC error from server");
+                            error!(params = %params, "[IRCChannel] error from server");
                             break;
                         }
                         _ => {}
                     }
                 }
                 Err(e) => {
-                    error!(error = %e, "IRC read error");
+                    error!(error = %e, "[IRCChannel] read error");
                     break;
                 }
             }
@@ -376,14 +376,14 @@ impl IRCChannel {
                         loop {
                             tokio::select! {
                                 _ = &mut cancel_rx => {
-                                    info!("IRC connection loop cancelled");
+                                    info!("[IRCChannel] connection loop cancelled");
                                     let _ = writer.write_all(b"QUIT :NemesisBot shutting down\r\n").await;
                                     return;
                                 }
                                 result = reader.read_line(&mut line) => {
                                     match result {
                                         Ok(0) => {
-                                            warn!("IRC connection closed");
+                                            warn!("[IRCChannel] connection closed");
                                             break;
                                         }
                                         Ok(_) => {
@@ -405,7 +405,7 @@ impl IRCChannel {
 
                                             match command {
                                                 "001" => {
-                                                    info!(channel = %config.channel, "IRC registered, joining");
+                                                    info!(channel = %config.channel, "[IRCChannel] registered, joining");
                                                     let _ = writer.write_all(format!("JOIN {}\r\n", config.channel).as_bytes()).await;
                                                     let _ = writer.flush().await;
                                                 }
@@ -416,16 +416,16 @@ impl IRCChannel {
                                                 "JOIN" => {
                                                     if let Some(nick) = prefix.map(IRCChannel::extract_nick_from_prefix) {
                                                         if nick == config.nick {
-                                                            info!("IRC joined channel successfully");
+                                                            info!("[IRCChannel] joined channel successfully");
                                                         }
                                                     }
                                                 }
                                                 "KICK" => {
-                                                    warn!("IRC kicked, rejoining");
+                                                    warn!("[IRCChannel] kicked, rejoining");
                                                     let _ = writer.write_all(format!("JOIN {}\r\n", config.channel).as_bytes()).await;
                                                 }
                                                 "ERROR" => {
-                                                    error!(params = %params, "IRC error");
+                                                    error!(params = %params, "[IRCChannel] error");
                                                     break;
                                                 }
                                                 _ => {}
@@ -433,7 +433,7 @@ impl IRCChannel {
                                             line.clear();
                                         }
                                         Err(e) => {
-                                            error!(error = %e, "IRC read error");
+                                            error!(error = %e, "[IRCChannel] read error");
                                             break;
                                         }
                                     }
@@ -445,7 +445,7 @@ impl IRCChannel {
                         backoff_secs = config.reconnect_backoff_secs;
                     }
                     Err(e) => {
-                        error!(error = %e, "IRC connect failed");
+                        error!(error = %e, "[IRCChannel] connect failed");
                     }
                 }
 
@@ -455,7 +455,7 @@ impl IRCChannel {
                 }
                 warn!(
                     backoff_secs = backoff_secs,
-                    "IRC reconnecting after backoff"
+                    "[IRCChannel] reconnecting after backoff"
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
                 backoff_secs = (backoff_secs * 2).min(config.max_reconnect_backoff_secs);
@@ -475,7 +475,7 @@ impl Channel for IRCChannel {
             server = %self.config.server,
             nick = %self.config.nick,
             channel = %self.config.channel,
-            "starting IRC channel"
+            "[IRCChannel] starting IRC channel"
         );
         *self.running.write() = true;
         self.base.set_enabled(true);
@@ -483,12 +483,12 @@ impl Channel for IRCChannel {
         // Spawn the connection loop
         self.spawn_connection_loop();
 
-        info!("IRC channel started");
+        info!("[IRCChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping IRC channel");
+        info!("[IRCChannel] stopping IRC channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -498,7 +498,7 @@ impl Channel for IRCChannel {
         }
         *self.writer.lock() = None;
 
-        info!("IRC channel stopped");
+        info!("[IRCChannel] channel stopped");
         Ok(())
     }
 

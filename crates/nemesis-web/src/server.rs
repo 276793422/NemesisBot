@@ -115,7 +115,7 @@ impl WebServer {
         tracing::info!(
             listen_addr = %config.listen_addr,
             ws_path = %config.ws_path,
-            "[Web] Creating web server"
+            "[WebServer] Creating web server"
         );
         Self {
             config,
@@ -220,7 +220,7 @@ impl WebServer {
         if let Some(ref files) = self.config.static_files {
             // In-memory static file serving (zero disk IO)
             let files = files.clone();
-            tracing::info!("Serving static files from embedded memory");
+            tracing::info!("[WebServer] Serving static files from embedded memory");
             router = router.fallback(move |req: axum::extract::Request| {
                 let files = files.clone();
                 async move { serve_embedded_static(files, req).await }
@@ -230,7 +230,7 @@ impl WebServer {
             if dir_path.exists() && dir_path.is_dir() {
                 tracing::info!(
                     static_dir = %static_dir,
-                    "Serving static files from directory"
+                    "[WebServer] Serving static files from directory"
                 );
                 let serve_dir = ServeDir::new(&dir_path).append_index_html_on_directories(true);
                 // Wrap ServeDir with a response header layer that appends
@@ -257,12 +257,12 @@ impl WebServer {
             } else {
                 tracing::warn!(
                     static_dir = %static_dir,
-                    "Static directory not found or not a directory, skipping static file serving"
+                    "[WebServer] Static directory not found or not a directory, skipping static file serving"
                 );
             }
         }
 
-        tracing::info!("[Web] Router built, routes registered");
+        tracing::info!("[WebServer] Router built, routes registered");
         router
     }
 
@@ -286,7 +286,7 @@ impl WebServer {
     pub async fn start(&self) -> Result<SocketAddr, String> {
         tracing::info!(
             listen_addr = %self.config.listen_addr,
-            "[Web] Starting web server"
+            "[WebServer] Starting web server"
         );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
@@ -299,24 +299,24 @@ impl WebServer {
         );
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
-            tracing::error!("[Web] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            tracing::error!("[WebServer] Invalid listen address '{}': {}", self.config.listen_addr, e);
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| {
-                tracing::error!("[Web] Bind failed on '{}': {}", addr, e);
+                tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
                 format!("bind failed: {}", e)
             })?;
 
         let actual_addr = listener.local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
-        tracing::info!("Web server listening on {}", actual_addr);
+        tracing::info!("[WebServer] Listening on {}", actual_addr);
         axum::serve(listener, app)
             .await
             .map_err(|e| {
-                tracing::error!("[Web] Server error: {}", e);
+                tracing::error!("[WebServer] Server error: {}", e);
                 format!("server error: {}", e)
             })?;
         Ok(actual_addr)
@@ -332,7 +332,7 @@ impl WebServer {
     ) -> Result<(), String> {
         tracing::info!(
             listen_addr = %self.config.listen_addr,
-            "[Web] Starting web server with graceful shutdown"
+            "[WebServer] Starting web server with graceful shutdown"
         );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
@@ -345,14 +345,14 @@ impl WebServer {
         );
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
-            tracing::error!("[Web] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            tracing::error!("[WebServer] Invalid listen address '{}': {}", self.config.listen_addr, e);
             format!("invalid listen address: {}", e)
         })?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| {
-                tracing::error!("[Web] Bind failed on '{}': {}", addr, e);
+                tracing::error!("[WebServer] Bind failed on '{}': {}", addr, e);
                 format!("bind failed: {}", e)
             })?;
 
@@ -364,14 +364,14 @@ impl WebServer {
             let _ = tx.send(actual_addr);
         }
 
-        tracing::info!("Web server listening on {}", actual_addr);
+        tracing::info!("[WebServer] Listening on {}", actual_addr);
 
         tokio::select! {
             result = axum::serve(listener, app) => {
                 result.map_err(|e| format!("server error: {}", e))?;
             }
             _ = shutdown_rx.recv() => {
-                tracing::info!("Web server shutdown signal received");
+                tracing::info!("[WebServer] Shutdown signal received");
             }
         }
         Ok(())
@@ -379,7 +379,7 @@ impl WebServer {
 
     /// Stop the web server.
     pub fn stop(&self) {
-        tracing::info!("[Web] Stopping web server");
+        tracing::info!("[WebServer] Stopping web server");
         self.running.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -471,7 +471,7 @@ pub fn resolve_static_dir(
         if p.exists() && p.is_dir() {
             return Some(path.to_string());
         }
-        tracing::warn!("Explicit static dir not found: {}", path);
+        tracing::warn!("[WebServer] Explicit static dir not found: {}", path);
     }
 
     // 2. workspace/static/
@@ -599,7 +599,7 @@ pub async fn handle_events_stream(
     let _running = state.running.clone();
 
     let stream = async_stream::stream! {
-        tracing::debug!("[Web] SSE stream started");
+        tracing::debug!("[WebServer] SSE stream started");
         // Send initial heartbeat
         let heartbeat_data = serde_json::json!({"ts": chrono::Utc::now().to_rfc3339()});
         yield Ok(SseEvent::default()
@@ -616,18 +616,18 @@ pub async fn handle_events_stream(
                         .data(data));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("SSE client lagged by {} events, continuing", n);
+                    tracing::warn!("[WebServer] SSE client lagged by {} events, continuing", n);
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    tracing::debug!("SSE event channel closed, ending stream");
+                    tracing::debug!("[WebServer] SSE event channel closed, ending stream");
                     break;
                 }
             }
         }
 
         state.event_hub.unsubscribe();
-        tracing::debug!("[Web] SSE stream ended");
+        tracing::debug!("[WebServer] SSE stream ended");
     };
 
     Sse::new(stream).keep_alive(KeepAlive::default())
@@ -661,10 +661,10 @@ pub async fn process_messages(
             session_id = %msg.session_id,
             sender_id = %msg.sender_id,
             chat_id = %msg.chat_id,
-            "Message published to bus"
+            "[WebServer] Message published to bus"
         );
     }
-    tracing::debug!("Message processor stopped");
+    tracing::debug!("[WebServer] Message processor stopped");
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +682,7 @@ pub async fn send_to_session(
         session_id = %session_id,
         role = %role,
         content_len = content.len(),
-        "send_to_session called"
+        "[WebServer] send_to_session called"
     );
 
     let msg = crate::protocol::ProtocolMessage::new(
@@ -704,7 +704,7 @@ pub async fn send_to_session(
     tracing::info!(
         session_id = %session_id,
         role = %role,
-        "send_to_session completed"
+        "[WebServer] send_to_session completed"
     );
     Ok(())
 }
@@ -747,7 +747,7 @@ pub fn start_publish_status_loop(
             interval.tick().await;
 
             if !running.load(std::sync::atomic::Ordering::SeqCst) {
-                tracing::debug!("Status publish loop stopping (server no longer running)");
+                tracing::debug!("[WebServer] Status publish loop stopping (server no longer running)");
                 break;
             }
 
@@ -790,7 +790,7 @@ pub async fn dispatch_outbound(
                 let session_id = if msg.chat_id.starts_with("web:") {
                     &msg.chat_id[4..]
                 } else {
-                    tracing::warn!(chat_id = %msg.chat_id, "Invalid chat ID format");
+                    tracing::warn!(chat_id = %msg.chat_id, "[WebServer] Invalid chat ID format");
                     continue;
                 };
 
@@ -809,16 +809,16 @@ pub async fn dispatch_outbound(
                         error = %e,
                         session_id = %session_id,
                         msg_type = %msg.message_type,
-                        "Failed to send outbound message"
+                        "[WebServer] Failed to send outbound message"
                     );
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("Outbound dispatch lagged by {} messages", n);
+                tracing::warn!("[WebServer] Outbound dispatch lagged by {} messages", n);
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                tracing::info!("Outbound bus channel closed, stopping dispatch");
+                tracing::info!("[WebServer] Outbound bus channel closed, stopping dispatch");
                 break;
             }
         }

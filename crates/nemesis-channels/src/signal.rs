@@ -198,7 +198,7 @@ impl Channel for SignalChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Signal channel");
+        info!("[SignalChannel] starting Signal channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -227,7 +227,7 @@ impl Channel for SignalChannel {
                 let resp = match http.get(&receive_url).send().await {
                     Ok(r) => r,
                     Err(e) => {
-                        warn!("Signal poll error: {e}");
+                        warn!("[SignalChannel] poll error: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
@@ -235,7 +235,7 @@ impl Channel for SignalChannel {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Signal poll returned {}", resp.status());
+                    warn!("[SignalChannel] poll returned {}", resp.status());
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(max_backoff);
                     continue;
@@ -298,15 +298,15 @@ impl Channel for SignalChannel {
                 }
             }
 
-            info!("Signal receive loop stopped");
+            info!("[SignalChannel] receive loop stopped");
         });
 
-        info!("Signal channel started");
+        info!("[SignalChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Signal channel");
+        info!("[SignalChannel] stopping Signal channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())

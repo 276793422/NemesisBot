@@ -99,7 +99,7 @@ impl SessionManager {
             session_id = %session.id,
             sender_id = %session.sender_id,
             chat_id = %session.chat_id,
-            "Session created"
+            "[WebSocket] Session created"
         );
 
         session
@@ -114,7 +114,7 @@ impl SessionManager {
     pub fn remove_session(&self, session_id: &str) {
         self.sessions.remove(session_id);
         self.send_queues.remove(session_id);
-        tracing::debug!(session_id = %session_id, "Session removed");
+        tracing::debug!(session_id = %session_id, "[WebSocket] Session removed");
     }
 
     /// Update last active time for a session.
@@ -140,7 +140,7 @@ impl SessionManager {
         tracing::debug!(
             session_id = %session_id,
             message_len = message.len(),
-            "Broadcasting to session"
+            "[WebSocket] Broadcasting to session"
         );
 
         // Try send queue first (thread-safe)
@@ -153,7 +153,7 @@ impl SessionManager {
         tracing::warn!(
             session_id = %session_id,
             message_len = message.len(),
-            "Session not found or no send queue"
+            "[WebSocket] Session not found or no send queue"
         );
         Err(format!("session not found or no send queue: {}", session_id))
     }
@@ -185,7 +185,7 @@ impl SessionManager {
         }
         self.sessions.clear();
         self.send_queues.clear();
-        tracing::info!("Session manager shutdown complete");
+        tracing::info!("[WebSocket] Session manager shutdown complete");
     }
 
     /// Start the background cleanup task.
@@ -223,7 +223,7 @@ impl SessionManager {
                     for session_id in to_remove {
                         sessions.remove(&session_id);
                         send_queues.remove(&session_id);
-                        tracing::info!(session_id = %session_id, "Removed inactive session");
+                        tracing::info!(session_id = %session_id, "[WebSocket] Removed inactive session");
                     }
                 }
             });

@@ -464,7 +464,7 @@ impl VirusScanner for ClamAVEngine {
 
         *self.scanner.write() = Some(Arc::new(scanner));
         self.started.store(true, Ordering::SeqCst);
-        tracing::info!("ClamAV engine started at {}", address);
+        tracing::info!("[Scanner] ClamAV engine started at {}", address);
         Ok(())
     }
 
@@ -473,7 +473,7 @@ impl VirusScanner for ClamAVEngine {
             return Ok(());
         }
         *self.scanner.write() = None;
-        tracing::info!("ClamAV engine stopped");
+        tracing::info!("[Scanner] ClamAV engine stopped");
         Ok(())
     }
 
@@ -1010,13 +1010,13 @@ impl VirusScanner for ClamavScannerWrapper {
             let mut mgr = crate::clamav::manager::Manager::new(mgr_config);
             match mgr.start().await {
                 Ok(()) => {
-                    tracing::info!("ClamAV daemon started via Manager");
+                    tracing::info!("[Scanner] ClamAV daemon started via Manager");
                     *self.manager.lock().await = Some(mgr);
                     self.started.store(true, Ordering::SeqCst);
                     return Ok(());
                 }
                 Err(e) => {
-                    tracing::warn!("Manager start failed ({}), falling back to ping-only mode", e);
+                    tracing::warn!("[Scanner] Manager start failed ({}), falling back to ping-only mode", e);
                     // Fall through to ping-only mode
                 }
             }
@@ -1035,7 +1035,7 @@ impl VirusScanner for ClamavScannerWrapper {
         let mut guard = self.manager.lock().await;
         if let Some(mgr) = guard.take() {
             mgr.stop().await?;
-            tracing::info!("ClamAV daemon stopped via Manager");
+            tracing::info!("[Scanner] ClamAV daemon stopped via Manager");
         }
         Ok(())
     }

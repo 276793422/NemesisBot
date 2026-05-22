@@ -279,7 +279,7 @@ impl DingTalkChannel {
 
         // Only handle conversation message events
         if event_type != "dingtalk.oapi.capi.conversation.message.receive" {
-            debug!(event_type = %event_type, "DingTalk stream: unhandled event type");
+            debug!(event_type = %event_type, "[DingTalkChannel] stream: unhandled event type");
             return;
         }
 
@@ -291,7 +291,7 @@ impl DingTalkChannel {
         let msg: DingTalkConversationMessage = match serde_json::from_str(payload_str) {
             Ok(m) => m,
             Err(e) => {
-                warn!(error = %e, "DingTalk stream: failed to parse message payload");
+                warn!(error = %e, "[DingTalkChannel] stream: failed to parse message payload");
                 return;
             }
         };
@@ -316,7 +316,7 @@ impl DingTalkChannel {
 
         // Check allow list
         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
-            debug!(sender_id = %sender_id, "DingTalk message filtered by allow_list");
+            debug!(sender_id = %sender_id, "[DingTalkChannel] message filtered by allow_list");
             return;
         }
 
@@ -374,11 +374,11 @@ impl DingTalkChannel {
         info!(
             sender_id = %inbound.sender_id,
             chat_id = %inbound.chat_id,
-            "DingTalk received message"
+            "[DingTalkChannel] received message"
         );
 
         if let Err(e) = bus_sender.send(inbound) {
-            warn!("DingTalk: failed to publish inbound message: {e}");
+            warn!("[DingTalkChannel] failed to publish inbound message: {e}");
         }
     }
 
@@ -424,7 +424,7 @@ impl DingTalkChannel {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "DingTalk auth failed, backing off");
+                        warn!(error = %e, "[DingTalkChannel] auth failed, backing off");
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
                             _ = &mut cancel_rx => break,
@@ -435,7 +435,7 @@ impl DingTalkChannel {
                 };
 
                 if token.is_empty() {
-                    warn!("DingTalk auth returned empty token, backing off");
+                    warn!("[DingTalkChannel] auth returned empty token, backing off");
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = &mut cancel_rx => break,
@@ -473,7 +473,7 @@ impl DingTalkChannel {
                                     .and_then(|d| d.get("endpoint"))
                                     .and_then(|e| e.as_str())
                                 {
-                                    info!(endpoint = %endpoint, "DingTalk stream connection opened");
+                                    info!(endpoint = %endpoint, "[DingTalkChannel] stream connection opened");
                                     backoff = INITIAL_BACKOFF;
 
                                     // Poll the stream endpoint for events
@@ -486,7 +486,7 @@ impl DingTalkChannel {
                                     loop {
                                         tokio::select! {
                                             _ = &mut cancel_rx => {
-                                                info!("DingTalk stream loop shutting down");
+                                                info!("[DingTalkChannel] stream loop shutting down");
                                                 return;
                                             }
                                             _ = poll_interval.tick() => {
@@ -526,11 +526,11 @@ impl DingTalkChannel {
                                                     Ok(resp) => {
                                                         let status = resp.status();
                                                         if status.as_u16() != 204 {
-                                                            warn!(status = %status, "DingTalk stream poll returned non-200");
+                                                            warn!(status = %status, "[DingTalkChannel] stream poll returned non-200");
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        warn!(error = %e, "DingTalk stream poll failed");
+                                                        warn!(error = %e, "[DingTalkChannel] stream poll failed");
                                                         break;
                                                     }
                                                 }
@@ -538,18 +538,18 @@ impl DingTalkChannel {
                                         }
                                     }
                                 } else {
-                                    debug!("DingTalk stream connection response: {:?}", body);
+                                    debug!("[DingTalkChannel] stream connection response: {:?}", body);
                                     backoff = INITIAL_BACKOFF;
                                 }
                             }
                         } else {
                             let status = resp.status();
                             let body = resp.text().await.unwrap_or_default();
-                            warn!(status = %status, body = %body, "DingTalk stream open failed");
+                            warn!(status = %status, body = %body, "[DingTalkChannel] stream open failed");
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "DingTalk stream connect failed, backing off");
+                        warn!(error = %e, "[DingTalkChannel] stream connect failed, backing off");
                     }
                 }
 
@@ -565,7 +565,7 @@ impl DingTalkChannel {
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
 
-            info!("DingTalk stream loop stopped");
+            info!("[DingTalkChannel] stream loop stopped");
         });
     }
 }
@@ -577,25 +577,25 @@ impl Channel for DingTalkChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting DingTalk channel (Stream Mode)");
+        info!("[DingTalkChannel] starting DingTalk channel (Stream Mode)");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
         // Try to get access token
         match self.refresh_token().await {
-            Ok(token) => info!(token_len = token.len(), "DingTalk authenticated"),
-            Err(e) => warn!(error = %e, "DingTalk auth failed (will retry)"),
+            Ok(token) => info!(token_len = token.len(), "[DingTalkChannel] authenticated"),
+            Err(e) => warn!(error = %e, "[DingTalkChannel] auth failed (will retry)"),
         }
 
         // Start stream loop
         self.spawn_stream_loop();
 
-        info!("DingTalk channel started");
+        info!("[DingTalkChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping DingTalk channel");
+        info!("[DingTalkChannel] stopping DingTalk channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -605,7 +605,7 @@ impl Channel for DingTalkChannel {
 
         self.session_webhooks.clear();
         *self.access_token.write() = String::new();
-        info!("DingTalk channel stopped");
+        info!("[DingTalkChannel] channel stopped");
         Ok(())
     }
 
@@ -629,7 +629,7 @@ impl Channel for DingTalkChannel {
                 ))
             })?;
 
-        debug!(chat_id = %msg.chat_id, "DingTalk sending message");
+        debug!(chat_id = %msg.chat_id, "[DingTalkChannel] sending message");
         self.send_direct_reply(&webhook, &msg.content).await
     }
 }

@@ -134,7 +134,7 @@ impl ClusterOps for StubClusterOps {
             task_id = %task_id,
             peer_id = %peer_id,
             action = %action,
-            "StubClusterOps: submitted async task"
+            "[Tools] StubClusterOps submitted async task"
         );
         Ok(task_id)
     }
@@ -274,7 +274,7 @@ impl ClusterRpcTool {
                 info!(
                     task_id = %submitted_id,
                     peer_id = %peer_id,
-                    "Async peer_chat task submitted"
+                    "[Tools] Async peer_chat task submitted"
                 );
                 let msg = format!(
                     "peer_chat task submitted to {} (task_id: {}), waiting for callback...",
@@ -285,7 +285,7 @@ impl ClusterRpcTool {
                 result
             }
             Err(e) => {
-                warn!(error = %e, peer_id = %peer_id, "Failed to submit peer_chat task");
+                warn!(error = %e, peer_id = %peer_id, "[Tools] Failed to submit peer_chat task");
                 ToolResult::error(&format!("Failed to submit task: {}", e))
             }
         }
@@ -357,7 +357,7 @@ impl crate::registry::Tool for ClusterRpcTool {
         debug!(
             peer_id = %peer_id,
             action = %action,
-            "Executing cluster RPC"
+            "[Tools] Executing cluster RPC"
         );
 
         // peer_chat goes through the async (non-blocking) path

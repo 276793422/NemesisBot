@@ -326,7 +326,7 @@ impl LearningEngine {
         if actions_skipped > 0 {
             tracing::info!(
                 actions_skipped,
-                "Learning cycle skipped some actions due to limits or unknown type"
+                "[LearningEngine] Learning cycle skipped some actions due to limits or unknown type"
             );
         }
 
@@ -335,7 +335,7 @@ impl LearningEngine {
 
         // Persist cycle
         if let Err(e) = self.cycle_store.append(&cycle).await {
-            tracing::warn!(error = %e, "Failed to persist learning cycle");
+            tracing::warn!(error = %e, "[LearningEngine] Failed to persist learning cycle");
         }
 
         *self.latest_cycle.lock() = Some(cycle.clone());
@@ -589,7 +589,7 @@ impl LearningEngine {
         let content = match self.generate_skill_draft(&*provider_arc, action) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, "LLM generation failed for skill draft");
+                tracing::warn!(error = %e, "[LearningEngine] LLM generation failed for skill draft");
                 return;
             }
         };
@@ -646,7 +646,7 @@ impl LearningEngine {
                         }
                     }
 
-                    tracing::info!(artifact_id = %artifact_id, "Created skill from learning cycle");
+                    tracing::info!(artifact_id = %artifact_id, "[LearningEngine] Created skill from learning cycle");
                     return;
                 }
 
@@ -655,11 +655,11 @@ impl LearningEngine {
                     let diagnosis = build_diagnosis(&validation);
                     match self.refine_skill_draft(&*provider_arc, action, &content, &diagnosis) {
                         Ok(_refined) => {
-                            tracing::warn!(attempt, "Skill validation failed, refinement produced");
+                            tracing::warn!(attempt, "[LearningEngine] Skill validation failed, refinement produced");
                             return;
                         }
                         Err(e) => {
-                            tracing::warn!(attempt = attempt + 1, error = %e, "Skill refinement failed");
+                            tracing::warn!(attempt = attempt + 1, error = %e, "[LearningEngine] Skill refinement failed");
                             return;
                         }
                     }
@@ -688,7 +688,7 @@ impl LearningEngine {
 
         tracing::warn!(
             max_refine = max_refine,
-            "Skill validation failed after all refinement rounds"
+            "[LearningEngine] Skill validation failed after all refinement rounds"
         );
     }
 
@@ -856,7 +856,7 @@ impl LearningEngine {
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "Failed to read cycles from store, falling back to in-memory cache"
+                    "[LearningEngine] Failed to read cycles from store, falling back to in-memory cache"
                 );
                 self.latest_cycle.lock().clone()
             }
@@ -1150,7 +1150,7 @@ impl LearningEngine {
                             current_content = refined;
                         }
                         Err(e) => {
-                            tracing::warn!(attempt = attempt + 1, error = %e, "Skill refinement failed");
+                            tracing::warn!(attempt = attempt + 1, error = %e, "[LearningEngine] Skill refinement failed");
                             break;
                         }
                     }

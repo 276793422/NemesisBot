@@ -194,7 +194,7 @@ impl PeerChatHandler {
         let req: PeerChatRequest = match serde_json::from_value(payload.clone()) {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!(error = %e, "Invalid peer_chat payload");
+                tracing::error!(error = %e, "[PeerChat] Invalid peer_chat payload");
                 return PeerChatAck {
                     status: "error".into(),
                     task_id: String::new(),
@@ -204,7 +204,7 @@ impl PeerChatHandler {
 
         // 2. Validate
         if req.content.is_empty() {
-            tracing::error!("Missing content in peer_chat request");
+            tracing::error!("[PeerChat] Missing content in peer_chat request");
             return PeerChatAck {
                 status: "error".into(),
                 task_id: String::new(),
@@ -281,7 +281,7 @@ impl PeerChatHandler {
         tracing::info!(
             task_id = %task_id,
             source_node = %source_node_id,
-            "Peer chat task accepted, processing asynchronously"
+            "[PeerChat] Peer chat task accepted, processing asynchronously"
         );
 
         PeerChatAck {
@@ -304,9 +304,9 @@ impl PeerChatHandler {
         if let Some(ref persister) = self.result_persister {
             if !source_node_id.is_empty() {
                 if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
-                    tracing::error!(task_id = %task_id, error = %e, "Failed to persist task result");
+                    tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
                 } else {
-                    tracing::info!(task_id = %task_id, "Task result persisted for recovery");
+                    tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
                 }
             }
         }
@@ -318,7 +318,7 @@ impl PeerChatHandler {
     pub fn delete_result(&self, task_id: &str) {
         if let Some(ref persister) = self.result_persister {
             if let Err(e) = persister.delete(task_id) {
-                tracing::error!(task_id = %task_id, error = %e, "Failed to delete task result");
+                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
             }
         }
     }
@@ -362,13 +362,13 @@ async fn process_async(
     timeout: Duration,
     _node_id: &str,
 ) {
-    tracing::info!(task_id = %task_id, "Async LLM processing started");
+    tracing::info!(task_id = %task_id, "[PeerChat] Async LLM processing started");
 
     // 1. Check LLM channel availability
     let llm_ch = match llm_channel {
         Some(ch) => ch,
         None => {
-            tracing::error!("RPC channel not available for peer_chat");
+            tracing::error!("[PeerChat] RPC channel not available for peer_chat");
             send_callback_or_persist(
                 rpc_client,
                 result_persister,
@@ -395,14 +395,14 @@ async fn process_async(
     tracing::info!(
         session_key = %session_key,
         correlation_id = %correlation_id,
-        "Submitting to LLM channel"
+        "[PeerChat] Submitting to LLM channel"
     );
 
     // 3. Submit to LLM channel
     let mut rx = match llm_ch.submit(&session_key, &req.content, &correlation_id) {
         Ok(rx) => rx,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to submit to LLM channel");
+            tracing::error!(error = %e, "[PeerChat] Failed to submit to LLM channel");
             send_callback_or_persist(
                 rpc_client,
                 result_persister,
@@ -421,11 +421,11 @@ async fn process_async(
     // 4. Wait for response with timeout
     let response = match tokio::time::timeout(timeout, &mut rx).await {
         Ok(Ok(response)) => {
-            tracing::info!(task_id = %task_id, "LLM response received");
+            tracing::info!(task_id = %task_id, "[PeerChat] LLM response received");
             response
         }
         Ok(Err(_)) => {
-            tracing::error!(task_id = %task_id, "Response channel closed");
+            tracing::error!(task_id = %task_id, "[PeerChat] Response channel closed");
             send_callback_or_persist(
                 rpc_client,
                 result_persister,
@@ -440,7 +440,7 @@ async fn process_async(
             return;
         }
         Err(_) => {
-            tracing::error!(task_id = %task_id, "LLM processing timeout");
+            tracing::error!(task_id = %task_id, "[PeerChat] LLM processing timeout");
             send_callback_or_persist(
                 rpc_client,
                 result_persister,
@@ -485,7 +485,7 @@ async fn send_callback_or_persist(
     let callback_ok = if !source_node_id.is_empty() {
         send_callback(rpc_client, source_node_id, task_id, status, response, error).await
     } else {
-        tracing::error!(task_id = %task_id, "No source node_id, cannot callback");
+        tracing::error!(task_id = %task_id, "[PeerChat] No source node_id, cannot callback");
         false
     };
 
@@ -493,7 +493,7 @@ async fn send_callback_or_persist(
         // Clean up persisted result
         if let Some(persister) = result_persister {
             if let Err(e) = persister.delete(task_id) {
-                tracing::error!(task_id = %task_id, error = %e, "Failed to delete task result");
+                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
             }
         }
     } else {
@@ -501,9 +501,9 @@ async fn send_callback_or_persist(
         if let Some(persister) = result_persister {
             if !source_node_id.is_empty() {
                 if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
-                    tracing::error!(task_id = %task_id, error = %e, "Failed to persist task result");
+                    tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
                 } else {
-                    tracing::info!(task_id = %task_id, "Task result persisted for recovery");
+                    tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
                 }
             }
         }
@@ -548,7 +548,7 @@ async fn send_callback(
                 tracing::info!(
                     task_id = %task_id,
                     source_node = %source_node_id,
-                    "Callback sent successfully"
+                    "[PeerChat] Callback sent successfully"
                 );
                 return true;
             }
@@ -558,7 +558,7 @@ async fn send_callback(
                     attempt = attempt + 1,
                     max_retries = MAX_CALLBACK_RETRIES,
                     error = %e,
-                    "Callback attempt failed"
+                    "[PeerChat] Callback attempt failed"
                 );
                 if attempt < MAX_CALLBACK_RETRIES - 1 {
                     let backoff = Duration::from_secs(CALLBACK_BACKOFF_SECS * (attempt as u64 + 1));
@@ -571,7 +571,7 @@ async fn send_callback(
     tracing::error!(
         task_id = %task_id,
         source_node = %source_node_id,
-        "All callback retries exhausted"
+        "[PeerChat] All callback retries exhausted"
     );
     false
 }

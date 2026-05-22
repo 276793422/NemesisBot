@@ -401,7 +401,7 @@ impl AuditChain {
         }
         tracing::info!(
             total_events = self.total_event_count(),
-            "Audit chain closed"
+            "[Security] Audit chain closed"
         );
         Ok(())
     }

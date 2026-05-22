@@ -52,7 +52,7 @@ impl MessageBus {
         let receiver_count = self.inbound_tx.receiver_count();
         if receiver_count == 0 {
             warn!(
-                "publish_inbound: no inbound receivers, message will be dropped (channel={}, chat_id={})",
+                "[Bus] publish_inbound: no inbound receivers, message will be dropped (channel={}, chat_id={})",
                 msg.channel, msg.chat_id
             );
             self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
@@ -61,7 +61,7 @@ impl MessageBus {
         let channel_name = msg.channel.clone();
         if let Err(err) = self.inbound_tx.send(msg) {
             self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
-            warn!("publish_inbound: failed to send inbound message: {}", err);
+            warn!("[Bus] publish_inbound: failed to send inbound message: {}", err);
         } else {
             debug!("[Bus] Published inbound message, channel={}", channel_name);
         }
@@ -80,7 +80,7 @@ impl MessageBus {
         let receiver_count = self.outbound_tx.receiver_count();
         if receiver_count == 0 {
             warn!(
-                "publish_outbound: no outbound receivers, message will be dropped (channel={}, chat_id={})",
+                "[Bus] publish_outbound: no outbound receivers, message will be dropped (channel={}, chat_id={})",
                 msg.channel, msg.chat_id
             );
             self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
@@ -89,7 +89,7 @@ impl MessageBus {
         let channel_name = msg.channel.clone();
         if let Err(err) = self.outbound_tx.send(msg) {
             self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
-            warn!("publish_outbound: failed to send outbound message: {}", err);
+            warn!("[Bus] publish_outbound: failed to send outbound message: {}", err);
         } else {
             debug!("[Bus] Published outbound message, channel={}", channel_name);
         }
@@ -108,7 +108,7 @@ impl MessageBus {
         if existing > 0 {
             warn!(
                 existing_receivers = existing,
-                "subscribe_inbound: additional subscriber added to broadcast channel; \
+                "[Bus] subscribe_inbound: additional subscriber added to broadcast channel; \
                  each subscriber receives every message (fan-out), which may be unintentional"
             );
         }
@@ -125,7 +125,7 @@ impl MessageBus {
         if existing > 0 {
             warn!(
                 existing_receivers = existing,
-                "subscribe_outbound: additional subscriber added to broadcast channel; \
+                "[Bus] subscribe_outbound: additional subscriber added to broadcast channel; \
                  each subscriber receives every message (fan-out), which may be unintentional"
             );
         }

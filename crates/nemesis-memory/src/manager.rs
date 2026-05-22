@@ -158,7 +158,7 @@ impl MemoryManager {
         if let Some(ref em) = em_config {
             if !em.enabled {
                 tracing::info!(
-                    "Enhanced memory disabled (config.enhanced_memory.json: enabled = false)"
+                    "[Memory] Enhanced memory disabled (config.enhanced_memory.json: enabled = false)"
                 );
                 return mgr;
             }
@@ -168,7 +168,7 @@ impl MemoryManager {
                 Some(p) => p,
                 None => {
                     tracing::warn!(
-                        "Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
+                        "[Memory] Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
                          Disabling enhanced memory."
                     );
                     Self::disable_enhanced_memory_config(&em_config_path);
@@ -189,11 +189,11 @@ impl MemoryManager {
             };
 
             match mgr.init_vector_store(Some(store_config)) {
-                Ok(()) => tracing::info!("Vector store initialized"),
+                Ok(()) => tracing::info!("[Memory] Vector store initialized"),
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        "Vector store init failed, disabling enhanced memory"
+                        "[Memory] Vector store init failed, disabling enhanced memory"
                     );
                     Self::disable_enhanced_memory_config(&em_config_path);
                 }
@@ -217,7 +217,7 @@ impl MemoryManager {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
-                        "Failed to parse config.enhanced_memory.json"
+                        "[Memory] Failed to parse config.enhanced_memory.json"
                     );
                     None
                 }
@@ -226,7 +226,7 @@ impl MemoryManager {
                 tracing::debug!(
                     path = %path.display(),
                     error = %e,
-                    "Cannot read config.enhanced_memory.json"
+                    "[Memory] Cannot read config.enhanced_memory.json"
                 );
                 None
             }
@@ -256,12 +256,12 @@ impl MemoryManager {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
-                        "Failed to write disabled config"
+                        "[Memory] Failed to write disabled config"
                     );
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to serialize disabled config");
+                tracing::warn!(error = %e, "[Memory] Failed to serialize disabled config");
             }
         }
     }
@@ -313,7 +313,7 @@ impl MemoryManager {
 
         // Load previously persisted entries
         if let Err(e) = vs.load_persisted_sync() {
-            tracing::warn!(error = %e, "Failed to load persisted vector entries");
+            tracing::warn!(error = %e, "[Memory] Failed to load persisted vector entries");
         }
 
         *self.vector_store.write() = Some(vs);
@@ -426,10 +426,10 @@ impl MemoryManager {
                 updated_at: entry.updated_at.to_rfc3339(),
             };
             if let Err(e) = vs.store_entry(&ve) {
-                tracing::debug!("Failed to store entry in vector store: {}", e);
+                tracing::debug!("[Memory] Failed to store entry in vector store: {}", e);
             }
             if let Err(e) = vs.persist_entry_sync(&ve) {
-                tracing::debug!("Failed to persist entry to disk: {}", e);
+                tracing::debug!("[Memory] Failed to persist entry to disk: {}", e);
             }
         }
     }

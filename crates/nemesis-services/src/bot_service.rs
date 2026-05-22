@@ -550,7 +550,7 @@ pub struct BotService {
 impl BotService {
     /// Create a new (stopped) BotService from the given config.
     pub fn new(config: BotServiceConfig) -> Self {
-        info!("BotService created (stopped)");
+        info!("[BotService] BotService created (stopped)");
         Self {
             config,
             inner: Arc::new(RwLock::new(BotServiceInner {
@@ -595,7 +595,7 @@ impl BotService {
             }
         }
 
-        info!("bot_service: Starting bot service...");
+        info!("[BotService] Starting bot service...");
 
         // Set state to Starting
         {
@@ -653,7 +653,7 @@ impl BotService {
             let mut inner = self.inner.write();
             inner.state = BotState::Running;
         }
-        info!("bot_service: Bot service started successfully");
+        info!("[BotService] Bot service started successfully");
         Ok(())
     }
 
@@ -669,7 +669,7 @@ impl BotService {
             }
         }
 
-        info!("bot_service: Stopping bot service...");
+        info!("[BotService] Stopping bot service...");
 
         // Cancel context
         if let Some(tx) = self.cancel_tx.lock().as_ref() {
@@ -682,13 +682,13 @@ impl BotService {
             let mut inner = self.inner.write();
             inner.state = BotState::NotStarted;
         }
-        info!("bot_service: Bot service stopped");
+        info!("[BotService] Bot service stopped");
         Ok(())
     }
 
     /// Restart stops and then starts the bot service.
     pub fn restart(&self) -> nemesis_types::error::Result<()> {
-        info!("bot_service: Restarting bot service...");
+        info!("[BotService] Restarting bot service...");
 
         {
             let inner = self.inner.read();
@@ -703,7 +703,7 @@ impl BotService {
 
         self.start()?;
 
-        info!("bot_service: Bot service restarted successfully");
+        info!("[BotService] Bot service restarted successfully");
         Ok(())
     }
 
@@ -815,7 +815,7 @@ impl BotService {
             // Check if BOOTSTRAP.md exists (skip heartbeat during initialization).
             let bootstrap_path = workspace.join("BOOTSTRAP.md");
             if bootstrap_path.exists() {
-                info!("Skipping heartbeat: BOOTSTRAP.md exists (initialization in progress)");
+                info!("[BotService] Skipping heartbeat: BOOTSTRAP.md exists (initialization in progress)");
                 return;
             }
 
@@ -824,15 +824,15 @@ impl BotService {
                 match agent.process_heartbeat() {
                     Ok(response) => {
                         if !response.is_empty() {
-                            info!(response_len = response.len(), "Heartbeat processed");
+                            info!(response_len = response.len(), "[BotService] Heartbeat processed");
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Heartbeat processing failed");
+                        warn!(error = %e, "[BotService] Heartbeat processing failed");
                     }
                 }
             } else {
-                warn!("Heartbeat skipped: agent loop not initialized");
+                warn!("[BotService] Heartbeat skipped: agent loop not initialized");
             }
         })
     }
@@ -939,7 +939,7 @@ impl BotService {
     /// ```
     pub fn register_log_hook(&self, hook: LogHookHandle) {
         self.log_hooks.register(hook);
-        info!("bot_service: Log hook registered (total: {})", self.log_hooks.len());
+        info!("[BotService] Log hook registered (total: {})", self.log_hooks.len());
     }
 
     /// Return a reference to the log hook chain.
@@ -968,7 +968,7 @@ impl BotService {
         config_json: &serde_json::Value,
         restart: bool,
     ) -> nemesis_types::error::Result<()> {
-        info!("bot_service: Saving configuration to {:?}", self.config.config_path);
+        info!("[BotService] Saving configuration to {:?}", self.config.config_path);
 
         // Validate that the config JSON is a valid object
         if !config_json.is_object() {
@@ -1030,7 +1030,7 @@ impl BotService {
             nemesis_types::error::NemesisError::Io(e)
         })?;
 
-        info!("bot_service: Configuration saved successfully");
+        info!("[BotService] Configuration saved successfully");
 
         // Update the cached config file
         {
@@ -1041,18 +1041,18 @@ impl BotService {
 
         // Trigger restart if requested and bot is running
         if restart && self.get_state().is_running() {
-            info!("bot_service: Restart scheduled after config save");
+            info!("[BotService] Restart scheduled after config save");
             let restart_cb = self.restart_callback.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 let cb = restart_cb.lock();
                 if let Some(ref callback) = *cb {
                     match callback() {
-                        Ok(()) => info!("bot_service: Post-save restart completed"),
-                        Err(e) => error!("bot_service: Post-save restart failed: {}", e),
+                        Ok(()) => info!("[BotService] Post-save restart completed"),
+                        Err(e) => error!("[BotService] Post-save restart failed: {}", e),
                     }
                 } else {
-                    warn!("bot_service: No restart callback set; skipping post-save restart");
+                    warn!("[BotService] No restart callback set; skipping post-save restart");
                 }
             });
         }
@@ -1085,7 +1085,7 @@ impl BotService {
     /// the config file.
     fn load_config(&self) -> Result<(), String> {
         info!(
-            "bot_service: Loading config from {:?}",
+            "[BotService] Loading config from {:?}",
             self.config.config_path
         );
 
@@ -1116,7 +1116,7 @@ impl BotService {
         };
 
         info!(
-            "bot_service: Config loaded, workspace={:?}",
+            "[BotService] Config loaded, workspace={:?}",
             workspace
         );
 
@@ -1180,7 +1180,7 @@ impl BotService {
 
         drop(inner);
 
-        info!("bot_service: Configuration validated");
+        info!("[BotService] Configuration validated");
         Ok(())
     }
 
@@ -1223,13 +1223,13 @@ impl BotService {
 
         // Core components are always required
         enabled.enable(Component::Bus);
-        info!("Component initialized: {}", Component::Bus.label());
+        info!("[BotService] Component initialized: {}", Component::Bus.label());
 
         enabled.enable(Component::Agent);
-        info!("Component initialized: {}", Component::Agent.label());
+        info!("[BotService] Component initialized: {}", Component::Agent.label());
 
         enabled.enable(Component::Channels);
-        info!("Component initialized: {}", Component::Channels.label());
+        info!("[BotService] Component initialized: {}", Component::Channels.label());
 
         // --- Phase 2: Parallel independent service creation ---
         // In Go, these run in parallel using errgroup. In Rust, the application
@@ -1238,27 +1238,27 @@ impl BotService {
 
         // Cron service (always enabled)
         enabled.enable(Component::Cron);
-        info!("Component initialized: {}", Component::Cron.label());
+        info!("[BotService] Component initialized: {}", Component::Cron.label());
 
         // Heartbeat service (check config)
         if config_file_data.heartbeat.enabled {
             enabled.enable(Component::Heartbeat);
-            info!("Component initialized: {}", Component::Heartbeat.label());
+            info!("[BotService] Component initialized: {}", Component::Heartbeat.label());
         }
 
         // Health server (always enabled)
         enabled.enable(Component::Health);
-        info!("Component initialized: {}", Component::Health.label());
+        info!("[BotService] Component initialized: {}", Component::Health.label());
 
         // Devices (check config)
         if config_file_data.devices.enabled {
             enabled.enable(Component::Devices);
-            info!("Component initialized: {}", Component::Devices.label());
+            info!("[BotService] Component initialized: {}", Component::Devices.label());
         }
 
         // Skills (always enabled)
         enabled.enable(Component::Skills);
-        info!("Component initialized: {}", Component::Skills.label());
+        info!("[BotService] Component initialized: {}", Component::Skills.label());
 
         // --- Phase 3: Wire up service dependencies (sequential) ---
         // These steps depend on the services created in Phase 2.
@@ -1267,13 +1267,13 @@ impl BotService {
         // Security (config-driven)
         if self.config.security_enabled || config_file_data.security.enabled {
             enabled.enable(Component::Security);
-            info!("Component initialized: {}", Component::Security.label());
+            info!("[BotService] Component initialized: {}", Component::Security.label());
         }
 
         // Workflow (config-driven)
         if self.config.workflow_enabled || config_file_data.workflow.enabled {
             enabled.enable(Component::Workflow);
-            info!("Component initialized: {}", Component::Workflow.label());
+            info!("[BotService] Component initialized: {}", Component::Workflow.label());
         }
 
         // --- Phase 4: Forge and Observer setup ---
@@ -1282,26 +1282,26 @@ impl BotService {
         // Forge self-learning module
         if self.config.forge_enabled || config_file_data.forge.enabled {
             enabled.enable(Component::Forge);
-            info!("Component initialized: {}", Component::Forge.label());
+            info!("[BotService] Component initialized: {}", Component::Forge.label());
         }
 
         // Cluster (config-driven)
         if self.config.cluster_enabled {
             enabled.enable(Component::Cluster);
-            info!("Component initialized: {}", Component::Cluster.label());
+            info!("[BotService] Component initialized: {}", Component::Cluster.label());
         }
 
         // Memory subsystem (config-driven)
         if self.config.memory_enabled || config_file_data.memory.enabled {
             enabled.enable(Component::Memory);
-            info!("Component initialized: {}", Component::Memory.label());
+            info!("[BotService] Component initialized: {}", Component::Memory.label());
         }
 
         // Observer (enabled if any observers will be registered)
         enabled.enable(Component::Observer);
-        info!("Component initialized: {}", Component::Observer.label());
+        info!("[BotService] Component initialized: {}", Component::Observer.label());
 
-        info!("bot_service: Components initialized");
+        info!("[BotService] Components initialized");
         Ok(())
     }
 
@@ -1319,7 +1319,7 @@ impl BotService {
     /// Each service is started via its `LifecycleService::start()` method.
     /// Services that are not injected (None) are skipped gracefully.
     fn start_services(&self) -> Result<(), String> {
-        info!("bot_service: Starting all services...");
+        info!("[BotService] Starting all services...");
         let services = self.services.read();
 
         // 1. Start heartbeat service
@@ -1327,7 +1327,7 @@ impl BotService {
             heartbeat.start().map_err(|e| {
                 format!("failed to start heartbeat service: {}", e)
             })?;
-            info!("bot_service: Heartbeat service started");
+            info!("[BotService] Heartbeat service started");
         }
 
         // 2. Start device service
@@ -1335,7 +1335,7 @@ impl BotService {
             devices.start().map_err(|e| {
                 format!("failed to start device service: {}", e)
             })?;
-            info!("bot_service: Device service started");
+            info!("[BotService] Device service started");
         }
 
         // 3. Start channel manager
@@ -1347,7 +1347,7 @@ impl BotService {
             let enabled_channels = channels.enabled_channels();
             if !enabled_channels.is_empty() {
                 info!(
-                    "bot_service: Channels enabled: {:?}",
+                    "[BotService] Channels enabled: {:?}",
                     enabled_channels
                 );
             }
@@ -1360,11 +1360,11 @@ impl BotService {
             let health_clone = health.clone();
             tokio::spawn(async move {
                 if let Err(e) = health_clone.start() {
-                    error!("bot_service: Health server error: {}", e);
+                    error!("[BotService] Health server error: {}", e);
                 }
             });
             info!(
-                "bot_service: Health server started on {}:{}",
+                "[BotService] Health server started on {}:{}",
                 self.config.gateway_host, self.config.gateway_port
             );
         }
@@ -1375,7 +1375,7 @@ impl BotService {
             let cancel_rx = self.cancel_tx.lock().as_ref().map(|tx| tx.subscribe());
             tokio::spawn(async move {
                 if let Err(e) = agent_clone.start() {
-                    error!("bot_service: Agent loop error: {}", e);
+                    error!("[BotService] Agent loop error: {}", e);
                 }
                 // Keep running until cancelled
                 if let Some(mut rx) = cancel_rx {
@@ -1385,17 +1385,17 @@ impl BotService {
                     std::future::pending::<()>().await;
                 }
             });
-            info!("bot_service: Agent loop started");
+            info!("[BotService] Agent loop started");
         }
 
         // 6. Start cron service
         if let Some(ref cron) = services.cron {
             match cron.start() {
                 Ok(()) => {
-                    info!("bot_service: Cron service started");
+                    info!("[BotService] Cron service started");
                 }
                 Err(e) => {
-                    warn!("bot_service: Cron service start failed: {}", e);
+                    warn!("[BotService] Cron service start failed: {}", e);
                     // Non-fatal: cron failure should not prevent bot from starting
                 }
             }
@@ -1406,10 +1406,10 @@ impl BotService {
             forge.start().map_err(|e| {
                 format!("failed to start forge service: {}", e)
             })?;
-            info!("bot_service: Forge service started");
+            info!("[BotService] Forge service started");
         }
 
-        info!("bot_service: All services started");
+        info!("[BotService] All services started");
         Ok(())
     }
 
@@ -1429,7 +1429,7 @@ impl BotService {
     /// 7. Agent loop
     /// 8. Memory manager (close, not stop)
     fn stop_all(&self) {
-        info!("bot_service: Stopping all services (reverse order)...");
+        info!("[BotService] Stopping all services (reverse order)...");
 
         let mut services = self.services.write();
 
@@ -1437,70 +1437,70 @@ impl BotService {
         // 1. Forge
         if let Some(ref forge) = services.forge {
             if let Err(e) = forge.stop() {
-                warn!("bot_service: Error stopping forge service: {}", e);
+                warn!("[BotService] Error stopping forge service: {}", e);
             } else {
-                info!("bot_service: Forge service stopped");
+                info!("[BotService] Forge service stopped");
             }
         }
 
         // 2. Cron
         if let Some(ref cron) = services.cron {
             if let Err(e) = cron.stop() {
-                warn!("bot_service: Error stopping cron service: {}", e);
+                warn!("[BotService] Error stopping cron service: {}", e);
             } else {
-                info!("bot_service: Cron service stopped");
+                info!("[BotService] Cron service stopped");
             }
         }
 
         // 3. Health server
         if let Some(ref health) = services.health {
             if let Err(e) = health.stop() {
-                warn!("bot_service: Error stopping health server: {}", e);
+                warn!("[BotService] Error stopping health server: {}", e);
             } else {
-                info!("bot_service: Health server stopped");
+                info!("[BotService] Health server stopped");
             }
         }
 
         // 4. Device service
         if let Some(ref devices) = services.devices {
             if let Err(e) = devices.stop() {
-                warn!("bot_service: Error stopping device service: {}", e);
+                warn!("[BotService] Error stopping device service: {}", e);
             } else {
-                info!("bot_service: Device service stopped");
+                info!("[BotService] Device service stopped");
             }
         }
 
         // 5. Heartbeat service
         if let Some(ref heartbeat) = services.heartbeat {
             if let Err(e) = heartbeat.stop() {
-                warn!("bot_service: Error stopping heartbeat service: {}", e);
+                warn!("[BotService] Error stopping heartbeat service: {}", e);
             } else {
-                info!("bot_service: Heartbeat service stopped");
+                info!("[BotService] Heartbeat service stopped");
             }
         }
 
         // 6. Channel manager
         if let Some(ref channels) = services.channels {
             if let Err(e) = channels.stop() {
-                warn!("bot_service: Error stopping channel manager: {}", e);
+                warn!("[BotService] Error stopping channel manager: {}", e);
             } else {
-                info!("bot_service: Channel manager stopped");
+                info!("[BotService] Channel manager stopped");
             }
         }
 
         // 7. Agent loop
         if let Some(ref agent) = services.agent {
             if let Err(e) = agent.stop() {
-                warn!("bot_service: Error stopping agent loop: {}", e);
+                warn!("[BotService] Error stopping agent loop: {}", e);
             } else {
-                info!("bot_service: Agent loop stopped");
+                info!("[BotService] Agent loop stopped");
             }
         }
 
         // 8. Memory manager (close, not stop)
         if let Some(ref memory) = services.memory {
             memory.close();
-            info!("bot_service: Memory manager closed");
+            info!("[BotService] Memory manager closed");
         }
 
         // Drop all service references
@@ -1523,7 +1523,7 @@ impl BotService {
         let mut enabled = self.enabled.write();
         enabled.disable_all();
 
-        info!("bot_service: All services stopped");
+        info!("[BotService] All services stopped");
     }
 
     /// Set state and record error.
@@ -1532,7 +1532,7 @@ impl BotService {
         inner.state = state;
         inner.last_error = Some(err.to_string());
         error!(
-            "bot_service: Bot service error, state={}, error={}",
+            "[BotService] Bot service error, state={}, error={}",
             state, err
         );
     }

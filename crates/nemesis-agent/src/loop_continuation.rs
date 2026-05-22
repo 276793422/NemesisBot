@@ -154,7 +154,7 @@ impl ContinuationStore {
         let path = self.snapshot_path(task_id);
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
-                warn!("Failed to delete continuation snapshot {}: {}", task_id, e);
+                warn!("[Continuation] Failed to delete continuation snapshot {}: {}", task_id, e);
             }
         }
     }
@@ -201,7 +201,7 @@ impl ContinuationStore {
                         Ok(m) => m,
                         Err(e) => {
                             warn!(
-                                "Failed to deserialize messages for snapshot {}: {}",
+                                "[Continuation] Failed to deserialize messages for snapshot {}: {}",
                                 task_id, e
                             );
                             continue;
@@ -223,11 +223,11 @@ impl ContinuationStore {
 
                     manager.insert_continuation_sync(task_id.clone(), cont_data);
                     recovered += 1;
-                    info!("Recovered continuation snapshot from disk: task_id={}", task_id);
+                    info!("[Continuation] Recovered continuation snapshot from disk: task_id={}", task_id);
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to load continuation snapshot {}: {}",
+                        "[Continuation] Failed to load continuation snapshot {}: {}",
                         task_id, e
                     );
                 }
@@ -235,7 +235,7 @@ impl ContinuationStore {
         }
 
         if recovered > 0 {
-            info!("Recovered {} continuation snapshots from disk", recovered);
+            info!("[Continuation] Recovered {} continuation snapshots from disk", recovered);
         }
 
         recovered
@@ -335,7 +335,7 @@ impl ContinuationManager {
         if let Some(ref store) = self.disk_store {
             let messages_json = serde_json::to_string(&messages)
                 .unwrap_or_else(|e| {
-                    warn!("Failed to serialize messages for continuation: {}", e);
+                    warn!("[Continuation] Failed to serialize messages for continuation: {}", e);
                     "[]".to_string()
                 });
             let snapshot = ContinuationSnapshot {
@@ -347,7 +347,7 @@ impl ContinuationManager {
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
-                warn!("Failed to persist continuation snapshot to disk: {}", e);
+                warn!("[Continuation] Failed to persist continuation snapshot to disk: {}", e);
             }
         }
 
@@ -355,7 +355,7 @@ impl ContinuationManager {
         ready_flag.store(true, Ordering::Release);
         ready.notify_waiters();
         info!(
-            "Continuation snapshot saved (memory + disk): task_id={}",
+            "[Continuation] Continuation snapshot saved (memory + disk): task_id={}",
             task_id
         );
     }
@@ -421,7 +421,7 @@ impl ContinuationManager {
                     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                     if remaining.is_zero() {
                         warn!(
-                            "Continuation ready timeout, falling back to disk: task_id={}",
+                            "[Continuation] Continuation ready timeout, falling back to disk: task_id={}",
                             task_id
                         );
                         return None;
@@ -448,7 +448,7 @@ impl ContinuationManager {
                         });
                     } else {
                         warn!(
-                            "Continuation ready timeout, falling back to disk: task_id={}",
+                            "[Continuation] Continuation ready timeout, falling back to disk: task_id={}",
                             task_id
                         );
                         return None;
@@ -578,7 +578,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         Some(data) => data,
         None => {
             warn!(
-                "Continuation data not found for task_id={}",
+                "[Continuation] Continuation data not found for task_id={}",
                 task_id
             );
             return;
@@ -614,7 +614,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
     for iteration in 1..=max_iterations {
         debug!(
-            "Continuation LLM iteration {}/{}: task_id={}",
+            "[Continuation] Continuation LLM iteration {}/{}: task_id={}",
             iteration, max_iterations, task_id
         );
 
@@ -643,7 +643,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         let response = match provider.chat(model, messages.clone(), None, vec![]).await {
             Ok(resp) => resp,
             Err(e) => {
-                warn!("Continuation LLM call failed: {}", e);
+                warn!("[Continuation] Continuation LLM call failed: {}", e);
                 final_content = format!("[LLM error: {}]", e);
                 break;
             }
@@ -724,7 +724,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     message_type: String::new(),
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
-                    warn!("Failed to send continuation tool output: {}", e);
+                    warn!("[Continuation] Failed to send continuation tool output: {}", e);
                 }
             }
 
@@ -769,11 +769,11 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             message_type: String::new(),
         };
         if let Err(e) = outbound_tx.send(outbound).await {
-            warn!("Failed to send continuation final response: {}", e);
+            warn!("[Continuation] Failed to send continuation final response: {}", e);
         }
 
         info!(
-            "Continuation response sent: task_id={}, content_len={}, target_channel={}",
+            "[Continuation] Continuation response sent: task_id={}, content_len={}, target_channel={}",
             task_id,
             final_content.len(),
             cont_data.channel

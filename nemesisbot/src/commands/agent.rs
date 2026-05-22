@@ -162,7 +162,7 @@ impl LlmProvider for ProviderAdapter {
                 })
             }
             Err(e) => {
-                warn!("LLM provider error: {}", e);
+                warn!("[AgentAdapter] LLM provider error: {}", e);
                 Err(format!("{}", e))
             }
         }
@@ -206,7 +206,7 @@ fn build_agent_loop(
     let model_name = resolution.model_name.clone();
 
     info!(
-        "Agent using model: {}/{}",
+        "[AgentAdapter] Agent using model: {}/{}",
         resolution.provider_name, model_name
     );
 

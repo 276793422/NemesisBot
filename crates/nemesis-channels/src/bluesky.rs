@@ -302,7 +302,7 @@ impl Channel for BlueskyChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Bluesky channel");
+        info!("[BlueskyChannel] starting Bluesky channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -344,7 +344,7 @@ impl Channel for BlueskyChannel {
                             let tok = body["accessJwt"].as_str().unwrap_or("").to_string();
                             let did = body["did"].as_str().unwrap_or("").to_string();
                             if tok.is_empty() {
-                                warn!("Bluesky: empty access token from session");
+                                warn!("[BlueskyChannel] empty access token from session");
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(max_backoff);
                                 continue;
@@ -353,13 +353,13 @@ impl Channel for BlueskyChannel {
                             *did_arc.write() = did.clone();
                         }
                         Ok(resp) => {
-                            warn!("Bluesky: session returned {}", resp.status());
+                            warn!("[BlueskyChannel] session returned {}", resp.status());
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(max_backoff);
                             continue;
                         }
                         Err(e) => {
-                            warn!("Bluesky: session error: {e}");
+                            warn!("[BlueskyChannel] session error: {e}");
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(max_backoff);
                             continue;
@@ -389,14 +389,14 @@ impl Channel for BlueskyChannel {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        warn!("Bluesky: notification poll error: {e}");
+                        warn!("[BlueskyChannel] notification poll error: {e}");
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
                     }
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Bluesky: notification poll returned {}", resp.status());
+                    warn!("[BlueskyChannel] notification poll returned {}", resp.status());
                     if resp.status().as_u16() == 401 {
                         // Session expired, clear it
                         *access_token.write() = String::new();
@@ -485,15 +485,15 @@ impl Channel for BlueskyChannel {
                     .await;
             }
 
-            info!("Bluesky polling loop stopped");
+            info!("[BlueskyChannel] polling loop stopped");
         });
 
-        info!("Bluesky channel started");
+        info!("[BlueskyChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Bluesky channel");
+        info!("[BlueskyChannel] stopping Bluesky channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())
@@ -513,7 +513,7 @@ impl Channel for BlueskyChannel {
         }
 
         self.base.record_sent();
-        debug!(reply_to = %msg.chat_id, "Bluesky posting reply");
+        debug!(reply_to = %msg.chat_id, "[BlueskyChannel] posting reply");
         self.post_reply(&msg.chat_id, &msg.content).await?;
         Ok(())
     }

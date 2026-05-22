@@ -180,7 +180,7 @@ impl ForgeDataProvider for FileForgeProvider {
         tracing::info!(
             source_node = source_node,
             path = %path.display(),
-            "Stored remote reflection report"
+            "[ForgeHandler] Stored remote reflection report"
         );
 
         Ok(())
@@ -310,7 +310,7 @@ impl ForgeHandler {
         tracing::info!(
             source_node = from,
             local_node = %self.node_id,
-            "Received forge reflection report from peer"
+            "[ForgeHandler] Received forge reflection report from peer"
         );
 
         if payload.get("report").is_none() {
@@ -324,7 +324,7 @@ impl ForgeHandler {
         // If we have a provider, store the reflection
         if let Some(ref provider) = self.provider {
             if let Err(e) = provider.receive_reflection(&payload) {
-                tracing::error!(error = %e, "Failed to store reflection");
+                tracing::error!(error = %e, "[ForgeHandler] Failed to store reflection");
                 return HandleResult {
                     success: false,
                     response: serde_json::Value::Null,
@@ -353,7 +353,7 @@ impl ForgeHandler {
         tracing::info!(
             from = from,
             local_node = %self.node_id,
-            "Reflections list requested by peer"
+            "[ForgeHandler] Reflections list requested by peer"
         );
 
         let mut result = if let Some(ref provider) = self.provider {
@@ -380,7 +380,7 @@ impl ForgeHandler {
                             tracing::error!(
                                 filename = filename,
                                 error = %e,
-                                "Failed to read reflection"
+                                "[ForgeHandler] Failed to read reflection"
                             );
                             return HandleResult {
                                 success: false,

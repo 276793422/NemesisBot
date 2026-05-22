@@ -396,7 +396,7 @@ impl EmailChannel {
             .smtp_command(&mut writer, &mut reader, "QUIT")
             .await;
 
-        debug!(to = %to, "SMTP email sent successfully");
+        debug!(to = %to, "[EmailChannel] SMTP email sent successfully");
         Ok(())
     }
 
@@ -487,7 +487,7 @@ impl EmailChannel {
         debug!(
             host = %self.config.imap_host,
             folder = %self.config.folder,
-            "IMAP connected and authenticated"
+            "[EmailChannel] IMAP connected and authenticated"
         );
 
         Ok(conn)
@@ -512,7 +512,7 @@ impl EmailChannel {
             loop {
                 tokio::select! {
                     _ = &mut rx => {
-                        info!("IMAP poll loop shutting down");
+                        info!("[EmailChannel] IMAP poll loop shutting down");
                         break;
                     }
                     _ = interval.tick() => {
@@ -589,13 +589,13 @@ impl EmailChannel {
                                                 from = %from,
                                                 subject = %subject,
                                                 chat_id = %chat_id,
-                                                "Received email"
+                                                "[EmailChannel] Received email"
                                             );
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    warn!(error = %e, "IMAP SEARCH failed");
+                                    warn!(error = %e, "[EmailChannel] IMAP SEARCH failed");
                                 }
                             }
                             let _ = conn.send_command("LOGOUT").await;
@@ -755,7 +755,7 @@ impl Channel for EmailChannel {
             imap_host = %self.config.imap_host,
             smtp_host = %self.config.smtp_host,
             poll_interval = self.config.poll_interval,
-            "starting Email channel"
+            "[EmailChannel] starting Email channel"
         );
         *self.running.write() = true;
         self.base.set_enabled(true);
@@ -763,12 +763,12 @@ impl Channel for EmailChannel {
         // Start IMAP polling loop
         self.start_poll_loop();
 
-        info!("Email channel started");
+        info!("[EmailChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Email channel");
+        info!("[EmailChannel] stopping Email channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -778,7 +778,7 @@ impl Channel for EmailChannel {
         }
 
         self.sender_map.clear();
-        info!("Email channel stopped");
+        info!("[EmailChannel] channel stopped");
         Ok(())
     }
 
@@ -807,7 +807,7 @@ impl Channel for EmailChannel {
         debug!(
             to = %msg.chat_id,
             subject = %subject,
-            "Email sending message"
+            "[EmailChannel] sending message"
         );
 
         self.smtp_send(&msg.chat_id, &subject, &msg.content).await

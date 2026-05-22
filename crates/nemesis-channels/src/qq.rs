@@ -309,7 +309,7 @@ impl QQChannel {
                     {
                         Ok(r) => r,
                         Err(e) => {
-                            warn!(error = %e, "QQ auth request failed, backing off");
+                            warn!(error = %e, "[QQChannel] auth request failed, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -322,7 +322,7 @@ impl QQChannel {
                     let body: AccessTokenResponse = match resp.json().await {
                         Ok(b) => b,
                         Err(e) => {
-                            warn!(error = %e, "QQ auth parse failed, backing off");
+                            warn!(error = %e, "[QQChannel] auth parse failed, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -335,7 +335,7 @@ impl QQChannel {
                     match body.access_token {
                         Some(t) if !t.is_empty() => t,
                         _ => {
-                            warn!("QQ auth returned empty token, backing off");
+                            warn!("[QQChannel] auth returned empty token, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -356,7 +356,7 @@ impl QQChannel {
                     {
                         Ok(r) => r,
                         Err(e) => {
-                            warn!(error = %e, "QQ gateway request failed, backing off");
+                            warn!(error = %e, "[QQChannel] gateway request failed, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -368,7 +368,7 @@ impl QQChannel {
 
                     if !resp.status().is_success() {
                         let status = resp.status();
-                        warn!(status = %status, "QQ gateway request failed, backing off");
+                        warn!(status = %status, "[QQChannel] gateway request failed, backing off");
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
                             _ = &mut cancel_rx => break,
@@ -380,7 +380,7 @@ impl QQChannel {
                     let body: WsGatewayResponse = match resp.json().await {
                         Ok(b) => b,
                         Err(e) => {
-                            warn!(error = %e, "QQ gateway parse failed, backing off");
+                            warn!(error = %e, "[QQChannel] gateway parse failed, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -393,7 +393,7 @@ impl QQChannel {
                     match body.url {
                         Some(u) if !u.is_empty() => u,
                         _ => {
-                            warn!("QQ gateway returned empty URL, backing off");
+                            warn!("[QQChannel] gateway returned empty URL, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -404,12 +404,12 @@ impl QQChannel {
                     }
                 };
 
-                info!(url = %ws_url, "QQ bot connecting to WebSocket gateway");
+                info!(url = %ws_url, "[QQChannel] bot connecting to WebSocket gateway");
 
                 // Step 3: Connect to WebSocket
                 match connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
-                        info!("QQ bot WebSocket connected successfully");
+                        info!("[QQChannel] bot WebSocket connected successfully");
                         backoff = INITIAL_BACKOFF;
 
                         let (mut write, mut read) = ws_stream.split();
@@ -428,13 +428,13 @@ impl QQChannel {
 
                                                 match event_type {
                                                     "READY" => {
-                                                        info!("QQ bot READY event received");
+                                                        info!("[QQChannel] bot READY event received");
                                                     }
                                                     "RESUMED" => {
-                                                        info!("QQ bot RESUMED event received");
+                                                        info!("[QQChannel] bot RESUMED event received");
                                                     }
                                                     "HEARTBEAT_ACK" => {
-                                                        debug!("QQ bot heartbeat ACK");
+                                                        debug!("[QQChannel] bot heartbeat ACK");
                                                     }
                                                     "C2C_MESSAGE_CREATE" => {
                                                         if let Some(data) = &event.d {
@@ -455,7 +455,7 @@ impl QQChannel {
                                                         }
                                                     }
                                                     _ => {
-                                                        debug!(event_type = %event_type, "QQ bot unhandled event");
+                                                        debug!(event_type = %event_type, "[QQChannel] bot unhandled event");
                                                     }
                                                 }
                                             }
@@ -464,16 +464,16 @@ impl QQChannel {
                                             let _ = write.send(Message::Pong(payload)).await;
                                         }
                                         Some(Ok(Message::Close(frame))) => {
-                                            info!(frame = ?frame, "QQ bot WebSocket closed by server");
+                                            info!(frame = ?frame, "[QQChannel] bot WebSocket closed by server");
                                             break;
                                         }
                                         Some(Ok(_)) => {}
                                         Some(Err(e)) => {
-                                            warn!(error = %e, "QQ bot WebSocket stream error");
+                                            warn!(error = %e, "[QQChannel] bot WebSocket stream error");
                                             break;
                                         }
                                         None => {
-                                            info!("QQ bot WebSocket stream ended");
+                                            info!("[QQChannel] bot WebSocket stream ended");
                                             break;
                                         }
                                     }
@@ -485,12 +485,12 @@ impl QQChannel {
                                         "d": null
                                     });
                                     if write.send(Message::Text(heartbeat.to_string().into())).await.is_err() {
-                                        warn!("QQ bot heartbeat send failed");
+                                        warn!("[QQChannel] bot heartbeat send failed");
                                         break;
                                     }
                                 }
                                 _ = &mut cancel_rx => {
-                                    info!("QQ bot receive loop shutting down");
+                                    info!("[QQChannel] bot receive loop shutting down");
                                     let _ = write.close().await;
                                     return;
                                 }
@@ -498,7 +498,7 @@ impl QQChannel {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "QQ bot WebSocket connect failed, backing off");
+                        warn!(error = %e, "[QQChannel] bot WebSocket connect failed, backing off");
                     }
                 }
 
@@ -514,7 +514,7 @@ impl QQChannel {
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
 
-            info!("QQ bot receive loop stopped");
+            info!("[QQChannel] bot receive loop stopped");
         });
     }
 
@@ -543,7 +543,7 @@ impl QQChannel {
 
         // Check allow list
         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
-            debug!(sender_id = %sender_id, "QQ C2C message filtered by allow_list");
+            debug!(sender_id = %sender_id, "[QQChannel] C2C message filtered by allow_list");
             return;
         }
 
@@ -575,11 +575,11 @@ impl QQChannel {
         info!(
             sender_id = %inbound.sender_id,
             chat_id = %inbound.chat_id,
-            "QQ received C2C message"
+            "[QQChannel] received C2C message"
         );
 
         if let Err(e) = bus_sender.send(inbound) {
-            warn!("QQ: failed to publish inbound message: {e}");
+            warn!("[QQChannel] failed to publish inbound message: {e}");
         }
     }
 
@@ -608,7 +608,7 @@ impl QQChannel {
 
         // Check allow list
         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
-            debug!(sender_id = %sender_id, "QQ group message filtered by allow_list");
+            debug!(sender_id = %sender_id, "[QQChannel] group message filtered by allow_list");
             return;
         }
 
@@ -649,11 +649,11 @@ impl QQChannel {
         info!(
             sender_id = %inbound.sender_id,
             chat_id = %inbound.chat_id,
-            "QQ received group message"
+            "[QQChannel] received group message"
         );
 
         if let Err(e) = bus_sender.send(inbound) {
-            warn!("QQ: failed to publish inbound message: {e}");
+            warn!("[QQChannel] failed to publish inbound message: {e}");
         }
     }
 }
@@ -665,25 +665,25 @@ impl Channel for QQChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting QQ bot");
+        info!("[QQChannel] starting QQ bot");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
         // Try to obtain access token
         match self.refresh_token().await {
-            Ok(token) => info!(token_len = token.len(), "QQ bot authenticated"),
-            Err(e) => warn!(error = %e, "QQ bot auth failed (will retry in receive loop)"),
+            Ok(token) => info!(token_len = token.len(), "[QQChannel] bot authenticated"),
+            Err(e) => warn!(error = %e, "[QQChannel] bot auth failed (will retry in receive loop)"),
         }
 
         // Start the WebSocket receive loop
         self.spawn_receive_loop();
 
-        info!("QQ bot started successfully");
+        info!("[QQChannel] bot started successfully");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping QQ bot");
+        info!("[QQChannel] stopping QQ bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -692,7 +692,7 @@ impl Channel for QQChannel {
         }
 
         *self.access_token.write() = String::new();
-        info!("QQ bot stopped");
+        info!("[QQChannel] bot stopped");
         Ok(())
     }
 
@@ -705,14 +705,14 @@ impl Channel for QQChannel {
 
         // Determine message type from chat_id prefix
         if let Some(openid) = msg.chat_id.strip_prefix("c2c:") {
-            debug!(openid = %openid, "QQ sending C2C message");
+            debug!(openid = %openid, "[QQChannel] sending C2C message");
             self.send_c2c_message(openid, &msg.content).await
         } else if let Some(group_id) = msg.chat_id.strip_prefix("group:") {
-            debug!(group_id = %group_id, "QQ sending group message");
+            debug!(group_id = %group_id, "[QQChannel] sending group message");
             self.send_group_message(group_id, &msg.content).await
         } else {
             // Default to C2C
-            debug!(chat_id = %msg.chat_id, "QQ sending C2C message (default)");
+            debug!(chat_id = %msg.chat_id, "[QQChannel] sending C2C message (default)");
             self.send_c2c_message(&msg.chat_id, &msg.content).await
         }
     }

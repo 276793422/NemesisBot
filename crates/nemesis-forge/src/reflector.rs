@@ -501,7 +501,7 @@ impl Reflector {
 
         // Stage 4: Cluster sharing integration
         if self.cluster_enabled {
-            tracing::info!("Stage 4: Cluster sharing enabled, report will be shared after generation");
+            tracing::info!("[Reflector] Stage 4: Cluster sharing enabled, report will be shared after generation");
         }
 
         ReflectionReport {
@@ -544,11 +544,11 @@ impl Reflector {
             .await
             {
                 Ok(insights) => {
-                    tracing::info!(len = insights.len(), "LLM semantic analysis completed");
+                    tracing::info!(len = insights.len(), "[Reflector] LLM semantic analysis completed");
                     report.llm_insights = Some(insights);
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "LLM semantic analysis failed, skipping");
+                    tracing::warn!(error = %e, "[Reflector] LLM semantic analysis failed, skipping");
                 }
             }
         }
@@ -894,7 +894,7 @@ impl Reflector {
         std::fs::write(&path, md_content)
             .map_err(|e| format!("failed to write report: {}", e))?;
 
-        tracing::info!(path = %path.display(), "Wrote reflection report");
+        tracing::info!(path = %path.display(), "[Reflector] Wrote reflection report");
         Ok(path)
     }
 
@@ -925,7 +925,7 @@ impl Reflector {
                                     deleted += 1;
                                     tracing::debug!(
                                         path = %path.display(),
-                                        "Deleted old reflection report"
+                                        "[Reflector] Deleted old reflection report"
                                     );
                                 }
                             }
@@ -936,7 +936,7 @@ impl Reflector {
         }
 
         if deleted > 0 {
-            tracing::info!(deleted, max_age_days, "Cleaned up old reflection reports");
+            tracing::info!(deleted, max_age_days, "[Reflector] Cleaned up old reflection reports");
         }
         deleted
     }

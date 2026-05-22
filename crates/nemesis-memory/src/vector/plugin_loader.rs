@@ -152,7 +152,7 @@ impl NativePlugin {
 
         info!(
             path = path,
-            "Native embedding plugin loaded successfully"
+            "[PluginLoader] Native embedding plugin loaded successfully"
         );
 
         Ok(Self {
@@ -207,7 +207,7 @@ impl EmbeddingPlugin for NativePlugin {
         info!(
             model_dir = %model_dir,
             dim = dim,
-            "Embedding plugin initialized"
+            "[PluginLoader] Embedding plugin initialized"
         );
 
         Ok(())
@@ -270,7 +270,7 @@ impl EmbeddingPlugin for NativePlugin {
 
         inner.library = None;
         inner.closed = true;
-        info!("Embedding plugin closed");
+        info!("[PluginLoader] Embedding plugin closed");
     }
 }
 

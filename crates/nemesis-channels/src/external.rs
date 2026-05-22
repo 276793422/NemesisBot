@@ -109,7 +109,7 @@ impl ExternalChannel {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    error!(exe = %input_exe, error = %e, "failed to spawn input EXE");
+                    error!(exe = %input_exe, error = %e, "[ExternalChannel] failed to spawn input EXE");
                     return;
                 }
             };
@@ -117,7 +117,7 @@ impl ExternalChannel {
             let stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
-                    error!("input EXE has no stdout");
+                    error!("[ExternalChannel] input EXE has no stdout");
                     return;
                 }
             };
@@ -129,25 +129,25 @@ impl ExternalChannel {
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
-                        info!("input reader cancelled, killing process");
+                        info!("[ExternalChannel] input reader cancelled, killing process");
                         let _ = child.kill().await;
                         return;
                     }
                     result = reader.read_line(&mut line) => {
                         match result {
                             Ok(0) => {
-                                info!("input EXE closed stdout");
+                                info!("[ExternalChannel] input EXE closed stdout");
                                 break;
                             }
                             Ok(_) => {
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
-                                    debug!(line = %trimmed, "received from input EXE");
+                                    debug!(line = %trimmed, "[ExternalChannel] received from input EXE");
                                 }
                                 line.clear();
                             }
                             Err(e) => {
-                                error!(error = %e, "error reading from input EXE");
+                                error!(error = %e, "[ExternalChannel] error reading from input EXE");
                                 break;
                             }
                         }
@@ -174,7 +174,7 @@ impl Channel for ExternalChannel {
             input_exe = %self.config.input_exe,
             output_exe = %self.config.output_exe,
             chat_id = %self.config.chat_id,
-            "starting external channel"
+            "[ExternalChannel] starting external channel"
         );
         self.running.store(true, Ordering::SeqCst);
         self.base.set_enabled(true);
@@ -182,12 +182,12 @@ impl Channel for ExternalChannel {
         // Spawn the input reader
         self.spawn_input_reader();
 
-        info!("External channel started");
+        info!("[ExternalChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping external channel");
+        info!("[ExternalChannel] stopping external channel");
         self.running.store(false, Ordering::SeqCst);
         self.base.set_enabled(false);
 
@@ -202,7 +202,7 @@ impl Channel for ExternalChannel {
             let _ = child.kill().await;
         }
 
-        info!("External channel stopped");
+        info!("[ExternalChannel] channel stopped");
         Ok(())
     }
 
@@ -221,7 +221,7 @@ impl Channel for ExternalChannel {
         }
 
         self.base.record_sent();
-        debug!(content = %msg.content, "External sending to output EXE");
+        debug!(content = %msg.content, "[ExternalChannel] sending to output EXE");
 
         // Spawn the output process and write to stdin
         let output_exe = self.config.output_exe.clone();
@@ -234,23 +234,23 @@ impl Channel for ExternalChannel {
             {
                 Ok(c) => c,
                 Err(e) => {
-                    error!(exe = %output_exe, error = %e, "failed to spawn output EXE");
+                    error!(exe = %output_exe, error = %e, "[ExternalChannel] failed to spawn output EXE");
                     return;
                 }
             };
 
             if let Some(ref mut stdin) = child.stdin {
                 if let Err(e) = stdin.write_all(content.as_bytes()).await {
-                    error!(error = %e, "failed to write to output EXE stdin");
+                    error!(error = %e, "[ExternalChannel] failed to write to output EXE stdin");
                 }
             }
 
             match child.wait().await {
                 Ok(status) => {
-                    debug!(status = %status, "output EXE exited");
+                    debug!(status = %status, "[ExternalChannel] output EXE exited");
                 }
                 Err(e) => {
-                    warn!(error = %e, "failed to wait for output EXE");
+                    warn!(error = %e, "[ExternalChannel] failed to wait for output EXE");
                 }
             }
         });

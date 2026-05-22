@@ -195,7 +195,7 @@ impl Tool for PluginableTool {
             .plugin
             .pre_execute_with_context(self.inner.name(), args, &context)
         {
-            tracing::warn!(tool = self.inner.name(), "Tool execution blocked by plugin");
+            tracing::warn!(tool = self.inner.name(), "[Tools] Tool execution blocked by plugin");
             return ToolResult::error(&format!(
                 "Tool {} execution blocked by security plugin",
                 self.inner.name()
@@ -376,20 +376,20 @@ impl ToolRegistry {
                     tracing::warn!(
                         tool = name,
                         duration_ms = elapsed.as_millis() as u64,
-                        "Tool execution failed"
+                        "[Tools] Tool execution failed"
                     );
                 } else {
                     tracing::info!(
                         tool = name,
                         duration_ms = elapsed.as_millis() as u64,
                         result_len = result.for_llm.len(),
-                        "Tool execution completed"
+                        "[Tools] Tool execution completed"
                     );
                 }
                 result
             }
             None => {
-                tracing::error!(tool = name, "Tool not found");
+                tracing::error!(tool = name, "[Tools] Tool not found");
                 ToolResult::error(&format!("tool {:?} not found", name))
             }
         }
@@ -443,7 +443,7 @@ impl ToolRegistry {
                     tool = name,
                     channel = channel,
                     chat_id = chat_id,
-                    "Executing tool with context"
+                    "[Tools] Executing tool with context"
                 );
                 let start = std::time::Instant::now();
                 let result = tool.execute(args).await;
@@ -457,14 +457,14 @@ impl ToolRegistry {
                         tool = name,
                         channel = channel,
                         duration_ms = elapsed.as_millis() as u64,
-                        "Tool execution with context failed"
+                        "[Tools] Tool execution with context failed"
                     );
                 } else {
                     tracing::info!(
                         tool = name,
                         channel = channel,
                         duration_ms = elapsed.as_millis() as u64,
-                        "Tool execution with context completed"
+                        "[Tools] Tool execution with context completed"
                     );
                 }
                 result
@@ -472,7 +472,7 @@ impl ToolRegistry {
             None => {
                 // Clean up side-channel on error path
                 self.tool_contexts.remove(name);
-                tracing::error!(tool = name, "Tool not found");
+                tracing::error!(tool = name, "[Tools] Tool not found");
                 ToolResult::error(&format!("tool {:?} not found", name))
             }
         }
@@ -501,7 +501,7 @@ impl ToolRegistry {
                     channel = %context.channel,
                     chat_id = %context.chat_id,
                     correlation_id = %context.correlation_id,
-                    "Executing tool with full context"
+                    "[Tools] Executing tool with full context"
                 );
                 let start = std::time::Instant::now();
                 let result = tool.execute(args).await;
@@ -515,21 +515,21 @@ impl ToolRegistry {
                         tool = name,
                         channel = %context.channel,
                         duration_ms = elapsed.as_millis() as u64,
-                        "Tool execution with full context failed"
+                        "[Tools] Tool execution with full context failed"
                     );
                 } else {
                     tracing::info!(
                         tool = name,
                         channel = %context.channel,
                         duration_ms = elapsed.as_millis() as u64,
-                        "Tool execution with full context completed"
+                        "[Tools] Tool execution with full context completed"
                     );
                 }
                 result
             }
             None => {
                 self.tool_contexts.remove(name);
-                tracing::error!(tool = name, "Tool not found");
+                tracing::error!(tool = name, "[Tools] Tool not found");
                 ToolResult::error(&format!("tool {:?} not found", name))
             }
         }

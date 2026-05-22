@@ -74,7 +74,7 @@ impl ScanHook {
             tracing::warn!(
                 path = %save_path.display(),
                 virus = %result.virus,
-                "Downloaded file is infected"
+                "[Scanner] Downloaded file is infected"
             );
             // Attempt to remove the infected file
             let _ = tokio::fs::remove_file(save_path).await;

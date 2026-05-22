@@ -176,7 +176,7 @@ impl WhatsAppChannel {
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
-                        info!("WhatsApp receive loop shutting down");
+                        info!("[WhatsAppChannel] receive loop shutting down");
                         break;
                     }
                     _ = interval.tick() => {
@@ -208,7 +208,7 @@ impl WhatsAppChannel {
 
                                         // Check allow list
                                         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
-                                            debug!(sender_id = %sender_id, "WhatsApp message filtered by allow_list");
+                                            debug!(sender_id = %sender_id, "[WhatsAppChannel] message filtered by allow_list");
                                             continue;
                                         }
 
@@ -241,18 +241,18 @@ impl WhatsAppChannel {
                                         info!(
                                             sender_id = %inbound.sender_id,
                                             chat_id = %inbound.chat_id,
-                                            "WhatsApp received message from bridge"
+                                            "[WhatsAppChannel] received message from bridge"
                                         );
 
                                         if let Err(e) = bus_sender.send(inbound) {
-                                            warn!("WhatsApp: failed to publish inbound message: {e}");
+                                            warn!("[WhatsAppChannel] failed to publish inbound message: {e}");
                                         }
                                     }
                                 }
                             }
                             Ok(resp) => {
                                 consecutive_errors += 1;
-                                warn!(status = %resp.status(), "WhatsApp bridge poll returned error");
+                                warn!(status = %resp.status(), "[WhatsAppChannel] bridge poll returned error");
                                 if consecutive_errors > 3 {
                                     interval = tokio::time::interval(backoff);
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -261,7 +261,7 @@ impl WhatsAppChannel {
                             }
                             Err(e) => {
                                 consecutive_errors += 1;
-                                warn!(error = %e, "WhatsApp bridge poll failed");
+                                warn!(error = %e, "[WhatsAppChannel] bridge poll failed");
                                 if consecutive_errors > 3 {
                                     interval = tokio::time::interval(backoff);
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -273,7 +273,7 @@ impl WhatsAppChannel {
                 }
             }
 
-            info!("WhatsApp receive loop stopped");
+            info!("[WhatsAppChannel] receive loop stopped");
         });
     }
 }
@@ -285,19 +285,19 @@ impl Channel for WhatsAppChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!(url = %self.config.bridge_url, "starting WhatsApp channel");
+        info!(url = %self.config.bridge_url, "[WhatsAppChannel] starting WhatsApp channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
         // Start the receive loop
         self.spawn_receive_loop();
 
-        info!("WhatsApp channel connected");
+        info!("[WhatsAppChannel] channel connected");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping WhatsApp channel");
+        info!("[WhatsAppChannel] stopping WhatsApp channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -307,7 +307,7 @@ impl Channel for WhatsAppChannel {
         }
 
         self.outbound_queue.write().clear();
-        info!("WhatsApp channel stopped");
+        info!("[WhatsAppChannel] channel stopped");
         Ok(())
     }
 
@@ -320,14 +320,14 @@ impl Channel for WhatsAppChannel {
 
         self.base.record_sent();
 
-        debug!(chat_id = %msg.chat_id, "WhatsApp channel sending message");
+        debug!(chat_id = %msg.chat_id, "[WhatsAppChannel] channel sending message");
 
         // Try to send via bridge HTTP API
         match self.send_via_bridge(&msg.chat_id, &msg.content).await {
             Ok(()) => Ok(()),
             Err(e) => {
                 // Fall back to queue if bridge is unavailable
-                warn!(error = %e, "WhatsApp bridge send failed, queueing message");
+                warn!(error = %e, "[WhatsAppChannel] bridge send failed, queueing message");
                 self.outbound_queue.write().push(msg);
                 Ok(())
             }

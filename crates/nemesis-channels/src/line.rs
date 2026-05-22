@@ -271,7 +271,7 @@ impl LineChannel {
             let expected_b64 = base64::engine::general_purpose::STANDARD.encode(expected);
 
             if signature != expected_b64 {
-                warn!("LINE: invalid webhook signature");
+                warn!("[LineChannel] invalid webhook signature");
                 let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
                 let _ = stream.write_all(resp.as_bytes()).await;
                 return;
@@ -282,7 +282,7 @@ impl LineChannel {
         let webhook: LineWebhookRequest = match serde_json::from_slice(body) {
             Ok(w) => w,
             Err(e) => {
-                warn!("LINE: failed to parse webhook body: {e}");
+                warn!("[LineChannel] failed to parse webhook body: {e}");
                 let resp = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
                 let _ = stream.write_all(resp.as_bytes()).await;
                 return;
@@ -349,7 +349,7 @@ impl Channel for LineChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting LINE channel");
+        info!("[LineChannel] starting LINE channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -367,11 +367,11 @@ impl Channel for LineChannel {
             let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
                 Ok(l) => l,
                 Err(e) => {
-                    warn!("LINE webhook bind failed on port {port}: {e}");
+                    warn!("[LineChannel] webhook bind failed on port {port}: {e}");
                     return;
                 }
             };
-            info!("LINE webhook server listening on port {port}");
+            info!("[LineChannel] webhook server listening on port {port}");
 
             loop {
                 if !*running.read() {
@@ -381,7 +381,7 @@ impl Channel for LineChannel {
                 let (stream, _) = match listener.accept().await {
                     Ok(s) => s,
                     Err(e) => {
-                        warn!("LINE webhook accept error: {e}");
+                        warn!("[LineChannel] webhook accept error: {e}");
                         continue;
                     }
                 };
@@ -399,15 +399,15 @@ impl Channel for LineChannel {
                 });
             }
 
-            info!("LINE webhook server stopped");
+            info!("[LineChannel] webhook server stopped");
         });
 
-        info!("LINE channel started");
+        info!("[LineChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping LINE channel");
+        info!("[LineChannel] stopping LINE channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         self.reply_tokens.clear();

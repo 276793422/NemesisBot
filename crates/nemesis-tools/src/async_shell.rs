@@ -78,7 +78,7 @@ impl AsyncExecTool {
         let deny_patterns = if enable_deny_patterns {
             match custom_deny_patterns {
                 Some(patterns) if !patterns.is_empty() => {
-                    tracing::info!("Using custom deny patterns: {:?}", patterns);
+                    tracing::info!("[Shell] Using custom deny patterns: {:?}", patterns);
                     patterns
                         .iter()
                         .filter_map(|p| {
@@ -86,7 +86,7 @@ impl AsyncExecTool {
                             match &re {
                                 Ok(_) => re.ok(),
                                 Err(e) => {
-                                    tracing::warn!("Invalid custom deny pattern {:?}: {}", p, e);
+                                    tracing::warn!("[Shell] Invalid custom deny pattern {:?}: {}", p, e);
                                     None
                                 }
                             }
@@ -96,7 +96,7 @@ impl AsyncExecTool {
                 _ => default_deny_patterns(),
             }
         } else {
-            tracing::warn!("Deny patterns are disabled. All commands will be allowed.");
+            tracing::warn!("[Shell] Deny patterns are disabled. All commands will be allowed.");
             Vec::new()
         };
 

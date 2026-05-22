@@ -65,7 +65,7 @@ impl Daemon {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             if self.client.ping().await.is_ok() {
-                tracing::info!("ClamAV daemon started and ready");
+                tracing::info!("[Scanner] ClamAV daemon started and ready");
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -89,7 +89,7 @@ impl Daemon {
         *proc = None;
         self.running.store(false, Ordering::SeqCst);
 
-        tracing::info!("ClamAV daemon stopped");
+        tracing::info!("[Scanner] ClamAV daemon stopped");
         Ok(())
     }
 

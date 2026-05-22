@@ -134,7 +134,7 @@ impl ServiceManager {
     /// Create a new ServiceManager with a default BotService.
     pub fn new() -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
-        info!("ServiceManager created");
+        info!("[BotService] ServiceManager created");
         Self {
             shutdown_tx,
             state: Arc::new(Mutex::new(ServiceManagerState {
@@ -148,7 +148,7 @@ impl ServiceManager {
     /// Create a new ServiceManager with a custom BotService config.
     pub fn with_config(config: BotServiceConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
-        info!("ServiceManager created with custom config");
+        info!("[BotService] ServiceManager created with custom config");
         Self {
             shutdown_tx,
             state: Arc::new(Mutex::new(ServiceManagerState {
@@ -173,14 +173,14 @@ impl ServiceManager {
             return Err("basic services are already started".to_string());
         }
 
-        info!("service_manager: Starting basic services...");
+        info!("[BotService] Starting basic services...");
 
         // HTTP server for Web UI is started separately in CmdDesktop/Gateway
         // (same pattern as Go: web server lifecycle managed by gateway command)
 
         state.basic_services_started = true;
         state.wait_group.add();
-        info!("service_manager: Basic services started");
+        info!("[BotService] Basic services started");
         Ok(())
     }
 
@@ -199,10 +199,10 @@ impl ServiceManager {
             }
         }
 
-        info!("service_manager: Starting bot service...");
+        info!("[BotService] Starting bot service...");
 
         if let Err(e) = self.bot_service.start() {
-            error!("service_manager: Failed to start bot service: {}", e);
+            error!("[BotService] Failed to start bot service: {}", e);
             return Err(format!("{}", e));
         }
 
@@ -212,16 +212,16 @@ impl ServiceManager {
             state.wait_group.add();
         }
 
-        info!("service_manager: Bot service started");
+        info!("[BotService] Bot service started");
         Ok(())
     }
 
     /// Stop the bot service.
     pub fn stop_bot(&self) -> Result<(), String> {
-        info!("service_manager: Stopping bot service...");
+        info!("[BotService] Stopping bot service...");
 
         if let Err(e) = self.bot_service.stop() {
-            error!("service_manager: Failed to stop bot service: {}", e);
+            error!("[BotService] Failed to stop bot service: {}", e);
             return Err(format!("{}", e));
         }
 
@@ -231,20 +231,20 @@ impl ServiceManager {
             state.wait_group.done();
         }
 
-        info!("service_manager: Bot service stopped");
+        info!("[BotService] Bot service stopped");
         Ok(())
     }
 
     /// Restart the bot service.
     pub fn restart_bot(&self) -> Result<(), String> {
-        info!("service_manager: Restarting bot service...");
+        info!("[BotService] Restarting bot service...");
 
         if let Err(e) = self.bot_service.restart() {
-            error!("service_manager: Failed to restart bot service: {}", e);
+            error!("[BotService] Failed to restart bot service: {}", e);
             return Err(format!("{}", e));
         }
 
-        info!("service_manager: Bot service restarted");
+        info!("[BotService] Bot service restarted");
         Ok(())
     }
 
@@ -311,7 +311,7 @@ impl ServiceManager {
     /// This is idempotent - calling it multiple times has no additional effect
     /// beyond sending multiple signals (which receivers handle gracefully).
     pub fn trigger_shutdown(&self) {
-        info!("Shutdown signal triggered");
+        info!("[BotService] Shutdown signal triggered");
         let _ = self.shutdown_tx.send(());
     }
 
@@ -343,12 +343,12 @@ impl ServiceManager {
     ///
     /// After calling this, the ServiceManager should not be reused.
     pub fn shutdown(&self) {
-        info!("service_manager: Shutting down service manager...");
+        info!("[BotService] Shutting down service manager...");
 
         // Stop bot service if running
         if self.bot_service.get_state().can_stop() {
             if let Err(e) = self.bot_service.stop() {
-                error!("service_manager: Error stopping bot during shutdown: {}", e);
+                error!("[BotService] Error stopping bot during shutdown: {}", e);
             }
         }
 
@@ -364,7 +364,7 @@ impl ServiceManager {
         // Signal shutdown
         self.trigger_shutdown();
 
-        info!("service_manager: Service manager shutdown complete");
+        info!("[BotService] Service manager shutdown complete");
     }
 
     /// Wait for a shutdown signal (Ctrl+C or broadcast).
@@ -381,10 +381,10 @@ impl ServiceManager {
         // Wait for SIGINT/SIGTERM or broadcast
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("service_manager: Shutdown signal received (Ctrl+C)");
+                info!("[BotService] Shutdown signal received (Ctrl+C)");
             }
             _ = rx.recv() => {
-                info!("service_manager: Shutdown signal received");
+                info!("[BotService] Shutdown signal received");
             }
         }
     }
@@ -409,20 +409,20 @@ impl ServiceManager {
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("service_manager: Shutdown signal received (Ctrl+C)");
+                info!("[BotService] Shutdown signal received (Ctrl+C)");
             }
             _ = shutdown_rx.recv() => {
-                info!("service_manager: Shutdown broadcast received");
+                info!("[BotService] Shutdown broadcast received");
             }
             result = desktop_closed.changed() => {
                 match result {
                     Ok(()) => {
-                        info!("service_manager: Desktop UI closed, initiating shutdown");
+                        info!("[BotService] Desktop UI closed, initiating shutdown");
                     }
                     Err(_) => {
                         // The sender was dropped, meaning the desktop process
                         // has exited without sending a clean close signal.
-                        info!("service_manager: Desktop UI channel closed, initiating shutdown");
+                        info!("[BotService] Desktop UI channel closed, initiating shutdown");
                     }
                 }
             }
@@ -452,15 +452,15 @@ impl ServiceManager {
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("service_manager: Shutdown signal received (Ctrl+C)");
+                info!("[BotService] Shutdown signal received (Ctrl+C)");
                 true
             }
             _ = rx.recv() => {
-                info!("service_manager: Shutdown signal received");
+                info!("[BotService] Shutdown signal received");
                 true
             }
             _ = tokio::time::sleep(timeout) => {
-                warn!("service_manager: Shutdown wait timed out after {:?}", timeout);
+                warn!("[BotService] Shutdown wait timed out after {:?}", timeout);
                 false
             }
         }
@@ -485,13 +485,13 @@ impl ServiceManager {
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("service_manager: Shutdown signal received (Ctrl+C)");
+                info!("[BotService] Shutdown signal received (Ctrl+C)");
             }
             _ = rx.recv() => {
-                info!("service_manager: Shutdown broadcast received");
+                info!("[BotService] Shutdown broadcast received");
             }
             _ = &mut external => {
-                info!("service_manager: External shutdown trigger received");
+                info!("[BotService] External shutdown trigger received");
             }
         }
     }
@@ -524,7 +524,7 @@ impl ServiceManager {
                 result.is_ok()
             }
             _ = tokio::time::sleep(timeout) => {
-                warn!("service_manager: Timed out waiting for services to complete");
+                warn!("[BotService] Timed out waiting for services to complete");
                 false
             }
         }

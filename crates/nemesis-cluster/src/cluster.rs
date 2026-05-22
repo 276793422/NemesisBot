@@ -1193,11 +1193,11 @@ impl Cluster {
             tracing::info!(
                 source_node = from,
                 local_node = %node_id_share,
-                "Received forge reflection report from peer"
+                "[Cluster] Received forge reflection report from peer"
             );
 
             if let Err(e) = provider_share.receive_reflection(&payload) {
-                tracing::error!(error = %e, "Failed to store reflection");
+                tracing::error!(error = %e, "[Cluster] Failed to store reflection");
                 return Ok(serde_json::json!({
                     "status": "error",
                     "error": format!("Failed to store reflection: {}", e),
@@ -1224,7 +1224,7 @@ impl Cluster {
             tracing::info!(
                 from = from,
                 local_node = %node_id_list,
-                "Reflections list requested by peer"
+                "[Cluster] Reflections list requested by peer"
             );
 
             let mut result = provider_list.get_reflections_list_payload();
@@ -1242,7 +1242,7 @@ impl Cluster {
                             tracing::error!(
                                 filename = filename,
                                 error = %e,
-                                "Failed to read reflection"
+                                "[Cluster] Failed to read reflection"
                             );
                             return Ok(serde_json::json!({
                                 "status": "error",
@@ -1258,7 +1258,7 @@ impl Cluster {
             Ok(result)
         }))?;
 
-        tracing::info!("Registered forge RPC handlers: forge_share, forge_get_reflections");
+        tracing::info!("[Cluster] Registered forge RPC handlers: forge_share, forge_get_reflections");
         Ok(())
     }
 
@@ -1287,7 +1287,7 @@ impl Cluster {
             tracing::info!(
                 node_id = %node_id,
                 task_id = %task_id,
-                "peer_chat received, returning ACK"
+                "[Cluster] peer_chat received, returning ACK"
             );
 
             Ok(serde_json::json!({
@@ -1328,7 +1328,7 @@ impl Cluster {
             tracing::info!(
                 task_id = %task_id,
                 status = %status,
-                "peer_chat_callback received"
+                "[Cluster] peer_chat_callback received"
             );
 
             task_manager.complete_callback(task_id, status, response, error);
@@ -1592,7 +1592,7 @@ async fn poll_stale_pending_tasks(
                         tracing::warn!(
                             task_id = %task.id,
                             error = %err,
-                            "query_task_result returned error"
+                            "[Cluster] query_task_result returned error"
                         );
                         continue;
                     }

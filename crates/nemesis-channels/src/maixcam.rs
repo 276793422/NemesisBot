@@ -195,24 +195,24 @@ impl MaixCamChannel {
             let listener = match TcpListener::bind(&addr).await {
                 Ok(l) => l,
                 Err(e) => {
-                    error!(addr = %addr, error = %e, "failed to bind MaixCam TCP listener");
+                    error!(addr = %addr, error = %e, "[MaixCamChannel] failed to bind MaixCam TCP listener");
                     return;
                 }
             };
 
-            info!(addr = %addr, "MaixCam TCP server listening");
+            info!(addr = %addr, "[MaixCamChannel] TCP server listening");
             let mut cancel_rx = cancel_rx;
 
             loop {
                 tokio::select! {
                     _ = &mut cancel_rx => {
-                        info!("MaixCam TCP server shutting down");
+                        info!("[MaixCamChannel] TCP server shutting down");
                         break;
                     }
                     result = listener.accept() => {
                         match result {
                             Ok((stream, peer)) => {
-                                debug!(peer = %peer, "MaixCam device connected");
+                                debug!(peer = %peer, "[MaixCamChannel] device connected");
                                 *client_count.write() += 1;
 
                                 // Spawn per-connection reader
@@ -232,22 +232,22 @@ impl MaixCamChannel {
                                         line.clear();
                                         match reader.read_line(&mut line).await {
                                             Ok(0) => {
-                                                info!(peer = %peer_str, "MaixCam device disconnected");
+                                                info!(peer = %peer_str, "[MaixCamChannel] device disconnected");
                                                 break;
                                             }
                                             Ok(_) => {
                                                 let trimmed = line.trim();
                                                 if !trimmed.is_empty() {
-                                                    debug!(peer = %peer_str, data = %trimmed, "MaixCam data");
+                                                    debug!(peer = %peer_str, data = %trimmed, "[MaixCamChannel] data");
                                                     // Parse JSON message
                                                     if let Ok(msg) = serde_json::from_str::<MaixCamMessage>(trimmed) {
                                                         let msg_type = msg.msg_type.as_deref().unwrap_or("");
-                                                        debug!(msg_type = %msg_type, "MaixCam event");
+                                                        debug!(msg_type = %msg_type, "[MaixCamChannel] event");
                                                     }
                                                 }
                                             }
                                             Err(e) => {
-                                                warn!(error = %e, "MaixCam read error");
+                                                warn!(error = %e, "[MaixCamChannel] read error");
                                                 break;
                                             }
                                         }
@@ -257,7 +257,7 @@ impl MaixCamChannel {
                                 });
                             }
                             Err(e) => {
-                                warn!(error = %e, "MaixCam accept error");
+                                warn!(error = %e, "[MaixCamChannel] accept error");
                             }
                         }
                     }
@@ -291,7 +291,7 @@ impl Channel for MaixCamChannel {
         info!(
             host = %self.config.host,
             port = self.config.port,
-            "starting MaixCam channel"
+            "[MaixCamChannel] starting MaixCam channel"
         );
         *self.running.write() = true;
         self.base.set_enabled(true);
@@ -299,12 +299,12 @@ impl Channel for MaixCamChannel {
         // Spawn the TCP server
         self.spawn_tcp_server();
 
-        info!("MaixCam channel started");
+        info!("[MaixCamChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping MaixCam channel");
+        info!("[MaixCamChannel] stopping MaixCam channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -316,7 +316,7 @@ impl Channel for MaixCamChannel {
         *self.client_count.write() = 0;
         self.client_writers.clear();
         self.outbound_queue.write().clear();
-        info!("MaixCam channel stopped");
+        info!("[MaixCamChannel] channel stopped");
         Ok(())
     }
 
@@ -358,7 +358,7 @@ impl Channel for MaixCamChannel {
             ));
         }
 
-        debug!(chat_id = %msg.chat_id, "MaixCam sending command");
+        debug!(chat_id = %msg.chat_id, "[MaixCamChannel] sending command");
         self.outbound_queue.write().push(msg);
         Ok(())
     }

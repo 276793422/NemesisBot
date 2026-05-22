@@ -581,7 +581,7 @@ $results | ConvertTo-Json -Compress
     async fn run_powershell(&self, script: &str, timeout: Duration) -> Result<String, String> {
         tracing::debug!(
             script_length = script.len(),
-            "Running PowerShell script"
+            "[Tools] Running PowerShell script"
         );
 
         let output = tokio::time::timeout(

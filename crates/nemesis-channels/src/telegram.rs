@@ -246,7 +246,7 @@ impl TelegramChannel {
                         client_builder = client_builder.proxy(proxy);
                     }
                     Err(e) => {
-                        warn!("Invalid proxy URL '{}': {}", proxy_url, e);
+                        warn!("[TelegramChannel] invalid proxy URL '{}': {}", proxy_url, e);
                     }
                 }
             }
@@ -417,7 +417,7 @@ impl TelegramChannel {
             let mut backoff = std::time::Duration::from_secs(1);
             let max_backoff = std::time::Duration::from_secs(60);
 
-            info!("Telegram polling loop started");
+            info!("[TelegramChannel] polling loop started");
 
             while *running.read() {
                 // Build getUpdates request
@@ -437,7 +437,7 @@ impl TelegramChannel {
                         match body {
                             Ok(body) => {
                                 if !body.ok {
-                                    warn!("Telegram getUpdates returned not ok");
+                                    warn!("[TelegramChannel] getUpdates returned not ok");
                                     tokio::time::sleep(backoff).await;
                                     backoff = (backoff * 2).min(max_backoff);
                                     continue;
@@ -463,21 +463,21 @@ impl TelegramChannel {
                                 }
                             }
                             Err(e) => {
-                                warn!("Telegram getUpdates parse error: {e}");
+                                warn!("[TelegramChannel] getUpdates parse error: {e}");
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(max_backoff);
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("Telegram getUpdates request error: {e}");
+                        warn!("[TelegramChannel] getUpdates request error: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                     }
                 }
             }
 
-            info!("Telegram polling loop stopped");
+            info!("[TelegramChannel] polling loop stopped");
         });
     }
 
@@ -523,7 +523,7 @@ impl TelegramChannel {
                     || user.username.as_ref().map_or(false, |u| u == a)
             });
             if !allowed {
-                debug!("Telegram: message rejected by allowlist (sender_id={sender_id})");
+                debug!("[TelegramChannel] message rejected by allowlist (sender_id={sender_id})");
                 return;
             }
         }
@@ -643,7 +643,7 @@ impl TelegramChannel {
             sender_id = %sender_id,
             chat_id = %chat_id,
             preview = &content[..content.len().min(50)],
-            "Telegram: received message"
+            "[TelegramChannel] received message"
         );
 
         // Build metadata (mirrors Go's handleMessage metadata)
@@ -681,7 +681,7 @@ impl TelegramChannel {
         };
 
         if let Err(e) = bus_sender.send(inbound) {
-            warn!("Telegram: failed to publish inbound message: {e}");
+            warn!("[TelegramChannel] failed to publish inbound message: {e}");
         }
     }
 
@@ -748,24 +748,24 @@ impl TelegramChannel {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(v) => v,
                     Err(e) => {
-                        warn!("Telegram voice: getFile parse error: {e}");
+                        warn!("[TelegramChannel] voice: getFile parse error: {e}");
                         return Some("[voice (transcription failed)]".to_string());
                     }
                 };
                 if body["ok"].as_bool() != Some(true) {
-                    warn!("Telegram voice: getFile returned not ok: {:?}", body);
+                    warn!("[TelegramChannel] voice: getFile returned not ok: {:?}", body);
                     return Some("[voice (transcription failed)]".to_string());
                 }
                 match body["result"]["file_path"].as_str() {
                     Some(p) => p.to_string(),
                     None => {
-                        warn!("Telegram voice: getFile missing file_path");
+                        warn!("[TelegramChannel] voice: getFile missing file_path");
                         return Some("[voice (transcription failed)]".to_string());
                     }
                 }
             }
             Err(e) => {
-                warn!("Telegram voice: getFile request error: {e}");
+                warn!("[TelegramChannel] voice: getFile request error: {e}");
                 return Some("[voice (transcription failed)]".to_string());
             }
         };
@@ -781,16 +781,16 @@ impl TelegramChannel {
             Ok(resp) => {
                 if let Ok(bytes) = resp.bytes().await {
                     if let Err(e) = std::fs::write(&local_path, &bytes) {
-                        warn!("Telegram voice: failed to write file: {e}");
+                        warn!("[TelegramChannel] voice: failed to write file: {e}");
                         return Some("[voice (transcription failed)]".to_string());
                     }
                 } else {
-                    warn!("Telegram voice: failed to read download bytes");
+                    warn!("[TelegramChannel] voice: failed to read download bytes");
                     return Some("[voice (transcription failed)]".to_string());
                 }
             }
             Err(e) => {
-                warn!("Telegram voice: download error: {e}");
+                warn!("[TelegramChannel] voice: download error: {e}");
                 return Some("[voice (transcription failed)]".to_string());
             }
         }
@@ -800,11 +800,11 @@ impl TelegramChannel {
         // Step 3: Call transcriber
         match transcriber.transcribe(&path_str).await {
             Ok(text) => {
-                info!("Telegram voice transcribed successfully");
+                info!("[TelegramChannel] voice transcribed successfully");
                 Some(format!("[voice transcription: {text}]"))
             }
             Err(e) => {
-                warn!("Telegram voice transcription failed: {e}");
+                warn!("[TelegramChannel] voice transcription failed: {e}");
                 Some("[voice (transcription failed)]".to_string())
             }
         }
@@ -869,7 +869,7 @@ impl TelegramChannel {
 
         if !body.ok {
             // Edit can fail if message hasn't changed, treat as non-fatal
-            debug!("editMessageText returned not ok (may be non-fatal)");
+            debug!("[TelegramChannel] editMessageText returned not ok (may be non-fatal)");
         }
 
         Ok(())
@@ -1163,14 +1163,14 @@ impl Channel for TelegramChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Telegram bot (polling mode)");
+        info!("[TelegramChannel] starting bot (polling mode)");
 
         let me = self.get_me().await?;
         *self.bot_username.write() = me.username.clone().unwrap_or_default();
 
         info!(
             username = %self.bot_username.read(),
-            "Telegram bot connected"
+            "[TelegramChannel] bot connected"
         );
 
         *self.running.write() = true;
@@ -1183,7 +1183,7 @@ impl Channel for TelegramChannel {
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Telegram bot");
+        info!("[TelegramChannel] stopping bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -1242,7 +1242,7 @@ impl Channel for TelegramChannel {
             Ok(_) => Ok(()),
             Err(_) => {
                 // Retry without parse_mode (plain text fallback)
-                warn!("HTML parse failed, falling back to plain text");
+                warn!("[TelegramChannel] HTML parse failed, falling back to plain text");
                 let plain_params = SendMessageParams {
                     chat_id,
                     text: msg.content,

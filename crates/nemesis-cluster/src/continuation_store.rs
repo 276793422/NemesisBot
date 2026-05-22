@@ -66,7 +66,7 @@ impl ContinuationStore {
 
         // Persist to disk
         if let Err(e) = self.persist_to_disk(&snapshot).await {
-            tracing::warn!(task_id = %task_id, error = %e, "Failed to persist continuation to disk");
+            tracing::warn!(task_id = %task_id, error = %e, "[ContinuationStore] Failed to persist continuation to disk");
         }
 
         // Store in memory
@@ -152,7 +152,7 @@ impl ContinuationStore {
                     task_id,
                     path = %path.display(),
                     error = %e,
-                    "Failed to delete continuation snapshot from disk"
+                    "[ContinuationStore] Failed to delete continuation snapshot from disk"
                 );
             }
         }
@@ -207,7 +207,7 @@ impl ContinuationStore {
         }
 
         if removed > 0 {
-            tracing::info!(removed, "Cleaned up old continuation snapshots");
+            tracing::info!(removed, "[ContinuationStore] Cleaned up old continuation snapshots");
         }
 
         Ok(removed)
@@ -275,14 +275,14 @@ impl ContinuationStore {
                                     recovered += 1;
                                     tracing::info!(
                                         task_id = stem,
-                                        "Recovered continuation snapshot from disk"
+                                        "[ContinuationStore] Recovered continuation snapshot from disk"
                                     );
                                 }
                                 Err(e) => {
                                     tracing::warn!(
                                         path = %path.display(),
                                         error = %e,
-                                        "Failed to deserialize continuation snapshot, skipping"
+                                        "[ContinuationStore] Failed to deserialize continuation snapshot, skipping"
                                     );
                                 }
                             }
@@ -291,7 +291,7 @@ impl ContinuationStore {
                             tracing::warn!(
                                 path = %path.display(),
                                 error = %e,
-                                "Failed to read continuation snapshot, skipping"
+                                "[ContinuationStore] Failed to read continuation snapshot, skipping"
                             );
                         }
                     }
@@ -300,7 +300,7 @@ impl ContinuationStore {
         }
 
         if recovered > 0 {
-            tracing::info!(recovered, "Recovered continuation snapshots from disk");
+            tracing::info!(recovered, "[ContinuationStore] Recovered continuation snapshots from disk");
         }
 
         Ok(recovered)

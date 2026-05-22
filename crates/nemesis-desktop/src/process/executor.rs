@@ -262,12 +262,12 @@ impl DefaultPlatformExecutor {
                 let result = GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid);
                 if result == 0 {
                     debug!(
-                        "DefaultPlatformExecutor: GenerateConsoleCtrlEvent failed for PID {}",
+                        "[ProcessManager] GenerateConsoleCtrlEvent failed for PID {}",
                         pid
                     );
                 } else {
                     debug!(
-                        "DefaultPlatformExecutor: Sent CTRL_C_EVENT to PID {}",
+                        "[ProcessManager] Sent CTRL_C_EVENT to PID {}",
                         pid
                     );
                 }
@@ -284,12 +284,12 @@ impl DefaultPlatformExecutor {
                 let result = libc_kill(pid, SIGTERM);
                 if result != 0 {
                     debug!(
-                        "DefaultPlatformExecutor: kill(SIGTERM) failed for PID {}",
+                        "[ProcessManager] kill(SIGTERM) failed for PID {}",
                         child.pid
                     );
                 } else {
                     debug!(
-                        "DefaultPlatformExecutor: Sent SIGTERM to PID {}",
+                        "[ProcessManager] Sent SIGTERM to PID {}",
                         child.pid
                     );
                 }
@@ -300,7 +300,7 @@ impl DefaultPlatformExecutor {
         {
             let _ = child;
             debug!(
-                "DefaultPlatformExecutor: No graceful signal support on this platform"
+                "[ProcessManager] No graceful signal support on this platform"
             );
         }
     }
@@ -354,7 +354,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
         }
 
         debug!(
-            "DefaultPlatformExecutor: Spawning {} {:?}",
+            "[ProcessManager] Spawning {} {:?}",
             exe_path, args
         );
 
@@ -376,7 +376,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
         cp.stderr_pipe = stderr_pipe;
         cp.status = ProcessStatus::Running;
 
-        info!("DefaultPlatformExecutor: Child spawned with PID {}", pid);
+        info!("[ProcessManager] Child spawned with PID {}", pid);
         Ok(cp)
     }
 
@@ -398,7 +398,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
                         child.status = ProcessStatus::Terminated;
                         child.exited.store(true, Ordering::SeqCst);
                         info!(
-                            "DefaultPlatformExecutor: Child PID {} terminated gracefully",
+                            "[ProcessManager] Child PID {} terminated gracefully",
                             child.pid
                         );
                         return Ok(());
@@ -411,7 +411,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
                         std::thread::sleep(std::time::Duration::from_millis(100));
                     }
                     Err(e) => {
-                        debug!("DefaultPlatformExecutor: try_wait error: {}", e);
+                        debug!("[ProcessManager] try_wait error: {}", e);
                         break;
                     }
                 }
@@ -422,7 +422,7 @@ impl PlatformExecutor for DefaultPlatformExecutor {
 
         // Step 3: Force kill if still running
         info!(
-            "DefaultPlatformExecutor: Child PID {} did not exit gracefully, force killing",
+            "[ProcessManager] Child PID {} did not exit gracefully, force killing",
             child.pid
         );
         if let Some(ref mut c) = child.child {

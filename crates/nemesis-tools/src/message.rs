@@ -221,11 +221,11 @@ impl Tool for MessageTool {
         let final_content = if channel == "rpc" && !correlation_id.is_empty() {
             debug!(
                 correlation_id = %correlation_id,
-                "MessageTool: Added correlation ID prefix to RPC message"
+                "[Tools] Added correlation ID prefix to RPC message"
             );
             format_rpc_prefix(&correlation_id, content)
         } else if channel == "rpc" {
-            warn!("MessageTool: No correlation ID in context for RPC channel - response will not be delivered!");
+            warn!("[Tools] No correlation ID in context for RPC channel - response will not be delivered!");
             content.to_string()
         } else {
             content.to_string()

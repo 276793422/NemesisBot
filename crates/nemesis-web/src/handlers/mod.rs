@@ -145,7 +145,7 @@ pub fn write_workspace_file(workspace: &str, relative: &str, content: &str) -> R
     if let Err(e) = std::fs::rename(&tmp_path, &path) {
         let _ = std::fs::remove_file(&tmp_path);
         std::fs::write(&path, content).map_err(|e| format!("failed to write file: {}", e))?;
-        tracing::warn!(error = %e, "Atomic rename failed, fell back to direct write");
+        tracing::warn!(error = %e, "[WebServer] Atomic rename failed, fell back to direct write");
     }
     Ok(())
 }

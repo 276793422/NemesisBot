@@ -403,7 +403,7 @@ impl TcpConn {
             conn.flush()
                 .await
                 .map_err(|e| format!("auth token flush failed: {}", e))?;
-            trace!("Auth token sent to {}", self.address);
+            trace!("[Transport] Auth token sent to {}", self.address);
         }
 
         // Save addresses before splitting
@@ -444,7 +444,7 @@ impl TcpConn {
                     Ok(data) => {
                         match WireMessage::from_bytes(&data) {
                             Ok(msg) => {
-                                trace!("Received message: id={}, type={}", msg.id, msg.msg_type);
+                                trace!("[Transport] Received message: id={}, type={}", msg.id, msg.msg_type);
                                 *last_used_r.write() = Instant::now();
                                 if recv_tx.try_send(msg).is_err() {
                                     let count = dropped_r.fetch_add(1, Ordering::SeqCst);
@@ -452,7 +452,7 @@ impl TcpConn {
                                         node_id = %node_id,
                                         address = %address,
                                         dropped = count + 1,
-                                        "Receive buffer full, dropping message"
+                                        "[Transport] Receive buffer full, dropping message"
                                     );
                                 }
                             }
@@ -461,7 +461,7 @@ impl TcpConn {
                                     node_id = %node_id,
                                     address = %address,
                                     error = %e,
-                                    "Failed to parse wire message"
+                                    "[Transport] Failed to parse wire message"
                                 );
                             }
                         }
@@ -472,7 +472,7 @@ impl TcpConn {
                                 node_id = %node_id,
                                 address = %address,
                                 error = %e,
-                                "Read error, closing connection"
+                                "[Transport] Read error, closing connection"
                             );
                         }
                         break;
@@ -496,7 +496,7 @@ impl TcpConn {
                             warn!(
                                 address = %address_w,
                                 error = %e,
-                                "Write error, closing connection"
+                                "[Transport] Write error, closing connection"
                             );
                         }
                         break;
@@ -521,7 +521,7 @@ impl TcpConn {
                     warn!(
                         address = %address_i,
                         idle_for = ?elapsed,
-                        "Connection idle too long, closing"
+                        "[Transport] Connection idle too long, closing"
                     );
                     break;
                 }
@@ -568,7 +568,7 @@ impl TcpConn {
             address = %self.address,
             local = %local,
             remote = %remote,
-            "TcpConn started"
+            "[Transport] TcpConn started"
         );
         Ok(())
     }
@@ -629,7 +629,7 @@ impl TcpConn {
             node_id = %self.node_id,
             address = %self.address,
             dropped = self.dropped_count.load(Ordering::SeqCst),
-            "TcpConn closed"
+            "[Transport] TcpConn closed"
         );
     }
 

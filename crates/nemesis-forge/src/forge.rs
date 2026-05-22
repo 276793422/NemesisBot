@@ -60,7 +60,7 @@ impl Forge {
         tracing::info!(
             workspace = %workspace.display(),
             forge_dir = %forge_dir.display(),
-            "Forge instance created"
+            "[Forge] Instance created"
         );
 
         let collector = Collector::new(CollectorConfig {
@@ -116,7 +116,7 @@ impl Forge {
         {
             let mut running = self.running.lock();
             if *running {
-                tracing::warn!("Forge is already running");
+                tracing::warn!("[Forge] Already running");
                 return;
             }
             *running = true;
@@ -144,7 +144,7 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= flush_interval {
                         elapsed = 0;
-                        tracing::debug!("collector_loop: periodic flush");
+                        tracing::debug!("[Forge] collector_loop: periodic flush");
                     }
                 }
             });
@@ -166,7 +166,7 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= reflect_interval {
                         elapsed = 0;
-                        tracing::debug!("reflector_loop: periodic reflection tick");
+                        tracing::debug!("[Forge] reflector_loop: periodic reflection tick");
                     }
                 }
             });
@@ -189,7 +189,7 @@ impl Forge {
                     if elapsed >= cleanup_interval {
                         elapsed = 0;
                         tracing::debug!(
-                            "cleanup_loop: periodic cleanup tick"
+                            "[Forge] cleanup_loop: periodic cleanup tick"
                         );
                     }
                 }
@@ -197,7 +197,7 @@ impl Forge {
             self.bg_tasks.lock().push(handle);
         }
 
-        tracing::info!("Forge started with background tasks");
+        tracing::info!("[Forge] Started with background tasks");
     }
 
     /// Stop the forge subsystems.
@@ -210,7 +210,7 @@ impl Forge {
 
         // Perform a final collector flush to persist any buffered data.
         if let Err(e) = self.collector.flush().await {
-            tracing::warn!(error = %e, "Final collector flush failed during stop");
+            tracing::warn!(error = %e, "[Forge] Final collector flush failed during stop");
         }
 
         // Wait for background tasks to finish (they check the flag every 1s).
@@ -222,7 +222,7 @@ impl Forge {
             let _ = handle.await;
         }
 
-        tracing::info!("Forge stopped");
+        tracing::info!("[Forge] Stopped");
     }
 
     /// Check if forge is running.
@@ -518,7 +518,7 @@ impl Forge {
         tracing::info!(
             artifact_id = %final_artifact.id,
             name = %name,
-            "Created and registered skill artifact"
+            "[Forge] Created and registered skill artifact"
         );
 
         Ok(final_artifact)

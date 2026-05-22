@@ -201,16 +201,16 @@ impl Channel for WebhookInboundChannel {
             listen_addr = %self.config.listen_addr,
             path = %self.config.path,
             auth = !self.config.api_key.is_empty(),
-            "starting webhook inbound channel"
+            "[WebhookInboundChannel] starting webhook inbound channel"
         );
         *self.running.write() = true;
         self.base.set_enabled(true);
-        info!("Webhook inbound channel started");
+        info!("[WebhookInboundChannel] Webhook inbound channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping webhook inbound channel");
+        info!("[WebhookInboundChannel] stopping webhook inbound channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         self.pending.clear();
@@ -233,7 +233,7 @@ impl Channel for WebhookInboundChannel {
         }
 
         // No pending request, queue for testing
-        debug!(chat_id = %msg.chat_id, "webhook no pending request, queueing");
+        debug!(chat_id = %msg.chat_id, "[WebhookInboundChannel] no pending request, queueing");
         self.outbound_queue.write().push(msg);
         Ok(())
     }

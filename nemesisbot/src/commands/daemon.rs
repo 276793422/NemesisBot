@@ -95,7 +95,7 @@ pub async fn run(action: DaemonAction, local: bool) -> Result<()> {
 /// displays node information, and runs a heartbeat loop
 /// until Ctrl+C or shutdown signal.
 async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
-    info!("Starting cluster daemon (mode={})", mode);
+    info!("[Daemon] Starting cluster daemon (mode={})", mode);
 
     // --- Load cluster configuration ---
     let cluster_cfg_path = common::cluster_config_path(home);
@@ -151,7 +151,7 @@ async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
     // Start the cluster
     cluster.start();
     info!(
-        "Cluster started: node_id={}, rpc_port={}, udp_port={}",
+        "[Daemon] Cluster started: node_id={}, rpc_port={}, udp_port={}",
         cluster.node_id(),
         cluster.rpc_port(),
         cluster.udp_port()
@@ -166,17 +166,17 @@ async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
     let shutdown_tx_ctrlc = shutdown_tx.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        info!("Ctrl+C received, shutting down...");
+        info!("[Daemon] Ctrl+C received, shutting down...");
         println!("\n  Shutdown signal received, stopping daemon...");
         let _ = shutdown_tx_ctrlc.send(());
     });
 
     // --- Register basic RPC handlers (hello, ping, get_info, etc.) ---
     if let Err(e) = cluster.register_basic_handlers() {
-        warn!("Failed to register basic RPC handlers: {}", e);
+        warn!("[Daemon] Failed to register basic RPC handlers: {}", e);
         println!("  WARNING: Failed to register RPC handlers: {}", e);
     } else {
-        info!("Basic RPC handlers registered");
+        info!("[Daemon] Basic RPC handlers registered");
     }
 
     // --- Periodic tasks ---
@@ -184,7 +184,7 @@ async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
     let mut sync_interval = tokio::time::interval(Duration::from_secs(300));
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(60));
 
-    info!("Daemon loop started. Press Ctrl+C to stop.");
+    info!("[Daemon] Daemon loop started. Press Ctrl+C to stop.");
     println!("  Daemon running. Press Ctrl+C to stop.");
     println!();
 
@@ -200,7 +200,7 @@ async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
                 log_heartbeat(&cluster);
             }
             _ = shutdown_rx.recv() => {
-                info!("Shutdown signal received");
+                info!("[Daemon] Shutdown signal received");
                 break;
             }
         }
@@ -218,11 +218,11 @@ async fn run_cluster_daemon(home: &Path, mode: &str) -> Result<()> {
     ).await;
 
     if shutdown_result.is_err() {
-        warn!("Shutdown timed out after 30s, forcing exit");
+        warn!("[Daemon] Shutdown timed out after 30s, forcing exit");
         println!("  WARNING: Shutdown timed out, some resources may not have been cleaned up.");
     }
 
-    info!("Cluster daemon stopped.");
+    info!("[Daemon] Cluster daemon stopped.");
     println!("  Cluster daemon stopped.");
 
     Ok(())
@@ -238,7 +238,7 @@ fn tick_rpc_hello(cluster: &Cluster) {
     }
 
     let node_id = cluster.node_id().to_string();
-    info!("RPC ticker: calling {} online peer(s)", online_peers.len());
+    info!("[Daemon] RPC ticker: calling {} online peer(s)", online_peers.len());
 
     for peer in &online_peers {
         let peer_id = peer.base.id.clone();
@@ -250,10 +250,10 @@ fn tick_rpc_hello(cluster: &Cluster) {
         match cluster.call_with_context(&peer_id, "hello", payload) {
             Ok(response) => {
                 let resp_str = String::from_utf8_lossy(&response);
-                info!("RPC hello response from {}: {}", peer_id, resp_str);
+                info!("[Daemon] RPC hello response from {}: {}", peer_id, resp_str);
             }
             Err(e) => {
-                warn!("RPC hello failed for {}: {}", peer_id, e);
+                warn!("[Daemon] RPC hello failed for {}: {}", peer_id, e);
             }
         }
     }
@@ -263,10 +263,10 @@ fn tick_rpc_hello(cluster: &Cluster) {
 fn tick_sync_to_disk(cluster: &Cluster) {
     match cluster.sync_to_disk() {
         Ok(()) => {
-            info!("Cluster state synced to disk");
+            info!("[Daemon] Cluster state synced to disk");
         }
         Err(e) => {
-            warn!("Failed to sync cluster state to disk: {}", e);
+            warn!("[Daemon] Failed to sync cluster state to disk: {}", e);
         }
     }
 }
@@ -276,7 +276,7 @@ fn log_heartbeat(cluster: &Cluster) {
     let online_count = cluster.get_online_peers().len();
     let running = cluster.is_running();
     info!(
-        "Heartbeat: running={}, online_peers={}, node_id={}",
+        "[Daemon] Heartbeat: running={}, online_peers={}, node_id={}",
         running,
         online_count,
         cluster.node_id(),
@@ -301,7 +301,7 @@ fn log_cluster_status(home: &Path, cluster: &Cluster) -> Result<()> {
     let tasks = cluster.list_tasks();
 
     info!(
-        "Cluster status: {} static peer(s), {} online, {} active task(s)",
+        "[Daemon] Cluster status: {} static peer(s), {} online, {} active task(s)",
         static_peer_count,
         online_count,
         tasks.len(),
@@ -310,7 +310,7 @@ fn log_cluster_status(home: &Path, cluster: &Cluster) -> Result<()> {
     // Log online peer details at debug level
     for peer in &online_peers {
         info!(
-            "  Peer: {} ({}) - {} at {}",
+            "[Daemon]   Peer: {} ({}) - {} at {}",
             peer.base.name,
             peer.base.id,
             if peer.is_online() { "online" } else { "offline" },
@@ -335,7 +335,7 @@ fn load_peer_addresses(peers_path: &Path) -> Vec<String> {
                 .collect()
         }
         Err(e) => {
-            warn!("Failed to load peers.toml: {}", e);
+            warn!("[Daemon] Failed to load peers.toml: {}", e);
             Vec::new()
         }
     }

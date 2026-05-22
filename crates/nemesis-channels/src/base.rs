@@ -254,7 +254,7 @@ impl BaseChannel {
             ));
         }
         self.sync_targets.write().insert(name.to_string(), channel);
-        debug!(target = %name, "sync target added");
+        debug!(target = %name, "[Channel] sync target added");
         Ok(())
     }
 
@@ -263,7 +263,7 @@ impl BaseChannel {
     /// No-op if the target was not previously added.
     pub fn remove_sync_target(&self, name: &str) {
         self.sync_targets.write().remove(name);
-        debug!(target = %name, "sync target removed");
+        debug!(target = %name, "[Channel] sync target removed");
     }
 
     /// Sends a message to all configured sync targets.
@@ -289,7 +289,7 @@ impl BaseChannel {
             channel = %self.name,
             content_len = content.len(),
             num_targets = entries.len(),
-            "syncing to targets"
+            "[Channel] syncing to targets"
         );
 
         for (target_name, target_ch) in entries {
@@ -305,7 +305,7 @@ impl BaseChannel {
                 target = %target_name,
                 content_len = content.len(),
                 chat_id = %chat_id,
-                "sending to sync target"
+                "[Channel] sending to sync target"
             );
 
             match tokio::time::timeout(
@@ -320,14 +320,14 @@ impl BaseChannel {
                         channel = %self.name,
                         target = %target_name,
                         error = %e,
-                        "failed to sync to target"
+                        "[Channel] failed to sync to target"
                     );
                 }
                 Err(_) => {
                     warn!(
                         channel = %self.name,
                         target = %target_name,
-                        "sync to target timed out"
+                        "[Channel] sync to target timed out"
                     );
                 }
             }

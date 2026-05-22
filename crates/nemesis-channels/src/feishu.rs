@@ -373,7 +373,7 @@ impl FeishuChannel {
 
         // Check allow list
         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
-            debug!(sender_id = %sender_id, "Feishu message filtered by allow_list");
+            debug!(sender_id = %sender_id, "[FeishuChannel] message filtered by allow_list");
             return;
         }
 
@@ -436,11 +436,11 @@ impl FeishuChannel {
         info!(
             sender_id = %inbound.sender_id,
             chat_id = %inbound.chat_id,
-            "Feishu received message"
+            "[FeishuChannel] received message"
         );
 
         if let Err(e) = bus_sender.send(inbound) {
-            warn!("Feishu: failed to publish inbound message: {e}");
+            warn!("[FeishuChannel] failed to publish inbound message: {e}");
         }
     }
 
@@ -487,7 +487,7 @@ impl FeishuChannel {
                                     .map(|d| d.tenant_access_token)
                                     .unwrap_or_default()
                             } else {
-                                warn!(code = body.code, "Feishu auth error, backing off");
+                                warn!(code = body.code, "[FeishuChannel] auth error, backing off");
                                 tokio::select! {
                                     _ = tokio::time::sleep(backoff) => {}
                                     _ = &mut cancel_rx => break,
@@ -500,7 +500,7 @@ impl FeishuChannel {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Feishu auth request failed, backing off");
+                        warn!(error = %e, "[FeishuChannel] auth request failed, backing off");
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
                             _ = &mut cancel_rx => break,
@@ -533,7 +533,7 @@ impl FeishuChannel {
                                         .unwrap_or(DEFAULT_WS_PING_INTERVAL_SECS);
                                     (url, pi)
                                 } else {
-                                    warn!("Feishu ws endpoint: missing data, backing off");
+                                    warn!("[FeishuChannel] ws endpoint: missing data, backing off");
                                     tokio::select! {
                                         _ = tokio::time::sleep(backoff) => {}
                                         _ = &mut cancel_rx => break,
@@ -542,7 +542,7 @@ impl FeishuChannel {
                                     continue;
                                 }
                             } else {
-                                warn!(code = body.code, "Feishu ws endpoint error, backing off");
+                                warn!(code = body.code, "[FeishuChannel] ws endpoint error, backing off");
                                 tokio::select! {
                                     _ = tokio::time::sleep(backoff) => {}
                                     _ = &mut cancel_rx => break,
@@ -551,7 +551,7 @@ impl FeishuChannel {
                                 continue;
                             }
                         } else {
-                            warn!("Feishu ws endpoint parse failed, backing off");
+                            warn!("[FeishuChannel] ws endpoint parse failed, backing off");
                             tokio::select! {
                                 _ = tokio::time::sleep(backoff) => {}
                                 _ = &mut cancel_rx => break,
@@ -561,7 +561,7 @@ impl FeishuChannel {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Feishu ws endpoint request failed, backing off");
+                        warn!(error = %e, "[FeishuChannel] ws endpoint request failed, backing off");
                         tokio::select! {
                             _ = tokio::time::sleep(backoff) => {}
                             _ = &mut cancel_rx => break,
@@ -572,7 +572,7 @@ impl FeishuChannel {
                 };
 
                 if ws_url.is_empty() {
-                    warn!("Feishu ws endpoint returned empty URL, backing off");
+                    warn!("[FeishuChannel] ws endpoint returned empty URL, backing off");
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = &mut cancel_rx => break,
@@ -581,12 +581,12 @@ impl FeishuChannel {
                     continue;
                 }
 
-                info!(url = %ws_url, "Feishu connecting to WebSocket endpoint");
+                info!(url = %ws_url, "[FeishuChannel] connecting to WebSocket endpoint");
 
                 // Step 3: Connect to WebSocket
                 match connect_async(&ws_url).await {
                     Ok((ws_stream, _)) => {
-                        info!("Feishu WebSocket connected successfully");
+                        info!("[FeishuChannel] WebSocket connected successfully");
                         backoff = INITIAL_BACKOFF;
 
                         let (mut write, mut read) = ws_stream.split();
@@ -637,19 +637,19 @@ impl FeishuChannel {
                                             let _ = write.send(Message::Pong(payload)).await;
                                         }
                                         Some(Ok(Message::Close(frame))) => {
-                                            info!(frame = ?frame, "Feishu WebSocket closed by server");
+                                            info!(frame = ?frame, "[FeishuChannel] WebSocket closed by server");
                                             break;
                                         }
                                         Some(Ok(Message::Pong(_))) => {
-                                            debug!("Feishu WebSocket pong received");
+                                            debug!("[FeishuChannel] WebSocket pong received");
                                         }
                                         Some(Ok(_)) => {}
                                         Some(Err(e)) => {
-                                            warn!(error = %e, "Feishu WebSocket stream error");
+                                            warn!(error = %e, "[FeishuChannel] WebSocket stream error");
                                             break;
                                         }
                                         None => {
-                                            info!("Feishu WebSocket stream ended");
+                                            info!("[FeishuChannel] WebSocket stream ended");
                                             break;
                                         }
                                     }
@@ -657,12 +657,12 @@ impl FeishuChannel {
                                 _ = ping_interval_timer.tick() => {
                                     // Send a text ping (Feishu accepts text-based pings)
                                     if write.send(Message::Ping(vec![].into())).await.is_err() {
-                                        warn!("Feishu WebSocket ping failed");
+                                        warn!("[FeishuChannel] WebSocket ping failed");
                                         break;
                                     }
                                 }
                                 _ = &mut cancel_rx => {
-                                    info!("Feishu WebSocket receive loop shutting down");
+                                    info!("[FeishuChannel] WebSocket receive loop shutting down");
                                     let _ = write.close().await;
                                     return;
                                 }
@@ -670,7 +670,7 @@ impl FeishuChannel {
                         }
                     }
                     Err(e) => {
-                        warn!(error = %e, "Feishu WebSocket connect failed, backing off");
+                        warn!(error = %e, "[FeishuChannel] WebSocket connect failed, backing off");
                     }
                 }
 
@@ -690,7 +690,7 @@ impl FeishuChannel {
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
 
-            info!("Feishu receive loop stopped");
+            info!("[FeishuChannel] receive loop stopped");
         });
     }
 }
@@ -734,25 +734,25 @@ impl Channel for FeishuChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Feishu channel (WebSocket mode)");
+        info!("[FeishuChannel] starting Feishu channel (WebSocket mode)");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
         // Try to obtain access token
         match self.refresh_token().await {
-            Ok(token) => info!(token_len = token.len(), "Feishu authenticated"),
-            Err(e) => warn!(error = %e, "Feishu auth failed (will retry in receive loop)"),
+            Ok(token) => info!(token_len = token.len(), "[FeishuChannel] authenticated"),
+            Err(e) => warn!(error = %e, "[FeishuChannel] auth failed (will retry in receive loop)"),
         }
 
         // Start the WebSocket receive loop
         self.spawn_receive_loop();
 
-        info!("Feishu channel started");
+        info!("[FeishuChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Feishu channel");
+        info!("[FeishuChannel] stopping Feishu channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
 
@@ -761,7 +761,7 @@ impl Channel for FeishuChannel {
         }
 
         *self.access_token.write() = String::new();
-        info!("Feishu channel stopped");
+        info!("[FeishuChannel] channel stopped");
         Ok(())
     }
 
@@ -777,7 +777,7 @@ impl Channel for FeishuChannel {
         }
 
         self.base.record_sent();
-        debug!(chat_id = %msg.chat_id, "Feishu sending message");
+        debug!(chat_id = %msg.chat_id, "[FeishuChannel] sending message");
         self.send_text_message(&msg.chat_id, &msg.content).await
     }
 }

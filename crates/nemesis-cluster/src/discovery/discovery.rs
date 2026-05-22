@@ -393,14 +393,14 @@ impl DiscoveryService {
 
             // Ignore expired messages
             if msg.is_expired() {
-                tracing::debug!(node_id = %msg.node_id, "Ignoring expired discovery message");
+                tracing::debug!(node_id = %msg.node_id, "[Discovery] Ignoring expired discovery message");
                 return;
             }
 
             tracing::info!(
                 msg_type = %msg.msg_type,
                 node_id = %msg.node_id,
-                "Received discovery message"
+                "[Discovery] Received discovery message"
             );
 
             match msg.msg_type {
@@ -415,16 +415,16 @@ impl DiscoveryService {
                         &msg.tags,
                         &msg.capabilities,
                     );
-                    tracing::info!(node_id = %msg.node_id, "Node discovered/updated");
+                    tracing::info!(node_id = %msg.node_id, "[Discovery] Node discovered/updated");
                     if let Err(e) = cluster.sync_to_disk() {
-                        tracing::error!(error = %e, "Failed to sync config");
+                        tracing::error!(error = %e, "[Discovery] Failed to sync config");
                     }
                 }
                 super::message::DiscoveryMessageType::Bye => {
                     cluster.handle_node_offline(&msg.node_id, "node shutdown");
-                    tracing::info!(node_id = %msg.node_id, "Node marked offline (bye)");
+                    tracing::info!(node_id = %msg.node_id, "[Discovery] Node marked offline (bye)");
                     if let Err(e) = cluster.sync_to_disk() {
-                        tracing::error!(error = %e, "Failed to sync config");
+                        tracing::error!(error = %e, "[Discovery] Failed to sync config");
                     }
                 }
             }
@@ -433,7 +433,7 @@ impl DiscoveryService {
         // Start listener
         self.listener.start()?;
 
-        tracing::info!(port = %self.listener.port(), "Discovery started");
+        tracing::info!(port = %self.listener.port(), "[Discovery] Discovery started");
 
         // Send initial announce
         self.send_announce();
@@ -489,11 +489,11 @@ impl DiscoveryService {
         // Broadcast bye message (best-effort)
         let bye_msg = DiscoveryMessage::new_bye(self.cluster.node_id());
         if let Err(e) = self.listener.broadcast(&bye_msg) {
-            tracing::error!(error = %e, "Failed to broadcast bye message");
+            tracing::error!(error = %e, "[Discovery] Failed to broadcast bye message");
         }
 
         self.listener.stop()?;
-        tracing::info!("Discovery stopped");
+        tracing::info!("[Discovery] Discovery stopped");
         Ok(())
     }
 
@@ -525,7 +525,7 @@ impl DiscoveryService {
 fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) {
     let addresses = cluster.all_local_ips();
     if addresses.is_empty() {
-        tracing::error!("No local IP addresses available for broadcast");
+        tracing::error!("[Discovery] No local IP addresses available for broadcast");
         return;
     }
 
@@ -541,7 +541,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
     );
 
     if let Err(e) = listener.broadcast(&msg) {
-        tracing::error!(error = %e, "Failed to send announce");
+        tracing::error!(error = %e, "[Discovery] Failed to send announce");
     }
 }
 
@@ -555,7 +555,7 @@ fn send_announce_with(
 ) {
     let addresses = cluster.all_local_ips();
     if addresses.is_empty() {
-        tracing::error!("No local IP addresses available for broadcast");
+        tracing::error!("[Discovery] No local IP addresses available for broadcast");
         return;
     }
 
@@ -573,7 +573,7 @@ fn send_announce_with(
     let data = match msg.to_bytes() {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to marshal announce");
+            tracing::error!(error = %e, "[Discovery] Failed to marshal announce");
             return;
         }
     };
@@ -582,7 +582,7 @@ fn send_announce_with(
         match crate::discovery::crypto::encrypt_data(&key, &data) {
             Ok(encrypted) => encrypted,
             Err(_) => {
-                tracing::error!("Failed to encrypt announce");
+                tracing::error!("[Discovery] Failed to encrypt announce");
                 return;
             }
         }
@@ -600,7 +600,7 @@ fn send_announce_with(
     tracing::debug!(
         node_id = %cluster.node_id(),
         rpc_port = %cluster.rpc_port(),
-        "Announce sent"
+        "[Discovery] Announce sent"
     );
 }
 

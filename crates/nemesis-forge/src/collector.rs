@@ -110,7 +110,7 @@ impl Collector {
         // does not lose data; re-loading will deduplicate anyway).
         if let Some(ref path) = self.persistence_path {
             if let Err(e) = Self::append_jsonl(path, &ce).await {
-                tracing::warn!(path = %path.display(), error = %e, "Failed to persist experience");
+                tracing::warn!(path = %path.display(), error = %e, "[Collector] Failed to persist experience");
             }
         }
 
@@ -118,7 +118,7 @@ impl Collector {
         {
             let mut exps = self.experiences.lock();
             if exps.len() >= self.config.max_size {
-                tracing::debug!("Collector at max capacity, evicting oldest");
+                tracing::debug!("[Collector] At max capacity, evicting oldest");
                 if let Some(removed) = exps.first() {
                     self.seen_hashes.lock().remove(&removed.dedup_hash);
                 }
@@ -266,13 +266,13 @@ impl Collector {
                 last_seen: agg.last_seen.clone(),
             };
             if let Err(e) = Self::append_aggregated(&path, &record).await {
-                tracing::warn!(error = %e, "Failed to flush aggregated experience");
+                tracing::warn!(error = %e, "[Collector] Failed to flush aggregated experience");
             } else {
                 count += 1;
             }
         }
 
-        tracing::info!(count, "Flushed experience patterns");
+        tracing::info!(count, "[Collector] Flushed experience patterns");
         Ok(count)
     }
 
@@ -426,7 +426,7 @@ impl ForgePlugin {
     /// Start the plugin — begins processing the input channel.
     pub async fn start(&self) {
         *self.running.lock() = true;
-        tracing::info!("ForgePlugin started");
+        tracing::info!("[Collector] ForgePlugin started");
     }
 
     /// Stop the plugin.
@@ -489,7 +489,7 @@ impl ForgePlugin {
 
         // Try to send to async channel, fall back to direct record if full
         if self.input_tx.try_send(experience.clone()).is_err() {
-            tracing::debug!("Input channel full, dropping experience from async channel");
+            tracing::debug!("[Collector] Input channel full, dropping experience from async channel");
         }
 
         // Immediately update in-memory aggregation (matching Go's ForgePlugin.Execute

@@ -111,7 +111,7 @@ impl LlmProxyHandler {
             node_id = %self.node_id,
             model = model,
             message_count = messages_arr.len(),
-            "Processing LLM proxy request"
+            "[LlmHandler] Processing LLM proxy request"
         );
 
         // 4. Invoke provider if available
@@ -122,7 +122,7 @@ impl LlmProxyHandler {
                         node_id = %self.node_id,
                         model = model,
                         response_len = content.len(),
-                        "LLM proxy request completed"
+                        "[LlmHandler] LLM proxy request completed"
                     );
 
                     HandleResult {
@@ -140,7 +140,7 @@ impl LlmProxyHandler {
                         node_id = %self.node_id,
                         model = model,
                         error = %e,
-                        "LLM proxy request failed"
+                        "[LlmHandler] LLM proxy request failed"
                     );
 
                     HandleResult {
@@ -154,7 +154,7 @@ impl LlmProxyHandler {
             // No provider configured - return validation-only response
             tracing::warn!(
                 node_id = %self.node_id,
-                "No LLM provider configured, returning validation-only response"
+                "[LlmHandler] No LLM provider configured, returning validation-only response"
             );
 
             HandleResult {

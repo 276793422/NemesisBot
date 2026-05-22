@@ -66,7 +66,7 @@ pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
             if disk_static.exists() && disk_static.is_dir() {
                 tracing::info!(
                     path = %disk_static.display(),
-                    "Serving static files from disk (development override)"
+                    "[Main] Serving static files from disk (development override)"
                 );
                 return Arc::new(nemesis_web::DirectoryStaticFiles::new(disk_static));
             }
@@ -74,7 +74,7 @@ pub fn resolve_static_files() -> Arc<dyn nemesis_web::StaticFiles> {
     }
 
     // Production: serve directly from embedded memory
-    tracing::info!("Serving static files from embedded memory (zero disk IO)");
+    tracing::info!("[Main] Serving static files from embedded memory (zero disk IO)");
     Arc::new(EmbeddedStaticFiles::new(&EMBEDDED_STATIC))
 }
 

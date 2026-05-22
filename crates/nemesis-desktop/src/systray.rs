@@ -335,7 +335,7 @@ impl PlatformTray {
             Ok(el) => el,
             Err(e) => {
                 eprintln!("[tray] ERROR: Failed to create event loop: {}", e);
-                tracing::error!("Failed to create tray event loop: {}", e);
+                tracing::error!("[Desktop] Failed to create tray event loop: {}", e);
                 return;
             }
         };
@@ -356,7 +356,7 @@ impl PlatformTray {
             Ok(ic) => ic,
             Err(e) => {
                 eprintln!("[tray] ERROR: Failed to load tray icon: {}", e);
-                tracing::error!("Failed to load tray icon: {}", e);
+                tracing::error!("[Desktop] Failed to load tray icon: {}", e);
                 return;
             }
         };
@@ -395,13 +395,13 @@ impl PlatformTray {
             Ok(ti) => ti,
             Err(e) => {
                 eprintln!("[tray] ERROR: Failed to build tray icon: {:?}", e);
-                tracing::error!("Failed to build tray icon: {:?}", e);
+                tracing::error!("[Desktop] Failed to build tray icon: {:?}", e);
                 return;
             }
         };
 
         eprintln!("[tray] System tray icon created successfully");
-        tracing::info!("System tray icon created and running");
+        tracing::info!("[Desktop] System tray icon created and running");
 
         // Double-click detection state for non-Windows platforms (400ms timer)
         #[cfg(not(target_os = "windows"))]

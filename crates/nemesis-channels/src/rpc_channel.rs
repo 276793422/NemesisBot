@@ -106,7 +106,7 @@ impl RPCChannel {
         }
 
         self.base.record_received();
-        debug!(correlation_id = %cid, "registered pending RPC request");
+        debug!(correlation_id = %cid, "[RPCChannel] registered pending RPC request");
 
         map.insert(
             cid,
@@ -150,7 +150,7 @@ impl RPCChannel {
         debug!(
             correlation_id = %cid,
             timeout_secs = timeout.as_secs(),
-            "registered pending RPC request with custom timeout"
+            "[RPCChannel] registered pending RPC request with custom timeout"
         );
 
         map.insert(
@@ -196,7 +196,7 @@ impl RPCChannel {
         });
 
         self.tasks.write().push(handle);
-        debug!("RPC channel cleanup task started");
+        debug!("[RPCChannel] cleanup task started");
     }
 
     /// Removes expired pending requests.
@@ -223,14 +223,14 @@ impl RPCChannel {
         for id in &expired {
             if let Some(pending) = map.remove(id) {
                 // Dropping the sender signals RecvError to the waiter
-                debug!(correlation_id = %id, "cleaned up expired undelivered request");
+                debug!(correlation_id = %id, "[RPCChannel] cleaned up expired undelivered request");
                 let _ = pending.tx; // explicitly drop
             }
         }
 
         for id in &delivered {
             if map.remove(id).is_some() {
-                debug!(correlation_id = %id, "cleaned up delivered request");
+                debug!(correlation_id = %id, "[RPCChannel] cleaned up delivered request");
             }
         }
 
@@ -238,7 +238,7 @@ impl RPCChannel {
             debug!(
                 expired = expired.len(),
                 delivered = delivered.len(),
-                "RPC cleanup sweep completed"
+                "[RPCChannel] cleanup sweep completed"
             );
         }
     }
@@ -298,14 +298,14 @@ impl Channel for RPCChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        debug!("starting RPC channel");
+        debug!("[RPCChannel] starting");
         self.base.set_enabled(true);
-        info!("RPC channel started");
+        info!("[RPCChannel] started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        debug!("stopping RPC channel");
+        debug!("[RPCChannel] stopping");
         self.base.set_enabled(false);
 
         // Abort background tasks
@@ -315,11 +315,11 @@ impl Channel for RPCChannel {
         let mut map = self.pending.write();
         let count = map.len();
         for (id, pending) in map.drain() {
-            debug!(correlation_id = %id, "cleared pending request on stop");
+            debug!(correlation_id = %id, "[RPCChannel] cleared pending request on stop");
             let _ = pending.tx; // explicitly drop
         }
 
-        info!(pending_cleared = count, "RPC channel stopped");
+        info!(pending_cleared = count, "[RPCChannel] stopped");
         Ok(())
     }
 
@@ -331,7 +331,7 @@ impl Channel for RPCChannel {
             warn!(
                 msg_channel = %msg.channel,
                 ch_name = %self.name(),
-                "channel mismatch - message not for this channel"
+                "[RPCChannel] channel mismatch - message not for this channel"
             );
             return Ok(());
         }
@@ -343,7 +343,7 @@ impl Channel for RPCChannel {
                 debug!(
                     correlation_id = %correlation_id,
                     content_len = response_content.len(),
-                    "routing RPC response to pending request"
+                    "[RPCChannel] routing response to pending request"
                 );
 
                 // Send the actual content (without prefix) to the waiter
@@ -363,14 +363,14 @@ impl Channel for RPCChannel {
                     Ok(()) => {
                         debug!(
                             correlation_id = %correlation_id,
-                            "response delivered successfully via Send"
+                            "[RPCChannel] response delivered successfully"
                         );
                         pending.delivered = true;
                     }
                     Err(_) => {
                         warn!(
                             correlation_id = %correlation_id,
-                            "failed to deliver response (receiver dropped)"
+                            "[RPCChannel] failed to deliver response (receiver dropped)"
                         );
                     }
                 }
@@ -378,17 +378,17 @@ impl Channel for RPCChannel {
                 warn!(
                     correlation_id = %correlation_id,
                     pending_count = map.len(),
-                    "no pending request found for RPC response"
+                    "[RPCChannel] no pending request found for RPC response"
                 );
                 // Log all pending IDs for debugging
                 let ids: Vec<&String> = map.keys().collect();
                 if !ids.is_empty() {
-                    debug!(pending_ids = ?ids, "pending correlation IDs");
+                    debug!(pending_ids = ?ids, "[RPCChannel] pending correlation IDs");
                 }
             }
         } else {
             // No correlation ID prefix -- nothing to route.
-            debug!("RPC channel received outbound message without correlation ID prefix");
+            debug!("[RPCChannel] received outbound message without correlation ID prefix");
         }
 
         Ok(())

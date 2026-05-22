@@ -357,7 +357,7 @@ impl Channel for OneBotChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!(ws_url = %self.config.ws_url, "starting OneBot channel");
+        info!(ws_url = %self.config.ws_url, "[OneBotChannel] starting OneBot channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -385,7 +385,7 @@ impl Channel for OneBotChannel {
                 let mut request = match tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(&ws_url) {
                     Ok(r) => r,
                     Err(e) => {
-                        warn!("OneBot: failed to build WS request: {e}");
+                        warn!("[OneBotChannel] failed to build WS request: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
@@ -401,14 +401,14 @@ impl Channel for OneBotChannel {
                 let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
                     Ok(s) => s,
                     Err(e) => {
-                        warn!("OneBot: WS connect failed: {e}");
+                        warn!("[OneBotChannel] WS connect failed: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
                     }
                 };
 
-                info!("OneBot: connected to {}", ws_url);
+                info!("[OneBotChannel] connected to {}", ws_url);
                 backoff = std::time::Duration::from_secs(1);
 
                 let (sink, mut stream) = ws_stream.split();
@@ -429,11 +429,11 @@ impl Channel for OneBotChannel {
                     ).await {
                         Ok(Some(Ok(m))) => m,
                         Ok(Some(Err(e))) => {
-                            warn!("OneBot: WS read error: {e}");
+                            warn!("[OneBotChannel] WS read error: {e}");
                             break;
                         }
                         Ok(None) => {
-                            info!("OneBot: WebSocket stream ended");
+                            info!("[OneBotChannel] WebSocket stream ended");
                             break;
                         }
                         Err(_) => {
@@ -446,7 +446,7 @@ impl Channel for OneBotChannel {
                         Message::Text(t) => t,
                         Message::Ping(_) | Message::Pong(_) => continue,
                         Message::Close(_) => {
-                            info!("OneBot: WebSocket closed");
+                            info!("[OneBotChannel] WebSocket closed");
                             break;
                         }
                         _ => continue,
@@ -574,22 +574,22 @@ impl Channel for OneBotChannel {
 
                 // Reconnect
                 if reconnect_interval > 0 {
-                    info!("OneBot: reconnecting in {}s", reconnect_interval);
+                    info!("[OneBotChannel] reconnecting in {}s", reconnect_interval);
                     tokio::time::sleep(std::time::Duration::from_secs(reconnect_interval)).await;
                 } else {
                     break;
                 }
             }
 
-            info!("OneBot receive loop stopped");
+            info!("[OneBotChannel] receive loop stopped");
         });
 
-        info!("OneBot channel started");
+        info!("[OneBotChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping OneBot channel");
+        info!("[OneBotChannel] stopping OneBot channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())
@@ -623,7 +623,7 @@ impl Channel for OneBotChannel {
         let json = serde_json::to_string(&request)
             .map_err(|e| NemesisError::Channel(format!("OneBot serialize failed: {e}")))?;
 
-        debug!(chat_id = %msg.chat_id, "OneBot sending message");
+        debug!(chat_id = %msg.chat_id, "[OneBotChannel] sending message");
 
         // Send via WebSocket
         let mut ws_guard = self.ws_sink.write().await;

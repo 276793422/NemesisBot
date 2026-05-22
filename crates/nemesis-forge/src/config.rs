@@ -459,7 +459,7 @@ pub fn load_forge_config(path: &Path) -> ForgeConfig {
             match serde_json::from_str::<ForgeConfig>(&data) {
                 Ok(loaded) => config = loaded,
                 Err(e) => {
-                    tracing::warn!("Failed to parse forge config: {}", e);
+                    tracing::warn!("[Config] Failed to parse forge config: {}", e);
                 }
             }
             config

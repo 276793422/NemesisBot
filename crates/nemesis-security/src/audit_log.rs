@@ -113,7 +113,7 @@ impl AuditLogger {
                 danger = danger_level,
                 reason = reason,
                 policy = policy_rule,
-                "Security audit event"
+                "[Security] Security audit event"
             );
         } else {
             tracing::info!(
@@ -126,7 +126,7 @@ impl AuditLogger {
                 danger = danger_level,
                 reason = reason,
                 policy = policy_rule,
-                "Security audit event"
+                "[Security] Security audit event"
             );
         }
 

@@ -250,7 +250,7 @@ impl DiscordChannel {
             .map_err(|e| NemesisError::Channel(format!("discord typing failed: {e}")))?;
 
         if resp.status().as_u16() != 204 && !resp.status().is_success() {
-            debug!("typing indicator returned non-success status");
+            debug!("[DiscordChannel] typing indicator returned non-success status");
         }
 
         Ok(())
@@ -348,7 +348,7 @@ impl DiscordChannel {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        error!("Discord: failed to get gateway URL: {e}");
+                        error!("[DiscordChannel] failed to get gateway URL: {e}");
                         return;
                     }
                 }
@@ -359,7 +359,7 @@ impl DiscordChannel {
                 match resp["url"].as_str() {
                     Some(u) => format!("{u}/?v=10&encoding=json"),
                     None => {
-                        error!("Discord: missing URL in gateway response");
+                        error!("[DiscordChannel] missing URL in gateway response");
                         return;
                     }
                 }
@@ -373,13 +373,13 @@ impl DiscordChannel {
                     break;
                 }
 
-                info!("Connecting to Discord gateway...");
+                info!("[DiscordChannel] connecting to gateway...");
 
                 let ws_result = tokio_tungstenite::connect_async(&connect_url).await;
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {
-                        warn!("Discord gateway connection failed: {e}, retrying in {backoff:?}");
+                        warn!("[DiscordChannel] gateway connection failed: {e}, retrying in {backoff:?}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -387,7 +387,7 @@ impl DiscordChannel {
                 };
 
                 backoff = INITIAL_BACKOFF;
-                info!("Discord gateway connected");
+                info!("[DiscordChannel] gateway connected");
 
                 let (ws_tx_raw, mut ws_rx) = ws_stream.split();
                 let ws_tx = Arc::new(tokio::sync::Mutex::new(ws_tx_raw));
@@ -399,11 +399,11 @@ impl DiscordChannel {
                     let msg = match ws_rx.next().await {
                         Some(Ok(m)) => m,
                         Some(Err(e)) => {
-                            warn!("Discord WebSocket error: {e}");
+                            warn!("[DiscordChannel] WebSocket error: {e}");
                             break 'inner true;
                         }
                         None => {
-                            info!("Discord WebSocket closed");
+                            info!("[DiscordChannel] WebSocket closed");
                             break 'inner true;
                         }
                     };
@@ -411,7 +411,7 @@ impl DiscordChannel {
                     let text = match msg {
                         tokio_tungstenite::tungstenite::Message::Text(t) => t,
                         tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Discord gateway closed by server");
+                            info!("[DiscordChannel] gateway closed by server");
                             break 'inner true;
                         }
                         _ => continue,
@@ -420,7 +420,7 @@ impl DiscordChannel {
                     let payload: serde_json::Value = match serde_json::from_str(&text) {
                         Ok(v) => v,
                         Err(e) => {
-                            warn!("Discord: failed to parse gateway message: {e}");
+                            warn!("[DiscordChannel] failed to parse gateway message: {e}");
                             continue;
                         }
                     };
@@ -436,7 +436,7 @@ impl DiscordChannel {
                         opcode::HELLO => {
                             let interval =
                                 payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
-                            debug!("Discord HELLO: heartbeat_interval={interval}ms");
+                            debug!("[DiscordChannel] HELLO: heartbeat_interval={interval}ms");
 
                             // Spawn heartbeat task
                             if let Some(h) = heartbeat_handle.take() {
@@ -458,7 +458,7 @@ impl DiscordChannel {
                                     ticker.tick().await;
 
                                     if !hb_acked.swap(false, Ordering::Relaxed) {
-                                        warn!("Discord: heartbeat not ACKed, forcing reconnect");
+                                        warn!("[DiscordChannel] heartbeat not ACKed, forcing reconnect");
                                         let _ = hb_sink.lock().await.close().await;
                                         return;
                                     }
@@ -468,7 +468,7 @@ impl DiscordChannel {
                                     let text = match serde_json::to_string(&hb_payload) {
                                         Ok(s) => s,
                                         Err(e) => {
-                                            error!("Discord: heartbeat serialize failed: {e}");
+                                            error!("[DiscordChannel] heartbeat serialize failed: {e}");
                                             return;
                                         }
                                     };
@@ -481,7 +481,7 @@ impl DiscordChannel {
                                     {
                                         return;
                                     }
-                                    debug!("Discord heartbeat sent (seq={:?})", seq);
+                                    debug!("[DiscordChannel] heartbeat sent (seq={:?})", seq);
                                 }
                             }));
 
@@ -507,7 +507,7 @@ impl DiscordChannel {
                                 ))
                                 .await
                             {
-                                error!("Discord: failed to send IDENTIFY: {e}");
+                                error!("[DiscordChannel] failed to send IDENTIFY: {e}");
                                 break 'inner true;
                             }
                         }
@@ -533,7 +533,7 @@ impl DiscordChannel {
                                         *resume_url_store.write().await = Some(resume_url);
                                     }
 
-                                    info!("Discord bot ready: {username}");
+                                    info!("[DiscordChannel] bot ready: {username}");
                                 }
 
                                 "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
@@ -545,23 +545,23 @@ impl DiscordChannel {
                                     .await
                                     {
                                         debug!(
-                                            "Discord {} from {} in channel {}",
+                                            "[DiscordChannel] {} from {} in channel {}",
                                             event_name,
                                             inbound.sender_id,
                                             inbound.chat_id
                                         );
                                         if bus_sender.send(inbound).is_err() {
-                                            warn!("Discord: failed to publish inbound message (no receivers)");
+                                            warn!("[DiscordChannel] failed to publish inbound message (no receivers)");
                                         }
                                     }
                                 }
 
                                 "RESUMED" => {
-                                    info!("Discord session resumed successfully");
+                                    info!("[DiscordChannel] session resumed successfully");
                                 }
 
                                 _ => {
-                                    debug!("Discord event: {event_name}");
+                                    debug!("[DiscordChannel] event: {event_name}");
                                 }
                             }
                         }
@@ -580,12 +580,12 @@ impl DiscordChannel {
                         }
 
                         opcode::HEARTBEAT_ACK => {
-                            debug!("Discord heartbeat ACK received");
+                            debug!("[DiscordChannel] heartbeat ACK received");
                             heartbeat_acked.store(true, Ordering::Relaxed);
                         }
 
                         opcode::RECONNECT => {
-                            info!("Discord: server requested reconnect");
+                            info!("[DiscordChannel] server requested reconnect");
                             break 'inner true;
                         }
 
@@ -599,7 +599,7 @@ impl DiscordChannel {
                         }
 
                         _ => {
-                            debug!("Discord: unknown opcode {op}");
+                            debug!("[DiscordChannel] unknown opcode {op}");
                         }
                     }
                 };
@@ -618,12 +618,12 @@ impl DiscordChannel {
                     connect_url = format!("{url}/?v=10&encoding=json");
                 }
 
-                warn!("Discord: reconnecting in {backoff:?}");
+                warn!("[DiscordChannel] reconnecting in {backoff:?}");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
 
-            info!("Discord gateway loop stopped");
+            info!("[DiscordChannel] gateway loop stopped");
         });
     }
 
@@ -650,7 +650,7 @@ impl DiscordChannel {
 
         // Filter by allowed users
         if !allow_from.is_empty() && !allow_from.iter().any(|u| u == author_id) {
-            debug!("Discord: ignoring message from unlisted user {author_id}");
+            debug!("[DiscordChannel] ignoring message from unlisted user {author_id}");
             return None;
         }
 
@@ -710,19 +710,19 @@ impl Channel for DiscordChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Discord bot");
+        info!("[DiscordChannel] starting bot");
 
         // Start the WebSocket gateway receive loop
         self.start_gateway_loop();
 
         *self.running.write() = true;
         self.base.set_enabled(true);
-        info!("Discord bot connected");
+        info!("[DiscordChannel] bot connected");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Discord bot");
+        info!("[DiscordChannel] stopping bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
 

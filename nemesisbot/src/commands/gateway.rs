@@ -97,7 +97,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         // allowing the operation without user confirmation is unsafe.
         if !plugin_ui_dll_exists() {
             warn!(
-                "Approval rejected: plugin-ui.dll not found (operation={}, target={}, risk={}). \
+                "[Gateway] Approval rejected: plugin-ui.dll not found (operation={}, target={}, risk={}). \
                  Cannot show approval popup — denying by default.",
                 operation, target, risk_level
             );
@@ -117,7 +117,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         });
 
         info!(
-            "Requesting approval popup: operation={}, target={}, risk={}",
+            "[Gateway] Requesting approval popup: operation={}, target={}, risk={}",
             operation, target, risk_level
         );
 
@@ -151,15 +151,15 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
                 let action = value.get("action")
                     .and_then(|v| v.as_str())
                     .unwrap_or("rejected");
-                info!("Approval result: action={} for request_id={}", action, request_id);
+                info!("[Gateway] Approval result: action={} for request_id={}", action, request_id);
                 Ok(action == "approved")
             }
             Ok(Err(e)) => {
-                warn!("Approval channel error: {}", e);
+                warn!("[Gateway] Approval channel error: {}", e);
                 Ok(false)
             }
             Err(_) => {
-                warn!("Approval timeout after {}s", timeout_secs);
+                warn!("[Gateway] Approval timeout after {}s", timeout_secs);
                 Ok(false) // timeout = rejected
             }
         }
@@ -287,14 +287,14 @@ fn load_security_rules(
     use nemesis_security::types::{OperationType, SecurityRule};
 
     if !config_path.exists() {
-        info!("Security config file not found: {}, using defaults", config_path.display());
+        info!("[Gateway] Security config file not found: {}, using defaults", config_path.display());
         return;
     }
 
     let data = match std::fs::read_to_string(config_path) {
         Ok(d) => d,
         Err(e) => {
-            warn!("Failed to read security config: {}", e);
+            warn!("[Gateway] Failed to read security config: {}", e);
             return;
         }
     };
@@ -302,7 +302,7 @@ fn load_security_rules(
     let config: serde_json::Value = match serde_json::from_str(&data) {
         Ok(v) => v,
         Err(e) => {
-            warn!("Failed to parse security config JSON: {}", e);
+            warn!("[Gateway] Failed to parse security config JSON: {}", e);
             return;
         }
     };
@@ -310,7 +310,7 @@ fn load_security_rules(
     // Set default_action
     if let Some(action) = config.get("default_action").and_then(|v| v.as_str()) {
         plugin.auditor().set_default_action(action);
-        info!("Security default_action: {}", action);
+        info!("[Gateway] Security default_action: {}", action);
     }
 
     // Helper: parse rules from JSON array of {pattern, action}
@@ -344,7 +344,7 @@ fn load_security_rules(
             combined.extend(append_rules);
             plugin.set_rules(OperationType::FileWrite, combined);
         }
-        info!("Security file_rules loaded");
+        info!("[Gateway] Security file_rules loaded");
     }
 
     // Dir rules
@@ -356,7 +356,7 @@ fn load_security_rules(
         plugin.set_rules(OperationType::DirRead, read_rules);
         plugin.set_rules(OperationType::DirCreate, create_rules);
         plugin.set_rules(OperationType::DirDelete, delete_rules);
-        info!("Security dir_rules loaded");
+        info!("[Gateway] Security dir_rules loaded");
     }
 
     // Process rules
@@ -370,7 +370,7 @@ fn load_security_rules(
         plugin.set_rules(OperationType::ProcessSpawn, spawn_rules);
         plugin.set_rules(OperationType::ProcessKill, kill_rules);
         plugin.set_rules(OperationType::ProcessSuspend, suspend_rules);
-        info!("Security process_rules loaded");
+        info!("[Gateway] Security process_rules loaded");
     }
 
     // Network rules
@@ -382,7 +382,7 @@ fn load_security_rules(
         plugin.set_rules(OperationType::NetworkRequest, request_rules);
         plugin.set_rules(OperationType::NetworkDownload, download_rules);
         plugin.set_rules(OperationType::NetworkUpload, upload_rules);
-        info!("Security network_rules loaded");
+        info!("[Gateway] Security network_rules loaded");
     }
 
     // Hardware rules
@@ -394,7 +394,7 @@ fn load_security_rules(
         plugin.set_rules(OperationType::HardwareI2C, i2c_rules);
         plugin.set_rules(OperationType::HardwareSPI, spi_rules);
         plugin.set_rules(OperationType::HardwareGPIO, gpio_rules);
-        info!("Security hardware_rules loaded");
+        info!("[Gateway] Security hardware_rules loaded");
     }
 
     // Registry rules
@@ -406,10 +406,10 @@ fn load_security_rules(
         plugin.set_rules(OperationType::RegistryRead, read_rules);
         plugin.set_rules(OperationType::RegistryWrite, write_rules);
         plugin.set_rules(OperationType::RegistryDelete, delete_rules);
-        info!("Security registry_rules loaded");
+        info!("[Gateway] Security registry_rules loaded");
     }
 
-    info!("Security config loaded from {}", config_path.display());
+    info!("[Gateway] Security config loaded from {}", config_path.display());
 }
 
 /// Load scanner full config from `config.scanner.json`.
@@ -498,14 +498,14 @@ fn open_plugin_window(
     let dll_path = exe_dir.join("plugins").join("plugin_ui.dll");
     let dll_path_alt = exe_dir.join("plugins").join("plugin-ui.dll");
     if !dll_path.exists() && !dll_path_alt.exists() {
-        warn!("plugin-ui.dll not found, falling back to browser");
+        warn!("[Gateway] plugin-ui.dll not found, falling back to browser");
         return open_browser(backend_url);
     }
 
     // --- Dedup: check if a child of this type already exists ---
     if let Some(child_id) = process_manager.get_child_by_type(window_type) {
         info!(
-            "Plugin window '{}' already running (child_id: {}), sending bring_to_front",
+            "[Gateway] Plugin window '{}' already running (child_id: {}), sending bring_to_front",
             window_type, child_id
         );
         // Try to notify the existing child to bring its window to front
@@ -515,13 +515,13 @@ fn open_plugin_window(
             serde_json::json!({}),
         ) {
             Ok(()) => {
-                info!("Sent bring_to_front notification to child {}", child_id);
+                info!("[Gateway] Sent bring_to_front notification to child {}", child_id);
                 return Ok(());
             }
             Err(e) => {
                 // Notification failed — child may be dead. Clean up and respawn.
                 warn!(
-                    "Failed to notify child {} ({}), cleaning up and respawning",
+                    "[Gateway] Failed to notify child {} ({}), cleaning up and respawning",
                     child_id, e
                 );
                 let _ = process_manager.terminate_child(&child_id);
@@ -544,11 +544,11 @@ fn open_plugin_window(
     // Spawn new child via ProcessManager (handles pipe handshake + WS key + window data)
     match process_manager.spawn_child(window_type, &window_data) {
         Ok((child_id, _result_rx)) => {
-            info!("Plugin window '{}' spawned (child_id: {})", window_type, child_id);
+            info!("[Gateway] Plugin window '{}' spawned (child_id: {})", window_type, child_id);
             Ok(())
         }
         Err(e) => {
-            warn!("Failed to spawn plugin window '{}': {}", window_type, e);
+            warn!("[Gateway] Failed to spawn plugin window '{}': {}", window_type, e);
             Err(format!("spawn failed: {}", e))
         }
     }
@@ -2009,7 +2009,7 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
     println!("  Agent Status:");
     println!("    Tools: {} loaded ({} default + {} extended)", total_tools, default_count, total_tools - default_count);
     println!("    Skills: {} available", skill_count);
-    info!("Agent initialized ({} tools, {} skills)", total_tools, skill_count);
+    info!("[Gateway] Agent initialized ({} tools, {} skills)", total_tools, skill_count);
 }
 
 // ---------------------------------------------------------------------------
@@ -2126,7 +2126,7 @@ impl LlmProvider for ProviderAdapter {
                 })
             }
             Err(e) => {
-                warn!("LLM provider error: {}", e);
+                warn!("[Gateway] LLM provider error: {}", e);
                 Err(format!("{}", e))
             }
         }
@@ -2200,13 +2200,13 @@ impl nemesis_cluster::rpc::peer_chat_handler::LlmChannel for DirectLlmChannel {
                                 .to_string()
                         }
                         Err(e) => {
-                            tracing::error!("DirectLlmChannel: failed to parse response: {}", e);
+                            tracing::error!("[Gateway] DirectLlmChannel: failed to parse response: {}", e);
                             format!("[LLM error: {}]", e)
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::error!("DirectLlmChannel: HTTP request failed: {}", e);
+                    tracing::error!("[Gateway] DirectLlmChannel: HTTP request failed: {}", e);
                     format!("[LLM error: {}]", e)
                 }
             };
@@ -2325,9 +2325,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let pid = std::process::id();
     let pid_path = home.join("gateway.pid");
     if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
-        warn!("Failed to write PID file: {}", e);
+        warn!("[Gateway] Failed to write PID file: {}", e);
     } else {
-        info!("PID file written: {} (PID: {})", pid_path.display(), pid);
+        info!("[Gateway] PID file written: {} (PID: {})", pid_path.display(), pid);
     }
 
     // Step 7: Resolve the default LLM model and create provider
@@ -2346,13 +2346,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
     let provider = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    info!("Provider created for {}", llm_ref);
+    info!("[Gateway] Provider created for {}", llm_ref);
 
     let model_name = resolution.model_name.clone();
 
     // Step 8: Create MessageBus
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    info!("Message bus created");
+    info!("[Gateway] Message bus created");
 
     // Step 9: Create AgentLoop with mpsc channels (bridge to broadcast bus)
     // The AgentLoop uses mpsc channels, while the bus uses broadcast.
@@ -2384,7 +2384,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     context_builder.load_skills(&skills_dir);
 
     let system_prompt = context_builder.build_system_prompt(false);
-    info!("System prompt built ({} chars) from workspace files", system_prompt.len());
+    info!("[Gateway] System prompt built ({} chars) from workspace files", system_prompt.len());
 
     let adapter = ProviderAdapter::new(provider, model_name.clone());
     let agent_config = AgentConfig {
@@ -2410,7 +2410,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             nemesis_agent::session::SessionStore::new_with_storage(&sess_dir),
         );
         agent_loop.set_session_store(store);
-        info!("Session store initialized with disk persistence: {}", sess_dir.display());
+        info!("[Gateway] Session store initialized with disk persistence: {}", sess_dir.display());
     }
 
     // Create and inject WorkspaceStateManager for crash recovery.
@@ -2419,7 +2419,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let workspace_dir = home.join("workspace");
         let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
         agent_loop.set_state_manager(state_mgr);
-        info!("State manager initialized: {}", workspace_dir.display());
+        info!("[Gateway] State manager initialized: {}", workspace_dir.display());
     }
 
     // Register all tools (mirrors Go's bot_service.go initComponents):
@@ -2460,7 +2460,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 Ok("No message to deliver".to_string())
             }
         });
-        info!("Cron service handler wired (publishes to bus)");
+        info!("[Gateway] Cron service handler wired (publishes to bus)");
     }
 
     // Create Forge executor if forge.enabled = true (mirrors Go's bot_service.go initComponents)
@@ -2479,7 +2479,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         {
             let bridge_provider = ForgeProviderBridge::new(provider_for_forge.clone(), model_name.clone());
             forge.set_provider(Arc::new(bridge_provider));
-            info!("Forge provider connected via ForgeProviderBridge");
+            info!("[Gateway] Forge provider connected via ForgeProviderBridge");
         }
 
         // M3: Use NoOpBridge by default; real cluster bridge will be set later
@@ -2494,7 +2494,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 forge_dir.join("traces"),
             );
             forge.init_trace(trace_collector, trace_store);
-            info!("Forge trace collection initialized");
+            info!("[Gateway] Forge trace collection initialized");
         }
 
         // L2: Initialize learning engine (Phase 6 closed-loop).
@@ -2515,14 +2515,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             );
             let cycle_store_for_init = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
             forge.init_learning(learning_engine, monitor, cycle_store_for_init);
-            info!("Forge learning engine initialized (Phase 6)");
+            info!("[Gateway] Forge learning engine initialized (Phase 6)");
         }
 
         let forge = Arc::new(forge);
         let executor = Arc::new(
             nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
         );
-        info!("Forge executor created (8 tools will be registered)");
+        info!("[Gateway] Forge executor created (8 tools will be registered)");
         Some((executor, forge))
     } else {
         None
@@ -2565,10 +2565,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         &memory_data_dir, &config_dir,
                     )
                 );
-                info!("Memory manager created (data_dir={})", memory_data_dir.display());
+                info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
                 Some(std::sync::Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
             } else {
-                info!("Enhanced memory disabled (config.json: memory.enabled = false)");
+                info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
                 None
             }
         },
@@ -2582,7 +2582,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 &global_skills_str,
                 "", // builtin: reserved, currently empty
             );
-            info!("Skills loader created (workspace={}, global_skills={})", workspace_str, global_skills_str);
+            info!("[Gateway] Skills loader created (workspace={}, global_skills={})", workspace_str, global_skills_str);
             Some(std::sync::Arc::new(loader))
         },
         // Skills registry: loads from config.skills.json for remote find/install.
@@ -2594,22 +2594,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&content) {
                             Ok(reg_config) => {
                                 let rm = nemesis_skills::registry::RegistryManager::from_config(reg_config);
-                                info!("Skills registry loaded from {}", skills_config_path.display());
+                                info!("[Gateway] Skills registry loaded from {}", skills_config_path.display());
                                 Some(std::sync::Arc::new(rm))
                             }
                             Err(e) => {
-                                warn!("Failed to parse skills config: {} — skills search/install disabled", e);
+                                warn!("[Gateway] Failed to parse skills config: {} — skills search/install disabled", e);
                                 None
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("Failed to read skills config: {} — skills search/install disabled", e);
+                        warn!("[Gateway] Failed to read skills config: {} — skills search/install disabled", e);
                         None
                     }
                 }
             } else {
-                info!("No skills config found at {} — skills search/install disabled", skills_config_path.display());
+                info!("[Gateway] No skills config found at {} — skills search/install disabled", skills_config_path.display());
                 None
             }
         },
@@ -2631,11 +2631,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     perplexity_max_results: web.perplexity.max_results.max(1) as usize,
                     perplexity_enabled: web.perplexity.enabled,
                 };
-                info!("Web search enabled (brave={}, duckduckgo={}, perplexity={})",
+                info!("[Gateway] Web search enabled (brave={}, duckduckgo={}, perplexity={})",
                       web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled);
                 Some(config)
             } else {
-                info!("Web search disabled (no provider enabled in config.json: tools.web)");
+                info!("[Gateway] Web search disabled (no provider enabled in config.json: tools.web)");
                 None
             }
         },
@@ -2652,7 +2652,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Discover and register MCP tools from configured servers (async).
     if mcp_enabled && !mcp_servers.is_empty() {
-        info!("MCP enabled with {} server(s), discovering tools...", mcp_servers.len());
+        info!("[Gateway] MCP enabled with {} server(s), discovering tools...", mcp_servers.len());
         for server_cfg in &mcp_servers {
             let server_name = server_cfg.name.clone();
             match nemesis_agent::loop_tools::register_mcp_tools(server_cfg).await {
@@ -2661,22 +2661,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     for (name, tool) in mcp_tools {
                         agent_loop.register_tool(name, tool);
                     }
-                    info!("MCP server '{}': discovered {} tools", server_name, tool_count);
+                    info!("[Gateway] MCP server '{}': discovered {} tools", server_name, tool_count);
                 }
                 Err(e) => {
-                    warn!("MCP server '{}' discovery failed: {}", server_name, e);
+                    warn!("[Gateway] MCP server '{}' discovery failed: {}", server_name, e);
                 }
             }
         }
     }
-    info!("Agent loop created with shared tools (default + memory + skills + hardware + exec + cron{})",
+    info!("[Gateway] Agent loop created with shared tools (default + memory + skills + hardware + exec + cron{})",
           if mcp_enabled { " + MCP" } else { "" });
 
     // M4: Start Forge background services (Collector/Reflector/Syncer).
     // Mirrors Go's bot_service.go:582-585: forgeSvc.Start().
     if let Some((_, ref forge)) = forge_executor_and_instance {
         forge.start().await;
-        info!("Forge background services started");
+        info!("[Gateway] Forge background services started");
     }
 
     // Step 9a: Set up cluster if enabled.
@@ -2748,7 +2748,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             let (host, udp_port) = parse_host_port(addr);
                             let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
                             let addresses = if host.is_empty() { vec![] } else { vec![host] };
-                            info!("Loading static peer: {} ({}) addr={} rpc_port={}", name, peer_id, addr, rpc_port);
+                            info!("[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}", name, peer_id, addr, rpc_port);
                             cluster.handle_discovered_node(
                                 &peer_id,
                                 name,
@@ -2774,22 +2774,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
         cluster.start();
-        info!("Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",
+        info!("[Gateway] Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",
             node_id, node_name, cluster_app_cfg.port, cluster_app_cfg.rpc_port);
 
         // Diagnostic: list registry contents after start
         {
             let all_nodes = cluster.list_nodes();
             for n in &all_nodes {
-                info!("Registry node: {} (id={}) status={:?} addr={}",
+                info!("[Gateway] Registry node: {} (id={}) status={:?} addr={}",
                     n.base.name, n.base.id, n.status, n.base.address);
             }
         }
 
         // Register RPC handlers on the server
         if let Err(e) = cluster.register_basic_handlers() {
-            warn!("Failed to register basic RPC handlers: {}", e);
-        }
+            warn!("[Gateway] Failed to register basic RPC handlers: {}", e);        }
 
         // Start RPC server FIRST (register_default_handlers runs inside start(),
         // so we must call start() before registering our custom handlers to avoid
@@ -2797,14 +2796,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let rpc_server_ref = cluster.rpc_server()
             .expect("rpc_server just set")
             .clone();
-        info!("Starting RPC server on 0.0.0.0:{}", cluster_app_cfg.rpc_port);
+        info!("[Gateway] Starting RPC server on 0.0.0.0:{}", cluster_app_cfg.rpc_port);
         // Await start() synchronously — it binds the TCP listener and spawns the
         // accept loop, then returns. This ensures default handlers are registered
         // before we overwrite them below.
         if let Err(e) = rpc_server_ref.start().await {
-            error!("RPC server error on port {}: {}", cluster_app_cfg.rpc_port, e);
+            error!("[Gateway] RPC server error on port {}: {}", cluster_app_cfg.rpc_port, e);
         }
-        info!("RPC server started on port {}", cluster_app_cfg.rpc_port);
+        info!("[Gateway] RPC server started on port {}", cluster_app_cfg.rpc_port);
 
         // Now register custom peer_chat handler using PeerChatHandler.
         // Phase 1: B-side uses DirectLlmChannel to call LLM directly.
@@ -2915,7 +2914,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 Ok(serde_json::to_value(&ack)
                     .unwrap_or_else(|_| serde_json::json!({"status": "error"})))
             }));
-            info!("Registered PeerChatHandler (async LLM + callback) for peer_chat");
+            info!("[Gateway] Registered PeerChatHandler (async LLM + callback) for peer_chat");
         }
 
         // --- Now that Cluster is Arc-wrapped, wire up the real callback handler ---
@@ -2941,7 +2940,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                info!("peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
+                info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
 
                 // Publish directly to bus as a cluster_continuation message.
                 // AgentLoop's bus loop intercepts this prefix, loads the continuation
@@ -2965,7 +2964,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         metadata,
                     };
                     bus_for_cb.publish_inbound(inbound);
-                    info!("Published cluster_continuation for task_id={}", task_id);
+                    info!("[Gateway] Published cluster_continuation for task_id={}", task_id);
                 }
 
                 Ok(serde_json::json!({"status": "received", "task_id": task_id}))
@@ -2980,7 +2979,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 bus: bus.clone(),
             });
             cluster.set_message_bus(bus_adapter);
-            info!("Cluster: message bus injected for continuation flow");
+            info!("[Gateway] Cluster: message bus injected for continuation flow");
         }
 
         // --- Wire Forge-Cluster bridge ---
@@ -2989,7 +2988,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if let Some((_, ref forge_arc)) = forge_executor_and_instance {
             let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
             forge_arc.set_bridge(Arc::new(cluster_bridge));
-            info!("Forge-Cluster bridge wired (node_id={})", node_id);
+            info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
         }
 
         // --- Start UDP Discovery Service ---
@@ -3005,13 +3004,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         ) {
             Ok(discovery) => {
                 match discovery.start() {
-                    Ok(_) => info!("UDP discovery started on port {}", cluster_app_cfg.port),
-                    Err(e) => warn!("Failed to start UDP discovery: {}", e),
+                    Ok(_) => info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port),
+                    Err(e) => warn!("[Gateway] Failed to start UDP discovery: {}", e),
                 }
                 // Keep discovery alive — prevent Drop which would stop it
                 std::mem::forget(discovery);
             }
-            Err(e) => warn!("Failed to create discovery service: {}", e),
+            Err(e) => warn!("[Gateway] Failed to create discovery service: {}", e),
         }
 
         // RPC server was already created and set above before start().
@@ -3045,7 +3044,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         cluster_rpc_tool.set_rpc_call_fn(rpc_call_fn);
 
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
-        info!("cluster_rpc tool registered (node: {}, peers loaded from peers.toml)", node_name);
+        info!("[Gateway] cluster_rpc tool registered (node: {}, peers loaded from peers.toml)", node_name);
 
         // --- Inject ContinuationManager into AgentLoop ---
         // When a cluster_rpc tool returns an ACK (async), the AgentLoop saves
@@ -3056,13 +3055,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 &home.join("workspace"),
             ));
             agent_loop.set_continuation_manager(cont_mgr);
-            info!("ContinuationManager injected into AgentLoop (with disk persistence)");
+            info!("[Gateway] ContinuationManager injected into AgentLoop (with disk persistence)");
         }
 
         // Keep cluster alive until gateway shuts down
         std::mem::forget(cluster);
     } else {
-        info!("Cluster disabled in configuration");
+        info!("[Gateway] Cluster disabled in configuration");
     }
 
     // C1: Create ChannelManager and wire it.
@@ -3146,7 +3145,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Initialize channels from config (registers them in the manager).
         let bus_inbound_sender = bus.inbound_sender();
         if let Err(e) = channel_manager.init_channels(&init_config, bus_inbound_sender).await {
-            warn!("ChannelManager init_channels note: {} (non-fatal)", e);
+            warn!("[Gateway] ChannelManager init_channels note: {} (non-fatal)", e);
         }
 
         // Bridge: bus outbound broadcast → ChannelManager mpsc.
@@ -3164,7 +3163,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("ChannelManager outbound bridge lagged {} messages", n);
+                        tracing::warn!("[Gateway] ChannelManager outbound bridge lagged {} messages", n);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         break;
@@ -3172,21 +3171,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 }
             }
         });
-        info!("Bus outbound → ChannelManager bridge connected");
+        info!("[Gateway] Bus outbound → ChannelManager bridge connected");
 
         // Start the outbound dispatch loop (reads from internal mpsc, dispatches to channels).
         if let Err(e) = channel_manager.start_dispatch_loop() {
-            warn!("ChannelManager start_dispatch_loop note: {} (non-fatal)", e);
+            warn!("[Gateway] ChannelManager start_dispatch_loop note: {} (non-fatal)", e);
         }
 
         // Start all registered channels.
         if let Err(e) = channel_manager.start_all().await {
-            warn!("ChannelManager start_all note: {} (non-fatal)", e);
+            warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
         }
 
         // Keep the ChannelManager alive.
         std::mem::forget(channel_manager);
-        info!("ChannelManager created with {} enabled channel(s)", enabled_channels.len());
+        info!("[Gateway] ChannelManager created with {} enabled channel(s)", enabled_channels.len());
 
         // Set enabled channel list on agent loop.
         agent_loop.set_channel_manager(enabled_channels);
@@ -3209,14 +3208,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Log directory is always `{home}/workspace/logs/security_logs/`.
         let audit_dir = format!("{}/workspace/logs/security_logs", home.display());
         if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
-            warn!("Failed to initialize security audit log: {}", e);
+            warn!("[Gateway] Failed to initialize security audit log: {}", e);
         } else {
-            info!("Security audit log initialized: {}", audit_dir);
+            info!("[Gateway] Security audit log initialized: {}", audit_dir);
         }
 
         let auditor = plugin.auditor();
         agent_loop.set_security_plugin(plugin.clone());
-        info!("Security plugin enabled and injected into agent loop");
+        info!("[Gateway] Security plugin enabled and injected into agent loop");
 
         // Step 9c: Initialize scanner chain from config.scanner.json
         // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
@@ -3224,18 +3223,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if scanner_config_path.exists() {
             if let Some(full_config) = load_scanner_full_config(&scanner_config_path) {
                 if !full_config.enabled.is_empty() {
-                    info!("Initializing scanner chain from config...");
+                    info!("[Gateway] Initializing scanner chain from config...");
                     plugin.init_scanner_from_config(&full_config).await;
                 }
             }
         } else {
-            info!("Scanner config file not found: {}, scanner chain not initialized", scanner_config_path.display());
+            info!("[Gateway] Scanner config file not found: {}, scanner chain not initialized", scanner_config_path.display());
         }
 
         drop(auditor);
         Some(plugin)
     } else {
-        info!("Security plugin disabled by configuration");
+        info!("[Gateway] Security plugin disabled by configuration");
         None
     };
 
@@ -3275,7 +3274,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             mgr.register(rl_observer).await;
                         })
                     });
-                    info!("RequestLoggerObserver registered (logging.llm.enabled = true)");
+                    info!("[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)");
                 }
             }
         }
@@ -3289,7 +3288,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         });
         if has_observers {
             agent_loop.set_observer_manager(observer_mgr);
-            info!("Observer manager injected into agent loop");
+            info!("[Gateway] Observer manager injected into agent loop");
         }
     }
 
@@ -3318,16 +3317,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 Ok(mgr) => {
                     let cfg = mgr.config();
                     if cfg.development_mode {
-                        info!("CORS: development_mode enabled, allowing all origins");
+                        info!("[Gateway] CORS: development_mode enabled, allowing all origins");
                         vec![]
                     } else {
                         let origins = mgr.list_origins();
-                        info!("CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
+                        info!("[Gateway] CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
                         origins
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to load CORS config: {}, using permissive defaults", e);
+                    warn!("[Gateway] Failed to load CORS config: {}, using permissive defaults", e);
                     vec![]
                 }
             }
@@ -3367,10 +3366,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             preserve_prefix: false,
         };
         web_server.set_streaming_provider(Arc::new(nemesis_providers::http_provider::HttpProvider::new(streaming_cfg)));
-        info!("SSE streaming provider configured for /api/chat/stream");
+        info!("[Gateway] SSE streaming provider configured for /api/chat/stream");
     }
 
-    info!("Web server created for {}:{}", web_host, web_port);
+    info!("[Gateway] Web server created for {}:{}", web_host, web_port);
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;
@@ -3379,7 +3378,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         version: Some(crate::common::VERSION_INFO.version.to_string()),
     };
     let health_server = Arc::new(nemesis_health::server::HealthServer::new(health_config));
-    info!("Health server created for {}:{}", &cfg.gateway.host, health_port);
+    info!("[Gateway] Health server created for {}:{}", &cfg.gateway.host, health_port);
 
     // Step 12: Create HeartbeatService
     let heartbeat_interval_secs = if cfg.heartbeat.interval > 0 {
@@ -3395,7 +3394,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         default_interval_minutes: 30,
     };
     let heartbeat_service = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(heartbeat_config));
-    info!("Heartbeat service created (enabled: {})", cfg.heartbeat.enabled);
+    info!("[Gateway] Heartbeat service created (enabled: {})", cfg.heartbeat.enabled);
 
     // C2: Wire HeartbeatService — bus + handler + skip file.
     // Mirrors Go's bot_service.go:403-406:
@@ -3430,7 +3429,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         heartbeat_service.set_handler(Box::new(move |prompt: String, mut channel: String, mut chat_id: String| {
             // Check BOOTSTRAP.md — if exists, skip heartbeat entirely.
             if bootstrap_path.exists() {
-                tracing::info!("BOOTSTRAP.md exists, skipping heartbeat LLM call");
+                tracing::info!("[Gateway] BOOTSTRAP.md exists, skipping heartbeat LLM call");
                 return Some(nemesis_heartbeat::service::HeartbeatResult {
                     is_error: false,
                     is_async: false,
@@ -3444,7 +3443,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // heartbeat LLM call. Heartbeat is part of the agent's proactive
             // behavior — it should not consume API quota when the agent is idle.
             if !agent_loop_for_hb.is_running() {
-                tracing::debug!("Agent not running, skipping heartbeat");
+                tracing::debug!("[Gateway] Agent not running, skipping heartbeat");
                 return Some(nemesis_heartbeat::service::HeartbeatResult {
                     is_error: false,
                     is_async: false,
@@ -3491,7 +3490,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             heartbeat_service.set_skip_file(skip_file.to_string_lossy().to_string());
         }
 
-        info!("Heartbeat service wired (bus + handler + skip_file)");
+        info!("[Gateway] Heartbeat service wired (bus + handler + skip_file)");
     }
 
     // M1: Create and wire DeviceService.
@@ -3516,12 +3515,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }));
         // Start monitoring (USB hotplug, etc.) — async, fire-and-forget
         if let Err(e) = device_service.start().await {
-            warn!("Device service start note: {} (non-fatal)", e);
+            warn!("[Gateway] Device service start note: {} (non-fatal)", e);
         } else {
-            info!("Device service started (USB hotplug monitoring)");
+            info!("[Gateway] Device service started (USB hotplug monitoring)");
         }
     } else {
-        info!("Device service disabled (config.json: devices.enabled = false)");
+        info!("[Gateway] Device service disabled (config.json: devices.enabled = false)");
     }
 
     // Step 13: Create ServiceManager with config
@@ -3560,9 +3559,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     {
         let cron = cron_service.lock().unwrap();
         if let Err(e) = cron.start().await {
-            warn!("Cron service start note: {}", e);
+            warn!("[Gateway] Cron service start note: {}", e);
         } else {
-            info!("Cron scheduler started");
+            info!("[Gateway] Cron scheduler started");
         }
     }
 
@@ -3582,7 +3581,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             });
             event_hub.publish(nemesis_web::events::EVENT_LOG, data);
         }));
-        info!("Logger → SSE EventHub bridge connected");
+        info!("[Gateway] Logger → SSE EventHub bridge connected");
     }
 
     // Step 16: Start outbound dispatch (bus outbound → WebSocket sessions)
@@ -3591,43 +3590,43 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let dispatch_handle = tokio::spawn(async move {
         nemesis_web::server::dispatch_outbound(dispatch_bus, dispatch_session_mgr).await;
     });
-    info!("Outbound dispatch started");
+    info!("[Gateway] Outbound dispatch started");
 
     // Step 17: Start WebServer in background
     let web_shutdown_rx = svc_mgr.subscribe_shutdown();
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
     let web_handle = tokio::spawn(async move {
         if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx, Some(bound_tx)).await {
-            error!("Web server error: {}", e);
+            error!("[Gateway] Web server error: {}", e);
         }
     });
-    info!("Web server starting on {}:{}", web_host, web_port);
+    info!("[Gateway] Web server starting on {}:{}", web_host, web_port);
 
     // Wait for the actual bound address (sent immediately after TcpListener::bind)
     let real_port: i64 = match bound_rx.await {
         Ok(addr) => {
-            info!("Web server bound to {}", addr);
+            info!("[Gateway] Web server bound to {}", addr);
             addr.port() as i64
         }
         Err(_) => {
-            warn!("Failed to receive web server bound address, using config port");
+            warn!("[Gateway] Failed to receive web server bound address, using config port");
             web_port
         }
     };
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)
     // via start_services() → services.health.start(). No separate spawn needed here.
-    info!("Health server will be started by bot service on {}:{}", &cfg.gateway.host, health_port);
+    info!("[Gateway] Health server will be started by bot service on {}:{}", &cfg.gateway.host, health_port);
 
     // Step 18: Start AgentLoop's bus processing via adapter
     if let Err(e) = agent_adapter.start() {
-        warn!("Agent adapter start note: {}", e);
+        warn!("[Gateway] Agent adapter start note: {}", e);
     }
-    info!("Agent loop started via adapter, listening on bus");
+    info!("[Gateway] Agent loop started via adapter, listening on bus");
 
     // Step 19: Start bot service (for state tracking)
     if let Err(e) = svc_mgr.start_bot() {
-        warn!("Bot service start note: {}", e);
+        warn!("[Gateway] Bot service start note: {}", e);
         // Non-fatal: the real services are already started above
     }
 
@@ -3660,9 +3659,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Create and start ProcessManager for plugin window lifecycle + dedup
     let process_manager = Arc::new(nemesis_desktop::process::ProcessManager::new());
     if let Err(e) = process_manager.start().await {
-        warn!("ProcessManager start note: {} (non-fatal, plugin windows will use fallback)", e);
+        warn!("[Gateway] ProcessManager start note: {} (non-fatal, plugin windows will use fallback)", e);
     } else {
-        info!("ProcessManager started (WS server on port {})", process_manager.ws_port());
+        info!("[Gateway] ProcessManager started (WS server on port {})", process_manager.ws_port());
     }
 
     // Wire up ApprovalManager: ProcessManager → SecurityPlugin auditor
@@ -3672,7 +3671,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let auditor = plugin.auditor();
         let adapter = Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
         auditor.set_approval_manager(adapter);
-        info!("Approval manager wired (popup via ProcessManager)");
+        info!("[Gateway] Approval manager wired (popup via ProcessManager)");
     }
 
     // Step 22: Configure system tray
@@ -3684,14 +3683,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let start_adapter = Arc::clone(&agent_adapter);
         tray.set_on_start(Box::new(move || {
             if let Err(e) = start_adapter.start() {
-                tracing::warn!("Tray: failed to start agent: {}", e);
+                tracing::warn!("[Gateway] Tray: failed to start agent: {}", e);
             }
         }));
 
         let stop_adapter = Arc::clone(&agent_adapter);
         tray.set_on_stop(Box::new(move || {
             if let Err(e) = stop_adapter.stop() {
-                tracing::warn!("Tray: failed to stop agent: {}", e);
+                tracing::warn!("[Gateway] Tray: failed to stop agent: {}", e);
             }
         }));
 
@@ -3715,7 +3714,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Start tray on a dedicated thread (runs winit EventLoop)
         let _tray_handle = tray.run();
-        info!("System tray started");
+        info!("[Gateway] System tray started");
         println!("  OK System tray started");
     }
 
@@ -3729,7 +3728,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Stop ProcessManager (terminates all child processes)
     if let Err(e) = process_manager.stop() {
-        warn!("ProcessManager stop note: {}", e);
+        warn!("[Gateway] ProcessManager stop note: {}", e);
     }
 
     // Close the message bus

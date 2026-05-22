@@ -234,7 +234,7 @@ impl Channel for MastodonChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Mastodon channel");
+        info!("[MastodonChannel] starting Mastodon channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -279,7 +279,7 @@ impl Channel for MastodonChannel {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        warn!("Mastodon: notification poll error: {e}");
+                        warn!("[MastodonChannel] notification poll error: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
@@ -287,7 +287,7 @@ impl Channel for MastodonChannel {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Mastodon: notification poll returned {}", resp.status());
+                    warn!("[MastodonChannel] notification poll returned {}", resp.status());
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(max_backoff);
                     continue;
@@ -364,15 +364,15 @@ impl Channel for MastodonChannel {
                 }
             }
 
-            info!("Mastodon polling loop stopped");
+            info!("[MastodonChannel] polling loop stopped");
         });
 
-        info!("Mastodon channel started");
+        info!("[MastodonChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Mastodon channel");
+        info!("[MastodonChannel] stopping Mastodon channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())

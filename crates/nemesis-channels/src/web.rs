@@ -161,7 +161,7 @@ impl WebChannel {
         if let Some(srv) = server.as_ref() {
             srv.broadcast(content).map_err(|e| NemesisError::Channel(e))
         } else {
-            warn!("No web server configured for broadcast");
+            warn!("[WebChannel] no web server configured for broadcast");
             Ok(())
         }
     }
@@ -189,7 +189,7 @@ impl Channel for WebChannel {
             host = %self.config.host,
             port = self.config.port,
             path = %self.config.ws_path,
-            "Starting web channel"
+            "[WebChannel] starting"
         );
 
         // Start the web server if configured
@@ -197,7 +197,7 @@ impl Channel for WebChannel {
             let server = self.server.read();
             if let Some(srv) = server.as_ref() {
                 srv.start_server().map_err(|e| {
-                    error!(error = %e, "Web server failed to start");
+                    error!(error = %e, "[WebChannel] server failed to start");
                     NemesisError::Channel(e)
                 })?;
             }
@@ -211,14 +211,14 @@ impl Channel for WebChannel {
 
         info!(
             url = format!("http://{}:{}", self.config.host, self.config.port),
-            "Web channel started"
+            "[WebChannel] started"
         );
 
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("Stopping web channel");
+        info!("[WebChannel] stopping");
 
         self.running.store(false, Ordering::SeqCst);
         self.base.set_enabled(false);
@@ -228,7 +228,7 @@ impl Channel for WebChannel {
             srv.stop_server();
         }
 
-        info!("Web channel stopped");
+        info!("[WebChannel] stopped");
         Ok(())
     }
 
@@ -237,7 +237,7 @@ impl Channel for WebChannel {
             warn!(
                 chat_id = %msg.chat_id,
                 content_len = msg.content.len(),
-                "Web channel not running, cannot send message"
+                "[WebChannel] not running, cannot send message"
             );
             return Err(NemesisError::Channel("web channel not running".to_string()));
         }
@@ -248,14 +248,14 @@ impl Channel for WebChannel {
         let srv = match server.as_ref() {
             Some(s) => s,
             None => {
-                warn!("No web server configured, dropping message");
+                warn!("[WebChannel] no web server configured, dropping message");
                 return Ok(());
             }
         };
 
         // Handle broadcast to all sessions
         if msg.chat_id == "web:broadcast" {
-            debug!(content_len = msg.content.len(), "Broadcasting to all sessions");
+            debug!(content_len = msg.content.len(), "[WebChannel] broadcasting to all sessions");
             return srv.broadcast(&msg.content).map_err(|e| NemesisError::Channel(e));
         }
 
@@ -266,14 +266,14 @@ impl Channel for WebChannel {
             error!(
                 chat_id = %msg.chat_id,
                 expected_format = "web:<session-id>",
-                "Invalid chat ID format"
+                "[WebChannel] invalid chat ID format"
             );
             return Err(NemesisError::Channel(format!("invalid chat ID format: {}", msg.chat_id)));
         };
 
         // Handle history responses via dedicated method
         if msg.message_type == "history" {
-            debug!(session_id = %session_id, "Sending history to session");
+            debug!(session_id = %session_id, "[WebChannel] sending history to session");
             return srv
                 .send_history_to_session(session_id, &msg.content)
                 .map_err(|e| NemesisError::Channel(e));
@@ -284,7 +284,7 @@ impl Channel for WebChannel {
             session_id = %session_id,
             chat_id = %msg.chat_id,
             content_len = msg.content.len(),
-            "Sending message to session"
+            "[WebChannel] sending message to session"
         );
 
         if let Err(e) = srv.send_to_session(session_id, "assistant", &msg.content) {
@@ -292,7 +292,7 @@ impl Channel for WebChannel {
                 error = %e,
                 session_id = %session_id,
                 chat_id = %msg.chat_id,
-                "Failed to send message to session"
+                "[WebChannel] failed to send message to session"
             );
             return Err(NemesisError::Channel(e));
         }
@@ -300,7 +300,7 @@ impl Channel for WebChannel {
         info!(
             session_id = %session_id,
             chat_id = %msg.chat_id,
-            "Message sent to session successfully"
+            "[WebChannel] message sent to session successfully"
         );
 
         Ok(())

@@ -62,7 +62,7 @@ impl Updater {
         }
 
         *self.last_update.lock().unwrap() = Some(SystemTime::now());
-        tracing::info!("Virus database updated");
+        tracing::info!("[Scanner] Virus database updated");
         Ok(())
     }
 
@@ -107,7 +107,7 @@ impl Updater {
 
         tracing::info!(
             interval_secs = self.config.update_interval.as_secs(),
-            "Auto-update started"
+            "[Scanner] Auto-update started"
         );
 
         while self.running.load(Ordering::SeqCst) {
@@ -124,15 +124,15 @@ impl Updater {
             ).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    tracing::error!(error = %e, "Auto-update failed");
+                    tracing::error!(error = %e, "[Scanner] Auto-update failed");
                 }
                 Err(_) => {
-                    tracing::error!("Auto-update timed out");
+                    tracing::error!("[Scanner] Auto-update timed out");
                 }
             }
         }
 
-        tracing::info!("Auto-update stopped");
+        tracing::info!("[Scanner] Auto-update stopped");
     }
 
     /// Stop the updater.

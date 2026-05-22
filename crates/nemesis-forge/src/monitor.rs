@@ -342,7 +342,7 @@ impl DeploymentMonitor {
             tracing::info!(
                 artifact_id = %artifact.id,
                 name = %artifact.name,
-                "Artifact deprecated due to negative outcome"
+                "[Monitor] Artifact deprecated due to negative outcome"
             );
         }
     }
@@ -390,7 +390,7 @@ impl DeploymentMonitor {
                     tracing::warn!(
                         artifact_id = %artifact.id,
                         consecutive_rounds = artifact.consecutive_observing_rounds,
-                        "Auto-upgrading artifact to negative (3+ consecutive observing rounds)"
+                        "[Monitor] Auto-upgrading artifact to negative (3+ consecutive observing rounds)"
                     );
                     result.verdict = "negative".to_string();
                     result.improvement_score = -0.3;
@@ -463,13 +463,13 @@ impl DeploymentMonitor {
                         tracing::info!(
                             artifact_id = %result.artifact_id,
                             improvement_score = result.improvement_score,
-                            "Degrading artifact due to negative evaluation"
+                            "[Monitor] Degrading artifact due to negative evaluation"
                         );
                         self.apply_degradation(&result.artifact_id);
                     } else {
                         tracing::info!(
                             artifact_id = %result.artifact_id,
-                            "Skipping degradation: cooldown period active"
+                            "[Monitor] Skipping degradation: cooldown period active"
                         );
                     }
                 }

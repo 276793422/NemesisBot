@@ -1550,7 +1550,7 @@ pub fn setup_cluster_rpc_channel_with_config(
     tracing::info!(
         local_node_id = %cluster_config.local_node_id,
         timeout_secs = cluster_config.timeout_secs,
-        "Cluster RPC channel configured (24h B-side safety net)"
+        "[ClusterRPC] Cluster RPC channel configured (24h B-side safety net)"
     );
 
     config
@@ -1588,7 +1588,7 @@ pub fn register_peer_chat_handler<F>(
             tracing::info!(
                 task_id = task_id,
                 content_len = content.len(),
-                "Received peer_chat_callback"
+                "[ClusterRPC] Received peer_chat_callback"
             );
             Ok(serde_json::json!({
                 "status": "received",
@@ -1597,7 +1597,7 @@ pub fn register_peer_chat_handler<F>(
         }),
     );
 
-    tracing::info!("Registered peer_chat + peer_chat_callback handlers");
+    tracing::info!("[ClusterRPC] Registered peer_chat + peer_chat_callback handlers");
 }
 
 /// Cluster RPC tool for inter-node communication.
@@ -1738,7 +1738,7 @@ impl Tool for ClusterRpcTool {
             tracing::info!(
                 task_id = %task_id,
                 target = %target_node,
-                "Peer chat ACK received, returning async marker"
+                "[ClusterRPC] Peer chat ACK received, returning async marker"
             );
             return Ok(format!("__ASYNC__:{}:{}", task_id, target_node));
         }
@@ -2557,7 +2557,7 @@ where
     tracing::info!(
         server = server_name,
         tool_count = tools.len(),
-        "Discovered MCP tools"
+        "[MCP] Discovered MCP tools"
     );
 
     Ok(McpDiscoveryResult {
@@ -2625,7 +2625,7 @@ pub async fn register_mcp_tools(
     tracing::info!(
         server = %server_config.name,
         protocol_version = %init_result.protocol_version,
-        "MCP server initialized"
+        "[MCP] MCP server initialized"
     );
 
     // List tools from server
@@ -2642,7 +2642,7 @@ pub async fn register_mcp_tools(
     tracing::info!(
         server = %server_config.name,
         tool_count = mcp_tools.len(),
-        "Discovered MCP tools"
+        "[MCP] Discovered MCP tools"
     );
 
     // Wrap the client in a shared Mutex for thread-safe access from all tool executors
@@ -2835,7 +2835,7 @@ pub fn setup_cluster_rpc_channel(
 
     if let Some(ref cm) = continuation_manager {
         info!(
-            "RPC channel for peer chat configured with continuation manager (timeout={:?}, cleanup={:?})",
+            "[AgentTools] RPC channel for peer chat configured with continuation manager (timeout={:?}, cleanup={:?})",
             config.request_timeout, config.cleanup_interval
         );
         // The continuation manager is ready to save snapshots when async
@@ -2844,7 +2844,7 @@ pub fn setup_cluster_rpc_channel(
         let _ = cm; // Available for caller to wire up
     } else {
         info!(
-            "RPC channel for peer chat configured without continuation manager (timeout={:?}, cleanup={:?})",
+            "[AgentTools] RPC channel for peer chat configured without continuation manager (timeout={:?}, cleanup={:?})",
             config.request_timeout, config.cleanup_interval
         );
     }
@@ -3096,11 +3096,11 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             );
             tools.insert(def.name.clone(), Box::new(bridge));
         }
-        info!("Registered {} forge tools", forge_count);
+        info!("[AgentTools] Registered {} forge tools", forge_count);
     }
 
     info!(
-        "Registered {} shared tools (web={}, cluster={}, spawn={}, mcp={})",
+        "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={}, mcp={})",
         tools.len(),
         config.web_search.is_some(),
         config.cluster_rpc.is_some(),
@@ -3148,7 +3148,7 @@ where
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "Failed to discover MCP tools from server '{}': {}",
+                            "[MCP] Failed to discover MCP tools from server '{}': {}",
                             server.name,
                             e
                         );
@@ -3157,7 +3157,7 @@ where
             }
         } else {
             tracing::debug!(
-                "MCP enabled with {} servers but no discovery function provided",
+                "[MCP] MCP enabled with {} servers but no discovery function provided",
                 config.mcp_servers.len()
             );
         }

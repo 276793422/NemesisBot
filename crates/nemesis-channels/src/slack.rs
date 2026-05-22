@@ -277,14 +277,14 @@ impl SlackChannel {
                         Ok(resp) => match resp.json().await {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("Slack: failed to parse connections.open response: {e}");
+                                warn!("[SlackChannel] failed to parse connections.open response: {e}");
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(MAX_BACKOFF);
                                 continue;
                             }
                         },
                         Err(e) => {
-                            warn!("Slack: failed to get WebSocket URL: {e}, retrying in {backoff:?}");
+                            warn!("[SlackChannel] failed to get WebSocket URL: {e}, retrying in {backoff:?}");
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(MAX_BACKOFF);
                             continue;
@@ -293,7 +293,7 @@ impl SlackChannel {
 
                     if body["ok"].as_bool() != Some(true) {
                         let err = body["error"].as_str().unwrap_or("unknown");
-                        warn!("Slack: connections.open error: {err}, retrying in {backoff:?}");
+                        warn!("[SlackChannel] connections.open error: {err}, retrying in {backoff:?}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -302,7 +302,7 @@ impl SlackChannel {
                     match body["url"].as_str() {
                         Some(u) => u.to_string(),
                         None => {
-                            warn!("Slack: missing URL in connections.open response");
+                            warn!("[SlackChannel] missing URL in connections.open response");
                             tokio::time::sleep(backoff).await;
                             backoff = (backoff * 2).min(MAX_BACKOFF);
                             continue;
@@ -310,13 +310,13 @@ impl SlackChannel {
                     }
                 };
 
-                info!("Connecting to Slack Socket Mode...");
+                info!("[SlackChannel] connecting to Socket Mode...");
 
                 let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {
-                        warn!("Slack WebSocket connection failed: {e}, retrying in {backoff:?}");
+                        warn!("[SlackChannel] WebSocket connection failed: {e}, retrying in {backoff:?}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
@@ -324,7 +324,7 @@ impl SlackChannel {
                 };
 
                 backoff = INITIAL_BACKOFF;
-                info!("Slack Socket Mode connected");
+                info!("[SlackChannel] Socket Mode connected");
 
                 let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
@@ -332,11 +332,11 @@ impl SlackChannel {
                     let msg = match ws_rx.next().await {
                         Some(Ok(m)) => m,
                         Some(Err(e)) => {
-                            warn!("Slack WebSocket error: {e}");
+                            warn!("[SlackChannel] WebSocket error: {e}");
                             break 'inner true;
                         }
                         None => {
-                            info!("Slack WebSocket closed");
+                            info!("[SlackChannel] WebSocket closed");
                             break 'inner true;
                         }
                     };
@@ -344,7 +344,7 @@ impl SlackChannel {
                     let text = match msg {
                         tokio_tungstenite::tungstenite::Message::Text(t) => t,
                         tokio_tungstenite::tungstenite::Message::Close(_) => {
-                            info!("Slack Socket Mode closed by server");
+                            info!("[SlackChannel] Socket Mode closed by server");
                             break 'inner true;
                         }
                         _ => continue,
@@ -353,7 +353,7 @@ impl SlackChannel {
                     let payload: serde_json::Value = match serde_json::from_str(&text) {
                         Ok(v) => v,
                         Err(e) => {
-                            warn!("Slack: failed to parse message: {e}");
+                            warn!("[SlackChannel] failed to parse message: {e}");
                             continue;
                         }
                     };
@@ -362,7 +362,7 @@ impl SlackChannel {
 
                     match envelope_type {
                         "hello" => {
-                            debug!("Slack Socket Mode hello received");
+                            debug!("[SlackChannel] Socket Mode hello received");
                         }
 
                         "events_api" => {
@@ -376,7 +376,7 @@ impl SlackChannel {
                                     ))
                                     .await
                                 {
-                                    error!("Slack: failed to send ack: {e}");
+                                    error!("[SlackChannel] failed to send ack: {e}");
                                     break 'inner true;
                                 }
                             }
@@ -389,23 +389,23 @@ impl SlackChannel {
                                 &allow_from,
                             ) {
                                 debug!(
-                                    "Slack message from {} in channel {}",
+                                    "[SlackChannel] message from {} in channel {}",
                                     inbound.sender_id, inbound.chat_id
                                 );
                                 if bus_sender.send(inbound).is_err() {
-                                    warn!("Slack: failed to publish inbound message (no receivers)");
+                                    warn!("[SlackChannel] failed to publish inbound message (no receivers)");
                                 }
                             }
                         }
 
                         "disconnect" => {
                             let reason = payload["reason"].as_str().unwrap_or("unknown");
-                            info!("Slack disconnect request: {reason}");
+                            info!("[SlackChannel] disconnect request: {reason}");
                             break 'inner true;
                         }
 
                         _ => {
-                            debug!("Slack envelope type: {envelope_type}");
+                            debug!("[SlackChannel] envelope type: {envelope_type}");
                         }
                     }
                 };
@@ -414,12 +414,12 @@ impl SlackChannel {
                     break;
                 }
 
-                warn!("Slack: reconnecting in {backoff:?}");
+                warn!("[SlackChannel] reconnecting in {backoff:?}");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
 
-            info!("Slack Socket Mode loop stopped");
+            info!("[SlackChannel] Socket Mode loop stopped");
         });
     }
 
@@ -459,7 +459,7 @@ impl SlackChannel {
 
         // Filter by allow_from
         if !allow_from.is_empty() && !allow_from.iter().any(|u| u == user_id) {
-            debug!("Slack: ignoring message from unlisted user {user_id}");
+            debug!("[SlackChannel] ignoring message from unlisted user {user_id}");
             return None;
         }
 
@@ -551,16 +551,16 @@ impl Channel for SlackChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Slack channel (Socket Mode)");
+        info!("[SlackChannel] starting (Socket Mode)");
 
         // Validate bot token
         match self.validate_bot_token().await {
             Ok(user_id) => {
                 *self.bot_user_id.write() = user_id.clone();
-                info!("Slack bot authenticated (user_id: {user_id})");
+                info!("[SlackChannel] bot authenticated (user_id: {user_id})");
             }
             Err(e) => {
-                warn!("Slack auth.test failed (continuing anyway): {e}");
+                warn!("[SlackChannel] auth.test failed (continuing anyway): {e}");
             }
         }
 
@@ -569,12 +569,12 @@ impl Channel for SlackChannel {
 
         *self.running.write() = true;
         self.base.set_enabled(true);
-        info!("Slack channel started");
+        info!("[SlackChannel] started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Slack channel");
+        info!("[SlackChannel] stopping");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())

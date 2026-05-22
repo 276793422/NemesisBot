@@ -127,7 +127,7 @@ impl ScreenCaptureTool {
             output_path = %output_path.display(),
             script_length = script.len(),
             timeout_ms = timeout.as_millis() as u64,
-            "Running capture script"
+            "[Tools] Running capture script"
         );
 
         let output = match tokio::time::timeout(
@@ -178,7 +178,7 @@ impl ScreenCaptureTool {
         tracing::info!(
             path = %output_path.display(),
             size_bytes = file_info.len(),
-            "Screenshot captured successfully"
+            "[Tools] Screenshot captured successfully"
         );
 
         ToolResult::success(&result)
@@ -208,7 +208,7 @@ impl ScreenCaptureTool {
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "MCP capture failed, falling back to PowerShell"
+                            "[Tools] MCP capture failed, falling back to PowerShell"
                         );
                         // Fall through to PowerShell
                     }
@@ -288,7 +288,7 @@ impl ScreenCaptureTool {
                     Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "MCP region capture failed, falling back to PowerShell"
+                            "[Tools] MCP region capture failed, falling back to PowerShell"
                         );
                     }
                 }

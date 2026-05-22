@@ -76,13 +76,13 @@ impl WebSocketChannel {
             },
         );
         self.base.record_received();
-        debug!(chat_id = %chat_id, "websocket client connected");
+        debug!(chat_id = %chat_id, "[WebSocketChannel] client connected");
     }
 
     /// Simulates a client disconnecting.
     pub fn disconnect(&self, chat_id: &str) {
         self.connections.remove(chat_id);
-        debug!(chat_id = %chat_id, "websocket client disconnected");
+        debug!(chat_id = %chat_id, "[WebSocketChannel] client disconnected");
     }
 
     /// Returns whether a client with the given `chat_id` is connected.
@@ -108,7 +108,7 @@ impl WebSocketChannel {
         for entry in self.connections.iter() {
             entry.value().messages.write().push(content.to_string());
         }
-        debug!(count = self.connections.len(), "broadcast message to all connections");
+        debug!(count = self.connections.len(), "[WebSocketChannel] broadcast message to all connections");
     }
 
     /// Processes an inbound message from a WebSocket client.
@@ -153,7 +153,7 @@ impl WebSocketChannel {
         let count = stale.len();
         for chat_id in &stale {
             self.connections.remove(chat_id);
-            warn!(chat_id = %chat_id, "removed stale websocket connection");
+            warn!(chat_id = %chat_id, "[WebSocketChannel] removed stale websocket connection");
         }
         count
     }
@@ -168,7 +168,7 @@ impl WebSocketChannel {
                 ticker.tick().await;
                 let removed = channel.cleanup_stale_connections(interval * 3);
                 if removed > 0 {
-                    info!(removed = removed, "heartbeat monitor cleaned up stale connections");
+                    info!(removed = removed, "[WebSocketChannel] heartbeat monitor cleaned up stale connections");
                 }
             }
         });
@@ -188,13 +188,13 @@ impl Channel for WebSocketChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting websocket channel");
+        info!("[WebSocketChannel] starting websocket channel");
         self.base.set_enabled(true);
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping websocket channel");
+        info!("[WebSocketChannel] stopping websocket channel");
         self.base.set_enabled(false);
         self.connections.clear();
         Ok(())
@@ -205,7 +205,7 @@ impl Channel for WebSocketChannel {
 
         match self.connections.get(&msg.chat_id) {
             Some(conn) => {
-                debug!(chat_id = %msg.chat_id, "websocket channel sending message");
+                debug!(chat_id = %msg.chat_id, "[WebSocketChannel] channel sending message");
                 conn.messages.write().push(msg.content.clone());
                 Ok(())
             }

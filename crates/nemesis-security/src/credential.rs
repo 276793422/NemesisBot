@@ -161,13 +161,13 @@ impl Scanner {
                 tool = tool_name,
                 count = result.matches.len(),
                 elapsed_ms = elapsed.as_millis() as u64,
-                "Tool output contains potential credentials"
+                "[Security] Tool output contains potential credentials"
             );
         } else {
             tracing::debug!(
                 tool = tool_name,
                 elapsed_ms = elapsed.as_millis() as u64,
-                "Tool output clean"
+                "[Security] Tool output clean"
             );
         }
 

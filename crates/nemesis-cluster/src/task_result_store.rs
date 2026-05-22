@@ -64,7 +64,7 @@ impl TaskResultStore {
         // Create directory synchronously during construction so it's ready
         // for subsequent operations.
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::warn!("failed to create cache_dir {:?}: {}", dir, e);
+            tracing::warn!("[TaskResultStore] failed to create cache_dir {:?}: {}", dir, e);
         }
         Self {
             results: Mutex::new(HashMap::new()),
@@ -147,7 +147,7 @@ impl TaskResultStore {
         let entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(e) => {
-                tracing::warn!("failed to read cache_dir {:?}: {}", dir, e);
+                tracing::warn!("[TaskResultStore] failed to read cache_dir {:?}: {}", dir, e);
                 return 0;
             }
         };
@@ -170,11 +170,11 @@ impl TaskResultStore {
                         loaded += 1;
                     }
                     Err(e) => {
-                        tracing::warn!("skipping invalid result file {:?}: {}", path, e);
+                        tracing::warn!("[TaskResultStore] skipping invalid result file {:?}: {}", path, e);
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("failed to read result file {:?}: {}", path, e);
+                    tracing::warn!("[TaskResultStore] failed to read result file {:?}: {}", path, e);
                 }
             }
         }
@@ -212,7 +212,7 @@ impl TaskResultStore {
                     let tmp_path = path.with_extension("json.tmp");
                     if let Err(e) = std::fs::write(&tmp_path, &json) {
                         tracing::warn!(
-                            "failed to write result temp file {:?}: {}",
+                            "[TaskResultStore] failed to write result temp file {:?}: {}",
                             tmp_path,
                             e
                         );
@@ -220,7 +220,7 @@ impl TaskResultStore {
                     }
                     if let Err(e) = std::fs::rename(&tmp_path, &path) {
                         tracing::warn!(
-                            "failed to rename result file {:?} -> {:?}: {}",
+                            "[TaskResultStore] failed to rename result file {:?} -> {:?}: {}",
                             tmp_path,
                             path,
                             e
@@ -229,7 +229,7 @@ impl TaskResultStore {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "failed to serialize result {}: {}",
+                        "[TaskResultStore] failed to serialize result {}: {}",
                         result.task_id,
                         e
                     );
@@ -243,7 +243,7 @@ impl TaskResultStore {
             let path = dir.join(format!("{}.json", task_id));
             if path.exists() {
                 if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::warn!("failed to delete result file {:?}: {}", path, e);
+                    tracing::warn!("[TaskResultStore] failed to delete result file {:?}: {}", path, e);
                 }
             }
         }
@@ -337,7 +337,7 @@ impl AsyncTaskResultStore {
         let mut read_dir = match fs::read_dir(&dir).await {
             Ok(rd) => rd,
             Err(e) => {
-                tracing::warn!("failed to read cache_dir {:?}: {}", dir, e);
+                tracing::warn!("[TaskResultStore] failed to read cache_dir {:?}: {}", dir, e);
                 return 0;
             }
         };
@@ -359,11 +359,11 @@ impl AsyncTaskResultStore {
                         loaded += 1;
                     }
                     Err(e) => {
-                        tracing::warn!("skipping invalid result file {:?}: {}", path, e);
+                        tracing::warn!("[TaskResultStore] skipping invalid result file {:?}: {}", path, e);
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("failed to read result file {:?}: {}", path, e);
+                    tracing::warn!("[TaskResultStore] failed to read result file {:?}: {}", path, e);
                 }
             }
         }
@@ -409,7 +409,7 @@ impl AsyncTaskResultStore {
                         Ok(()) => {
                             if let Err(e) = fs::rename(&tmp_path, &path).await {
                                 tracing::warn!(
-                                    "failed to rename async result file {:?} -> {:?}: {}",
+                                    "[TaskResultStore] failed to rename async result file {:?} -> {:?}: {}",
                                     tmp_path,
                                     path,
                                     e
@@ -418,7 +418,7 @@ impl AsyncTaskResultStore {
                         }
                         Err(e) => {
                             tracing::warn!(
-                                "failed to write async result temp file {:?}: {}",
+                                "[TaskResultStore] failed to write async result temp file {:?}: {}",
                                 tmp_path,
                                 e
                             );
@@ -427,7 +427,7 @@ impl AsyncTaskResultStore {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "failed to serialize result {}: {}",
+                        "[TaskResultStore] failed to serialize result {}: {}",
                         result.task_id,
                         e
                     );
@@ -441,7 +441,7 @@ impl AsyncTaskResultStore {
             let path = dir.join(format!("{}.json", task_id));
             if Path::new(&path).exists() {
                 if let Err(e) = fs::remove_file(&path).await {
-                    tracing::warn!("failed to delete async result file {:?}: {}", path, e);
+                    tracing::warn!("[TaskResultStore] failed to delete async result file {:?}: {}", path, e);
                 }
             }
         }
@@ -539,7 +539,7 @@ impl GoTaskResultStore {
 
         // Load index from disk; failure is non-fatal
         if let Err(e) = store.load_index() {
-            tracing::warn!("failed to load task result index (starting fresh): {e}");
+            tracing::warn!("[TaskResultStore] failed to load task result index (starting fresh): {e}");
             *store.index.lock() = GoTaskResultIndex::default();
         }
 

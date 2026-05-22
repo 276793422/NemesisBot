@@ -136,7 +136,7 @@ pub async fn handle_websocket_upgrade(
     if !state.auth_token.is_empty() {
         let token = query.token.unwrap_or_default();
         if token != state.auth_token {
-            tracing::warn!("WebSocket authentication failed");
+            tracing::warn!("[WebSocket] Authentication failed");
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
     }
@@ -167,7 +167,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
 
     tracing::info!(
         session_id = %session_id,
-        "WebSocket connection established"
+        "[WebSocket] Connection established"
     );
 
     // Split socket into sink and stream
@@ -207,7 +207,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                     module = %pm.module,
                                     cmd = %pm.cmd,
                                     req_id = %req_id,
-                                    "WS API request received"
+                                    "[WebSocket] API request received"
                                 );
                                 if let Some(ref router) = state.ws_router {
                                     let ctx = crate::ws_router::RequestContext {
@@ -244,19 +244,19 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                         tracing::warn!(
                                             error = %e,
                                             session_id = %session_id,
-                                            "Failed to forward message to bus (channel closed)"
+                                            "[WebSocket] Failed to forward message to bus (channel closed)"
                                         );
                                     } else {
                                         tracing::debug!(
                                             session_id = %session_id,
                                             content = %incoming.content,
-                                            "Message forwarded to bus"
+                                            "[WebSocket] Message forwarded to bus"
                                         );
                                     }
                                 } else {
                                     tracing::warn!(
                                         session_id = %session_id,
-                                        "No inbound channel configured, dropping message"
+                                        "[WebSocket] No inbound channel configured, dropping message"
                                     );
                                 }
                             }
@@ -269,7 +269,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                 tracing::error!(
                                     error = %e,
                                     session_id = %session_id,
-                                    "Protocol message error"
+                                    "[WebSocket] Protocol message error"
                                 );
                                 let error_msg = build_error_message(&e);
                                 let _ = send_queue.send(error_msg).await;
@@ -284,28 +284,28 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                     Some(Ok(Message::Close(_))) => {
                         tracing::info!(
                             session_id = %session_id,
-                            "WebSocket close frame received"
+                            "[WebSocket] Close frame received"
                         );
                         break;
                     }
                     Some(Ok(Message::Binary(_))) => {
                         tracing::warn!(
                             session_id = %session_id,
-                            "Received binary message (not supported)"
+                            "[WebSocket] Received binary message (not supported)"
                         );
                     }
                     Some(Err(e)) => {
                         tracing::error!(
                             error = %e,
                             session_id = %session_id,
-                            "WebSocket read error"
+                            "[WebSocket] Read error"
                         );
                         break;
                     }
                     None => {
                         tracing::info!(
                             session_id = %session_id,
-                            "WebSocket stream ended"
+                            "[WebSocket] Stream ended"
                         );
                         break;
                     }
@@ -326,7 +326,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
 
     tracing::info!(
         session_id = %session_id,
-        "WebSocket connection closed"
+        "[WebSocket] Connection closed"
     );
 }
 
@@ -397,7 +397,7 @@ fn handle_chat_send(
     tracing::debug!(
         session_id = %session_id,
         content = %data.content,
-        "Message forwarded to channel (new protocol)"
+        "[WebSocket] Message forwarded to channel (new protocol)"
     );
 
     Ok(Some(IncomingMessage {
@@ -438,7 +438,7 @@ fn handle_history_request(
     tracing::debug!(
         session_id = %session_id,
         request_id = %req_data.request_id,
-        "History request forwarded to channel"
+        "[WebSocket] History request forwarded to channel"
     );
 
     Ok(Some(IncomingMessage {
@@ -463,7 +463,7 @@ fn handle_system_module(msg: &ProtocolMessage) -> Result<Option<IncomingMessage>
         },
         "error" => match msg.cmd.as_str() {
             "notify" => {
-                tracing::warn!("client error notification: {:?}", msg.data);
+                tracing::warn!("[WebSocket] Client error notification: {:?}", msg.data);
                 Ok(None)
             }
             _ => Err(format!("unknown error cmd: {}", msg.cmd)),
@@ -523,7 +523,7 @@ pub async fn broadcast_to_session(
         role = %role,
         content_len = content.len(),
         content_preview = &content[..content.len().min(100)],
-        "broadcast_to_session called"
+        "[WebSocket] broadcast_to_session called"
     );
 
     let data = build_broadcast_message(role, content)?;
@@ -535,7 +535,7 @@ pub async fn broadcast_to_session(
     tracing::info!(
         session_id = %session_id,
         role = %role,
-        "broadcast_to_session completed"
+        "[WebSocket] broadcast_to_session completed"
     );
     Ok(())
 }

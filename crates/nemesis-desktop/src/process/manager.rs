@@ -90,22 +90,22 @@ impl ProcessManager {
     ///
     /// Starts the WebSocket server and spawns the background monitor loop task.
     pub async fn start(&self) -> Result<(), String> {
-        info!("ProcessManager: Starting...");
+        info!("[ProcessManager] Starting...");
 
         // Start the WebSocket server
         let port = self.ws_server.start().await?;
-        info!("ProcessManager: WebSocket server started on port {}", port);
+        info!("[ProcessManager] WebSocket server started on port {}", port);
 
         // Start monitor loop in background
         self.spawn_monitor_loop();
 
-        info!("ProcessManager: Started");
+        info!("[ProcessManager] Started");
         Ok(())
     }
 
     /// Stop the process manager and terminate all children.
     pub fn stop(&self) -> Result<(), String> {
-        info!("ProcessManager: Stopping...");
+        info!("[ProcessManager] Stopping...");
 
         // Signal shutdown
         let _ = self.shutdown_tx.send(());
@@ -113,12 +113,12 @@ impl ProcessManager {
         // Terminate all children
         let mut state = self.state.lock();
         for (id, child) in state.children.iter_mut() {
-            info!("ProcessManager: Terminating child: {}", id);
+            info!("[ProcessManager] Terminating child: {}", id);
             if let Err(e) = self.executor.terminate_child(child) {
-                warn!("ProcessManager: Failed to terminate child {}: {}", id, e);
+                warn!("[ProcessManager] Failed to terminate child {}: {}", id, e);
             }
             if let Err(e) = self.executor.cleanup(child) {
-                warn!("ProcessManager: Failed to cleanup child {}: {}", id, e);
+                warn!("[ProcessManager] Failed to cleanup child {}: {}", id, e);
             }
         }
         state.children.clear();
@@ -129,7 +129,7 @@ impl ProcessManager {
         // Stop WebSocket server
         self.ws_server.stop();
 
-        info!("ProcessManager: Stopped");
+        info!("[ProcessManager] Stopped");
         Ok(())
     }
 
@@ -150,7 +150,7 @@ impl ProcessManager {
     ) -> Result<(String, Option<tokio::sync::oneshot::Receiver<serde_json::Value>>), String> {
         let child_id = format!("child-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         info!(
-            "ProcessManager: Spawning child {} (type: {})",
+            "[ProcessManager] Spawning child {} (type: {})",
             child_id, window_type
         );
 
@@ -182,7 +182,7 @@ impl ProcessManager {
             state.children.insert(child_id.clone(), child);
         }
 
-        info!("ProcessManager: Child {} created (PID: {})", child_id, pid);
+        info!("[ProcessManager] Child {} created (PID: {})", child_id, pid);
 
         // Perform handshake via pipes
         let handshake_result = self.perform_handshake(&child_id)?;
@@ -191,14 +191,14 @@ impl ProcessManager {
             return Err("handshake failed".to_string());
         }
 
-        info!("ProcessManager: Handshake completed with child {}", child_id);
+        info!("[ProcessManager] Handshake completed with child {}", child_id);
 
         // Generate WebSocket key
         let ws_port = self.ws_server.get_port();
         let ws_key = self.ws_server.key_generator().generate(&child_id, pid);
 
         info!(
-            "ProcessManager: WS key generated for child {}: port={}",
+            "[ProcessManager] WS key generated for child {}: port={}",
             child_id, ws_port
         );
 
@@ -208,7 +208,7 @@ impl ProcessManager {
             return Err(format!("failed to send WS key: {}", e));
         }
 
-        info!("ProcessManager: WS key sent to child {}", child_id);
+        info!("[ProcessManager] WS key sent to child {}", child_id);
 
         // Send window data via pipe
         if let Err(e) = self.send_window_data(&child_id, data) {
@@ -216,13 +216,13 @@ impl ProcessManager {
             return Err(format!("failed to send window data: {}", e));
         }
 
-        info!("ProcessManager: Window data sent to child {}", child_id);
+        info!("[ProcessManager] Window data sent to child {}", child_id);
 
         // Persistent windows (dashboard) don't wait for results
         let is_persistent = window_type == "dashboard";
         if is_persistent {
             info!(
-                "ProcessManager: Child {} is a persistent window (no result waiting)",
+                "[ProcessManager] Child {} is a persistent window (no result waiting)",
                 child_id
             );
             return Ok((child_id, None));
@@ -436,10 +436,10 @@ impl ProcessManager {
             // Wait up to 5 minutes for result (or shutdown)
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(300)) => {
-                    debug!("ProcessManager: Timeout waiting for result from child {}", child_id);
+                    debug!("[ProcessManager] Timeout waiting for result from child {}", child_id);
                 }
                 _ = shutdown_rx.recv() => {
-                    debug!("ProcessManager: Shutdown while waiting for child {}", child_id);
+                    debug!("[ProcessManager] Shutdown while waiting for child {}", child_id);
                 }
             }
 
@@ -462,7 +462,7 @@ impl ProcessManager {
         params: serde_json::Value,
     ) -> Result<(), String> {
         info!(
-            "ProcessManager: Notifying child {} with method {}",
+            "[ProcessManager] Notifying child {} with method {}",
             child_id, method
         );
 
@@ -479,7 +479,7 @@ impl ProcessManager {
             .send_notification(child_id, method, params)?;
 
         debug!(
-            "ProcessManager: Notification sent to child {}: {}",
+            "[ProcessManager] Notification sent to child {}: {}",
             child_id, method
         );
         Ok(())
@@ -496,7 +496,7 @@ impl ProcessManager {
         params: serde_json::Value,
     ) -> Result<Message, String> {
         info!(
-            "ProcessManager: Calling child {} with method {}",
+            "[ProcessManager] Calling child {} with method {}",
             child_id, method
         );
 
@@ -516,7 +516,7 @@ impl ProcessManager {
             .map_err(|e| format!("call_child failed: {}", e))?;
 
         debug!(
-            "ProcessManager: Response received from child {}: {}",
+            "[ProcessManager] Response received from child {}: {}",
             child_id, method
         );
         Ok(result)
@@ -550,7 +550,7 @@ impl ProcessManager {
 
                         // Clean up dead children
                         for id in dead_ids {
-                            info!("ProcessManager: Child {} is dead, cleaning up", id);
+                            info!("[ProcessManager] Child {} is dead, cleaning up", id);
 
                             let mut s = state.lock();
                             if let Some(mut child) = s.children.remove(&id) {
@@ -563,7 +563,7 @@ impl ProcessManager {
                         }
                     }
                     _ = shutdown_rx.recv() => {
-                        debug!("ProcessManager: Monitor loop shutting down");
+                        debug!("[ProcessManager] Monitor loop shutting down");
                         return;
                     }
                 }
@@ -580,7 +580,7 @@ impl ProcessManager {
             .get_mut(child_id)
             .ok_or_else(|| format!("child not found: {}", child_id))?;
 
-        info!("ProcessManager: Terminating child: {}", child_id);
+        info!("[ProcessManager] Terminating child: {}", child_id);
 
         self.executor.terminate_child(child)?;
         self.executor.cleanup(child)?;
@@ -634,7 +634,7 @@ impl ProcessManager {
         };
 
         for id in dead_ids {
-            info!("ProcessManager: Cleaning up dead child: {}", id);
+            info!("[ProcessManager] Cleaning up dead child: {}", id);
             let mut state = self.state.lock();
             if let Some(mut child) = state.children.remove(&id) {
                 let _ = self.executor.cleanup(&mut child);

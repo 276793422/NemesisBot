@@ -97,7 +97,7 @@ impl WsRouter {
                 tracing::warn!(
                     req_id = %req_id,
                     error = %e,
-                    "Failed to send WS API response"
+                    "[WebSocket] Failed to send WS API response"
                 );
             }
         }

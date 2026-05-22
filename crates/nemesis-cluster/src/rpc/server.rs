@@ -101,7 +101,7 @@ impl RpcServer {
     pub fn register_handler(&self, action: &str, handler: RpcHandlerFn) {
         tracing::info!(
             action = action,
-            "[RPC-Server] Handler registered for action: {}",
+            "[RpcServer] Handler registered for action: {}",
             action,
         );
         self.handlers.write().insert(action.to_string(), Arc::from(handler));
@@ -111,7 +111,7 @@ impl RpcServer {
     pub fn unregister_handler(&self, action: &str) {
         tracing::info!(
             action = action,
-            "[RPC-Server] Handler unregistered for action: {}",
+            "[RpcServer] Handler unregistered for action: {}",
             action,
         );
         self.handlers.write().remove(action);
@@ -144,8 +144,10 @@ impl RpcServer {
         tracing::info!(
             bind_address = %self.config.bind_address,
             port = actual_port,
-            "RPC server started"
+            "[RpcServer] RPC server started"
         );
+
+        // Start accept loop
 
         // Start accept loop
         let shutdown_rx = self.shutdown_tx.subscribe();
@@ -180,7 +182,7 @@ impl RpcServer {
         }
         *self.running.write() = false;
         let _ = self.shutdown_tx.send(());
-        tracing::info!("RPC server stopped");
+        tracing::info!("[RpcServer] RPC server stopped");
         Ok(())
     }
 
@@ -226,13 +228,13 @@ impl RpcServer {
                             if current >= max_conns {
                                 tracing::warn!(
                                     remote = %remote_addr,
-                                    "Rejecting connection: max_conns reached"
+                                    "[RpcServer] Rejecting connection: max_conns reached"
                                 );
                                 drop(stream);
                                 continue;
                             }
 
-                            tracing::info!(remote = %remote_addr, "Accepted RPC connection");
+                            tracing::info!(remote = %remote_addr, "[RpcServer] Accepted RPC connection");
 
                             let handlers = Arc::clone(&handlers);
                             let auth_token = auth_token.clone();
@@ -252,12 +254,12 @@ impl RpcServer {
                             });
                         }
                         Err(e) => {
-                            tracing::error!(error = %e, "Accept error");
+                            tracing::error!(error = %e, "[RpcServer] Accept error");
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    tracing::info!("RPC server accept loop shutting down");
+                    tracing::info!("[RpcServer] RPC server accept loop shutting down");
                     break;
                 }
             }
@@ -291,16 +293,16 @@ impl RpcServer {
 
             match read_result {
                 Ok(Ok(0)) => {
-                    tracing::warn!(remote = %remote_addr, "Connection closed during auth");
+                    tracing::warn!(remote = %remote_addr, "[RpcServer] Connection closed during auth");
                     return;
                 }
                 Ok(Ok(_)) => {
                     let token = token_line.trim();
                     if token != auth_token {
-                        tracing::warn!(remote = %remote_addr, "Unauthorized connection (invalid token)");
+                        tracing::warn!(remote = %remote_addr, "[RpcServer] Unauthorized connection (invalid token)");
                         return;
                     }
-                    tracing::info!(remote = %remote_addr, "Authenticated RPC connection");
+                    tracing::info!(remote = %remote_addr, "[RpcServer] Authenticated RPC connection");
 
                     // Recover the TCP stream from the BufReader so we can
                     // continue with framed communication.
@@ -319,7 +321,7 @@ impl RpcServer {
                     let mut conn = TcpConn::new(stream, config);
 
                     if let Err(e) = conn.start().await {
-                        tracing::error!(remote = %remote_addr, error = %e, "Failed to start TcpConn");
+                        tracing::error!(remote = %remote_addr, error = %e, "[RpcServer] Failed to start TcpConn");
                         return;
                     }
 
@@ -351,7 +353,7 @@ impl RpcServer {
                                 }
                             }
                             None => {
-                                tracing::debug!(remote = %remote_addr, "Connection closed");
+                                tracing::debug!(remote = %remote_addr, "[RpcServer] Connection closed");
                                 break;
                             }
                         }
@@ -359,10 +361,10 @@ impl RpcServer {
                     conn.close();
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!(remote = %remote_addr, error = %e, "Failed to read auth token");
+                    tracing::warn!(remote = %remote_addr, error = %e, "[RpcServer] Failed to read auth token");
                 }
                 Err(_) => {
-                    tracing::warn!(remote = %remote_addr, "Auth timeout");
+                    tracing::warn!(remote = %remote_addr, "[RpcServer] Auth timeout");
                 }
             }
             return;
@@ -377,7 +379,7 @@ impl RpcServer {
         let mut conn = TcpConn::new(stream, config);
 
         if let Err(e) = conn.start().await {
-            tracing::error!(remote = %remote_addr, error = %e, "Failed to start TcpConn");
+            tracing::error!(remote = %remote_addr, error = %e, "[RpcServer] Failed to start TcpConn (no auth)");
             return;
         }
 
@@ -390,7 +392,7 @@ impl RpcServer {
                     }
                 }
                 None => {
-                    tracing::debug!(remote = %remote_addr, "Connection closed");
+                    tracing::debug!(remote = %remote_addr, "[RpcServer] Connection closed");
                     break;
                 }
             }
@@ -413,7 +415,7 @@ impl RpcServer {
             action = %action,
             from = %wire_msg.from,
             id = %wire_msg.id,
-            "Received RPC request"
+            "[RpcServer] Received RPC request"
         );
 
         // Parse payload as JSON value
@@ -463,7 +465,7 @@ impl RpcServer {
                 action = %action,
                 from = %wire_msg.from,
                 id = %wire_msg.id,
-                "[RPC-Server] No handler for action: {}",
+                "[RpcServer] No handler for action: {}",
                 action,
             );
             let resp = WireMessage::new_error(
@@ -484,13 +486,13 @@ impl RpcServer {
                     action = %action,
                     from = %wire_msg.from,
                     id = %wire_msg.id,
-                    "[RPC-Server] Request handled successfully: action={}, from={}",
+                    "[RpcServer] Request handled successfully: action={}, from={}",
                     action,
                     wire_msg.from,
                 );
                 let resp = WireMessage::new_response(wire_msg, value);
                 if let Err(e) = conn.send(&resp).await {
-                    tracing::error!(error = %e, "Failed to send response");
+                    tracing::error!(error = %e, "[RpcServer] Failed to send response");
                 }
             }
             Err(err) => {
@@ -499,13 +501,13 @@ impl RpcServer {
                     from = %wire_msg.from,
                     id = %wire_msg.id,
                     error = %err,
-                    "[RPC-Server] Request handler returned error: action={}, from={}",
+                    "[RpcServer] Request handler returned error: action={}, from={}",
                     action,
                     wire_msg.from,
                 );
                 let resp = WireMessage::new_error(wire_msg, &err);
                 if let Err(e) = conn.send(&resp).await {
-                    tracing::error!(error = %e, "Failed to send error response");
+                    tracing::error!(error = %e, "[RpcServer] Failed to send error response");
                 }
             }
         }
@@ -553,7 +555,7 @@ impl RpcServer {
                 .get("task_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            tracing::info!(task_id = %task_id, "peer_chat request received (default handler)");
+            tracing::info!(task_id = %task_id, "[RpcServer] peer_chat request received (default handler)");
             Ok(serde_json::json!({
                 "status": "accepted",
                 "task_id": task_id,
@@ -567,7 +569,7 @@ impl RpcServer {
                 .get("task_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            tracing::info!(task_id = %task_id, "peer_chat_callback received (default handler)");
+            tracing::info!(task_id = %task_id, "[RpcServer] peer_chat_callback received (default handler)");
             Ok(serde_json::json!({
                 "status": "received",
                 "task_id": task_id,
@@ -591,7 +593,7 @@ impl RpcServer {
             None => {
                 tracing::warn!(
                     action = action,
-                    "[RPC-Server] No handler for sync request: action={}",
+                    "[RpcServer] No handler for sync request: action={}",
                     action,
                 );
                 return Err(format!("no handler for action: {}", action));

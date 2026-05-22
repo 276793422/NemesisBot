@@ -447,7 +447,7 @@ impl SessionStore {
         }
 
         if loaded > 0 {
-            info!("Loaded {} sessions from disk", loaded);
+            info!("[SessionStore] Loaded {} sessions from disk", loaded);
         }
     }
 
@@ -701,7 +701,7 @@ impl Summarizer {
             self.session_store.set_summary(session_key, &final_summary);
 
             if let Err(e) = self.session_store.save(session_key) {
-                warn!("Failed to save session after summarization: {}", e);
+                warn!("[SessionStore] Failed to save session after summarization: {}", e);
             }
         }
 
@@ -985,7 +985,7 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
     new_history.push(history[history.len() - 1].clone());
 
     info!(
-        "Forced compression: dropped {} messages, new history has {} messages",
+        "[SessionStore] Forced compression: dropped {} messages, new history has {} messages",
         dropped_count,
         new_history.len()
     );

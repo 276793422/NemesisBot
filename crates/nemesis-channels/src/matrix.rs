@@ -321,7 +321,7 @@ impl Channel for MatrixChannel {
     }
 
     async fn start(&self) -> Result<()> {
-        info!("starting Matrix channel");
+        info!("[MatrixChannel] starting Matrix channel");
         *self.running.write() = true;
         self.base.set_enabled(true);
 
@@ -367,7 +367,7 @@ impl Channel for MatrixChannel {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        warn!("Matrix sync error: {e}");
+                        warn!("[MatrixChannel] sync error: {e}");
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                         continue;
@@ -375,7 +375,7 @@ impl Channel for MatrixChannel {
                 };
 
                 if !resp.status().is_success() {
-                    warn!("Matrix sync returned {}", resp.status());
+                    warn!("[MatrixChannel] sync returned {}", resp.status());
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(max_backoff);
                     continue;
@@ -386,7 +386,7 @@ impl Channel for MatrixChannel {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(b) => b,
                     Err(e) => {
-                        warn!("Matrix sync parse error: {e}");
+                        warn!("[MatrixChannel] sync parse error: {e}");
                         continue;
                     }
                 };
@@ -436,15 +436,15 @@ impl Channel for MatrixChannel {
                 }
             }
 
-            info!("Matrix sync loop stopped");
+            info!("[MatrixChannel] sync loop stopped");
         });
 
-        info!("Matrix channel started");
+        info!("[MatrixChannel] channel started");
         Ok(())
     }
 
     async fn stop(&self) -> Result<()> {
-        info!("stopping Matrix channel");
+        info!("[MatrixChannel] stopping Matrix channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
         Ok(())
@@ -467,7 +467,7 @@ impl Channel for MatrixChannel {
             &msg.chat_id
         };
 
-        debug!(room_id = %room_id, "Matrix sending message");
+        debug!(room_id = %room_id, "[MatrixChannel] sending message");
         self.send_room_message(room_id, &msg.content).await?;
         Ok(())
     }

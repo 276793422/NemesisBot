@@ -187,7 +187,7 @@ impl RequestLoggerObserver {
             return;
         }
         if let Err(e) = logger.create_session() {
-            warn!("Failed to create logging session: {}", e);
+            warn!("[RequestLogger] Failed to create logging session: {}", e);
             return;
         }
         logger.log_user_request(&UserRequestInfo {

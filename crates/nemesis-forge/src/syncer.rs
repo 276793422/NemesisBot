@@ -80,7 +80,7 @@ impl Syncer {
         tracing::info!(
             peers = count,
             node_id = %self.bridge.local_node_id(),
-            "Shared reflection report with peers"
+            "[Syncer] Shared reflection report with peers"
         );
 
         Ok(count)
@@ -156,7 +156,7 @@ impl Syncer {
         tracing::info!(
             from = %from,
             filename = %final_filename,
-            "Received remote reflection"
+            "[Syncer] Received remote reflection"
         );
 
         Ok(())

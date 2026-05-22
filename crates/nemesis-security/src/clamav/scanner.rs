@@ -109,7 +109,7 @@ impl Scanner {
         self.record_scan(0, result.infected, false).await;
 
         if result.infected {
-            tracing::warn!(path = %file_path.display(), virus = %result.virus, "Virus detected");
+            tracing::warn!(path = %file_path.display(), virus = %result.virus, "[Scanner] Virus detected");
         }
 
         Ok(result)
@@ -198,7 +198,7 @@ impl Scanner {
                     path = %r.path,
                     virus = %r.virus,
                     dir = %dir_path.display(),
-                    "Virus detected in directory scan"
+                    "[Scanner] Virus detected in directory scan"
                 );
             }
         }

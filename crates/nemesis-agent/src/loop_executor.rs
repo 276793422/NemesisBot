@@ -604,7 +604,7 @@ impl FallbackExecutor {
                 if let Some(entry) = cooldowns.get(&key) {
                     if entry.last_failure.elapsed() < FALLBACK_COOLDOWN {
                         debug!(
-                            "Skipping fallback candidate {} (cooldown remaining: {:?})",
+                            "[FallbackExecutor] Skipping fallback candidate {} (cooldown remaining: {:?})",
                             key,
                             FALLBACK_COOLDOWN - entry.last_failure.elapsed()
                         );
@@ -630,7 +630,7 @@ impl FallbackExecutor {
                 }
                 Err(err) => {
                     warn!(
-                        "Fallback candidate {} failed: {}",
+                        "[FallbackExecutor] Fallback candidate {} failed: {}",
                         key, err
                     );
                     // Set cooldown.
@@ -949,14 +949,14 @@ impl AgentLoopExecutor {
     ///
     /// This method blocks until the inbound channel is closed and drained.
     pub async fn run(&mut self) {
-        info!("AgentLoopExecutor starting");
+        info!("[AgentLoopExecutor] starting");
 
         while let Some(msg) = self.inbound_rx.recv().await {
-            debug!("Received inbound message from channel={}", msg.channel);
+            debug!("[AgentLoopExecutor] Received inbound message from channel={}", msg.channel);
             self.process_message(msg).await;
         }
 
-        info!("AgentLoopExecutor stopped (inbound channel closed)");
+        info!("[AgentLoopExecutor] stopped (inbound channel closed)");
     }
 
     /// Process a single inbound message through the agent loop.
@@ -986,7 +986,7 @@ impl AgentLoopExecutor {
         {
             let task_id = &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
             debug!(
-                "Cluster continuation message received: task_id={}",
+                "[AgentLoopExecutor] Cluster continuation message received: task_id={}",
                 task_id
             );
 
@@ -1011,7 +1011,7 @@ impl AgentLoopExecutor {
                 .await;
             } else {
                 warn!(
-                    "Cluster continuation received but no ContinuationManager configured: task_id={}",
+                    "[AgentLoopExecutor] Cluster continuation received but no ContinuationManager configured: task_id={}",
                     task_id
                 );
             }
@@ -1021,7 +1021,7 @@ impl AgentLoopExecutor {
         // Check session busy state.
         if !self.try_acquire_session(&msg.session_key) {
             warn!(
-                "Session busy, returning busy message: session_key={}",
+                "[AgentLoopExecutor] Session busy, returning busy message: session_key={}",
                 msg.session_key
             );
             let outbound = nemesis_types::channel::OutboundMessage {
@@ -1031,7 +1031,7 @@ impl AgentLoopExecutor {
                 message_type: String::new(),
             };
             if let Err(e) = self.outbound_tx.send(outbound).await {
-                warn!("Failed to send busy message: {}", e);
+                warn!("[AgentLoopExecutor] Failed to send busy message: {}", e);
             }
             return;
         }
@@ -1084,7 +1084,7 @@ impl AgentLoopExecutor {
             && !nemesis_types::constants::is_internal_channel(&msg.channel)
         {
             let channel_key = format!("{}:{}", msg.channel, msg.chat_id);
-            debug!("Recording last channel: {}", channel_key);
+            debug!("[AgentLoopExecutor] Recording last channel: {}", channel_key);
         }
 
         // Add user message to instance history.
@@ -1107,7 +1107,7 @@ impl AgentLoopExecutor {
             .session_persistence
             .save_session(&msg.session_key)
         {
-            warn!("Failed to save session: {}", e);
+            warn!("[AgentLoopExecutor] Failed to save session: {}", e);
         }
 
         // Maybe trigger summarization.
@@ -1136,7 +1136,7 @@ impl AgentLoopExecutor {
         // Log response.
         let response_preview = nemesis_types::utils::truncate(&final_content, 120);
         info!(
-            "Response: {} (session={}, iterations={}, len={})",
+            "[AgentLoopExecutor] Response: {} (session={}, iterations={}, len={})",
             response_preview,
             msg.session_key,
             total_iterations,
@@ -1153,7 +1153,7 @@ impl AgentLoopExecutor {
         };
 
         if let Err(e) = self.outbound_tx.send(outbound).await {
-            warn!("Failed to send outbound message: {}", e);
+            warn!("[AgentLoopExecutor] Failed to send outbound message: {}", e);
         }
     }
 
@@ -1181,13 +1181,13 @@ impl AgentLoopExecutor {
             iteration += 1;
 
             debug!(
-                "LLM iteration {}/{}: session={}",
+                "[AgentLoopExecutor] LLM iteration {}/{}: session={}",
                 iteration, max_iterations, context.session_key
             );
 
             // Build the message list from instance history.
             let messages = self.build_messages(instance);
-            debug!("Sending {} messages to LLM", messages.len());
+            debug!("[AgentLoopExecutor] Sending {} messages to LLM", messages.len());
 
             // Build tool definitions from registered tools for LLM function calling.
             let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.iter()
@@ -1254,7 +1254,7 @@ impl AgentLoopExecutor {
             if response.tool_calls.is_empty() || response.finished {
                 final_content = response.content.clone();
                 debug!(
-                    "LLM response without tool calls (direct answer, {} chars)",
+                    "[AgentLoopExecutor] LLM response without tool calls (direct answer, {} chars)",
                     final_content.len()
                 );
                 break;
@@ -1263,7 +1263,7 @@ impl AgentLoopExecutor {
             // Log tool calls.
             let tool_names: Vec<&str> = response.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
             info!(
-                "LLM requested tool calls: {:?} (iteration={})",
+                "[AgentLoopExecutor] LLM requested tool calls: {:?} (iteration={})",
                 tool_names, iteration
             );
 
@@ -1276,7 +1276,7 @@ impl AgentLoopExecutor {
             instance.set_state(AgentState::ExecutingTool);
             for (chain_pos, tc) in tool_calls.iter().enumerate() {
                 let tool_start = std::time::Instant::now();
-                info!("Tool call: {} (id={})", tc.name, tc.id);
+                info!("[AgentLoopExecutor] Tool call: {} (id={})", tc.name, tc.id);
 
                 // Execute the tool with context.
                 let tool_result = self
@@ -1311,7 +1311,7 @@ impl AgentLoopExecutor {
                             )
                             .await;
                         info!(
-                            "Continuation snapshot saved: task_id={}",
+                            "[AgentLoopExecutor] Continuation snapshot saved: task_id={}",
                             tool_result.task_id
                         );
                     }
@@ -1326,10 +1326,10 @@ impl AgentLoopExecutor {
                         message_type: String::new(),
                     };
                     if let Err(e) = self.outbound_tx.send(outbound).await {
-                        warn!("Failed to send tool result to user: {}", e);
+                        warn!("[AgentLoopExecutor] Failed to send tool result to user: {}", e);
                     }
                     debug!(
-                        "Sent tool result to user: tool={}, len={}",
+                        "[AgentLoopExecutor] Sent tool result to user: tool={}, len={}",
                         tc.name,
                         tool_result.for_user.len()
                     );
@@ -1421,7 +1421,7 @@ impl AgentLoopExecutor {
                 Ok(fb_result) => {
                     if !fb_result.provider.is_empty() && fb_result.attempts > 1 {
                         info!(
-                            "Fallback: succeeded with {}/{} after {} attempts",
+                            "[AgentLoopExecutor] Fallback: succeeded with {}/{} after {} attempts",
                             fb_result.provider, fb_result.model, fb_result.attempts
                         );
                     }
@@ -1475,7 +1475,7 @@ impl AgentLoopExecutor {
 
                     // If not a context error, or we've exhausted retries, return error as response.
                     if !is_context_error || retry_count >= max_retries {
-                        warn!("LLM call failed (non-recoverable): {}", err);
+                        warn!("[AgentLoopExecutor] LLM call failed (non-recoverable): {}", err);
                         return crate::r#loop::LlmResponse {
                             content: format!("Error: {}", err),
                             tool_calls: Vec::new(),
@@ -1486,7 +1486,7 @@ impl AgentLoopExecutor {
                     }
 
                     warn!(
-                        "Context window error detected, attempting compression (retry {}/{})",
+                        "[AgentLoopExecutor] Context window error detected, attempting compression (retry {}/{})",
                         retry_count, max_retries
                     );
 
@@ -1544,12 +1544,12 @@ impl AgentLoopExecutor {
 
         for tc in tool_calls {
             let tool_start = std::time::Instant::now();
-            info!("Executing tool: {} (id={})", tc.name, tc.id);
+            info!("[AgentLoopExecutor] Executing tool: {} (id={})", tc.name, tc.id);
 
             let result = match self.tools.get(&tc.name) {
                 Some(tool) => match tool.execute(&tc.arguments, context).await {
                     Ok(output) => {
-                        debug!("Tool {} returned: {} bytes", tc.name, output.len());
+                        debug!("[AgentLoopExecutor] Tool {} returned: {} bytes", tc.name, output.len());
                         ToolCallResult {
                             tool_name: tc.name.clone(),
                             result: output,
@@ -1557,7 +1557,7 @@ impl AgentLoopExecutor {
                         }
                     }
                     Err(err) => {
-                        warn!("Tool {} error: {}", tc.name, err);
+                        warn!("[AgentLoopExecutor] Tool {} error: {}", tc.name, err);
                         ToolCallResult {
                             tool_name: tc.name.clone(),
                             result: format!("Tool error: {}", err),
@@ -1566,7 +1566,7 @@ impl AgentLoopExecutor {
                     }
                 },
                 None => {
-                    warn!("Unknown tool: {}", tc.name);
+                    warn!("[AgentLoopExecutor] Unknown tool: {}", tc.name);
                     ToolCallResult {
                         tool_name: tc.name.clone(),
                         result: format!("Error: Unknown tool '{}'", tc.name),
@@ -1633,7 +1633,7 @@ impl AgentLoopExecutor {
                 // Call set_context on the tool (default no-op, overridden by context-aware tools).
                 tool.set_context(channel, chat_id);
                 debug!(
-                    "Updated tool context: tool={}, channel={}, chat_id={}",
+                    "[AgentLoopExecutor] Updated tool context: tool={}, channel={}, chat_id={}",
                     tool_name, channel, chat_id
                 );
             }
@@ -1690,7 +1690,7 @@ impl AgentLoopExecutor {
 
         // Save session.
         if let Err(e) = self.session_persistence.save_session(session_key) {
-            warn!("Failed to save session: {}", e);
+            warn!("[AgentLoopExecutor] Failed to save session: {}", e);
         }
 
         // Emit conversation end.
@@ -1728,7 +1728,7 @@ impl AgentLoopExecutor {
         };
 
         if let Err(e) = self.outbound_tx.send(outbound).await {
-            warn!("Failed to send outbound message: {}", e);
+            warn!("[AgentLoopExecutor] Failed to send outbound message: {}", e);
         }
 
         Ok(result)

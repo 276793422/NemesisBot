@@ -110,7 +110,7 @@ impl RateLimiter {
                     peer_id = peer_id,
                     window_requests = timestamps.len(),
                     max_per_window = self.max_requests_per_window,
-                    "[RPC-Client] Rate limited: peer exceeded window limit",
+                    "[RpcClient] Rate limited: peer exceeded window limit",
                 );
                 return Err(RpcClientError::RateLimited(format!(
                     "peer {} exceeded {} requests per {:?}",
@@ -153,7 +153,7 @@ impl RateLimiter {
                     tracing::debug!(
                         peer_id = peer_id,
                         attempts = attempt,
-                        "[RPC-Client] Rate limit acquire succeeded after retries",
+                        "[RpcClient] Rate limit acquire succeeded after retries",
                     );
                 }
                 return Ok(());
@@ -164,7 +164,7 @@ impl RateLimiter {
         tracing::warn!(
             peer_id = peer_id,
             max_retries = MAX_RETRIES,
-            "[RPC-Client] Rate limited, exhausted all retries",
+            "[RpcClient] Rate limited, exhausted all retries",
         );
         Err(RpcClientError::RateLimited(format!(
             "peer {} rate limited after {} retries",
@@ -298,7 +298,7 @@ impl RpcClient {
             tracing::warn!(
                 peer_id = peer_id,
                 error = %e,
-                "[RPC-Client] Rate limited, request rejected",
+                "[RpcClient] Rate limited, request rejected",
             );
             return Err(e);
         }
@@ -317,7 +317,7 @@ impl RpcClient {
         if !is_online {
             tracing::warn!(
                 peer_id = peer_id,
-                "[RPC-Client] Peer is offline",
+                "[RpcClient] Peer is offline",
             );
             return Err(RpcClientError::Connection(format!(
                 "peer is offline: {}",
@@ -345,7 +345,7 @@ impl RpcClient {
             addr = %best_addr,
             action = ?request.action,
             request_id = %request.id,
-            "[RPC-Client] Connecting to peer",
+            "[RpcClient] Connecting to peer",
         );
 
         // 5. Execute with timeout
@@ -358,7 +358,7 @@ impl RpcClient {
                 peer_id = peer_id,
                 action = ?request.action,
                 timeout_secs = timeout.as_secs(),
-                "[RPC-Client] Call timed out",
+                "[RpcClient] Call timed out",
             );
             RpcClientError::Timeout
         })?
@@ -375,7 +375,7 @@ impl RpcClient {
                     peer_id = peer_id,
                     action = ?request.action,
                     duration_ms = elapsed.as_millis() as u64,
-                    "[RPC-Client] Call completed successfully",
+                    "[RpcClient] Call completed successfully",
                 );
             }
             Err(e) => {
@@ -384,7 +384,7 @@ impl RpcClient {
                     action = ?request.action,
                     duration_ms = elapsed.as_millis() as u64,
                     error = %e,
-                    "[RPC-Client] Call failed",
+                    "[RpcClient] Call failed",
                 );
             }
         }
@@ -408,7 +408,7 @@ impl RpcClient {
                 tracing::debug!(
                     addr = best_addr,
                     error = %e,
-                    "Failed to connect to best address, trying fallbacks"
+                    "[RpcClient] Failed to connect to best address, trying fallbacks"
                 );
             }
         }
@@ -426,11 +426,11 @@ impl RpcClient {
 
             match self.try_connect_and_send(addr, request).await {
                 Ok(resp) => {
-                    tracing::info!(addr = addr, "Connected to fallback address");
+                    tracing::info!(addr = addr, "[RpcClient] Connected to fallback address");
                     return Ok(resp);
                 }
                 Err(e) => {
-                    tracing::debug!(addr = addr, error = %e, "Fallback address failed");
+                    tracing::debug!(addr = addr, error = %e, "[RpcClient] Fallback address failed");
                 }
             }
         }
@@ -469,7 +469,7 @@ impl RpcClient {
 
         tracing::debug!(
             addr = addr,
-            "[RPC-Client] Connected to {}",
+            "[RpcClient] Connected to {}",
             addr,
         );
 
@@ -527,7 +527,7 @@ impl RpcClient {
         tracing::debug!(
             addr = addr,
             request_id = %request.id,
-            "RPC request sent, waiting for response"
+            "[RpcClient] RPC request sent, waiting for response"
         );
 
         // Receive response frame: [4-byte length][JSON WireMessage]
@@ -545,7 +545,7 @@ impl RpcClient {
                 addr = addr,
                 request_id = %request.id,
                 error = %err,
-                "[RPC-Client] Remote error response",
+                "[RpcClient] Remote error response",
             );
             return Err(RpcClientError::RemoteError(err.clone()));
         }
@@ -571,7 +571,7 @@ impl RpcClient {
                                 tracing::debug!(
                                     addr = addr,
                                     local_ip = %local_iface.ip,
-                                    "Selected address in same subnet"
+                                    "[RpcClient] Selected address in same subnet"
                                 );
                                 return addr.clone();
                             }

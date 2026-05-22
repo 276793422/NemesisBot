@@ -20,7 +20,7 @@ pub async fn run_headless_window(
     data: &ApprovalWindowData,
     ws_client: Option<Arc<WebSocketClient>>,
 ) -> Result<(), String> {
-    info!("HeadlessWindow({}): Starting", window_id);
+    info!("[HeadlessWindow] {}: Starting", window_id);
 
     // Wait 1 second before auto-approving
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -32,7 +32,7 @@ pub async fn run_headless_window(
         "timestamp": chrono::Utc::now().timestamp(),
     });
 
-    info!("HeadlessWindow({}): Sending auto-approve result", window_id);
+    info!("[HeadlessWindow] {}: Sending auto-approve result", window_id);
 
     // Send result via WebSocket
     if let Some(ref client) = ws_client {
@@ -42,7 +42,7 @@ pub async fn run_headless_window(
     // Keep alive for a bit to ensure result is sent
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    info!("HeadlessWindow({}): Completed", window_id);
+    info!("[HeadlessWindow] {}: Completed", window_id);
     Ok(())
 }
 

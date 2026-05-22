@@ -257,7 +257,7 @@ impl RequestLogger {
 
         // Create base directory
         if let Err(e) = fs::create_dir_all(&self.base_dir) {
-            warn!("Failed to create log directory: {}", e);
+            warn!("[RequestLogger] Failed to create log directory: {}", e);
             return Ok(()); // Silent failure
         }
 
@@ -267,7 +267,7 @@ impl RequestLogger {
         let session_dir = self.base_dir.join(format!("{}{}", timestamp, suffix));
 
         if let Err(e) = fs::create_dir_all(&session_dir) {
-            warn!("Failed to create session directory: {}", e);
+            warn!("[RequestLogger] Failed to create session directory: {}", e);
             return Ok(()); // Silent failure
         }
 

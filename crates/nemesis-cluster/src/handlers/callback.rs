@@ -65,7 +65,7 @@ impl CallbackHandler {
             task_id = %payload.task_id,
             success = payload.success,
             node_id = %self.node_id,
-            "Processing peer_chat callback"
+            "[CallbackHandler] Processing peer_chat callback"
         );
 
         if payload.success {
@@ -83,7 +83,7 @@ impl CallbackHandler {
             tracing::warn!(
                 task_id = %payload.task_id,
                 error = ?payload.error,
-                "Remote peer_chat failed"
+                "[CallbackHandler] Remote peer_chat failed"
             );
 
             // Mark task as failed if a completer is available.

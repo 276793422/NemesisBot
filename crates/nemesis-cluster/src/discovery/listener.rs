@@ -325,7 +325,7 @@ pub fn handle_discovery_message(
         }
         DiscoveryMessageType::Bye => {
             registry.remove(&msg.node_id);
-            tracing::info!(node_id = %msg.node_id, "Peer announced departure");
+            tracing::info!(node_id = %msg.node_id, "[Discovery] Peer announced departure");
             DiscoveryAction::None
         }
     }

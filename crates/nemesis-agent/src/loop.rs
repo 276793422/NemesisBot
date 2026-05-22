@@ -578,7 +578,7 @@ impl AgentLoop {
                     // Check for cluster continuation marker.
                     if agent_id == "__continuation__" {
                         let task_id = response;
-                        info!("Handling cluster continuation for task {}", task_id);
+                        info!("[AgentLoop] Handling cluster continuation for task {}", task_id);
 
                         // Clone the data needed by the spawned task.
                         // Mirrors Go's `go al.handleClusterContinuation(ctx, taskID)`.
@@ -618,7 +618,7 @@ impl AgentLoop {
                                 }
                             } else {
                                 warn!(
-                                    "No continuation manager configured, cannot handle continuation for task_id={}",
+                                    "[AgentLoop] No continuation manager configured, cannot handle continuation for task_id={}",
                                     task_id
                                 );
                             }
@@ -643,7 +643,7 @@ impl AgentLoop {
 
                         if already_sent {
                             debug!(
-                                "Skipping outbound publish: message tool already sent response for session {}",
+                                "[AgentLoop] Skipping outbound publish: message tool already sent response for session {}",
                                 msg.session_key
                             );
                         } else if let Some(ref tx) = self.outbound_tx {
@@ -667,7 +667,7 @@ impl AgentLoop {
                                 message_type: String::new(),
                             };
                             if let Err(e) = tx.send(outbound).await {
-                                warn!("Failed to send outbound message: {}", e);
+                                warn!("[AgentLoop] Failed to send outbound message: {}", e);
                             }
                         }
                     }
@@ -700,7 +700,7 @@ impl AgentLoop {
                     // Check for cluster continuation marker.
                     if agent_id == "__continuation__" {
                         let task_id = response;
-                        info!("Handling cluster continuation for task {}", task_id);
+                        info!("[AgentLoop] Handling cluster continuation for task {}", task_id);
 
                         let provider = self.provider.clone();
                         let model = self.config.model.clone();
@@ -738,7 +738,7 @@ impl AgentLoop {
                                 }
                             } else {
                                 warn!(
-                                    "No continuation manager configured, cannot handle continuation for task_id={}",
+                                    "[AgentLoop] No continuation manager configured, cannot handle continuation for task_id={}",
                                     task_id
                                 );
                             }
@@ -758,7 +758,7 @@ impl AgentLoop {
 
                         if already_sent {
                             debug!(
-                                "Skipping outbound publish: message tool already sent response for session {}",
+                                "[AgentLoop] Skipping outbound publish: message tool already sent response for session {}",
                                 msg.session_key
                             );
                         } else if let Some(ref tx) = self.outbound_tx {
@@ -781,7 +781,7 @@ impl AgentLoop {
                                 message_type: String::new(),
                             };
                             if let Err(e) = tx.send(outbound).await {
-                                warn!("Failed to send outbound message: {}", e);
+                                warn!("[AgentLoop] Failed to send outbound message: {}", e);
                             }
                         }
                     }
@@ -820,7 +820,7 @@ impl AgentLoop {
         map.clear();
         if count > 0 {
             tracing::warn!(
-                "Cleared {} session busy states (agent was stopped mid-processing)",
+                "[AgentLoop] Cleared {} session busy states (agent was stopped mid-processing)",
                 count
             );
         }
@@ -906,7 +906,7 @@ impl AgentLoop {
             }
         } else {
             warn!(
-                "No continuation manager configured, cannot handle continuation for task_id={}",
+                "[AgentLoop] No continuation manager configured, cannot handle continuation for task_id={}",
                 task_id
             );
         }
@@ -1061,7 +1061,7 @@ impl AgentLoop {
         let content_preview = truncate(&msg.content, 80);
 
         info!(
-            "Processing message from {}:{}: {}",
+            "[AgentLoop] Processing message from {}:{}: {}",
             msg.channel, msg.sender_id, content_preview
         );
 
@@ -1072,7 +1072,7 @@ impl AgentLoop {
                 .starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
             {
                 let task_id = &msg.sender_id[nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX.len()..];
-                debug!("Cluster continuation message intercepted, task_id={}", task_id);
+                debug!("[AgentLoop] Cluster continuation message intercepted, task_id={}", task_id);
                 return ("__continuation__".to_string(), task_id.to_string(), None);
             }
             let (resp, err) = self.process_system_message(msg).await;
@@ -1136,7 +1136,7 @@ impl AgentLoop {
             };
 
             info!(
-                "Routed message: agent_id={}, session_key={}, matched_by={}",
+                "[AgentLoop] Routed message: agent_id={}, session_key={}, matched_by={}",
                 route.agent_id, session_key, route.matched_by
             );
 
@@ -1159,7 +1159,7 @@ impl AgentLoop {
             };
 
             info!(
-                "Routed message (no resolver): agent_id={}, session_key={}",
+                "[AgentLoop] Routed message (no resolver): agent_id={}, session_key={}",
                 agent_id, session_key
             );
 
@@ -1169,7 +1169,7 @@ impl AgentLoop {
         // Session busy check.
         if !self.try_acquire_session(&session_key) {
             warn!(
-                "Session busy, returning busy message: session_key={}, mode={:?}",
+                "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
                 session_key, self.concurrent_mode
             );
             return (agent_id, BUSY_MESSAGE.to_string(), None);
@@ -1208,7 +1208,7 @@ impl AgentLoop {
         }
 
         info!(
-            "Processing system message: sender_id={}, chat_id={}",
+            "[AgentLoop] Processing system message: sender_id={}, chat_id={}",
             msg.sender_id, msg.chat_id
         );
 
@@ -1225,7 +1225,7 @@ impl AgentLoop {
         // Skip internal channels.
         if is_internal_channel(origin_channel) {
             info!(
-                "Subagent completed (internal channel): content_len={}",
+                "[AgentLoop] Subagent completed (internal channel): content_len={}",
                 msg.content.len()
             );
             return (String::new(), None);
@@ -1277,7 +1277,7 @@ impl AgentLoop {
         let req: HistoryRequest = match serde_json::from_str(&msg.content) {
             Ok(r) => r,
             Err(e) => {
-                error!("Failed to parse history request: {}", e);
+                error!("[AgentLoop] Failed to parse history request: {}", e);
                 self.publish_history_response(
                     &msg.chat_id,
                     "",
@@ -1364,7 +1364,7 @@ impl AgentLoop {
         let content = match serde_json::to_string(&response_data) {
             Ok(c) => c,
             Err(e) => {
-                error!("Failed to marshal history response: {}", e);
+                error!("[AgentLoop] Failed to marshal history response: {}", e);
                 return;
             }
         };
@@ -1377,14 +1377,14 @@ impl AgentLoop {
                 message_type: "history".to_string(),
             };
             if let Err(e) = tx.send(outbound).await {
-                warn!("Failed to send history response: {}", e);
+                warn!("[AgentLoop] Failed to send history response: {}", e);
             }
         } else {
-            warn!("publish_history_response: no outbound_tx available");
+            warn!("[AgentLoop] publish_history_response: no outbound_tx available");
         }
 
         debug!(
-            "History response published: chat_id={}, request_id={}, total_count={}, has_more={}",
+            "[AgentLoop] History response published: chat_id={}, request_id={}, total_count={}, has_more={}",
             chat_id, request_id, total_count, has_more
         );
     }
@@ -1398,7 +1398,7 @@ impl AgentLoop {
     pub fn record_last_channel(&self, channel: &str) {
         if let Some(ref mgr) = self.state_manager {
             if let Err(e) = mgr.set_last_channel(channel) {
-                tracing::warn!("Failed to persist last channel: {}", e);
+                tracing::warn!("[AgentLoop] Failed to persist last channel: {}", e);
             }
         }
     }
@@ -1408,7 +1408,7 @@ impl AgentLoop {
     pub fn record_last_chat_id(&self, chat_id: &str) {
         if let Some(ref mgr) = self.state_manager {
             if let Err(e) = mgr.set_last_chat_id(chat_id) {
-                tracing::warn!("Failed to persist last chat ID: {}", e);
+                tracing::warn!("[AgentLoop] Failed to persist last chat ID: {}", e);
             }
         }
     }
@@ -1713,7 +1713,7 @@ impl AgentLoop {
         let total = history.len();
         instance.set_history(retained);
         info!(
-            "Force-compressed history: {} messages -> {} messages (dropped {})",
+            "[AgentLoop] Force-compressed history: {} messages -> {} messages (dropped {})",
             total,
             instance.get_history().len(),
             dropped_count
@@ -1782,7 +1782,7 @@ impl AgentLoop {
         match response {
             Some(Ok(resp)) => resp.content,
             Some(Err(e)) => {
-                debug!("summarize_batch LLM call failed: {}", e);
+                debug!("[AgentLoop] summarize_batch LLM call failed: {}", e);
                 String::new()
             }
             None => String::new(),
@@ -1890,7 +1890,7 @@ impl AgentLoop {
             }
 
             if let Err(e) = store.save(session_key) {
-                warn!("Failed to persist session history for {}: {}", session_key, e);
+                warn!("[AgentLoop] Failed to persist session history for {}: {}", session_key, e);
             }
         }
 
@@ -1973,7 +1973,7 @@ impl AgentLoop {
         loop {
             if turns_used >= self.config.max_turns {
                 warn!(
-                    "Agent loop reached max turns ({})",
+                    "[AgentLoop] Agent loop reached max turns ({})",
                     self.config.max_turns
                 );
                 events.push(AgentEvent::Error(
@@ -1984,7 +1984,7 @@ impl AgentLoop {
 
             // Build the message list from instance history.
             let messages = self.build_messages(instance);
-            debug!("Sending {} messages to LLM", messages.len());
+            debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
 
             // Build tool definitions from registered tools for LLM function calling.
             // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
@@ -2000,7 +2000,7 @@ impl AgentLoop {
                     }
                 })
                 .collect();
-            debug!("Sending {} tool definitions to LLM", tool_defs.len());
+            debug!("[AgentLoop] Sending {} tool definitions to LLM", tool_defs.len());
 
             // Emit LLM request observer event.
             let msg_values: Vec<serde_json::Value> = messages.iter()
@@ -2043,7 +2043,7 @@ impl AgentLoop {
 
                         // Notify user about compression.
                         info!(
-                            "LLM context error, attempting compression and retry: {}",
+                            "[AgentLoop] LLM context error, attempting compression and retry: {}",
                             retry_err
                         );
 
@@ -2056,7 +2056,7 @@ impl AgentLoop {
                             // Rebuild messages from compressed history.
                             let compressed_messages = self.build_messages(instance);
                             debug!(
-                                "Retry {}: sending {} messages after compression",
+                                "[AgentLoop] Retry {}: sending {} messages after compression",
                                 retry_count,
                                 compressed_messages.len()
                             );
@@ -2081,7 +2081,7 @@ impl AgentLoop {
                                 }
                                 Err(e) => {
                                     retry_err = e;
-                                    warn!("LLM retry {} failed: {}", retry_count, retry_err);
+                                    warn!("[AgentLoop] LLM retry {} failed: {}", retry_count, retry_err);
                                 }
                             }
                         }
@@ -2089,7 +2089,7 @@ impl AgentLoop {
                         match got_response {
                             Some(resp) => resp,
                             None => {
-                                warn!("All LLM retries exhausted: {}", retry_err);
+                                warn!("[AgentLoop] All LLM retries exhausted: {}", retry_err);
                                 instance.add_assistant_message(
                                     &format!("Error: {}", retry_err),
                                     Vec::new(),
@@ -2101,7 +2101,7 @@ impl AgentLoop {
                             }
                         }
                     } else {
-                        warn!("LLM call failed: {}", err);
+                        warn!("[AgentLoop] LLM call failed: {}", err);
                         instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
                         let formatted = context.format_rpc_message(&format!("Error: {}", err));
                         events.push(AgentEvent::Error(formatted));
@@ -2198,7 +2198,7 @@ impl AgentLoop {
                             });
 
                             info!(
-                                "Continuation saved for async cluster_rpc: task_id={}, tool_call_id={}",
+                                "[AgentLoop] Continuation saved for async cluster_rpc: task_id={}, tool_call_id={}",
                                 task_id, tc.id
                             );
                         }
@@ -2248,7 +2248,7 @@ impl AgentLoop {
         tool_call: &ToolCallInfo,
         context: &RequestContext,
     ) -> String {
-        info!("Executing tool: {} (id={})", tool_call.name, tool_call.id);
+        info!("[AgentLoop] Executing tool: {} (id={})", tool_call.name, tool_call.id);
 
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
         if let Some(ref security) = self.security_plugin {
@@ -2264,7 +2264,7 @@ impl AgentLoop {
             let (allowed, reason) = security.execute(&invocation);
             if !allowed {
                 let reason_str = reason.unwrap_or_else(|| "operation denied by security policy".to_string());
-                warn!("Security blocked tool {}: {}", tool_call.name, reason_str);
+                warn!("[AgentLoop] Security blocked tool {}: {}", tool_call.name, reason_str);
                 // Use a very explicit prefix so the LLM cannot misinterpret this
                 // as a generic error (e.g. "file not found"). The LLM must
                 // understand that the USER or SECURITY POLICY blocked the action.
@@ -2284,16 +2284,16 @@ impl AgentLoop {
         match self.tools.get(&tool_call.name) {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {
-                    debug!("Tool {} returned: {} bytes", tool_call.name, result.len());
+                    debug!("[AgentLoop] Tool {} returned: {} bytes", tool_call.name, result.len());
                     result
                 }
                 Err(err) => {
-                    warn!("Tool {} error: {}", tool_call.name, err);
+                    warn!("[AgentLoop] Tool {} error: {}", tool_call.name, err);
                     format!("Tool error: {}", err)
                 }
             },
             None => {
-                warn!("Unknown tool: {}", tool_call.name);
+                warn!("[AgentLoop] Unknown tool: {}", tool_call.name);
                 format!("Error: Unknown tool '{}'", tool_call.name)
             }
         }
@@ -2334,7 +2334,7 @@ impl AgentLoop {
         if context.channel == "system"
             && content.starts_with(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
         {
-            debug!("Cluster continuation message intercepted: {}", content);
+            debug!("[AgentLoop] Cluster continuation message intercepted: {}", content);
             return (String::new(), String::new(), true);
         }
 
@@ -2652,7 +2652,7 @@ fn summarize_batch_owned(
     match response {
         Some(Ok(resp)) => resp.content,
         Some(Err(e)) => {
-            debug!("summarize_batch_owned LLM call failed: {}", e);
+            debug!("[AgentLoop] summarize_batch_owned LLM call failed: {}", e);
             String::new()
         }
         None => String::new(),

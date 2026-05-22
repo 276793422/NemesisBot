@@ -129,7 +129,7 @@ impl ChannelManager {
             mgr.dispatch_loop(rx).await;
         });
 
-        info!("channel manager dispatch loop started");
+        info!("[ChannelManager] channel manager dispatch loop started");
         Ok(())
     }
 
@@ -141,12 +141,12 @@ impl ChannelManager {
     /// is dropped (all clones go out of scope) **or** when the shutdown
     /// flag is set (explicit `stop_all()` call).
     async fn dispatch_loop(&self, mut rx: mpsc::Receiver<OutboundMessage>) {
-        info!("outbound dispatcher started");
+        info!("[ChannelManager] outbound dispatcher started");
         loop {
             // Check shutdown flag before each recv, so stop_all() can break
             // the loop even if cloned senders are still alive.
             if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
-                info!("dispatch loop shutting down (shutdown flag set)");
+                info!("[ChannelManager] dispatch loop shutting down (shutdown flag set)");
                 break;
             }
 
@@ -157,7 +157,7 @@ impl ChannelManager {
                         debug!(
                             channel = %msg.channel,
                             chat_id = %msg.chat_id,
-                            "skipping internal channel"
+                            "[ChannelManager] skipping internal channel"
                         );
                         self.metrics
                             .dropped_internal
@@ -169,15 +169,15 @@ impl ChannelManager {
                         channel = %msg.channel,
                         chat_id = %msg.chat_id,
                         content_len = msg.content.len(),
-                        "received outbound message from bus"
+                        "[ChannelManager] received outbound message from bus"
                     );
 
                     if let Err(e) = self.dispatch_outbound(msg).await {
-                        warn!(error = %e, "dispatch loop failed to send outbound message");
+                        warn!(error = %e, "[ChannelManager] dispatch loop failed to send outbound message");
                     }
                 }
                 None => {
-                    info!("dispatch loop shutting down (channel closed)");
+                    info!("[ChannelManager] dispatch loop shutting down (channel closed)");
                     break;
                 }
             }
@@ -200,7 +200,7 @@ impl ChannelManager {
                 name
             )));
         }
-        info!(name = %name, "registered channel");
+        info!(name = %name, "[ChannelManager] registered channel");
         map.insert(name, channel);
         Ok(())
     }
@@ -215,9 +215,9 @@ impl ChannelManager {
             existed
         };
         if existed {
-            warn!(name = %name, "replaced existing channel registration");
+            warn!(name = %name, "[ChannelManager] replaced existing channel registration");
         } else {
-            info!(name = %name, "registered channel");
+            info!(name = %name, "[ChannelManager] registered channel");
         }
     }
 
@@ -246,21 +246,21 @@ impl ChannelManager {
 
         let map = self.channels.read().await;
         if map.is_empty() {
-            warn!("no channels to start");
+            warn!("[ChannelManager] no channels to start");
             return Ok(());
         }
 
-        info!("starting all channels");
+        info!("[ChannelManager] starting all channels");
 
         let mut started_count = 0u32;
         for (name, ch) in map.iter() {
-            info!(name = %name, "starting channel");
+            info!(name = %name, "[ChannelManager] starting channel");
             if let Err(e) = ch.start().await {
-                error!(name = %name, error = %e, "failed to start channel");
+                error!(name = %name, error = %e, "[ChannelManager] failed to start channel");
                 // Continue starting remaining channels
             } else {
                 started_count += 1;
-                info!(name = %name, "started channel");
+                info!(name = %name, "[ChannelManager] started channel");
             }
         }
 
@@ -283,15 +283,15 @@ impl ChannelManager {
 
         let map = self.channels.read().await;
 
-        info!("stopping all channels");
+        info!("[ChannelManager] stopping all channels");
 
         for (name, ch) in map.iter() {
-            debug!(name = %name, "stopping channel");
+            debug!(name = %name, "[ChannelManager] stopping channel");
             if let Err(e) = ch.stop().await {
-                error!(name = %name, error = %e, "failed to stop channel");
+                error!(name = %name, error = %e, "[ChannelManager] failed to stop channel");
                 // Continue stopping remaining channels even on error.
             }
-            info!(name = %name, "stopped channel");
+            info!(name = %name, "[ChannelManager] stopped channel");
         }
 
         info!("[ChannelManager] All channels stopped");
@@ -320,7 +320,7 @@ impl ChannelManager {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 debug!(
                     channel = %channel_name,
-                    "dropping outbound message: channel not in allowed list"
+                    "[ChannelManager] dropping outbound message: channel not in allowed list"
                 );
                 return Ok(());
             }
@@ -329,7 +329,7 @@ impl ChannelManager {
         let map = self.channels.read().await;
         match map.get(&channel_name) {
             Some(ch) => {
-                debug!(channel = %channel_name, chat_id = %msg.chat_id, "dispatching outbound message");
+                debug!(channel = %channel_name, chat_id = %msg.chat_id, "[ChannelManager] dispatching outbound message");
                 self.metrics
                     .dispatched
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -364,7 +364,7 @@ impl ChannelManager {
     /// references to non-existent channels are logged as warnings and skipped.
     /// Mirrors Go's `setupSyncTargets()`.
     pub async fn setup_sync_targets(&self, config: &ChannelSyncConfig) {
-        info!("setting up sync targets");
+        info!("[ChannelManager] setting up sync targets");
 
         let channels = self.channels.read().await;
         let mut targets = HashMap::new();
@@ -372,7 +372,7 @@ impl ChannelManager {
         for (source_name, target_names) in &config.targets {
             // Skip if the source channel is not registered
             if !channels.contains_key(source_name) {
-                warn!(source = %source_name, "sync source channel not registered, skipping");
+                warn!(source = %source_name, "[ChannelManager] sync source channel not registered, skipping");
                 continue;
             }
 
@@ -380,13 +380,13 @@ impl ChannelManager {
             for target_name in target_names {
                 // Prevent self-sync
                 if target_name == source_name {
-                    warn!(channel = %source_name, "channel cannot sync to itself, skipping");
+                    warn!(channel = %source_name, "[ChannelManager] channel cannot sync to itself, skipping");
                     continue;
                 }
 
                 // Check target exists
                 if !channels.contains_key(target_name) {
-                    warn!(source = %source_name, target = %target_name, "sync target not found, skipping");
+                    warn!(source = %source_name, target = %target_name, "[ChannelManager] sync target not found, skipping");
                     continue;
                 }
 
@@ -394,13 +394,13 @@ impl ChannelManager {
             }
 
             if !valid_targets.is_empty() {
-                info!(source = %source_name, targets = ?valid_targets, "configured sync targets");
+                info!(source = %source_name, targets = ?valid_targets, "[ChannelManager] configured sync targets");
                 targets.insert(source_name.clone(), valid_targets);
             }
         }
 
         *self.sync_targets.write().await = targets;
-        info!("sync targets setup completed");
+        info!("[ChannelManager] sync targets setup completed");
     }
 
     /// Get the list of sync target channel names for a given source channel.
@@ -550,20 +550,20 @@ impl ChannelManager {
         config: &ChannelInitConfig,
         bus_sender: broadcast::Sender<InboundMessage>,
     ) -> Result<()> {
-        info!("initializing channel manager");
+        info!("[ChannelManager] initializing channel manager");
 
         // Telegram
         #[cfg(feature = "telegram")]
         {
             if let Some(ref cfg) = config.telegram {
-                info!("attempting to initialize Telegram channel");
+                info!("[ChannelManager] attempting to initialize Telegram channel");
                 match crate::telegram::TelegramChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Telegram channel enabled successfully");
+                        info!("[ChannelManager] Telegram channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Telegram channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Telegram channel");
                     }
                 }
             }
@@ -573,14 +573,14 @@ impl ChannelManager {
         #[cfg(feature = "discord")]
         {
             if let Some(ref cfg) = config.discord {
-                info!("attempting to initialize Discord channel");
+                info!("[ChannelManager] attempting to initialize Discord channel");
                 match crate::discord::DiscordChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Discord channel enabled successfully");
+                        info!("[ChannelManager] Discord channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Discord channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Discord channel");
                     }
                 }
             }
@@ -590,14 +590,14 @@ impl ChannelManager {
         #[cfg(feature = "slack")]
         {
             if let Some(ref cfg) = config.slack {
-                info!("attempting to initialize Slack channel");
+                info!("[ChannelManager] attempting to initialize Slack channel");
                 match crate::slack::SlackChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Slack channel enabled successfully");
+                        info!("[ChannelManager] Slack channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Slack channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Slack channel");
                     }
                 }
             }
@@ -607,14 +607,14 @@ impl ChannelManager {
         #[cfg(feature = "whatsapp")]
         {
             if let Some(ref cfg) = config.whatsapp {
-                info!("attempting to initialize WhatsApp channel");
+                info!("[ChannelManager] attempting to initialize WhatsApp channel");
                 match crate::whatsapp::WhatsAppChannel::new(cfg.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("WhatsApp channel enabled successfully");
+                        info!("[ChannelManager] WhatsApp channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize WhatsApp channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize WhatsApp channel");
                     }
                 }
             }
@@ -624,14 +624,14 @@ impl ChannelManager {
         #[cfg(feature = "feishu")]
         {
             if let Some(ref cfg) = config.feishu {
-                info!("attempting to initialize Feishu channel");
+                info!("[ChannelManager] attempting to initialize Feishu channel");
                 match crate::feishu::FeishuChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Feishu channel enabled successfully");
+                        info!("[ChannelManager] Feishu channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Feishu channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Feishu channel");
                     }
                 }
             }
@@ -641,14 +641,14 @@ impl ChannelManager {
         #[cfg(feature = "dingtalk")]
         {
             if let Some(ref cfg) = config.dingtalk {
-                info!("attempting to initialize DingTalk channel");
+                info!("[ChannelManager] attempting to initialize DingTalk channel");
                 match crate::dingtalk::DingTalkChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("DingTalk channel enabled successfully");
+                        info!("[ChannelManager] DingTalk channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize DingTalk channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize DingTalk channel");
                     }
                 }
             }
@@ -658,14 +658,14 @@ impl ChannelManager {
         #[cfg(feature = "tencent")]
         {
             if let Some(ref cfg) = config.qq {
-                info!("attempting to initialize QQ channel");
+                info!("[ChannelManager] attempting to initialize QQ channel");
                 match crate::qq::QQChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("QQ channel enabled successfully");
+                        info!("[ChannelManager] QQ channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize QQ channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize QQ channel");
                     }
                 }
             }
@@ -675,14 +675,14 @@ impl ChannelManager {
         #[cfg(feature = "email")]
         {
             if let Some(ref cfg) = config.email {
-                info!("attempting to initialize Email channel");
+                info!("[ChannelManager] attempting to initialize Email channel");
                 match crate::email::EmailChannel::new(cfg.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Email channel enabled successfully");
+                        info!("[ChannelManager] Email channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Email channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Email channel");
                     }
                 }
             }
@@ -692,14 +692,14 @@ impl ChannelManager {
         #[cfg(feature = "matrix")]
         {
             if let Some(ref cfg) = config.matrix {
-                info!("attempting to initialize Matrix channel");
+                info!("[ChannelManager] attempting to initialize Matrix channel");
                 match crate::matrix::MatrixChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Matrix channel enabled successfully");
+                        info!("[ChannelManager] Matrix channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Matrix channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Matrix channel");
                     }
                 }
             }
@@ -709,14 +709,14 @@ impl ChannelManager {
         #[cfg(feature = "irc")]
         {
             if let Some(ref cfg) = config.irc {
-                info!("attempting to initialize IRC channel");
+                info!("[ChannelManager] attempting to initialize IRC channel");
                 match crate::irc::IRCChannel::new(cfg.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("IRC channel enabled successfully");
+                        info!("[ChannelManager] IRC channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize IRC channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize IRC channel");
                     }
                 }
             }
@@ -726,14 +726,14 @@ impl ChannelManager {
         #[cfg(feature = "signal")]
         {
             if let Some(ref cfg) = config.signal {
-                info!("attempting to initialize Signal channel");
+                info!("[ChannelManager] attempting to initialize Signal channel");
                 match crate::signal::SignalChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Signal channel enabled successfully");
+                        info!("[ChannelManager] Signal channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Signal channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Signal channel");
                     }
                 }
             }
@@ -743,14 +743,14 @@ impl ChannelManager {
         #[cfg(feature = "mastodon")]
         {
             if let Some(ref cfg) = config.mastodon {
-                info!("attempting to initialize Mastodon channel");
+                info!("[ChannelManager] attempting to initialize Mastodon channel");
                 match crate::mastodon::MastodonChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Mastodon channel enabled successfully");
+                        info!("[ChannelManager] Mastodon channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Mastodon channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Mastodon channel");
                     }
                 }
             }
@@ -760,14 +760,14 @@ impl ChannelManager {
         #[cfg(feature = "bluesky")]
         {
             if let Some(ref cfg) = config.bluesky {
-                info!("attempting to initialize Bluesky channel");
+                info!("[ChannelManager] attempting to initialize Bluesky channel");
                 match crate::bluesky::BlueskyChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("Bluesky channel enabled successfully");
+                        info!("[ChannelManager] Bluesky channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize Bluesky channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize Bluesky channel");
                     }
                 }
             }
@@ -777,14 +777,14 @@ impl ChannelManager {
         #[cfg(feature = "onebot")]
         {
             if let Some(ref cfg) = config.onebot {
-                info!("attempting to initialize OneBot channel");
+                info!("[ChannelManager] attempting to initialize OneBot channel");
                 match crate::onebot::OneBotChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("OneBot channel enabled successfully");
+                        info!("[ChannelManager] OneBot channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize OneBot channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize OneBot channel");
                     }
                 }
             }
@@ -793,14 +793,14 @@ impl ChannelManager {
         // LINE
         {
             if let Some(ref cfg) = config.line {
-                info!("attempting to initialize LINE channel");
+                info!("[ChannelManager] attempting to initialize LINE channel");
                 match crate::line::LineChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("LINE channel enabled successfully");
+                        info!("[ChannelManager] LINE channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize LINE channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize LINE channel");
                     }
                 }
             }
@@ -809,14 +809,14 @@ impl ChannelManager {
         // External
         {
             if let Some(ref cfg) = config.external {
-                info!("attempting to initialize External channel");
+                info!("[ChannelManager] attempting to initialize External channel");
                 match crate::external::ExternalChannel::new(cfg.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("External channel enabled successfully");
+                        info!("[ChannelManager] External channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize External channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize External channel");
                     }
                 }
             }
@@ -825,14 +825,14 @@ impl ChannelManager {
         // MaixCam
         {
             if let Some(ref cfg) = config.maixcam {
-                info!("attempting to initialize MaixCam channel");
+                info!("[ChannelManager] attempting to initialize MaixCam channel");
                 match crate::maixcam::MaixCamChannel::new(cfg.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
-                        info!("MaixCam channel enabled successfully");
+                        info!("[ChannelManager] MaixCam channel enabled successfully");
                     }
                     Err(e) => {
-                        error!(error = %e, "failed to initialize MaixCam channel");
+                        error!(error = %e, "[ChannelManager] failed to initialize MaixCam channel");
                     }
                 }
             }
@@ -841,27 +841,27 @@ impl ChannelManager {
         // Web (always available, enabled by default)
         {
             if let Some(ref cfg) = config.web {
-                info!("attempting to initialize Web channel");
+                info!("[ChannelManager] attempting to initialize Web channel");
                 let ch = crate::web::WebChannel::new(cfg.clone());
                 self.register_or_replace(Arc::new(ch)).await;
-                info!("Web channel enabled successfully");
+                info!("[ChannelManager] Web channel enabled successfully");
             }
         }
 
         // WebSocket
         {
             if let Some(heartbeat_secs) = config.websocket_heartbeat_secs {
-                info!("attempting to initialize WebSocket channel");
+                info!("[ChannelManager] attempting to initialize WebSocket channel");
                 let ch = crate::websocket::WebSocketChannel::with_heartbeat(
                     std::time::Duration::from_secs(heartbeat_secs),
                 );
                 self.register_or_replace(Arc::new(ch)).await;
-                info!("WebSocket channel enabled successfully");
+                info!("[ChannelManager] WebSocket channel enabled successfully");
             }
         }
 
         let count = self.channel_count().await;
-        info!(enabled_channels = count, "channel initialization completed");
+        info!(enabled_channels = count, "[ChannelManager] channel initialization completed");
 
         Ok(())
     }

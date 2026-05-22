@@ -73,7 +73,7 @@ impl Manager {
         }
 
         if !self.config.enabled {
-            tracing::info!("ClamAV integration is disabled");
+            tracing::info!("[Scanner] ClamAV integration is disabled");
             return Ok(());
         }
 
@@ -82,7 +82,7 @@ impl Manager {
         if clamav_path.is_empty() {
             clamav_path = config::detect_clamav_path()
                 .ok_or_else(|| "ClamAV installation not found; set clamav_path in config or install ClamAV".to_string())?;
-            tracing::info!(path = %clamav_path, "Auto-detected ClamAV");
+            tracing::info!(path = %clamav_path, "[Scanner] Auto-detected ClamAV");
         }
 
         // Resolve to absolute path
@@ -149,13 +149,13 @@ impl Manager {
         });
 
         if updater.is_database_stale(Duration::from_secs(24 * 3600)) {
-            tracing::info!("Downloading virus database before starting clamd");
+            tracing::info!("[Scanner] Downloading virus database before starting clamd");
             match updater.update().await {
                 Ok(()) => {
-                    tracing::info!("Virus database downloaded successfully");
+                    tracing::info!("[Scanner] Virus database downloaded successfully");
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Initial database download failed");
+                    tracing::warn!(error = %e, "[Scanner] Initial database download failed");
                 }
             }
         }
@@ -191,7 +191,7 @@ impl Manager {
             path = %clamav_path,
             address = %self.config.address,
             data_dir = %data_dir,
-            "ClamAV manager started"
+            "[Scanner] ClamAV manager started"
         );
 
         Ok(())
@@ -214,7 +214,7 @@ impl Manager {
         }
 
         self.started.store(false, Ordering::SeqCst);
-        tracing::info!("ClamAV manager stopped");
+        tracing::info!("[Scanner] ClamAV manager stopped");
         Ok(())
     }
 

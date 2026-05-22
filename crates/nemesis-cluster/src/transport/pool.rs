@@ -432,7 +432,7 @@ impl Pool {
         }
 
         if removed > 0 {
-            tracing::info!(removed, "Cleaned up dead connections from pool");
+            tracing::info!(removed, "[Transport] Cleaned up dead connections from pool");
         }
 
         removed

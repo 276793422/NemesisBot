@@ -219,7 +219,7 @@ impl InMemoryGraphStore {
             self.load_once.get_or_init(|| {
                 // Errors are logged and swallowed -- the store starts empty.
                 if let Err(e) = self.load_from_disk(dir) {
-                    tracing::warn!("graph store: failed to load from disk: {e}");
+                    tracing::warn!("[GraphStore] failed to load from disk: {e}");
                 }
             });
         }
@@ -371,7 +371,7 @@ impl GraphStore for InMemoryGraphStore {
 
         if self.persistence_dir.is_some() {
             if let Err(e) = self.persist_triples() {
-                tracing::warn!("graph store: persist_triples failed: {e}");
+                tracing::warn!("[GraphStore] persist_triples failed: {e}");
             }
         }
 
@@ -386,7 +386,7 @@ impl GraphStore for InMemoryGraphStore {
 
         if self.persistence_dir.is_some() {
             if let Err(e) = self.persist_entities() {
-                tracing::warn!("graph store: persist_entities failed: {e}");
+                tracing::warn!("[GraphStore] persist_entities failed: {e}");
             }
         }
 
@@ -415,7 +415,7 @@ impl GraphStore for InMemoryGraphStore {
 
         if removed && self.persistence_dir.is_some() {
             if let Err(e) = self.persist_triples() {
-                tracing::warn!("graph store: persist_triples failed: {e}");
+                tracing::warn!("[GraphStore] persist_triples failed: {e}");
             }
         }
 
@@ -581,7 +581,7 @@ impl GraphStore for InMemoryGraphStore {
 
         if self.persistence_dir.is_some() {
             if let Err(e) = self.persist_all() {
-                tracing::warn!("graph store: persist_all failed: {e}");
+                tracing::warn!("[GraphStore] persist_all failed: {e}");
             }
         }
 

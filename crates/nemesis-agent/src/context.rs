@@ -443,7 +443,7 @@ impl ContextBuilder {
         let path = self.workspace.join(filename);
         match std::fs::read_to_string(&path) {
             Ok(content) => {
-                debug!("Loaded workspace file: {}", filename);
+                debug!("[ContextBuilder] Loaded workspace file: {}", filename);
                 Some(content)
             }
             Err(_) => None,
@@ -486,7 +486,7 @@ impl ContextBuilder {
 
         // Debug info
         debug!(
-            "System prompt built: {} chars, {} lines",
+            "[ContextBuilder] System prompt built: {} chars, {} lines",
             system_prompt.len(),
             system_prompt.lines().count()
         );
@@ -504,7 +504,7 @@ impl ContextBuilder {
         // Mirrors Go's loop: `for len(history) > 0 && history[0].Role == "tool" { history = history[1:] }`.
         let mut history_iter = history.iter().peekable();
         while history_iter.peek().map_or(false, |t| t.role == "tool") {
-            debug!("Skipping orphaned tool message from history");
+            debug!("[ContextBuilder] Skipping orphaned tool message from history");
             history_iter.next();
         }
 

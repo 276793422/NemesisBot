@@ -282,13 +282,13 @@ impl SecurityAuditor {
     /// Enable the auditor.
     pub fn enable(&self) {
         *self.enabled.write() = true;
-        tracing::info!("Security auditor enabled");
+        tracing::info!("[Security] Security auditor enabled");
     }
 
     /// Disable the auditor.
     pub fn disable(&self) {
         *self.enabled.write() = false;
-        tracing::warn!("Security auditor DISABLED - all operations will be allowed!");
+        tracing::warn!("[Security] Security auditor DISABLED - all operations will be allowed!");
     }
 
     /// Request permission for an operation.
@@ -408,7 +408,7 @@ impl SecurityAuditor {
                     approver = approver,
                     operation = %req.op_type,
                     target = %req.target,
-                    "Operation approved"
+                    "[Security] Operation approved"
                 );
                 active.remove(request_id);
                 self.pending_count.fetch_sub(1, Ordering::SeqCst);
@@ -439,7 +439,7 @@ impl SecurityAuditor {
                     approver = approver,
                     reason = reason,
                     operation = %req.op_type,
-                    "Operation denied"
+                    "[Security] Operation denied"
                 );
                 active.remove(request_id);
                 self.pending_count.fetch_sub(1, Ordering::SeqCst);
@@ -591,16 +591,16 @@ impl SecurityAuditor {
                             {
                                 Ok(mut file) => {
                                     if let Err(e) = writeln!(file, "{}", line) {
-                                        tracing::warn!(path = %log_path.display(), error = %e, "Failed to write audit event");
+                                        tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event");
                                     }
                                 }
                                 Err(e) => {
-                                    tracing::warn!(path = %log_path.display(), error = %e, "Failed to open audit log for writing");
+                                    tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to open audit log for writing");
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "Failed to serialize audit event");
+                            tracing::warn!(error = %e, "[Security] Failed to serialize audit event");
                         }
                     }
                 }
@@ -625,16 +625,16 @@ impl SecurityAuditor {
                     {
                         Ok(mut file) => {
                             if let Err(e) = writeln!(file, "{}", line) {
-                                tracing::warn!(path = %log_path.display(), error = %e, "Failed to write audit event to log file");
+                                tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event to log file");
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(path = %log_path.display(), error = %e, "Failed to open log file for writing");
+                            tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to open log file for writing");
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to serialize audit event for log file");
+                    tracing::warn!(error = %e, "[Security] Failed to serialize audit event for log file");
                 }
             }
         }
@@ -944,11 +944,11 @@ pub async fn monitor_security_status(
                     denied = %stats.get("denied").unwrap_or(&serde_json::json!(0)),
                     pending = %stats.get("pending").unwrap_or(&serde_json::json!(0)),
                     enabled = %stats.get("enabled").unwrap_or(&serde_json::json!(false)),
-                    "Security status monitor tick"
+                    "[Security] Security status monitor tick"
                 );
             }
             _ = shutdown.changed() => {
-                tracing::info!("Security status monitor shutting down");
+                tracing::info!("[Security] Security status monitor shutting down");
                 return;
             }
         }
@@ -985,7 +985,7 @@ pub fn get_audit_log(
     let content = match std::fs::read_to_string(&log_path) {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(path = %log_path.display(), error = %e, "Failed to read audit log");
+            tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to read audit log");
             return Vec::new();
         }
     };
@@ -1003,7 +1003,7 @@ pub fn get_audit_log(
                 }
             }
             Err(e) => {
-                tracing::trace!(line = line, error = %e, "Skipping malformed audit log line");
+                tracing::trace!(line = line, error = %e, "[Security] Skipping malformed audit log line");
             }
         }
     }

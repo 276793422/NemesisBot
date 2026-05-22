@@ -108,14 +108,14 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
 
     if !path.exists() {
         if let Err(e) = std::fs::create_dir_all(config_dir) {
-            warn!("Failed to create config dir '{}': {}", config_dir.display(), e);
+            warn!("[EmbeddingConfig] Failed to create config dir '{}': {}", config_dir.display(), e);
         } else {
             match std::fs::write(&path, DEFAULT_CONFIG) {
                 Ok(()) => {
-                    info!("Default embedding config saved to {}", path.display());
+                    info!("[EmbeddingConfig] Default embedding config saved to {}", path.display());
                 }
                 Err(e) => {
-                    warn!("Failed to save default embedding config: {}", e);
+                    warn!("[EmbeddingConfig] Failed to save default embedding config: {}", e);
                 }
             }
         }
@@ -124,16 +124,16 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
     match std::fs::read_to_string(&path) {
         Ok(content) => match toml::from_str::<EmbeddingConfig>(&content) {
             Ok(config) => {
-                info!("Embedding config loaded from {}", path.display());
+                info!("[EmbeddingConfig] Embedding config loaded from {}", path.display());
                 config
             }
             Err(e) => {
-                error!("Failed to parse embedding config '{}': {}", path.display(), e);
+                error!("[EmbeddingConfig] Failed to parse embedding config '{}': {}", path.display(), e);
                 EmbeddingConfig::default()
             }
         },
         Err(e) => {
-            warn!("Failed to read embedding config '{}': {}, using defaults", path.display(), e);
+            warn!("[EmbeddingConfig] Failed to read embedding config '{}': {}, using defaults", path.display(), e);
             EmbeddingConfig::default()
         }
     }
@@ -145,13 +145,13 @@ pub fn save_embedding_config(config: &EmbeddingConfig, config_dir: &Path) {
     match toml::to_string_pretty(config) {
         Ok(content) => {
             if let Err(e) = std::fs::write(&path, content) {
-                warn!("Failed to save embedding config to {}: {}", path.display(), e);
+                warn!("[EmbeddingConfig] Failed to save embedding config to {}: {}", path.display(), e);
             } else {
-                info!("Embedding config saved to {}", path.display());
+                info!("[EmbeddingConfig] Embedding config saved to {}", path.display());
             }
         }
         Err(e) => {
-            warn!("Failed to serialize embedding config: {}", e);
+            warn!("[EmbeddingConfig] Failed to serialize embedding config: {}", e);
         }
     }
 }
@@ -202,7 +202,7 @@ pub fn ensure_model_files(
     let model_path = if !model_conf.local_model_path.is_empty()
         && Path::new(&model_conf.local_model_path).exists()
     {
-        info!("Model found at {}", model_conf.local_model_path);
+        info!("[EmbeddingConfig] Model found at {}", model_conf.local_model_path);
         // Use the directory of the existing model file
         Path::new(&model_conf.local_model_path)
             .parent()
@@ -211,19 +211,19 @@ pub fn ensure_model_files(
     } else {
         // Try the default data_dir location first
         if model_dest.exists() {
-            info!("Model found at {}", model_dest.display());
+            info!("[EmbeddingConfig] Model found at {}", model_dest.display());
             data_dir.clone()
         } else if config_dir.join("model.onnx").exists() {
             // Fallback: check config_dir itself (useful for test-data dirs)
-            info!("Model found at {}", config_dir.join("model.onnx").display());
+            info!("[EmbeddingConfig] Model found at {}", config_dir.join("model.onnx").display());
             config_dir.to_path_buf()
         } else if model_conf.model_url.is_empty() {
             return Err(format!("model file not found and no URL configured for tier '{}'", active));
         } else {
-            info!("Downloading model from {}...", model_conf.model_url);
+            info!("[EmbeddingConfig] Downloading model from {}...", model_conf.model_url);
             download_file(&model_conf.model_url, &model_dest)?;
             model_updated = true;
-            info!("Model downloaded to {}", model_dest.display());
+            info!("[EmbeddingConfig] Model downloaded to {}", model_dest.display());
             data_dir.clone()
         }
     };
@@ -238,13 +238,13 @@ pub fn ensure_model_files(
             // Copy to model directory
             let src = Path::new(&model_conf.local_tokenizer_path);
             if let Err(e) = std::fs::copy(src, &tokenizer_path) {
-                warn!("Failed to copy tokenizer to model dir: {}", e);
+                warn!("[EmbeddingConfig] Failed to copy tokenizer to model dir: {}", e);
             }
         } else if !model_conf.tokenizer_url.is_empty() {
-            info!("Downloading tokenizer from {}...", model_conf.tokenizer_url);
+            info!("[EmbeddingConfig] Downloading tokenizer from {}...", model_conf.tokenizer_url);
             download_file(&model_conf.tokenizer_url, &tokenizer_path)?;
             tokenizer_updated = true;
-            info!("Tokenizer downloaded to {}", tokenizer_path.display());
+            info!("[EmbeddingConfig] Tokenizer downloaded to {}", tokenizer_path.display());
         }
         // If tokenizer still not available, the plugin will handle the error
     }

@@ -128,7 +128,7 @@ impl CORSManager {
 
         tracing::info!(
             path = %config_path.display(),
-            "CORS config loaded"
+            "[WebServer] CORS config loaded"
         );
 
         Ok(Self {
@@ -197,7 +197,7 @@ impl CORSManager {
 
         cfg.allowed_origins.push(origin.to_owned());
 
-        tracing::info!(origin = %origin, "CORS: added allowed origin");
+        tracing::info!(origin = %origin, "[WebServer] CORS: added allowed origin");
 
         let cloned = cfg.clone();
         drop(cfg); // release write lock before I/O
@@ -216,7 +216,7 @@ impl CORSManager {
             return Ok(()); // nothing removed
         }
 
-        tracing::info!(origin = %origin, "CORS: removed allowed origin");
+        tracing::info!(origin = %origin, "[WebServer] CORS: removed allowed origin");
 
         let cloned = cfg.clone();
         drop(cfg);
@@ -233,7 +233,7 @@ impl CORSManager {
         let mut cfg = self.config.write();
         cfg.development_mode = enabled;
 
-        tracing::info!(enabled = %enabled, "CORS: development mode changed");
+        tracing::info!(enabled = %enabled, "[WebServer] CORS: development mode changed");
 
         let cloned = cfg.clone();
         drop(cfg);
@@ -278,7 +278,7 @@ impl CORSManager {
             std::fs::write(path, &json)?;
             tracing::warn!(
                 error = %e,
-                "Atomic rename failed, fell back to direct write"
+                "[WebServer] Atomic rename failed, fell back to direct write"
             );
         }
 

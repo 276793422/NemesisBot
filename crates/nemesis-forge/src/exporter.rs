@@ -104,7 +104,7 @@ impl Exporter {
         };
 
         tokio::fs::write(&path, content).await?;
-        tracing::info!(path = %path.display(), kind = ?kind, "Artifact exported");
+        tracing::info!(path = %path.display(), kind = ?kind, "[Exporter] Artifact exported");
         Ok(path)
     }
 

@@ -248,9 +248,11 @@ pub fn print_help() {
 /// other commands (status, model, cron, etc.) that just need basic console output.
 pub fn ensure_default_logger() {
     use std::sync::OnceLock;
+
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         let _ = tracing_subscriber::fmt()
+            .event_format(nemesis_logger::GoStyleFormatter)
             .with_max_level(tracing::Level::INFO)
             .with_writer(std::io::stderr)
             .try_init();
@@ -277,8 +279,7 @@ pub fn init_logger_from_config(
 ) -> u32 {
     let mut level = tracing::Level::INFO;
     let mut enable_console = true;
-    let mut _enable_file = false;
-    let mut _file_path: Option<String> = None;
+    let mut file_path: Option<String> = None;
 
     // Read from config file if it exists
     if config_path.exists() {
@@ -302,8 +303,7 @@ pub fn init_logger_from_config(
                     // File path
                     if let Some(fp) = logging.get("file").and_then(|v| v.as_str()) {
                         if !fp.is_empty() {
-                            _enable_file = true;
-                            _file_path = Some(fp.to_string());
+                            file_path = Some(fp.to_string());
                         }
                     }
                 }
@@ -338,20 +338,65 @@ pub fn init_logger_from_config(
         return override_flags;
     }
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_writer(std::io::stderr);
+    // Build the appropriate writer
+    let writer = if !enable_console {
+        // No console: if file path is set, write to file only (not stderr)
+        match &file_path {
+            Some(fp) => {
+                match nemesis_logger::DualMakeWriter::file_only(fp) {
+                    Ok(mw) => {
+                        eprintln!("[Logger] Logging to file only: {}", fp);
+                        mw
+                    }
+                    Err(e) => {
+                        eprintln!("[Logger] Warning: failed to open log file '{}': {}", fp, e);
+                        // Fallback: discard all output (no console, no file)
+                        nemesis_logger::DualMakeWriter::console_only()
+                    }
+                }
+            }
+            None => {
+                // No console and no file — discard all output
+                nemesis_logger::DualMakeWriter::console_only()
+            }
+        }
+    } else if let Some(fp) = &file_path {
+        // Console + file
+        match nemesis_logger::DualMakeWriter::with_file(fp) {
+            Ok(mw) => {
+                eprintln!("[Logger] Logging to console + file: {}", fp);
+                mw
+            }
+            Err(e) => {
+                eprintln!("[Logger] Warning: failed to open log file '{}': {}", fp, e);
+                nemesis_logger::DualMakeWriter::console_only()
+            }
+        }
+    } else {
+        // Console only
+        nemesis_logger::DualMakeWriter::console_only()
+    };
 
     if enable_console {
-        if subscriber.try_init().is_err() {
+        if tracing_subscriber::fmt()
+            .event_format(nemesis_logger::GoStyleFormatter)
+            .with_max_level(level)
+            .with_writer(writer)
+            .try_init()
+            .is_err()
+        {
             // Global subscriber already set (e.g. by a previous call or default logger).
             // This is non-fatal: the existing subscriber will handle logs at whatever
             // level it was configured with.
             eprintln!("[Logger] Warning: global subscriber already set, config-based init skipped");
         }
     } else {
-        // No console: init with a writer that discards output
-        let _ = subscriber.with_writer(io::sink).try_init();
+        // No console mode: init with the dual writer (file only or discard)
+        let _ = tracing_subscriber::fmt()
+            .event_format(nemesis_logger::GoStyleFormatter)
+            .with_max_level(level)
+            .with_writer(writer)
+            .try_init();
     }
 
     override_flags

@@ -167,7 +167,7 @@ impl SecurityPlugin {
                 }) {
                     Ok(logger) => Some(logger),
                     Err(e) => {
-                        tracing::error!("Failed to initialize audit log file: {}", e);
+                        tracing::error!("[Security] Failed to initialize audit log file: {}", e);
                         None
                     }
                 }
@@ -291,7 +291,7 @@ impl SecurityPlugin {
         }
 
         // Clean up auditor
-        tracing::info!("Security plugin cleaned up");
+        tracing::info!("[Security] Security plugin cleaned up");
         Ok(())
     }
 
@@ -415,7 +415,7 @@ impl SecurityPlugin {
                     credential = credential_enabled,
                     dlp = dlp_enabled,
                     ssrf = ssrf_enabled,
-                    "Security config reloaded"
+                    "[Security] Security config reloaded"
                 );
 
                 Ok(())
@@ -575,7 +575,7 @@ impl SecurityPlugin {
                     tracing::debug!(
                         tool = %tool_name,
                         paths = ?paths,
-                        "Layer 7: scanning extracted paths"
+                        "[Scanner] Layer 7: scanning extracted paths"
                     );
                     for file_path in &paths {
                         let path = std::path::Path::new(file_path);
@@ -716,7 +716,7 @@ impl SecurityPlugin {
         let chain = self.scan_chain.blocking_write();
         chain.set_enabled(enabled);
         if enabled {
-            tracing::info!("Scanner chain initialized and enabled");
+            tracing::info!("[Scanner] Scanner chain initialized and enabled");
         }
     }
 
@@ -737,7 +737,7 @@ impl SecurityPlugin {
         chain.load_from_full_config(full_config);
 
         if chain.engine_count() == 0 {
-            tracing::warn!("No scanner engines loaded from config, scanner chain remains disabled");
+            tracing::warn!("[Scanner] No scanner engines loaded from config, scanner chain remains disabled");
             return;
         }
 
@@ -747,7 +747,7 @@ impl SecurityPlugin {
         chain.set_enabled(true);
         tracing::info!(
             engine_count = chain.engine_count(),
-            "Scanner chain initialized and enabled from config"
+            "[Scanner] Scanner chain initialized and enabled from config"
         );
     }
 

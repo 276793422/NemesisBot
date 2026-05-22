@@ -83,14 +83,14 @@ impl WebSocketClient {
     /// 2. Sends an authentication message containing the key
     /// 3. Starts background read and write tasks
     pub async fn connect(&self) -> Result<(), String> {
-        info!("WebSocketClient({}): Connecting to {}", self.id, self.server_url);
+        info!("[WebSocketClient] {}: Connecting to {}", self.id, self.server_url);
 
         // Establish WebSocket connection
         let (ws_stream, _response) = tokio_tungstenite::connect_async(&self.server_url)
             .await
             .map_err(|e| format!("WebSocket connect failed: {}", e))?;
 
-        info!("WebSocketClient({}): TCP connected", self.id);
+        info!("[WebSocketClient] {}: TCP connected", self.id);
 
         // Send authentication message
         let auth_msg = serde_json::json!({
@@ -106,7 +106,7 @@ impl WebSocketClient {
             .await
             .map_err(|e| format!("send auth: {}", e))?;
 
-        info!("WebSocketClient({}): Authenticated", self.id);
+        info!("[WebSocketClient] {}: Authenticated", self.id);
 
         // Create channels for communication
         let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -181,23 +181,23 @@ impl WebSocketClient {
                                 .send(tokio_tungstenite::tungstenite::Message::Text(data.into()))
                                 .await
                             {
-                                warn!("WebSocketClient({}): Write error: {}", id, e);
+                                warn!("[WebSocketClient] {}: Write error: {}", id, e);
                                 break;
                             }
                         }
                         None => {
-                            debug!("WebSocketClient({}): Send channel closed", id);
+                            debug!("[WebSocketClient] {}: Send channel closed", id);
                             break;
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    debug!("WebSocketClient({}): Shutdown signal received", id);
+                    debug!("[WebSocketClient] {}: Shutdown signal received", id);
                     break;
                 }
             }
         }
-        debug!("WebSocketClient({}): Write loop exiting", id);
+        debug!("[WebSocketClient] {}: Write loop exiting", id);
     }
 
     /// Background read loop - receives incoming messages and routes them.
@@ -222,7 +222,7 @@ impl WebSocketClient {
                                     Self::handle_message(&text, id, pending, dispatcher, send_tx);
                                 }
                                 tokio_tungstenite::tungstenite::Message::Close(_) => {
-                                    info!("WebSocketClient({}): Close frame received", id);
+                                    info!("[WebSocketClient] {}: Close frame received", id);
                                     break;
                                 }
                                 _ => {
@@ -231,22 +231,22 @@ impl WebSocketClient {
                             }
                         }
                         Some(Err(e)) => {
-                            warn!("WebSocketClient({}): Read error: {}", id, e);
+                            warn!("[WebSocketClient] {}: Read error: {}", id, e);
                             break;
                         }
                         None => {
-                            info!("WebSocketClient({}): Stream ended", id);
+                            info!("[WebSocketClient] {}: Stream ended", id);
                             break;
                         }
                     }
                 }
                 _ = shutdown_rx.recv() => {
-                    debug!("WebSocketClient({}): Shutdown signal received", id);
+                    debug!("[WebSocketClient] {}: Shutdown signal received", id);
                     break;
                 }
             }
         }
-        debug!("WebSocketClient({}): Read loop exiting", id);
+        debug!("[WebSocketClient] {}: Read loop exiting", id);
     }
 
     /// Handle an incoming text message.
@@ -266,14 +266,14 @@ impl WebSocketClient {
         let msg: Message = match serde_json::from_str(text) {
             Ok(m) => m,
             Err(e) => {
-                warn!("WebSocketClient({}): JSON decode error: {}", id, e);
+                warn!("[WebSocketClient] {}: JSON decode error: {}", id, e);
                 return;
             }
         };
 
         if msg.jsonrpc != crate::websocket::protocol::VERSION {
             debug!(
-                "WebSocketClient({}): Non-protocol message ignored",
+                "[WebSocketClient] {}: Non-protocol message ignored",
                 id
             );
             return;
@@ -286,13 +286,13 @@ impl WebSocketClient {
                 if let Some(tx) = pending_map.remove(&msg_id) {
                     if tx.send(msg).is_err() {
                         warn!(
-                            "WebSocketClient({}): Pending channel dropped for id={}",
+                            "[WebSocketClient] {}: Pending channel dropped for id={}",
                             id, msg_id
                         );
                     }
                 } else {
                     debug!(
-                        "WebSocketClient({}): No pending request for id={}",
+                        "[WebSocketClient] {}: No pending request for id={}",
                         id, msg_id
                     );
                 }
@@ -309,13 +309,13 @@ impl WebSocketClient {
                             serde_json::to_string(&resp_msg).unwrap_or_default();
                         if let Err(e) = tx.try_send(resp_str) {
                             warn!(
-                                "WebSocketClient({}): Failed to send dispatch response: {}",
+                                "[WebSocketClient] {}: Failed to send dispatch response: {}",
                                 id, e
                             );
                         }
                     } else {
                         warn!(
-                            "WebSocketClient({}): No send channel for dispatch response",
+                            "[WebSocketClient] {}: No send channel for dispatch response",
                             id
                         );
                     }
@@ -325,7 +325,7 @@ impl WebSocketClient {
                 }
                 Err(e) => {
                     warn!(
-                        "WebSocketClient({}): Dispatch error for request: {}",
+                        "[WebSocketClient] {}: Dispatch error for request: {}",
                         id, e
                     );
                 }
@@ -337,7 +337,7 @@ impl WebSocketClient {
         if msg.is_notification() {
             if let Err(e) = dispatcher.dispatch(&msg) {
                 warn!(
-                    "WebSocketClient({}): Dispatch error for notification: {}",
+                    "[WebSocketClient] {}: Dispatch error for notification: {}",
                     id, e
                 );
             }
@@ -448,7 +448,7 @@ impl WebSocketClient {
 
     /// Close the connection.
     pub fn close(&self) {
-        info!("WebSocketClient({}): Closing", self.id);
+        info!("[WebSocketClient] {}: Closing", self.id);
 
         let mut state = self.state.lock();
 

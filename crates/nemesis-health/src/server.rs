@@ -121,7 +121,7 @@ impl HealthServer {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind failed: {}", e))?;
-        tracing::info!("Health server listening on {}", addr);
+        tracing::info!("[Health] Server listening on {}", addr);
         axum::serve(listener, app).await.map_err(|e| format!("server error: {}", e))
     }
 
@@ -134,7 +134,7 @@ impl HealthServer {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind failed: {}", e))?;
-        tracing::info!("Health server listening on {}", addr);
+        tracing::info!("[Health] Server listening on {}", addr);
 
         let (tx, rx) = oneshot::channel();
         *self.shutdown_tx.lock() = Some(tx);

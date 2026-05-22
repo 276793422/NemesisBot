@@ -44,7 +44,7 @@ impl LifecycleService for HealthServerAdapter {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             if let Err(e) = inner.start().await {
-                tracing::error!("Health server error: {}", e);
+                tracing::error!("[Main] Health server error: {}", e);
             }
         });
         Ok(())
@@ -87,7 +87,7 @@ impl LifecycleService for HeartbeatServiceAdapter {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             if let Err(e) = inner.start().await {
-                tracing::error!("Heartbeat service error: {}", e);
+                tracing::error!("[Main] Heartbeat service error: {}", e);
             }
         });
         Ok(())
@@ -137,7 +137,7 @@ impl LifecycleService for ChannelManagerAdapter {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             if let Err(e) = inner.start_all().await {
-                tracing::error!("Channel manager start error: {}", e);
+                tracing::error!("[Main] Channel manager start error: {}", e);
             }
         });
         Ok(())
@@ -147,7 +147,7 @@ impl LifecycleService for ChannelManagerAdapter {
         let inner = self.inner.clone();
         tokio::spawn(async move {
             if let Err(e) = inner.stop_all().await {
-                tracing::error!("Channel manager stop error: {}", e);
+                tracing::error!("[Main] Channel manager stop error: {}", e);
             }
         });
         self.started.store(false, Ordering::SeqCst);
@@ -235,7 +235,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         total_dropped += n as u64;
                         tracing::warn!(
-                            "Agent inbound bridge lagged by {} messages (total dropped: {})",
+                            "[Main] Agent inbound bridge lagged by {} messages (total dropped: {})",
                             n, total_dropped
                         );
                         continue;
@@ -243,7 +243,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         if total_dropped > 0 {
                             tracing::warn!(
-                                "Agent inbound bridge closing with {} total dropped messages",
+                                "[Main] Agent inbound bridge closing with {} total dropped messages",
                                 total_dropped
                             );
                         }

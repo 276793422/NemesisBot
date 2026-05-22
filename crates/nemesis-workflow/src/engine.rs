@@ -565,7 +565,7 @@ impl WorkflowEngine {
                         // We store approval status as a node result metadata field
                         // since the Execution type doesn't have a variables field
                         debug!(
-                            "Node {} review result: approved={}",
+                            "[Workflow] Node {} review result: approved={}",
                             node_id, b
                         );
                     }
@@ -604,7 +604,7 @@ impl WorkflowEngine {
     /// will return an error. In-progress executions are not automatically
     /// cancelled (they will complete naturally).
     pub async fn close(&self) {
-        info!("Closing workflow engine");
+        info!("[Workflow] Closing workflow engine");
         let mut closed = self.closed.write().await;
         *closed = true;
 
@@ -629,11 +629,11 @@ impl WorkflowEngine {
             let persistence = WorkflowPersistence::new(&file_path);
             if let Err(e) = persistence.save_execution(execution) {
                 warn!(
-                    "Failed to persist execution {}: {}",
+                    "[Workflow] Failed to persist execution {}: {}",
                     execution.id, e
                 );
             } else {
-                debug!("Persisted execution {}", execution.id);
+                debug!("[Workflow] Persisted execution {}", execution.id);
             }
         }
     }

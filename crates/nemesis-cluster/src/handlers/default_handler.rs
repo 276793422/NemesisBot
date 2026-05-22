@@ -191,7 +191,7 @@ impl DefaultHandler {
 
             Action::ConfirmTaskDelivery => {
                 let task_id = payload.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
-                tracing::info!(task_id = task_id, "Task delivery confirmed");
+                tracing::info!(task_id = task_id, "[DefaultHandler] Task delivery confirmed");
                 HandleResult {
                     success: true,
                     response: serde_json::json!({
