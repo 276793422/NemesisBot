@@ -3595,9 +3595,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 17: Start WebServer in background
     let web_shutdown_rx = svc_mgr.subscribe_shutdown();
+    let actual_port = Arc::new(std::sync::Mutex::new(None::<u16>));
+    let actual_port_clone = actual_port.clone();
     let web_handle = tokio::spawn(async move {
-        if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx).await {
-            error!("Web server error: {}", e);
+        match web_server.start_with_shutdown(web_shutdown_rx).await {
+            Ok(addr) => {
+                *actual_port_clone.lock().unwrap() = Some(addr.port());
+            }
+            Err(e) => error!("Web server error: {}", e),
         }
     });
     info!("Web server starting on {}:{}", web_host, web_port);
@@ -3621,15 +3626,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Non-fatal: the real services are already started above
     }
 
-    // Step 20: Compute display URLs
-    let web_url = format!("http://{}:{}", web_host, web_port);
-    let _chat_url = format!("http://{}:{}/chat/", web_host, web_port);
+    // Step 20: Compute display URLs (use actual bound port when port 0 was used)
+    let real_port: i64 = actual_port.lock().unwrap()
+        .map(|p| p as i64)
+        .unwrap_or(web_port);
+    let web_url = format!("http://{}:{}", web_host, real_port);
+    let _chat_url = format!("http://{}:{}/chat/", web_host, real_port);
 
     // Step 21: Print startup banner
     let enabled_channels = count_enabled_channels(&cfg);
     print_gateway_banner(
         &web_host,
-        web_port,
+        real_port,
         &cfg.channels.web.auth_token,
         enabled_channels,
         &cfg.gateway.host,
@@ -3637,7 +3645,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     );
 
     // Verify web server is listening
-    let listen_addr = format!("{}:{}", web_host, web_port);
+    let listen_addr = format!("{}:{}", web_host, real_port);
     println!("  Checking web server on {}...", listen_addr);
     match tokio::net::TcpStream::connect(&listen_addr).await {
         Ok(_) => println!("  OK Web server is listening"),

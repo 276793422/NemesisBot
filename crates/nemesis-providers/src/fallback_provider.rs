@@ -80,6 +80,11 @@ impl FallbackProvider {
     /// Create a new fallback provider with the given chain.
     /// Providers are tried in order; unavailable ones (in cooldown) are skipped.
     pub fn new(name: &str, chain: Vec<FallbackEntry>) -> Self {
+        tracing::info!(
+            name = name,
+            chain_length = chain.len(),
+            "[Provider] Created fallback provider chain"
+        );
         Self {
             chain,
             cooldown: Arc::new(CooldownTracker::new()),
@@ -263,6 +268,10 @@ impl FallbackProvider {
             let effective_model = if model.is_empty() { &entry.model } else { model };
 
             if !self.cooldown.is_available(provider_name) {
+                tracing::debug!(
+                    provider = provider_name,
+                    "[Provider] Skipping provider in cooldown during detailed execution"
+                );
                 attempts.push(FallbackAttempt {
                     provider: provider_name.to_string(),
                     model: effective_model.to_string(),
@@ -275,6 +284,11 @@ impl FallbackProvider {
             match entry.provider.chat(messages, tools, effective_model, options).await {
                 Ok(resp) => {
                     self.cooldown.mark_success(provider_name);
+                    tracing::info!(
+                        provider = provider_name,
+                        model = effective_model,
+                        "[Provider] Fallback chain succeeded"
+                    );
                     attempts.push(FallbackAttempt {
                         provider: provider_name.to_string(),
                         model: effective_model.to_string(),
@@ -291,6 +305,13 @@ impl FallbackProvider {
                     let reason = err.reason();
                     self.cooldown.mark_failure(provider_name, reason);
                     let error_msg = format!("{}", err);
+                    tracing::warn!(
+                        provider = provider_name,
+                        model = effective_model,
+                        error = %error_msg,
+                        retriable = err.is_retriable(),
+                        "[Provider] Fallback attempt failed"
+                    );
                     errors.push((provider_name.to_string(), error_msg.clone()));
                     attempts.push(FallbackAttempt {
                         provider: provider_name.to_string(),
@@ -351,6 +372,10 @@ impl LLMProvider for FallbackProvider {
 
             // Skip providers in cooldown
             if !self.cooldown.is_available(provider_name) {
+                tracing::debug!(
+                    provider = provider_name,
+                    "[Provider] Skipping provider in cooldown"
+                );
                 continue;
             }
 

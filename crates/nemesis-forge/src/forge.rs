@@ -57,6 +57,12 @@ impl Forge {
     pub fn new(config: ForgeConfig, workspace: PathBuf) -> Self {
         let forge_dir = workspace.join("forge");
 
+        tracing::info!(
+            workspace = %workspace.display(),
+            forge_dir = %forge_dir.display(),
+            "Forge instance created"
+        );
+
         let collector = Collector::new(CollectorConfig {
             persistence_path: forge_dir
                 .join("experiences")
@@ -226,12 +232,14 @@ impl Forge {
 
     /// Set the cluster bridge for cross-node communication.
     pub fn set_bridge(&self, bridge: Arc<dyn ClusterForgeBridge>) {
+        tracing::info!("[Forge] Cluster bridge configured");
         *self.bridge.lock() = Some(bridge);
     }
 
     /// Cascade-set the LLM provider to all subsystems that need it:
     /// reflector, pipeline (via LLMCaller), and learning engine.
     pub fn set_provider(&self, provider: Arc<dyn crate::reflector_llm::LLMCaller>) {
+        tracing::info!("[Forge] Setting LLM provider on subsystems");
         // Reflector gets the LLM caller for semantic analysis (Stage 2 LLM).
         if let Some(ref reflector) = self.reflector {
             reflector.set_provider(provider.clone());
@@ -337,16 +345,19 @@ impl Forge {
 
     /// Initialize the reflector subsystem.
     pub fn init_reflector(&mut self, reflector: Reflector) {
+        tracing::info!("[Forge] Reflector subsystem initialized");
         self.reflector = Some(reflector);
     }
 
     /// Initialize the pipeline subsystem.
     pub fn init_pipeline(&mut self, pipeline: Pipeline) {
+        tracing::info!("[Forge] Pipeline subsystem initialized");
         self.pipeline = Some(pipeline);
     }
 
     /// Initialize the MCP installer.
     pub fn init_mcp_installer(&mut self, installer: MCPInstaller) {
+        tracing::info!("[Forge] MCP installer initialized");
         self.mcp_installer = Some(installer);
     }
 
@@ -354,18 +365,23 @@ impl Forge {
     pub fn init_syncer(&mut self) {
         let bridge_opt = self.bridge.lock().clone();
         if let Some(bridge) = bridge_opt {
+            tracing::info!("[Forge] Syncer initialized with cluster bridge");
             self.syncer = Some(Syncer::with_forge_dir(bridge, self.forge_dir.clone()));
+        } else {
+            tracing::debug!("[Forge] Syncer not initialized: no bridge configured");
         }
     }
 
     /// Initialize the trace subsystem.
     pub fn init_trace(&mut self, collector: TraceCollector, store: TraceStore) {
+        tracing::info!("[Forge] Trace subsystem initialized");
         self.trace_collector = Some(collector);
         self.trace_store = Some(store);
     }
 
     /// Initialize the learning subsystem.
     pub fn init_learning(&mut self, engine: LearningEngine, monitor: DeploymentMonitor, store: CycleStore) {
+        tracing::info!("[Forge] Learning subsystem initialized (engine + monitor + cycle store)");
         self.learning_engine = Some(engine);
         self.deployment_monitor = Some(monitor);
         self.cycle_store = Some(store);
@@ -375,18 +391,37 @@ impl Forge {
 
     /// Trigger a manual reflection cycle.
     pub fn reflect_now(&self, experiences: &[crate::types::CollectedExperience]) -> Result<nemesis_types::forge::Reflection, String> {
+        tracing::info!(
+            experience_count = experiences.len(),
+            "[Forge] Manual reflection triggered"
+        );
         if let Some(ref reflector) = self.reflector {
-            Ok(reflector.generate_reflection(experiences))
+            let result = reflector.generate_reflection(experiences);
+            tracing::info!(
+                insight_count = result.insights.len(),
+                recommendation_count = result.recommendations.len(),
+                "[Forge] Reflection completed"
+            );
+            Ok(result)
         } else {
+            tracing::error!("[Forge] Reflection failed: reflector not initialized");
             Err("Reflector not initialized".to_string())
         }
     }
 
     /// Receive a remote reflection report and store it.
     pub fn receive_reflection(&self, payload: &serde_json::Value) -> Result<(), String> {
+        tracing::info!("[Forge] Receiving remote reflection report");
         if let Some(ref syncer) = self.syncer {
-            syncer.receive_reflection(payload)
+            let result = syncer.receive_reflection(payload);
+            if result.is_ok() {
+                tracing::info!("[Forge] Remote reflection report stored successfully");
+            } else {
+                tracing::error!(error = %result.as_ref().unwrap_err(), "[Forge] Failed to store remote reflection");
+            }
+            result
         } else {
+            tracing::error!("[Forge] Receive reflection failed: syncer not initialized");
             Err("Syncer not initialized".to_string())
         }
     }

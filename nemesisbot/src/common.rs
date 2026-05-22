@@ -240,6 +240,23 @@ pub fn print_help() {
 // Logger initialization
 // =========================================================================
 
+/// Initialize a default console logger for simple CLI commands.
+///
+/// Uses `std::sync::OnceLock` to ensure the subscriber is only installed once.
+/// Commands like gateway/agent/daemon call `init_logger_from_config()` instead,
+/// which reads the logging section from config.json. This function is for all
+/// other commands (status, model, cron, etc.) that just need basic console output.
+pub fn ensure_default_logger() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
+
 /// Bitmask flags returned by `init_logger_from_config`.
 pub const LOG_DEBUG: u32 = 1;
 pub const LOG_QUIET: u32 = 2;
@@ -322,10 +339,16 @@ pub fn init_logger_from_config(
     }
 
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(level);
+        .with_max_level(level)
+        .with_writer(std::io::stderr);
 
     if enable_console {
-        let _ = subscriber.try_init();
+        if subscriber.try_init().is_err() {
+            // Global subscriber already set (e.g. by a previous call or default logger).
+            // This is non-fatal: the existing subscriber will handle logs at whatever
+            // level it was configured with.
+            eprintln!("[Logger] Warning: global subscriber already set, config-based init skipped");
+        }
     } else {
         // No console: init with a writer that discards output
         let _ = subscriber.with_writer(io::sink).try_init();

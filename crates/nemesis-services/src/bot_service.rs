@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn, error};
+use tracing::{debug, info, warn, error};
 
 use crate::state::BotState;
 use crate::helpers::get_config_path;
@@ -609,6 +609,7 @@ impl BotService {
         *self.cancel_tx.lock() = Some(cancel_tx);
 
         // Phase 1: Load configuration
+        debug!("[BotService] Starting component: {}", "load_config");
         if let Err(e) = self.load_config() {
             self.set_state_with_error(BotState::Error, &e);
             return Err(nemesis_types::error::NemesisError::Other(format!(
@@ -618,6 +619,7 @@ impl BotService {
         }
 
         // Phase 2: Validate configuration
+        debug!("[BotService] Starting component: {}", "validate_config");
         if let Err(e) = self.validate_config() {
             self.set_state_with_error(BotState::Error, &e);
             return Err(nemesis_types::error::NemesisError::Other(format!(
@@ -627,6 +629,7 @@ impl BotService {
         }
 
         // Phase 3: Initialize components
+        debug!("[BotService] Starting component: {}", "init_components");
         if let Err(e) = self.init_components() {
             self.set_state_with_error(BotState::Error, &e);
             return Err(nemesis_types::error::NemesisError::Other(format!(
@@ -636,6 +639,7 @@ impl BotService {
         }
 
         // Phase 4: Start services
+        debug!("[BotService] Starting component: {}", "start_services");
         if let Err(e) = self.start_services() {
             self.stop_all();
             self.set_state_with_error(BotState::Error, &e);
@@ -847,61 +851,73 @@ impl BotService {
     /// Called during Phase 4 of initialization when forge is enabled.
     /// The caller creates the concrete Forge instance and injects it here.
     pub fn inject_forge(&self, forge: Arc<dyn ForgeService>) {
+        debug!("[BotService] Injecting {} service", "forge");
         self.services.write().forge = Some(forge);
     }
 
     /// Inject a Memory service instance.
     pub fn inject_memory(&self, memory: Arc<dyn MemoryService>) {
+        debug!("[BotService] Injecting {} service", "memory");
         self.services.write().memory = Some(memory);
     }
 
     /// Inject a Heartbeat service instance.
     pub fn inject_heartbeat(&self, heartbeat: Arc<dyn HeartbeatService>) {
+        debug!("[BotService] Injecting {} service", "heartbeat");
         self.services.write().heartbeat = Some(heartbeat);
     }
 
     /// Inject a Device service instance.
     pub fn inject_devices(&self, devices: Arc<dyn DeviceService>) {
+        debug!("[BotService] Injecting {} service", "devices");
         self.services.write().devices = Some(devices);
     }
 
     /// Inject a Health server instance.
     pub fn inject_health(&self, health: Arc<dyn HealthServer>) {
+        debug!("[BotService] Injecting {} service", "health_server");
         self.services.write().health = Some(health);
     }
 
     /// Inject a Channel manager instance.
     pub fn inject_channels(&self, channels: Arc<dyn ChannelManager>) {
+        debug!("[BotService] Injecting {} service", "channels");
         self.services.write().channels = Some(channels);
     }
 
     /// Inject an Agent loop instance.
     pub fn inject_agent(&self, agent: Arc<dyn AgentLoopService>) {
+        debug!("[BotService] Injecting {} service", "agent");
         self.services.write().agent = Some(agent);
     }
 
     /// Inject a Cron service instance.
     pub fn inject_cron(&self, cron: Arc<dyn CronService>) {
+        debug!("[BotService] Injecting {} service", "cron");
         self.services.write().cron = Some(cron);
     }
 
     /// Inject a Security service instance.
     pub fn inject_security(&self, security: Arc<dyn SecurityService>) {
+        debug!("[BotService] Injecting {} service", "security");
         self.services.write().security = Some(security);
     }
 
     /// Inject a Workflow service instance.
     pub fn inject_workflow(&self, workflow: Arc<dyn WorkflowService>) {
+        debug!("[BotService] Injecting {} service", "workflow");
         self.services.write().workflow = Some(workflow);
     }
 
     /// Inject a Skills service instance.
     pub fn inject_skills(&self, skills: Arc<dyn SkillsService>) {
+        debug!("[BotService] Injecting {} service", "skills");
         self.services.write().skills = Some(skills);
     }
 
     /// Inject an Observer manager instance.
     pub fn inject_observer(&self, observer: Arc<dyn ObserverManager>) {
+        debug!("[BotService] Injecting {} service", "observer");
         self.services.write().observer = Some(observer);
     }
 

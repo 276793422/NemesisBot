@@ -99,11 +99,21 @@ impl RpcServer {
 
     /// Register a handler for a specific RPC action.
     pub fn register_handler(&self, action: &str, handler: RpcHandlerFn) {
+        tracing::info!(
+            action = action,
+            "[RPC-Server] Handler registered for action: {}",
+            action,
+        );
         self.handlers.write().insert(action.to_string(), Arc::from(handler));
     }
 
     /// Unregister a handler for a specific action.
     pub fn unregister_handler(&self, action: &str) {
+        tracing::info!(
+            action = action,
+            "[RPC-Server] Handler unregistered for action: {}",
+            action,
+        );
         self.handlers.write().remove(action);
     }
 
@@ -449,6 +459,13 @@ impl RpcServer {
         }; // guard dropped here
 
         if no_handler {
+            tracing::warn!(
+                action = %action,
+                from = %wire_msg.from,
+                id = %wire_msg.id,
+                "[RPC-Server] No handler for action: {}",
+                action,
+            );
             let resp = WireMessage::new_error(
                 wire_msg,
                 &format!("no handler for action: {}", action),
@@ -463,12 +480,29 @@ impl RpcServer {
         // Send response
         match result {
             Ok(value) => {
+                tracing::info!(
+                    action = %action,
+                    from = %wire_msg.from,
+                    id = %wire_msg.id,
+                    "[RPC-Server] Request handled successfully: action={}, from={}",
+                    action,
+                    wire_msg.from,
+                );
                 let resp = WireMessage::new_response(wire_msg, value);
                 if let Err(e) = conn.send(&resp).await {
                     tracing::error!(error = %e, "Failed to send response");
                 }
             }
             Err(err) => {
+                tracing::warn!(
+                    action = %action,
+                    from = %wire_msg.from,
+                    id = %wire_msg.id,
+                    error = %err,
+                    "[RPC-Server] Request handler returned error: action={}, from={}",
+                    action,
+                    wire_msg.from,
+                );
                 let resp = WireMessage::new_error(wire_msg, &err);
                 if let Err(e) = conn.send(&resp).await {
                     tracing::error!(error = %e, "Failed to send error response");
@@ -554,7 +588,14 @@ impl RpcServer {
         let handlers = self.handlers.read();
         let handler = match handlers.get(action) {
             Some(h) => Arc::clone(h),
-            None => return Err(format!("no handler for action: {}", action)),
+            None => {
+                tracing::warn!(
+                    action = action,
+                    "[RPC-Server] No handler for sync request: action={}",
+                    action,
+                );
+                return Err(format!("no handler for action: {}", action));
+            }
         };
         drop(handlers);
         handler(payload)

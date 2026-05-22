@@ -177,6 +177,7 @@ pub struct LearningEngine {
 impl LearningEngine {
     /// Create a new learning engine.
     pub fn new(config: ForgeConfig, registry: Arc<Registry>, cycle_store: CycleStore) -> Self {
+        tracing::info!("[Forge/LearningEngine] Created");
         Self {
             forge_dir: PathBuf::new(),
             config,
@@ -197,6 +198,10 @@ impl LearningEngine {
         registry: Arc<Registry>,
         cycle_store: CycleStore,
     ) -> Self {
+        tracing::info!(
+            forge_dir = %forge_dir.display(),
+            "[Forge/LearningEngine] Created with forge directory"
+        );
         Self {
             forge_dir,
             config,
@@ -212,22 +217,26 @@ impl LearningEngine {
 
     /// Set the LLM provider for skill draft generation.
     pub fn set_provider(&self, provider: Arc<dyn LLMProvider>) {
+        tracing::info!("[Forge/LearningEngine] LLM provider set for skill generation");
         *self.provider.lock() = Some(provider);
     }
 
     /// Set the pipeline for validation.
     pub fn set_pipeline(&self, pipeline: Arc<Pipeline>) {
+        tracing::info!("[Forge/LearningEngine] Pipeline set for validation");
         *self.pipeline.lock() = Some(pipeline);
     }
 
     /// Set the deployment monitor for outcome evaluation.
     pub fn set_monitor(&self, monitor: Arc<DeploymentMonitor>) {
+        tracing::info!("[Forge/LearningEngine] Deployment monitor set");
         *self.monitor.lock() = Some(monitor);
     }
 
     /// Set the skill creator delegate. Mirrors Go's `SetForge(f *Forge)`.
     /// The Forge instance implements SkillCreator and is injected here.
     pub fn set_skill_creator(&self, creator: Arc<dyn SkillCreator>) {
+        tracing::info!("[Forge/LearningEngine] Skill creator delegate set");
         *self.skill_creator.lock() = Some(creator);
     }
 
@@ -243,6 +252,11 @@ impl LearningEngine {
     /// 7. Save cycle record
     pub async fn run_cycle(&self, experiences: &[CollectedExperience]) -> LearningCycle {
         let cycle_id = uuid::Uuid::new_v4().to_string();
+        tracing::info!(
+            cycle_id = %cycle_id,
+            experience_count = experiences.len(),
+            "[Forge/LearningEngine] Starting learning cycle"
+        );
         let mut cycle = LearningCycle {
             id: cycle_id,
             started_at: chrono::Utc::now().to_rfc3339(),
@@ -334,9 +348,12 @@ impl LearningEngine {
             return Vec::new();
         }
 
-        let mut patterns = Vec::new();
+        tracing::debug!(
+            experience_count = experiences.len(),
+            "[Forge/LearningEngine] Extracting patterns from experiences"
+        );
 
-        // Detect tool chains (sequential tool usage patterns)
+        let mut patterns = Vec::new();
         let tool_chain_patterns = self.detect_tool_chains(experiences);
         patterns.extend(tool_chain_patterns);
 
@@ -366,6 +383,11 @@ impl LearningEngine {
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        tracing::info!(
+            pattern_count = patterns.len(),
+            "[Forge/LearningEngine] Patterns extracted"
+        );
 
         patterns
     }

@@ -498,6 +498,11 @@ impl Tool for ShellTool {
 
         // Guard the command against dangerous patterns and workspace violations
         if let Err(e) = self.guard_command(&command, &cwd) {
+            tracing::warn!(
+                command = %command.chars().take(100).collect::<String>(),
+                reason = %e,
+                "[Tools/Shell] Command blocked by safety guard"
+            );
             return ToolResult::error(&e);
         }
 

@@ -199,6 +199,7 @@ impl Reflector {
 
     /// Set the LLM caller for semantic analysis.
     pub fn set_provider(&self, caller: Arc<dyn crate::reflector_llm::LLMCaller>) {
+        tracing::info!("[Forge/Reflector] LLM provider set for semantic analysis");
         *self.llm_caller.write() = Some(caller);
     }
 
@@ -260,6 +261,10 @@ impl Reflector {
     /// implementation an LLM call would be made here for deeper semantic
     /// analysis.
     pub fn generate_reflection(&self, experiences: &[CollectedExperience]) -> Reflection {
+        tracing::debug!(
+            experience_count = experiences.len(),
+            "[Forge/Reflector] Generating reflection from experiences"
+        );
         let stats = self.analyze(experiences);
 
         let mut insights: Vec<String> = Vec::new();

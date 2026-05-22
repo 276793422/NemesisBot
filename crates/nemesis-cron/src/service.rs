@@ -7,6 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tracing::{debug, info, warn, error};
 
 /// Cron schedule definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +76,7 @@ pub struct CronService {
 impl CronService {
     /// Create a new cron service.
     pub fn new(store_path: &str) -> Self {
+        info!("[Cron] Service created, store_path={}", store_path);
         let svc = Self {
             store_path: store_path.to_string(),
             store: Arc::new(Mutex::new(CronStoreData { version: 1, jobs: vec![] })),
@@ -82,14 +84,18 @@ impl CronService {
             stop_handle: Arc::new(Mutex::new(None)),
             on_job: Arc::new(Mutex::new(None)),
         };
-        let _ = svc.load_store();
+        if let Err(e) = svc.load_store() {
+            warn!("[Cron] Failed to load store on init: {}", e);
+        }
         svc
     }
 
     /// Start the cron service.
     pub async fn start(&self) -> Result<(), String> {
+        info!("[Cron] Starting cron service");
         let mut running = self.running.lock();
         if *running {
+            info!("[Cron] Cron service already running, skipping");
             return Ok(());
         }
         self.recompute_next_runs();
@@ -120,6 +126,7 @@ impl CronService {
                 if due.is_empty() {
                     continue;
                 }
+                debug!("[Cron] Found {} due job(s)", due.len());
 
                 // Reset next_run for due jobs and save (under lock), matching Go's
                 // "reset before unlock to avoid duplicate execution" pattern.
@@ -142,6 +149,8 @@ impl CronService {
                     };
                     let Some(callback_job) = callback_job else { continue };
 
+                    info!("[Cron] Executing scheduled job: name={}, id={}", callback_job.name, callback_job.id);
+
                     // Call on_job handler (outside lock)
                     let handler_result = {
                         let on_job = on_job.lock();
@@ -159,19 +168,22 @@ impl CronService {
                             job.state.last_run_at_ms = Some(start_time);
                             job.updated_at_ms = Utc::now().timestamp_millis();
 
-                            match handler_result {
+                            match &handler_result {
                                 Some(Ok(_)) => {
                                     job.state.last_status = Some("ok".to_string());
                                     job.state.last_error = None;
+                                    info!("[Cron] Scheduled job completed: name={}, id={}, status=ok", job.name, job.id);
                                 }
                                 Some(Err(e)) => {
                                     job.state.last_status = Some("error".to_string());
-                                    job.state.last_error = Some(e);
+                                    job.state.last_error = Some(e.clone());
+                                    error!("[Cron] Scheduled job failed: name={}, id={}, error={}", job.name, job.id, e);
                                 }
                                 None => {
                                     // No handler configured
                                     job.state.last_status = Some("ok".to_string());
                                     job.state.last_error = None;
+                                    debug!("[Cron] Scheduled job executed (no handler): name={}, id={}", job.name, job.id);
                                 }
                             }
 
@@ -196,19 +208,24 @@ impl CronService {
         });
 
         *self.stop_handle.lock() = Some(handle);
+        info!("[Cron] Cron service started successfully");
         Ok(())
     }
 
     /// Stop the cron service.
     pub fn stop(&self) {
+        info!("[Cron] Stopping cron service");
         *self.running.lock() = false;
         if let Some(h) = self.stop_handle.lock().take() {
             h.abort();
         }
+        info!("[Cron] Cron service stopped");
     }
 
     /// Add a new job.
     pub fn add_job(&self, name: &str, schedule: CronSchedule, message: &str, deliver: bool, channel: Option<&str>, to: Option<&str>) -> Result<CronJob, String> {
+        let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
+        info!("[Cron] Job added: name={}, schedule_kind={}, cron={}", name, schedule.kind, cron_expr);
         let now_ms = Utc::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
@@ -241,6 +258,7 @@ impl CronService {
 
     /// Remove a job.
     pub fn remove_job(&self, job_id: &str) -> bool {
+        info!("[Cron] Job removed: id={}", job_id);
         let removed = {
             let mut store = self.store.lock();
             let before = store.jobs.len();
@@ -254,7 +272,9 @@ impl CronService {
     /// List jobs.
     pub fn list_jobs(&self, include_disabled: bool) -> Vec<CronJob> {
         let store = self.store.lock();
-        if include_disabled { store.jobs.clone() } else { store.jobs.iter().filter(|j| j.enabled).cloned().collect() }
+        let jobs: Vec<CronJob> = if include_disabled { store.jobs.clone() } else { store.jobs.iter().filter(|j| j.enabled).cloned().collect() };
+        debug!("[Cron] Listing jobs, count={}, include_disabled={}", jobs.len(), include_disabled);
+        jobs
     }
 
     /// Get status. Matches Go's `Status()` return:
@@ -279,6 +299,7 @@ impl CronService {
 
     /// Update a job's name and/or schedule.
     pub fn update_job(&self, job_id: &str, name: Option<&str>, schedule: Option<CronSchedule>) -> Result<(), String> {
+        info!("[Cron] Job updated: id={}", job_id);
         let now_ms = Utc::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
@@ -304,6 +325,7 @@ impl CronService {
             job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
         }
         let new_state = job.enabled;
+        info!("[Cron] Job toggled: id={}, enabled={}", job_id, new_state);
         job.updated_at_ms = now_ms;
         drop(store);
         self.save_store()?;
@@ -313,6 +335,7 @@ impl CronService {
     /// Enable or disable a specific job. Mirrors Go's `EnableJob(jobID, enabled)`.
     /// Returns the updated job if found.
     pub fn enable_job(&self, job_id: &str, enabled: bool) -> Result<CronJob, String> {
+        info!("[Cron] Job enable/disable: id={}, enabled={}", job_id, enabled);
         let now_ms = Utc::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
@@ -343,16 +366,25 @@ impl CronService {
 
     /// Execute a job immediately by ID.
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        info!("[Cron] Executing job: id={}", job_id);
         let now_ms = Utc::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
-            .ok_or_else(|| format!("job not found: {}", job_id))?;
+            .ok_or_else(|| {
+                error!("[Cron] Job not found for execution: id={}", job_id);
+                format!("job not found: {}", job_id)
+            })?;
+        let job_name = job.name.clone();
         job.state.last_run_at_ms = Some(now_ms);
         job.state.last_status = Some("executed".to_string());
         job.state.last_error = None;
         job.updated_at_ms = now_ms;
         drop(store);
-        self.save_store()
+        self.save_store()?;
+        let elapsed = start.elapsed().as_millis();
+        info!("[Cron] Job executed: name={}, id={}, duration_ms={}", job_name, job_id, elapsed);
+        Ok(())
     }
 
     /// Validate a cron expression. Supports both 5-field (min hour day month weekday)

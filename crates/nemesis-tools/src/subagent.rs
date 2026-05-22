@@ -78,6 +78,7 @@ impl SubagentManager {
     /// When set, `SubagentTool` will call `run_tool_loop` with this callback.
     /// When `None`, tasks fall back to a placeholder result.
     pub fn set_llm_callback(&self, callback: LLMCallback) {
+        tracing::info!("[Tools/Subagent] LLM callback configured");
         let mut guard = self.llm_callback.write().unwrap();
         *guard = Some(callback);
     }
@@ -124,6 +125,13 @@ impl SubagentManager {
     ) -> String {
         let id_val = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = format!("subagent-{}", id_val);
+
+        tracing::info!(
+            task_id = %id,
+            label = %label,
+            has_llm = self.llm_callback.read().unwrap().is_some(),
+            "[Tools/Subagent] Spawning subagent task"
+        );
 
         let record = SubagentTask {
             id: id.clone(),

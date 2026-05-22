@@ -7,7 +7,7 @@ use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::constants::BUS_CHANNEL_CAPACITY;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::broadcast;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 /// Message bus for routing messages between channels and agents.
 pub struct MessageBus {
@@ -46,6 +46,7 @@ impl MessageBus {
     /// (e.g., no receivers or buffer full) and increments a dropped counter.
     pub fn publish_inbound(&self, msg: InboundMessage) {
         if self.closed.load(Ordering::Relaxed) {
+            warn!("[Bus] Publish inbound rejected: bus is closed");
             return;
         }
         let receiver_count = self.inbound_tx.receiver_count();
@@ -57,9 +58,12 @@ impl MessageBus {
             self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
+        let channel_name = msg.channel.clone();
         if let Err(err) = self.inbound_tx.send(msg) {
             self.inbound_dropped.fetch_add(1, Ordering::Relaxed);
             warn!("publish_inbound: failed to send inbound message: {}", err);
+        } else {
+            debug!("[Bus] Published inbound message, channel={}", channel_name);
         }
     }
 
@@ -70,6 +74,7 @@ impl MessageBus {
     /// (e.g., no receivers or buffer full) and increments a dropped counter.
     pub fn publish_outbound(&self, msg: OutboundMessage) {
         if self.closed.load(Ordering::Relaxed) {
+            warn!("[Bus] Publish outbound rejected: bus is closed");
             return;
         }
         let receiver_count = self.outbound_tx.receiver_count();
@@ -81,9 +86,12 @@ impl MessageBus {
             self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
+        let channel_name = msg.channel.clone();
         if let Err(err) = self.outbound_tx.send(msg) {
             self.outbound_dropped.fetch_add(1, Ordering::Relaxed);
             warn!("publish_outbound: failed to send outbound message: {}", err);
+        } else {
+            debug!("[Bus] Published outbound message, channel={}", channel_name);
         }
     }
 
@@ -96,6 +104,7 @@ impl MessageBus {
     /// more than once.
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundMessage> {
         let existing = self.inbound_tx.receiver_count();
+        info!("[Bus] New inbound subscriber, total receivers={}", existing);
         if existing > 0 {
             warn!(
                 existing_receivers = existing,
@@ -112,6 +121,7 @@ impl MessageBus {
     /// fan-out concern as `subscribe_inbound`.
     pub fn subscribe_outbound(&self) -> broadcast::Receiver<OutboundMessage> {
         let existing = self.outbound_tx.receiver_count();
+        info!("[Bus] New outbound subscriber, total receivers={}", existing);
         if existing > 0 {
             warn!(
                 existing_receivers = existing,

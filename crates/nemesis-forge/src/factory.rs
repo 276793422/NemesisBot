@@ -31,11 +31,13 @@ pub struct Factory {
 impl Factory {
     /// Create a new factory without LLM support (template-based).
     pub fn new() -> Self {
+        tracing::debug!("[Forge/Factory] Created (template-based, no LLM)");
         Self { llm_caller: None }
     }
 
     /// Create a new factory with LLM support.
     pub fn with_llm(caller: Box<dyn LLMCaller>) -> Self {
+        tracing::info!("[Forge/Factory] Created with LLM support");
         Self {
             llm_caller: Some(caller),
         }
@@ -50,16 +52,27 @@ impl Factory {
         name: &str,
         experiences: &[CollectedExperience],
     ) -> Artifact {
+        tracing::info!(
+            name = name,
+            experience_count = experiences.len(),
+            has_llm = self.llm_caller.is_some(),
+            "[Forge/Factory] Creating skill artifact"
+        );
         let tool_names: Vec<String> = experiences
             .iter()
             .map(|ce| ce.experience.tool_name.clone())
             .collect();
 
         let content = if let Some(ref caller) = self.llm_caller {
+            tracing::debug!(name = name, "[Forge/Factory] Generating skill content via LLM");
             self.generate_skill_llm(caller.as_ref(), name, &tool_names, experiences)
                 .await
-                .unwrap_or_else(|_| self.generate_skill_template(name, &tool_names, experiences))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(name = name, error = %e, "[Forge/Factory] LLM skill generation failed, falling back to template");
+                    self.generate_skill_template(name, &tool_names, experiences)
+                })
         } else {
+            tracing::debug!(name = name, "[Forge/Factory] Generating skill content from template");
             self.generate_skill_template(name, &tool_names, experiences)
         };
 
@@ -89,16 +102,27 @@ impl Factory {
         name: &str,
         experiences: &[CollectedExperience],
     ) -> Artifact {
+        tracing::info!(
+            name = name,
+            experience_count = experiences.len(),
+            has_llm = self.llm_caller.is_some(),
+            "[Forge/Factory] Creating script artifact"
+        );
         let tool_names: Vec<String> = experiences
             .iter()
             .map(|ce| ce.experience.tool_name.clone())
             .collect();
 
         let content = if let Some(ref caller) = self.llm_caller {
+            tracing::debug!(name = name, "[Forge/Factory] Generating script content via LLM");
             self.generate_script_llm(caller.as_ref(), name, &tool_names, experiences)
                 .await
-                .unwrap_or_else(|_| self.generate_script_template(name, &tool_names))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(name = name, error = %e, "[Forge/Factory] LLM script generation failed, falling back to template");
+                    self.generate_script_template(name, &tool_names)
+                })
         } else {
+            tracing::debug!(name = name, "[Forge/Factory] Generating script content from template");
             self.generate_script_template(name, &tool_names)
         };
 
@@ -124,6 +148,11 @@ impl Factory {
     /// Checks content length, presence of required sections, and other
     /// heuristics. Returns a score in [0.0, 1.0].
     pub fn evaluate_artifact(&self, artifact: &Artifact) -> EvaluationResult {
+        tracing::debug!(
+            artifact_name = artifact.name,
+            artifact_kind = ?artifact.kind,
+            "[Forge/Factory] Evaluating artifact quality"
+        );
         let mut feedback: Vec<String> = Vec::new();
         let mut score: f64 = 0.0;
 

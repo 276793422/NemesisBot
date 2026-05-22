@@ -271,6 +271,7 @@ impl ToolRegistry {
 
     /// Register a tool.
     pub fn register(&self, tool: Arc<dyn Tool>) {
+        tracing::debug!(tool = tool.name(), "[Tools] Registered tool");
         self.tools.insert(tool.name().to_string(), tool);
     }
 
@@ -287,6 +288,12 @@ impl ToolRegistry {
         source: &str,
         workspace: &str,
     ) {
+        tracing::debug!(
+            tool = tool.name(),
+            user = user,
+            source = source,
+            "[Tools] Registered tool with plugin hook"
+        );
         let wrapped = Arc::new(PluginableTool::new(
             tool,
             plugin,
@@ -302,6 +309,7 @@ impl ToolRegistry {
     /// Convenience wrapper for backward compatibility where no security
     /// context is available.
     pub fn register_with_plugin_simple(&self, tool: Arc<dyn Tool>, plugin: Arc<dyn PluginHook>) {
+        tracing::debug!(tool = tool.name(), "[Tools] Registered tool with plugin hook (simple)");
         let wrapped = Arc::new(PluginableTool::new_simple(tool, plugin));
         self.tools.insert(wrapped.name().to_string(), wrapped);
     }

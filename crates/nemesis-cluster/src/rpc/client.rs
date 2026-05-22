@@ -106,6 +106,12 @@ impl RateLimiter {
         if let Some(timestamps) = state.requests.get_mut(peer_id) {
             timestamps.retain(|ts| *ts > window_start);
             if timestamps.len() >= self.max_requests_per_window {
+                tracing::warn!(
+                    peer_id = peer_id,
+                    window_requests = timestamps.len(),
+                    max_per_window = self.max_requests_per_window,
+                    "[RPC-Client] Rate limited: peer exceeded window limit",
+                );
                 return Err(RpcClientError::RateLimited(format!(
                     "peer {} exceeded {} requests per {:?}",
                     peer_id, self.max_requests_per_window, self.window
@@ -141,13 +147,25 @@ impl RateLimiter {
         const MAX_RETRIES: usize = 600;
         const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-        for _ in 0..MAX_RETRIES {
+        for attempt in 0..MAX_RETRIES {
             if let Ok(()) = self.acquire(peer_id) {
+                if attempt > 0 {
+                    tracing::debug!(
+                        peer_id = peer_id,
+                        attempts = attempt,
+                        "[RPC-Client] Rate limit acquire succeeded after retries",
+                    );
+                }
                 return Ok(());
             }
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
 
+        tracing::warn!(
+            peer_id = peer_id,
+            max_retries = MAX_RETRIES,
+            "[RPC-Client] Rate limited, exhausted all retries",
+        );
         Err(RpcClientError::RateLimited(format!(
             "peer {} rate limited after {} retries",
             peer_id, MAX_RETRIES
@@ -273,8 +291,17 @@ impl RpcClient {
         request: RPCRequest,
         timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
+        let start = std::time::Instant::now();
+
         // 1. Rate limiting (async retry matching Go's blocking Acquire)
-        self.rate_limiter.acquire_async(peer_id).await?;
+        if let Err(e) = self.rate_limiter.acquire_async(peer_id).await {
+            tracing::warn!(
+                peer_id = peer_id,
+                error = %e,
+                "[RPC-Client] Rate limited, request rejected",
+            );
+            return Err(e);
+        }
         let needs_release = true;
 
         let result = async {
@@ -288,6 +315,10 @@ impl RpcClient {
             })?;
 
         if !is_online {
+            tracing::warn!(
+                peer_id = peer_id,
+                "[RPC-Client] Peer is offline",
+            );
             return Err(RpcClientError::Connection(format!(
                 "peer is offline: {}",
                 peer_id
@@ -309,16 +340,53 @@ impl RpcClient {
         // 4. Select best address and connect
         let best_addr = self.select_best_address(&full_addresses);
 
+        tracing::debug!(
+            peer_id = peer_id,
+            addr = %best_addr,
+            action = ?request.action,
+            request_id = %request.id,
+            "[RPC-Client] Connecting to peer",
+        );
+
         // 5. Execute with timeout
         time::timeout(timeout, async {
             self.send_and_receive(&best_addr, &full_addresses, &request).await
         })
         .await
-        .map_err(|_| RpcClientError::Timeout)?
+        .map_err(|_| {
+            tracing::error!(
+                peer_id = peer_id,
+                action = ?request.action,
+                timeout_secs = timeout.as_secs(),
+                "[RPC-Client] Call timed out",
+            );
+            RpcClientError::Timeout
+        })?
         }.await;
 
         if needs_release {
             self.rate_limiter.release(peer_id);
+        }
+
+        let elapsed = start.elapsed();
+        match &result {
+            Ok(_) => {
+                tracing::info!(
+                    peer_id = peer_id,
+                    action = ?request.action,
+                    duration_ms = elapsed.as_millis() as u64,
+                    "[RPC-Client] Call completed successfully",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    peer_id = peer_id,
+                    action = ?request.action,
+                    duration_ms = elapsed.as_millis() as u64,
+                    error = %e,
+                    "[RPC-Client] Call failed",
+                );
+            }
         }
 
         result
@@ -399,6 +467,12 @@ impl RpcClient {
             RpcClientError::Connection(format!("set blocking: {}", e))
         })?;
 
+        tracing::debug!(
+            addr = addr,
+            "[RPC-Client] Connected to {}",
+            addr,
+        );
+
         // Clone request data for the blocking closure
         let request_clone = request.clone();
         let addr_owned = addr.to_string();
@@ -467,6 +541,12 @@ impl RpcClient {
 
         // Check for remote error
         if let Some(ref err) = response.error {
+            tracing::error!(
+                addr = addr,
+                request_id = %request.id,
+                error = %err,
+                "[RPC-Client] Remote error response",
+            );
             return Err(RpcClientError::RemoteError(err.clone()));
         }
 

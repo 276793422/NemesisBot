@@ -57,6 +57,13 @@ pub struct HttpProvider {
 
 impl HttpProvider {
     pub fn new(config: HttpProviderConfig) -> Self {
+        tracing::info!(
+            name = %config.name,
+            base_url = %config.base_url,
+            default_model = %config.default_model,
+            timeout_secs = config.timeout_secs,
+            "[Provider] Initialized HTTP provider"
+        );
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs));
 
@@ -212,6 +219,14 @@ impl HttpProvider {
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
+        tracing::debug!(
+            provider = %provider_name,
+            model = %model,
+            url = %url,
+            message_count = messages.len(),
+            "[Provider] Starting streaming request"
+        );
+
         tokio::spawn(async move {
             let mut req = client
                 .post(&url)
@@ -238,6 +253,12 @@ impl HttpProvider {
             let status = resp.status().as_u16();
             if status >= 400 {
                 let text = resp.text().await.unwrap_or_default();
+                tracing::error!(
+                    provider = %provider_name,
+                    model = %model,
+                    status = status,
+                    "[Provider] Streaming request failed with HTTP error"
+                );
                 let _ = tx
                     .send(Err(FailoverError::from_status(
                         &provider_name,
@@ -262,6 +283,11 @@ impl HttpProvider {
                 let bytes = match chunk_result {
                     Ok(b) => b,
                     Err(e) => {
+                        tracing::error!(
+                            provider = %provider_name,
+                            error = %e,
+                            "[Provider] SSE stream read error"
+                        );
                         let _ = tx
                             .send(Err(FailoverError::Format {
                                 provider: provider_name.clone(),
@@ -286,6 +312,11 @@ impl HttpProvider {
                         }
                         let data = &line[6..];
                         if data.trim() == "[DONE]" {
+                            tracing::debug!(
+                                provider = %provider_name,
+                                model = %model,
+                                "[Provider] SSE stream completed ([DONE])"
+                            );
                             let _ = tx.send(Ok(StreamChunk {
                                 delta: String::new(),
                                 tool_calls: vec![],
@@ -440,6 +471,14 @@ impl LLMProvider for HttpProvider {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let body = self.build_request_body(messages, tools, model, options);
 
+        tracing::debug!(
+            provider = %self.config.name,
+            model = %model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            "[Provider] Sending non-streaming request"
+        );
+
         let mut req = self.client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
@@ -462,6 +501,13 @@ impl LLMProvider for HttpProvider {
 
         if status >= 400 {
             let text = resp.text().await.unwrap_or_default();
+            tracing::error!(
+                provider = %self.config.name,
+                model = model,
+                status = status,
+                response = %text.chars().take(200).collect::<String>(),
+                "[Provider] Request failed with HTTP error"
+            );
             return Err(FailoverError::from_status(
                 &self.config.name,
                 model,
@@ -510,6 +556,17 @@ impl LLMProvider for HttpProvider {
         } else {
             vec![]
         };
+
+        tracing::debug!(
+            provider = %self.config.name,
+            model = model,
+            finish_reason = %finish_reason,
+            tool_call_count = tool_calls.len(),
+            prompt_tokens = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0),
+            completion_tokens = usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
+            total_tokens = usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+            "[Provider] Response received"
+        );
 
         Ok(LLMResponse {
             content,

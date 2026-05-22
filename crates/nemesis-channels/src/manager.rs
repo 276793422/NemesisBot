@@ -252,17 +252,19 @@ impl ChannelManager {
 
         info!("starting all channels");
 
+        let mut started_count = 0u32;
         for (name, ch) in map.iter() {
             info!(name = %name, "starting channel");
             if let Err(e) = ch.start().await {
                 error!(name = %name, error = %e, "failed to start channel");
                 // Continue starting remaining channels
             } else {
+                started_count += 1;
                 info!(name = %name, "started channel");
             }
         }
 
-        info!("all channels started");
+        info!("[ChannelManager] All channels started, count={}", started_count);
         Ok(())
     }
 
@@ -292,7 +294,7 @@ impl ChannelManager {
             info!(name = %name, "stopped channel");
         }
 
-        info!("all channels stopped");
+        info!("[ChannelManager] All channels stopped");
         Ok(())
     }
 
@@ -334,6 +336,7 @@ impl ChannelManager {
                 match ch.send(msg).await {
                     Ok(()) => Ok(()),
                     Err(e) => {
+                        error!("[ChannelManager] Failed to dispatch outbound message to {}: {}", channel_name, e);
                         self.metrics
                             .send_errors
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -345,6 +348,7 @@ impl ChannelManager {
                 self.metrics
                     .dropped_not_found
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                warn!("[ChannelManager] No channel found for outbound message, target={}", channel_name);
                 Err(NemesisError::Channel(format!(
                     "channel '{}' not found for outbound message",
                     channel_name

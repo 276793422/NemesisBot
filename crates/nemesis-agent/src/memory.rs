@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::types::ConversationTurn;
 
@@ -182,6 +182,8 @@ impl MemoryStore {
         // Ensure memory directory exists.
         let _ = fs::create_dir_all(&memory_dir);
 
+        info!("[MemoryStore] Initialized, memory_dir={}", memory_dir.display());
+
         Self {
             workspace,
             memory_dir,
@@ -205,6 +207,7 @@ impl MemoryStore {
 
     /// Write content to the long-term memory file.
     pub fn write_long_term(&self, content: &str) -> std::io::Result<()> {
+        debug!("[MemoryStore] Writing long-term memory, {} bytes", content.len());
         if let Some(parent) = self.memory_file.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -223,6 +226,7 @@ impl MemoryStore {
     ///
     /// If the file does not exist yet, it is created with a date header.
     pub fn append_today(&self, content: &str) -> std::io::Result<()> {
+        debug!("[MemoryStore] Appending to today's daily note, {} bytes", content.len());
         let path = self.today_file();
 
         // Ensure month directory exists.

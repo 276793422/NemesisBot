@@ -11,6 +11,7 @@
 use crate::auditor::{AuditFilter, OperationRequest, SecurityAuditor};
 use crate::types::*;
 use std::collections::HashMap;
+use tracing::{debug, info, warn};
 
 /// Build a `tokio::process::Command` that executes a shell command.
 ///
@@ -99,6 +100,13 @@ impl SecurityMiddleware {
         source: &str,
         workspace: &str,
     ) -> Self {
+        info!(
+            user = user,
+            source = source,
+            workspace = workspace,
+            preset = "Standard",
+            "[Security] Middleware created",
+        );
         Self {
             auditor,
             user: user.to_string(),
@@ -115,6 +123,13 @@ impl SecurityMiddleware {
         workspace: &str,
         preset: PermissionPreset,
     ) -> Self {
+        info!(
+            user = user,
+            source = source,
+            workspace = workspace,
+            preset = ?preset,
+            "[Security] Middleware created with preset",
+        );
         Self {
             auditor,
             user: user.to_string(),
@@ -131,6 +146,12 @@ impl SecurityMiddleware {
 
     /// Set permission preset.
     pub fn set_preset(&mut self, preset: PermissionPreset) {
+        info!(
+            old_preset = ?self.preset,
+            new_preset = ?preset,
+            user = %self.user,
+            "[Security] Permission preset changed",
+        );
         self.preset = preset;
     }
 
@@ -141,6 +162,16 @@ impl SecurityMiddleware {
 
     fn check_operation(&self, op: OperationType, target: &str) -> Result<String, String> {
         if !self.preset.allows(op) {
+            warn!(
+                operation = %op,
+                target = target,
+                preset = ?self.preset,
+                user = %self.user,
+                source = %self.source,
+                "[Security] Operation denied by preset: operation={}, preset={:?}",
+                op,
+                self.preset,
+            );
             return Err(format!(
                 "operation {} not allowed under {:?} preset",
                 op, self.preset
@@ -156,10 +187,34 @@ impl SecurityMiddleware {
             timestamp: Some(chrono::Utc::now()),
             ..Default::default()
         };
+        let danger = req.danger_level;
         let (allowed, err, _) = self.auditor.request_permission(&req);
         if allowed {
+            debug!(
+                operation = %op,
+                target = target,
+                danger_level = %danger,
+                user = %self.user,
+                source = %self.source,
+                "[Security] Operation approved: operation={}, target={}, danger={}",
+                op,
+                target,
+                danger,
+            );
             Ok(target.to_string())
         } else {
+            warn!(
+                operation = %op,
+                target = target,
+                danger_level = %danger,
+                user = %self.user,
+                source = %self.source,
+                error = ?err,
+                "[Security] Operation denied: operation={}, target={}, danger={}",
+                op,
+                target,
+                danger,
+            );
             Err(err.unwrap_or_else(|| "permission denied".to_string()))
         }
     }
@@ -220,6 +275,15 @@ impl SecurityMiddleware {
             return Err("no operations in batch".to_string());
         }
 
+        info!(
+            batch_id = %batch.id,
+            operation_count = batch.operations.len(),
+            user = %self.user,
+            source = %self.source,
+            "[Security] Batch permission request: {} operations",
+            batch.operations.len(),
+        );
+
         // Find the highest danger level
         let mut max_danger = DangerLevel::Low;
         for op in &batch.operations {
@@ -227,6 +291,13 @@ impl SecurityMiddleware {
                 max_danger = op.danger_level;
             }
             if !self.preset.allows(op.op_type) {
+                warn!(
+                    operation = %op.op_type,
+                    target = %op.target,
+                    preset = ?self.preset,
+                    "[Security] Batch operation denied by preset: operation={}",
+                    op.op_type,
+                );
                 return Err(format!(
                     "operation {} not allowed under {:?} preset",
                     op.op_type, self.preset
@@ -255,6 +326,11 @@ impl SecurityMiddleware {
         // Request permission for the batch summary
         let (allowed, err, _) = self.auditor.request_permission(&summary_req);
         if !allowed {
+            warn!(
+                batch_id = %summary_id,
+                max_danger = %max_danger,
+                "[Security] Batch permission denied",
+            );
             return Err(err.unwrap_or_else(|| "batch permission denied".to_string()));
         }
 
@@ -265,9 +341,22 @@ impl SecurityMiddleware {
             individual_req.source = self.source.clone();
             let (allowed, err, _) = self.auditor.request_permission(&individual_req);
             if !allowed {
+                warn!(
+                    batch_id = %summary_id,
+                    operation = %op.op_type,
+                    target = %op.target,
+                    "[Security] Individual operation in batch denied",
+                );
                 return Err(err.unwrap_or_else(|| "individual operation denied".to_string()));
             }
         }
+
+        info!(
+            batch_id = %summary_id,
+            operation_count = batch.operations.len(),
+            "[Security] Batch approved: {} operations",
+            batch.operations.len(),
+        );
 
         Ok(summary_id)
     }
@@ -278,11 +367,27 @@ impl SecurityMiddleware {
 
     /// Approve a pending request (for user interaction).
     pub fn approve_pending_request(&self, request_id: &str) -> Result<(), String> {
+        info!(
+            request_id = request_id,
+            user = %self.user,
+            source = %self.source,
+            "[Security] User approved operation: request_id={}",
+            request_id,
+        );
         self.auditor.approve_request(request_id, &self.user)
     }
 
     /// Deny a pending request (for user interaction).
     pub fn deny_pending_request(&self, request_id: &str, reason: &str) -> Result<(), String> {
+        info!(
+            request_id = request_id,
+            user = %self.user,
+            source = %self.source,
+            reason = reason,
+            "[Security] User rejected operation: request_id={}, reason={}",
+            request_id,
+            reason,
+        );
         self.auditor.deny_request(request_id, &self.user, reason)
     }
 
@@ -322,6 +427,12 @@ impl SecurityMiddleware {
 
     /// Export the audit log to a file.
     pub fn export_audit_log(&self, file_path: &str) -> Result<(), String> {
+        info!(
+            file_path = file_path,
+            user = %self.user,
+            "[Security] Exporting audit log to: {}",
+            file_path,
+        );
         self.auditor.export_audit_log(file_path)
     }
 
@@ -528,6 +639,12 @@ impl<'a> SecureFileWrapper<'a> {
     /// Read file contents with security check.
     pub async fn read_file(&self, path: &str) -> Result<String, String> {
         let validated = self.check_file_read(path)?;
+        debug!(
+            path = path,
+            user = %self.middleware.user,
+            "[Security] File read: path={}",
+            path,
+        );
         tokio::fs::read_to_string(&validated)
             .await
             .map_err(|e| format!("failed to read file: {}", e))
@@ -536,6 +653,14 @@ impl<'a> SecureFileWrapper<'a> {
     /// Write content to a file with security check.
     pub async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         let validated = self.check_file_write(path)?;
+        info!(
+            path = path,
+            content_len = content.len(),
+            user = %self.middleware.user,
+            "[Security] File write: path={}, size={}",
+            path,
+            content.len(),
+        );
         if let Some(parent) = std::path::Path::new(&validated).parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -581,6 +706,12 @@ impl<'a> SecureFileWrapper<'a> {
     /// Delete a file with security check.
     pub async fn delete_file(&self, path: &str) -> Result<(), String> {
         let validated = self.check_file_delete(path)?;
+        info!(
+            path = path,
+            user = %self.middleware.user,
+            "[Security] File delete: path={}",
+            path,
+        );
         tokio::fs::remove_file(&validated)
             .await
             .map_err(|e| format!("failed to delete file: {}", e))
@@ -752,6 +883,15 @@ impl<'a> SecureProcessWrapper<'a> {
     pub fn check_process_exec(&self, command: &str) -> Result<(), String> {
         let (safe, reason) = is_safe_command(command);
         if !safe {
+            warn!(
+                command = command,
+                reason = %reason,
+                user = %self.middleware.user,
+                source = %self.middleware.source,
+                "[Security] Dangerous command blocked: command={}, reason={}",
+                command,
+                reason,
+            );
             return Err(format!("command blocked: {}", reason));
         }
         self.middleware
@@ -763,6 +903,15 @@ impl<'a> SecureProcessWrapper<'a> {
     pub fn check_process_spawn(&self, command: &str) -> Result<(), String> {
         let (safe, reason) = is_safe_command(command);
         if !safe {
+            warn!(
+                command = command,
+                reason = %reason,
+                user = %self.middleware.user,
+                source = %self.middleware.source,
+                "[Security] Dangerous spawn command blocked: command={}, reason={}",
+                command,
+                reason,
+            );
             return Err(format!("command blocked: {}", reason));
         }
         self.middleware
@@ -780,6 +929,15 @@ impl<'a> SecureProcessWrapper<'a> {
     /// Execute a command with security check and return output.
     pub async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<String, String> {
         self.check_process_exec(command)?;
+
+        info!(
+            command = command,
+            timeout_secs = timeout_secs,
+            user = %self.middleware.user,
+            "[Security] Executing command: cmd={}, timeout={}s",
+            command,
+            timeout_secs,
+        );
 
         let timeout = std::time::Duration::from_secs(timeout_secs.min(600));
         let result = tokio::time::timeout(
@@ -813,6 +971,13 @@ impl<'a> SecureProcessWrapper<'a> {
     pub async fn spawn(&self, command: &str) -> Result<u32, String> {
         self.check_process_spawn(command)?;
 
+        info!(
+            command = command,
+            user = %self.middleware.user,
+            "[Security] Spawning process: cmd={}",
+            command,
+        );
+
         let mut child = shell_command(command)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -837,6 +1002,13 @@ impl<'a> SecureProcessWrapper<'a> {
     /// On Unix, sends `SIGKILL` via `kill -9 <pid>`.
     pub async fn kill(&self, pid: u32) -> Result<(), String> {
         self.check_process_kill(&pid.to_string())?;
+
+        warn!(
+            pid = pid,
+            user = %self.middleware.user,
+            "[Security] Killing process: pid={}",
+            pid,
+        );
 
         let kill_cmd = if cfg!(target_os = "windows") {
             format!("taskkill /F /PID {}", pid)
@@ -872,6 +1044,13 @@ impl<'a> SecureProcessWrapper<'a> {
     /// On Unix, sends `SIGTERM` via `kill <pid>`.
     pub async fn terminate(&self, pid: u32) -> Result<(), String> {
         self.check_process_kill(&pid.to_string())?;
+
+        warn!(
+            pid = pid,
+            user = %self.middleware.user,
+            "[Security] Terminating process: pid={}",
+            pid,
+        );
 
         let term_cmd = if cfg!(target_os = "windows") {
             format!("taskkill /PID {}", pid)
@@ -1064,6 +1243,15 @@ impl<'a> SecureNetworkWrapper<'a> {
     /// Download a URL with security check.
     pub async fn download_url(&self, url: &str, max_size: usize) -> Result<Vec<u8>, String> {
         let validated = self.check_network_download(url)?;
+
+        info!(
+            url = url,
+            max_size = max_size,
+            user = %self.middleware.user,
+            "[Security] Downloading URL: url={}, max_size={}",
+            url,
+            max_size,
+        );
 
         let response = reqwest::get(&validated).await.map_err(|e| format!("request failed: {}", e))?;
 

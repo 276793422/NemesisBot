@@ -210,11 +210,15 @@ async fn main() -> Result<()> {
         println!("Local mode enabled: using ./.nemesisbot");
     }
 
-    // Initialize tracing/logger with config-based setup.
-    // Note: tracing_subscriber::fmt::init() is now called inside
-    // init_logger_from_config if not in quiet mode. For commands that
-    // don't use agent (which calls init_logger), we init a default here.
-    let _ = tracing_subscriber::fmt::try_init();
+    // Lazy logging initialization:
+    // Commands like gateway/agent/daemon call init_logger_from_config() internally
+    // which reads config.json and configures tracing properly. We must NOT init
+    // a global subscriber here because tracing only allows ONE global init — if we
+    // called try_init() here, the config-based init in those commands would silently
+    // fail and all logging configuration (level, console, file) would be ignored.
+    //
+    // Instead, we use a helper function that inits a default subscriber only once
+    // and is called by commands that don't have their own config-based init.
 
     match cli.command {
         Commands::Onboard { default, args } => {
@@ -456,63 +460,82 @@ async fn main() -> Result<()> {
             commands::agent::run(subcommand, message, session, debug, quiet, no_console, cli.local).await?;
         }
         Commands::Status => {
+            common::ensure_default_logger();
             commands::status::run(cli.local)?;
         }
         Commands::Channel { action } => {
+            common::ensure_default_logger();
             commands::channel::run(action, cli.local)?;
         }
         Commands::Cluster { action } => {
+            common::ensure_default_logger();
             commands::cluster::run(action, cli.local)?;
         }
         Commands::Cors { action } => {
+            common::ensure_default_logger();
             commands::cors::run(action, cli.local)?;
         }
         Commands::Model { action } => {
+            common::ensure_default_logger();
             commands::model::run(action, cli.local)?;
         }
         Commands::Cron { action } => {
+            common::ensure_default_logger();
             commands::cron::run(action, cli.local)?;
         }
         Commands::Mcp { action } => {
+            common::ensure_default_logger();
             commands::mcp::run(action, cli.local)?;
         }
         Commands::Security { action } => {
+            common::ensure_default_logger();
             commands::security::run(action, cli.local).await?;
         }
         Commands::Log { action } => {
+            common::ensure_default_logger();
             commands::log::run(action, cli.local)?;
         }
         Commands::Auth { action } => {
+            common::ensure_default_logger();
             commands::auth::run(action, cli.local).await?;
         }
         Commands::Skills { action } => {
+            common::ensure_default_logger();
             commands::skills::run(action, cli.local)?;
         }
         Commands::Forge { action } => {
+            common::ensure_default_logger();
             commands::forge::run(action, cli.local)?;
         }
         Commands::Workflow { action } => {
+            common::ensure_default_logger();
             commands::workflow::run(action, cli.local)?;
         }
         Commands::Scanner { action } => {
+            common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
         }
         Commands::Memory { action } => {
+            common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
         }
         Commands::Shutdown => {
+            common::ensure_default_logger();
             commands::shutdown::run(cli.local)?;
         }
         Commands::Daemon { action } => {
             commands::daemon::run(action, cli.local).await?;
         }
         Commands::Migrate { options } => {
+            common::ensure_default_logger();
             commands::migrate::run(options, cli.local)?;
         }
         Commands::Version => {
+            common::ensure_default_logger();
             common::print_version_info();
         }
         Commands::Test { action } => {
+            common::ensure_default_logger();
             commands::test_cmd::run(action).await?;
         }
     }

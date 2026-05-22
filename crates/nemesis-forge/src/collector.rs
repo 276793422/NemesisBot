@@ -43,6 +43,11 @@ impl Collector {
         } else {
             Some(PathBuf::from(&config.persistence_path))
         };
+        tracing::debug!(
+            persistence = persistence_path.as_ref().map(|p| p.display().to_string()),
+            max_size = config.max_size,
+            "[Forge/Collector] Created"
+        );
         Self {
             config,
             experiences: Mutex::new(Vec::new()),

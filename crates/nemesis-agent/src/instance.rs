@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::types::{AgentConfig, AgentState, ConversationTurn, ToolCallInfo};
+use tracing::debug;
 
 /// Default maximum number of conversation turns to keep (excluding system prompt).
 const DEFAULT_MAX_HISTORY: usize = 100;
@@ -58,6 +59,7 @@ impl AgentInstance {
     /// Create a new agent instance with the given configuration.
     pub fn new(config: AgentConfig) -> Self {
         let id = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        debug!("[AgentInstance] Created instance id={}", id);
         let instance = Self {
             id,
             config,
@@ -219,6 +221,8 @@ impl AgentInstance {
             return;
         }
 
+        debug!("[AgentInstance] Compressing history for instance id={}, {} turns", self.id, history.len());
+
         // Find the system prompt (first message with role "system").
         let system_prompt = history
             .iter()
@@ -273,10 +277,17 @@ impl AgentInstance {
     /// messages), the system prompt must not be lost.
     pub fn set_history(&self, new_history: Vec<ConversationTurn>) {
         let mut history = self.history.lock().unwrap();
-        let system_prompt = history.first().filter(|t| t.role == "system").cloned();
+        debug!("[AgentInstance] Setting history for instance id={}, new_len={}", self.id, new_history.len());
+        let old_system_prompt = history.first().filter(|t| t.role == "system").cloned();
         *history = new_history;
-        if let Some(sp) = system_prompt {
-            history.insert(0, sp);
+        if let Some(sp) = old_system_prompt {
+            // Only insert the old system prompt if new_history doesn't already have one.
+            // This handles both cases: session restore from disk (no system prompt in
+            // loaded data) and callers like force_compression that already include one.
+            let has_system = history.first().map_or(false, |t| t.role == "system");
+            if !has_system {
+                history.insert(0, sp);
+            }
         }
     }
 

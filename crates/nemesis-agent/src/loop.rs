@@ -350,6 +350,8 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new agent loop with the given provider and configuration (standalone mode).
     pub fn new(provider: Box<dyn LlmProvider>, config: AgentConfig) -> Self {
+        let model = config.model.clone();
+        info!("[AgentLoop] Created in standalone mode, model={}", model);
         Self {
             provider: Arc::from(provider),
             tools: HashMap::new(),
@@ -403,6 +405,12 @@ impl AgentLoop {
             dm_scope: "main".to_string(),
         };
 
+        let model = config.model.clone();
+        info!(
+            "[AgentLoop] Created in bus mode, model={}, concurrent_mode={:?}, queue_size={}",
+            model, concurrent_mode, queue_size
+        );
+
         Self {
             provider: Arc::from(provider),
             tools: HashMap::new(),
@@ -433,12 +441,14 @@ impl AgentLoop {
 
     /// Register a tool with the agent loop (standalone mode).
     pub fn register_tool(&mut self, name: String, tool: Box<dyn Tool>) {
+        debug!("[AgentLoop] Registered tool: {}", name);
         self.tools.insert(name, Arc::from(tool));
     }
 
     /// Register a tool across all agents in the registry (bus mode).
     /// Mirrors Go's `AgentLoop.RegisterTool()`.
     pub fn register_tool_shared(&mut self, name: String, tool: Box<dyn Tool>) {
+        debug!("[AgentLoop] Registered shared tool: {}", name);
         self.tools.insert(name, Arc::from(tool));
     }
 
@@ -457,12 +467,14 @@ impl AgentLoop {
     /// Mirrors Go's `state.NewManager(workspace)`.
     pub fn set_state_manager(&mut self, mgr: Arc<nemesis_state::workspace_state::WorkspaceStateManager>) {
         self.state_manager = Some(mgr);
+        debug!("[AgentLoop] State manager configured");
     }
 
     /// Set the observer callback for event emission.
     /// Mirrors Go's `SetObserverManager()`.
     pub fn set_observer_callback(&mut self, cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>) {
         self.observer_callback = Some(cb);
+        debug!("[AgentLoop] Observer callback configured");
     }
 
     /// Set the route resolver for multi-agent message routing.
@@ -471,6 +483,7 @@ impl AgentLoop {
     /// cascade to determine agent and session key.
     pub fn set_route_resolver(&mut self, resolver: RouteResolver) {
         self.route_resolver = Some(resolver);
+        info!("[AgentLoop] Route resolver configured");
     }
 
     /// Set the cluster reference.
@@ -677,6 +690,7 @@ impl AgentLoop {
         mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
     ) {
         self.running.store(true, Ordering::Release);
+        info!("[AgentLoop] Bus consumption loop started");
 
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {
@@ -778,12 +792,14 @@ impl AgentLoop {
             }
         }
 
+        info!("[AgentLoop] Bus consumption loop stopped");
         self.running.store(false, Ordering::Release);
     }
 
     /// Stop the bus consumption loop.
     /// Mirrors Go's `AgentLoop.Stop()`.
     pub fn stop(&self) {
+        info!("[AgentLoop] Stop requested");
         self.running.store(false, Ordering::Release);
     }
 

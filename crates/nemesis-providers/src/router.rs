@@ -350,6 +350,11 @@ impl Router {
 
     /// Register a provider.
     pub fn register_provider(&self, name: &str, provider: Arc<dyn LLMProvider>) {
+        tracing::info!(
+            provider = name,
+            default_model = %provider.default_model(),
+            "[Provider] Registered provider"
+        );
         self.providers.insert(name.to_string(), provider);
     }
 
@@ -491,6 +496,12 @@ impl Router {
                         return Ok(resp);
                     }
                     Err(e) => {
+                        tracing::warn!(
+                            provider = %candidate.provider,
+                            model = %candidate.model,
+                            error = %e,
+                            "[Provider] Primary provider failed, attempting fallback"
+                        );
                         self.metrics.record(Metric {
                             provider: candidate.provider.clone(),
                             latency_ms: start.elapsed().as_millis() as u64,
@@ -504,6 +515,12 @@ impl Router {
                             let candidates = self.candidates.read();
                             for alt in candidates.iter().filter(|c| c.model == resolved && c.provider != candidate.provider) {
                                 if let Some(alt_provider) = self.providers.get(&alt.provider) {
+                                    tracing::warn!(
+                                        from_provider = %candidate.provider,
+                                        to_provider = %alt.provider,
+                                        model = %alt.model,
+                                        "[Provider] Fallback triggered"
+                                    );
                                     match alt_provider.chat(messages, tools, &alt.model, options).await {
                                         Ok(resp) => return Ok(resp),
                                         Err(_) => continue,

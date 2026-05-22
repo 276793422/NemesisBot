@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info};
 
 /// Callback type for async tool notifications.
 ///
@@ -284,6 +284,7 @@ impl ContextBuilder {
     /// 2. Bootstrap files (IDENTITY.md, SOUL.md, USER.md, etc.)
     /// 3. Tools section
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
+        info!("[ContextBuilder] Building system prompt from workspace: {:?}", self.workspace);
         let mut parts = Vec::new();
 
         // Core identity section
@@ -315,7 +316,9 @@ impl ContextBuilder {
         }
 
         // Join with "---" separator
-        parts.join("\n\n---\n\n")
+        let result = parts.join("\n\n---\n\n");
+        debug!("[ContextBuilder] System prompt built, total length={}", result.len());
+        result
     }
 
     /// Build the core identity section with time, environment, and workspace info.

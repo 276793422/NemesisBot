@@ -80,6 +80,11 @@ pub async fn run_tool_loop(
     llm_callback: &LLMCallback,
     initial_messages: Vec<serde_json::Value>,
 ) -> ToolLoopResult {
+    tracing::debug!(
+        max_iterations = config.max_iterations,
+        timeout_secs = config.timeout_secs,
+        "[Tools/ToolLoop] Starting tool loop"
+    );
     let mut iteration = 0;
     let mut tool_results: Vec<serde_json::Value> = Vec::new();
     let mut final_content = String::new();
@@ -133,6 +138,10 @@ pub async fn run_tool_loop(
         }
     }
 
+    tracing::debug!(
+        iterations = iteration,
+        "[Tools/ToolLoop] Tool loop completed"
+    );
     ToolLoopResult {
         content: final_content,
         iterations: iteration,

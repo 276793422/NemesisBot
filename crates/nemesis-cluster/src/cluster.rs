@@ -228,6 +228,11 @@ impl Cluster {
                 node_id: self.node_id.clone(),
             });
             let client = Arc::new(RpcClient::with_resolver(resolver));
+            tracing::info!(
+                "[Cluster] RPC client initialized, node_id={}, rpc_port={}",
+                self.node_id,
+                self.rpc_port,
+            );
             *self.rpc_client.lock() = Some(client);
         }
 
@@ -383,12 +388,14 @@ impl Cluster {
             String::new()
         };
 
+        let was_known = self.registry.get(node_id).is_some();
+
         let node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: node_id.into(),
                 name: name.into(),
                 role: nemesis_types::cluster::NodeRole::Worker,
-                address: primary_address,
+                address: primary_address.clone(),
                 category: category.into(),
                 last_seen: chrono::Utc::now().to_rfc3339(),
             },
@@ -397,14 +404,42 @@ impl Cluster {
             addresses, // Preserve all addresses for multi-address failover
         };
         self.registry.upsert(node);
+
+        if was_known {
+            logger::log_discovery("updated", &primary_address, Some(node_id));
+        } else {
+            logger::log_discovery("discovered", &primary_address, Some(node_id));
+            tracing::info!(
+                node_id = node_id,
+                name = name,
+                addr = %primary_address,
+                category = category,
+                "[Cluster] Node discovered: id={}, addr={}",
+                node_id,
+                primary_address,
+            );
+        }
     }
 
     /// Mark a node as offline.
     pub fn handle_node_offline(&self, node_id: &str, _reason: &str) {
         // The registry doesn't have mark_offline, so we remove or update status
         if let Some(mut info) = self.registry.get(node_id) {
+            tracing::warn!(
+                node_id = node_id,
+                name = %info.base.name,
+                "[Cluster] Node went offline: id={}",
+                node_id,
+            );
             info.status = NodeStatus::Offline;
             self.registry.upsert(info);
+            logger::log_discovery("offline", "", Some(node_id));
+        } else {
+            tracing::debug!(
+                node_id = node_id,
+                "[Cluster] Node offline event for unknown node: id={}",
+                node_id,
+            );
         }
     }
 
@@ -424,6 +459,7 @@ impl Cluster {
             original_channel,
             original_chat_id,
         );
+        logger::log_task("submitted", &task.id, action);
         task.id
     }
 
@@ -478,12 +514,25 @@ impl Cluster {
 
     /// Complete a task.
     pub fn complete_task(&self, task_id: &str, result: serde_json::Value) -> bool {
-        self.task_manager.complete_task(task_id, result)
+        let ok = self.task_manager.complete_task(task_id, result);
+        if ok {
+            logger::log_task("completed", task_id, "");
+        }
+        ok
     }
 
     /// Fail a task.
     pub fn fail_task(&self, task_id: &str, error: &str) -> bool {
-        self.task_manager.fail_task(task_id, error)
+        let ok = self.task_manager.fail_task(task_id, error);
+        if ok {
+            tracing::warn!(
+                task_id = task_id,
+                error = error,
+                "[Cluster] Task failed",
+            );
+            logger::log_task("failed", task_id, error);
+        }
+        ok
     }
 
     /// List all tasks.
@@ -547,6 +596,13 @@ impl Cluster {
                     target: Some(peer_id.to_string()),
                 };
 
+                tracing::debug!(
+                    peer_id = peer_id,
+                    action = action,
+                    request_id = %request.id,
+                    "[Cluster] Initiating RPC call_with_context",
+                );
+
                 // Try to run within an existing tokio runtime
                 match tokio::runtime::Handle::try_current() {
                     Ok(handle) => {
@@ -559,8 +615,19 @@ impl Cluster {
                         )) {
                             Ok(response) => {
                                 if let Some(ref err) = response.error {
+                                    tracing::error!(
+                                        peer_id = peer_id,
+                                        action = action,
+                                        error = %err,
+                                        "[Cluster] RPC call returned error",
+                                    );
                                     Err(err.clone())
                                 } else {
+                                    tracing::debug!(
+                                        peer_id = peer_id,
+                                        action = action,
+                                        "[Cluster] RPC call completed successfully",
+                                    );
                                     // Serialize the result to bytes (matching Go's []byte return)
                                     match &response.result {
                                         Some(val) => {
@@ -571,16 +638,36 @@ impl Cluster {
                                     }
                                 }
                             }
-                            Err(e) => Err(format!("RPC call failed: {}", e)),
+                            Err(e) => {
+                                tracing::error!(
+                                    peer_id = peer_id,
+                                    action = action,
+                                    error = %e,
+                                    "[Cluster] RPC call failed",
+                                );
+                                Err(format!("RPC call failed: {}", e))
+                            }
                         }
                     }
                     Err(_) => {
                         // No tokio runtime available (e.g. in unit tests or CLI)
+                        tracing::warn!(
+                            peer_id = peer_id,
+                            action = action,
+                            "[Cluster] RPC client not available (no tokio runtime)",
+                        );
                         Err("RPC client not initialized (no tokio runtime available)".into())
                     }
                 }
             }
-            None => Err("RPC client not initialized".into()),
+            None => {
+                tracing::error!(
+                    peer_id = peer_id,
+                    action = action,
+                    "[Cluster] RPC client not initialized",
+                );
+                Err("RPC client not initialized".into())
+            }
         }
     }
 
@@ -612,11 +699,30 @@ impl Cluster {
                     target: Some(peer_id.to_string()),
                 };
 
+                tracing::debug!(
+                    peer_id = peer_id,
+                    action = action,
+                    timeout_secs = timeout.as_secs(),
+                    request_id = %request.id,
+                    "[Cluster] Initiating async RPC call",
+                );
+
                 match client.call_with_timeout(peer_id, request, timeout).await {
                     Ok(response) => {
                         if let Some(ref err) = response.error {
+                            tracing::error!(
+                                peer_id = peer_id,
+                                action = action,
+                                error = %err,
+                                "[Cluster] Async RPC call returned error",
+                            );
                             Err(err.clone())
                         } else {
+                            tracing::debug!(
+                                peer_id = peer_id,
+                                action = action,
+                                "[Cluster] Async RPC call completed successfully",
+                            );
                             match &response.result {
                                 Some(val) => {
                                     serde_json::to_vec(val)
@@ -626,10 +732,25 @@ impl Cluster {
                             }
                         }
                     }
-                    Err(e) => Err(format!("RPC call failed: {}", e)),
+                    Err(e) => {
+                        tracing::error!(
+                            peer_id = peer_id,
+                            action = action,
+                            error = %e,
+                            "[Cluster] Async RPC call failed",
+                        );
+                        Err(format!("RPC call failed: {}", e))
+                    }
                 }
             }
-            None => Err("RPC client not initialized".into()),
+            None => {
+                tracing::error!(
+                    peer_id = peer_id,
+                    action = action,
+                    "[Cluster] Async RPC client not initialized",
+                );
+                Err("RPC client not initialized".into())
+            }
         }
     }
 
@@ -843,6 +964,14 @@ impl Cluster {
         };
 
         crate::cluster_config::save_dynamic_state(&self.dynamic_state_path, &state)
+            .map_err(|e| {
+                tracing::error!(
+                    path = %self.dynamic_state_path.display(),
+                    error = %e,
+                    "[Cluster] Failed to sync state to disk",
+                );
+                e
+            })
     }
 
     // -- Peer capability search ------------------------------------------------
@@ -1325,6 +1454,10 @@ impl Cluster {
 
     /// Set the RPC client for the cluster.
     pub fn set_rpc_client(&self, client: Arc<RpcClient>) {
+        tracing::info!(
+            timeout_secs = client.timeout().as_secs(),
+            "[Cluster] RPC client set externally",
+        );
         *self.rpc_client.lock() = Some(client);
     }
 
@@ -1392,6 +1525,13 @@ async fn poll_stale_pending_tasks(
 ) {
     let tasks = task_manager.list_pending_tasks();
 
+    if !tasks.is_empty() {
+        tracing::debug!(
+            count = tasks.len(),
+            "[Cluster] Polling stale pending tasks",
+        );
+    }
+
     for task in tasks {
         // Parse created_at (RFC 3339) and compute age.
         let created = match chrono::DateTime::parse_from_rfc3339(&task.created_at) {
@@ -1407,6 +1547,11 @@ async fn poll_stale_pending_tasks(
 
         // Timeout tasks older than 24 hours.
         if age > chrono::Duration::hours(24) {
+            tracing::warn!(
+                task_id = %task.id,
+                age_secs = age.num_seconds(),
+                "[Cluster] Timing out stale task after 24h",
+            );
             task_manager.complete_callback(
                 &task.id,
                 "error",
@@ -1487,6 +1632,12 @@ async fn poll_stale_pending_tasks(
                 let result_status = string_value(resp.get("result_status"));
                 let response = string_value(resp.get("response"));
                 let error = string_value(resp.get("error"));
+                tracing::info!(
+                    task_id = %task.id,
+                    result_status = %result_status,
+                    peer_id = %task.peer_id,
+                    "[Cluster] Stale task recovered from peer",
+                );
                 task_manager.complete_callback(
                     &task.id,
                     &result_status,
@@ -1503,6 +1654,11 @@ async fn poll_stale_pending_tasks(
                 .await;
             }
             "not_found" => {
+                tracing::warn!(
+                    task_id = %task.id,
+                    peer_id = %task.peer_id,
+                    "[Cluster] Stale task not found on remote peer",
+                );
                 task_manager.complete_callback(
                     &task.id,
                     "error",

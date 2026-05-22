@@ -112,6 +112,11 @@ pub struct WebServer {
 impl WebServer {
     /// Create a new web server.
     pub fn new(config: WebServerConfig) -> Self {
+        tracing::info!(
+            listen_addr = %config.listen_addr,
+            ws_path = %config.ws_path,
+            "[Web] Creating web server"
+        );
         Self {
             config,
             event_hub: Arc::new(EventHub::new()),
@@ -257,6 +262,7 @@ impl WebServer {
             }
         }
 
+        tracing::info!("[Web] Router built, routes registered");
         router
     }
 
@@ -276,7 +282,12 @@ impl WebServer {
     }
 
     /// Start the web server. Blocks until the server shuts down.
-    pub async fn start(&self) -> Result<(), String> {
+    /// Returns the actual bound address (useful when port 0 is used for OS-assigned random port).
+    pub async fn start(&self) -> Result<SocketAddr, String> {
+        tracing::info!(
+            listen_addr = %self.config.listen_addr,
+            "[Web] Starting web server"
+        );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Spawn the periodic status publish loop
@@ -288,20 +299,37 @@ impl WebServer {
             self.running.clone(),
         );
 
-        let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| format!("invalid listen address: {}", e))?;
+        let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
+            tracing::error!("[Web] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            format!("invalid listen address: {}", e)
+        })?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|e| format!("bind failed: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("[Web] Bind failed on '{}': {}", addr, e);
+                format!("bind failed: {}", e)
+            })?;
 
-        tracing::info!("Web server listening on {}", addr);
+        let actual_addr = listener.local_addr()
+            .map_err(|e| format!("failed to get local addr: {}", e))?;
+        tracing::info!("Web server listening on {}", actual_addr);
         axum::serve(listener, app)
             .await
-            .map_err(|e| format!("server error: {}", e))
+            .map_err(|e| {
+                tracing::error!("[Web] Server error: {}", e);
+                format!("server error: {}", e)
+            })?;
+        Ok(actual_addr)
     }
 
     /// Start the web server with graceful shutdown signal.
-    pub async fn start_with_shutdown(&self, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> Result<(), String> {
+    /// Returns the actual bound address (useful when port 0 is used for OS-assigned random port).
+    pub async fn start_with_shutdown(&self, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> Result<SocketAddr, String> {
+        tracing::info!(
+            listen_addr = %self.config.listen_addr,
+            "[Web] Starting web server with graceful shutdown"
+        );
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Spawn the periodic status publish loop
@@ -313,27 +341,37 @@ impl WebServer {
             self.running.clone(),
         );
 
-        let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| format!("invalid listen address: {}", e))?;
+        let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
+            tracing::error!("[Web] Invalid listen address '{}': {}", self.config.listen_addr, e);
+            format!("invalid listen address: {}", e)
+        })?;
         let app = self.build_router();
         let listener = tokio::net::TcpListener::bind(addr)
             .await
-            .map_err(|e| format!("bind failed: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("[Web] Bind failed on '{}': {}", addr, e);
+                format!("bind failed: {}", e)
+            })?;
 
-        tracing::info!("Web server listening on {}", addr);
+        let actual_addr = listener.local_addr()
+            .map_err(|e| format!("failed to get local addr: {}", e))?;
+        tracing::info!("Web server listening on {}", actual_addr);
 
         tokio::select! {
             result = axum::serve(listener, app) => {
-                result.map_err(|e| format!("server error: {}", e))
+                result.map_err(|e| format!("server error: {}", e))?;
+                Ok(actual_addr)
             }
             _ = shutdown_rx.recv() => {
                 tracing::info!("Web server shutdown signal received");
-                Ok(())
+                Ok(actual_addr)
             }
         }
     }
 
     /// Stop the web server.
     pub fn stop(&self) {
+        tracing::info!("[Web] Stopping web server");
         self.running.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -553,6 +591,7 @@ pub async fn handle_events_stream(
     let _running = state.running.clone();
 
     let stream = async_stream::stream! {
+        tracing::debug!("[Web] SSE stream started");
         // Send initial heartbeat
         let heartbeat_data = serde_json::json!({"ts": chrono::Utc::now().to_rfc3339()});
         yield Ok(SseEvent::default()
@@ -580,6 +619,7 @@ pub async fn handle_events_stream(
         }
 
         state.event_hub.unsubscribe();
+        tracing::debug!("[Web] SSE stream ended");
     };
 
     Sse::new(stream).keep_alive(KeepAlive::default())

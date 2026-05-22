@@ -120,6 +120,11 @@ pub struct SystemTray {
 impl SystemTray {
     /// Creates a new system tray with the given configuration.
     pub fn new(config: TrayConfig) -> Self {
+        tracing::info!(
+            title = %config.title,
+            menu_count = config.menu_items.len(),
+            "[Desktop] System tray created"
+        );
         Self {
             config: RwLock::new(config),
             callbacks: RwLock::new(HashMap::new()),
@@ -151,7 +156,9 @@ impl SystemTray {
     /// When [`Self::trigger_action`] is called with a matching id the
     /// registered callback will be invoked with the resolved [`TrayAction`].
     pub fn on_click(&self, menu_id: impl Into<String>, callback: TrayCallback) {
-        self.callbacks.write().expect("callbacks lock poisoned").insert(menu_id.into(), callback);
+        let id = menu_id.into();
+        tracing::debug!(menu_id = %id, "[Desktop] Callback registered for menu item");
+        self.callbacks.write().expect("callbacks lock poisoned").insert(id, callback);
     }
 
     /// Programmatically triggers an action by menu item id.
@@ -162,16 +169,23 @@ impl SystemTray {
     pub fn trigger_action(&self, menu_id: &str) -> bool {
         let action = match TrayAction::from_menu_id(menu_id) {
             Some(a) => a,
-            None => return false,
+            None => {
+                tracing::warn!(menu_id = menu_id, "[Desktop] Unknown tray menu action");
+                return false;
+            }
         };
 
         let cb = self.callbacks.read().expect("callbacks lock poisoned").get(menu_id).cloned();
         match cb {
             Some(callback) => {
+                tracing::info!(menu_id = menu_id, action = ?action, "[Desktop] Tray action triggered");
                 callback(action);
                 true
             }
-            None => false,
+            None => {
+                tracing::debug!(menu_id = menu_id, "[Desktop] No callback registered for menu item");
+                false
+            }
         }
     }
 
@@ -250,26 +264,31 @@ impl PlatformTray {
 
     /// Set callback for "Start Service" menu item.
     pub fn set_on_start(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Start Service callback set");
         self.on_start = Some(cb);
     }
 
     /// Set callback for "Stop Service" menu item.
     pub fn set_on_stop(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Stop Service callback set");
         self.on_stop = Some(cb);
     }
 
     /// Set callback for "Open Dashboard" menu item and double-click.
     pub fn set_on_open_dashboard(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Open Dashboard callback set");
         self.on_open_dashboard = Some(cb);
     }
 
     /// Set callback for "Open Chat" menu item.
     pub fn set_on_open_chat(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Open Chat callback set");
         self.on_open_chat = Some(cb);
     }
 
     /// Set callback for "Quit" menu item.
     pub fn set_on_quit(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Quit callback set");
         self.on_quit = Some(cb);
     }
 
@@ -405,20 +424,26 @@ impl PlatformTray {
                 }
                 Event::UserEvent(TrayUserEvent::Menu(menu_event)) => {
                     let id = menu_event.id().as_ref();
+                    tracing::debug!(menu_id = id, "[Desktop] Tray menu item selected");
                     match id {
                         "start" => {
+                            tracing::info!("[Desktop] Start Service clicked");
                             if let Some(ref cb) = on_start { cb(); }
                         }
                         "stop" => {
+                            tracing::info!("[Desktop] Stop Service clicked");
                             if let Some(ref cb) = on_stop { cb(); }
                         }
                         "dashboard" => {
+                            tracing::info!("[Desktop] Open Dashboard clicked");
                             if let Some(ref cb) = on_open_dashboard { cb(); }
                         }
                         "chat" => {
+                            tracing::info!("[Desktop] Open Chat clicked");
                             if let Some(ref cb) = on_open_chat { cb(); }
                         }
                         "quit" => {
+                            tracing::info!("[Desktop] Quit clicked, exiting tray event loop");
                             if let Some(ref cb) = on_quit { cb(); }
                             el.exit();
                         }
@@ -428,6 +453,7 @@ impl PlatformTray {
                 Event::UserEvent(TrayUserEvent::Icon(icon_event)) => {
                     match &icon_event {
                         tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                            tracing::debug!("[Desktop] Tray icon double-clicked, opening Dashboard");
                             if let Some(ref cb) = on_open_dashboard { cb(); }
                         }
                         tray_icon::TrayIconEvent::Click { button, .. } => {

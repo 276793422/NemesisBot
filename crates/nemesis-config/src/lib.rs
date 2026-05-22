@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tracing::{info, warn, error};
 
 pub mod provider_resolver;
 
@@ -1105,37 +1106,55 @@ pub fn set_embedded_defaults_from_fs(config_dir: &Path) -> Result<()> {
 /// Mirrors Go LoadConfig: tries file → embedded default → hardcoded default.
 /// After loading, applies environment variable overrides (NEMESISBOT_*).
 pub fn load_config(config_path: &Path) -> Result<Config> {
+    info!("[Config] Loading config from: {:?}", config_path);
     if config_path.exists() {
-        let content = std::fs::read_to_string(config_path)?;
-        let mut config: Config = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(config_path).map_err(|e| {
+            error!("[Config] Failed to read config file {:?}: {}", config_path, e);
+            e
+        })?;
+        let mut config: Config = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse config JSON: {}", e);
+            e
+        })?;
         apply_env_overrides(&mut config);
         config.post_process_for_compatibility();
         config.adjust_paths_for_environment();
+        info!("[Config] Config loaded successfully from file");
         return Ok(config);
     }
 
+    info!("[Config] Config file not found at {:?}, trying embedded default", config_path);
     let defaults = get_embedded_defaults();
     if !defaults.config.is_empty() {
         if let Ok(mut config) = serde_json::from_slice::<Config>(&defaults.config) {
             apply_env_overrides(&mut config);
             config.post_process_for_compatibility();
             config.adjust_paths_for_environment();
+            info!("[Config] Config loaded successfully from embedded default");
             return Ok(config);
+        } else {
+            warn!("[Config] Failed to parse embedded default config, falling back to hardcoded default");
         }
     }
 
+    info!("[Config] Using hardcoded default config");
     let mut config = default_config();
     apply_env_overrides(&mut config);
     config.post_process_for_compatibility();
     config.adjust_paths_for_environment();
+    info!("[Config] Config loaded successfully (hardcoded default)");
     Ok(config)
 }
 
 /// Save configuration to a file path.
 /// Mirrors Go SaveConfig: auto-adjusts paths for local mode before saving.
 pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
+    info!("[Config] Saving config to: {:?}", config_path);
     if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            error!("[Config] Failed to create config directory: {}", e);
+            e
+        })?;
     }
 
     // Auto-adjust paths for local mode before saving (mirrors Go behavior)
@@ -1172,7 +1191,10 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
         }
     }
 
-    let content = serde_json::to_string_pretty(&*config)?;
+    let content = serde_json::to_string_pretty(&*config).map_err(|e| {
+        error!("[Config] Failed to serialize config: {}", e);
+        e
+    })?;
     // Write with restricted permissions (0600 on Unix) to protect API keys/tokens
     #[cfg(unix)]
     {
@@ -1182,13 +1204,23 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(config_path)?;
-        std::io::Write::write_all(&mut f, content.as_bytes())?;
+            .open(config_path).map_err(|e| {
+                error!("[Config] Failed to open config file for writing: {}", e);
+                e
+            })?;
+        std::io::Write::write_all(&mut f, content.as_bytes()).map_err(|e| {
+            error!("[Config] Failed to write config file: {}", e);
+            e
+        })?;
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(config_path, content)?;
+        std::fs::write(config_path, content).map_err(|e| {
+            error!("[Config] Failed to write config file: {}", e);
+            e
+        })?;
     }
+    info!("[Config] Config saved successfully");
     Ok(())
 }
 
@@ -1308,13 +1340,19 @@ pub fn apply_env_overrides(config: &mut Config) {
 
 /// Load embedded default config.
 pub fn load_embedded_config() -> Result<Config> {
+    info!("[Config] Loading embedded config");
     let defaults = get_embedded_defaults();
     if defaults.config.is_empty() {
+        error!("[Config] Embedded default config not available");
         return Err(ConfigError::Validation("embedded default config not available".into()));
     }
-    let mut config: Config = serde_json::from_slice(&defaults.config)?;
+    let mut config: Config = serde_json::from_slice(&defaults.config).map_err(|e| {
+        error!("[Config] Failed to parse embedded config: {}", e);
+        e
+    })?;
     config.post_process_for_compatibility();
     config.adjust_paths_for_environment();
+    info!("[Config] Embedded config loaded successfully");
     Ok(config)
 }
 
@@ -1464,21 +1502,30 @@ impl Config {
 /// Load MCP configuration from a separate config.mcp.json file.
 /// Three-tier fallback: file -> embedded default -> hardcoded default.
 pub fn load_mcp_config(path: &Path) -> Result<McpConfig> {
+    info!("[Config] Loading MCP config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        let cfg: McpConfig = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            error!("[Config] Failed to read MCP config: {}", e);
+            e
+        })?;
+        let cfg: McpConfig = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse MCP config JSON: {}", e);
+            e
+        })?;
+        info!("[Config] MCP config loaded from file");
         return Ok(cfg);
     }
 
-    // Try embedded default
+    info!("[Config] MCP config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.mcp.is_empty() {
         if let Ok(cfg) = serde_json::from_slice::<McpConfig>(&defaults.mcp) {
+            info!("[Config] MCP config loaded from embedded default");
             return Ok(cfg);
         }
     }
 
-    // Hardcoded default
+    info!("[Config] Using hardcoded default MCP config");
     Ok(McpConfig {
         enabled: false,
         servers: vec![],
@@ -1488,104 +1535,175 @@ pub fn load_mcp_config(path: &Path) -> Result<McpConfig> {
 
 /// Save MCP configuration to a separate config.mcp.json file.
 pub fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
+    info!("[Config] Saving MCP config to: {:?}", path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            error!("[Config] Failed to create MCP config directory: {}", e);
+            e
+        })?;
     }
-    let content = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_string_pretty(cfg).map_err(|e| {
+        error!("[Config] Failed to serialize MCP config: {}", e);
+        e
+    })?;
+    std::fs::write(path, content).map_err(|e| {
+        error!("[Config] Failed to write MCP config: {}", e);
+        e
+    })?;
+    info!("[Config] MCP config saved successfully");
     Ok(())
 }
 
 /// Load security configuration from config.security.json.
 /// Three-tier fallback: file -> embedded default -> hardcoded default.
 pub fn load_security_config(path: &Path) -> Result<SecurityConfig> {
+    info!("[Config] Loading security config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        let cfg: SecurityConfig = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            error!("[Config] Failed to read security config: {}", e);
+            e
+        })?;
+        let cfg: SecurityConfig = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse security config JSON: {}", e);
+            e
+        })?;
+        info!("[Config] Security config loaded from file");
         return Ok(cfg);
     }
 
-    // Try embedded default
+    info!("[Config] Security config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.security.is_empty() {
         if let Ok(cfg) = serde_json::from_slice::<SecurityConfig>(&defaults.security) {
+            info!("[Config] Security config loaded from embedded default");
             return Ok(cfg);
         }
     }
 
-    // Hardcoded default
+    info!("[Config] Using hardcoded default security config");
     Ok(SecurityConfig::default())
 }
 
 /// Save security configuration to config.security.json.
 pub fn save_security_config(path: &Path, cfg: &SecurityConfig) -> Result<()> {
+    info!("[Config] Saving security config to: {:?}", path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            error!("[Config] Failed to create security config directory: {}", e);
+            e
+        })?;
     }
-    let content = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_string_pretty(cfg).map_err(|e| {
+        error!("[Config] Failed to serialize security config: {}", e);
+        e
+    })?;
+    std::fs::write(path, content).map_err(|e| {
+        error!("[Config] Failed to write security config: {}", e);
+        e
+    })?;
+    info!("[Config] Security config saved successfully");
     Ok(())
 }
 
 /// Load scanner configuration from config.scanner.json.
 /// Three-tier fallback: file -> embedded default -> hardcoded default.
 pub fn load_scanner_config(path: &Path) -> Result<ScannerFullConfig> {
+    info!("[Config] Loading scanner config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        let cfg: ScannerFullConfig = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            error!("[Config] Failed to read scanner config: {}", e);
+            e
+        })?;
+        let cfg: ScannerFullConfig = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse scanner config JSON: {}", e);
+            e
+        })?;
+        info!("[Config] Scanner config loaded from file");
         return Ok(cfg);
     }
 
-    // Try embedded default
+    info!("[Config] Scanner config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.scanner.is_empty() {
         if let Ok(cfg) = serde_json::from_slice::<ScannerFullConfig>(&defaults.scanner) {
+            info!("[Config] Scanner config loaded from embedded default");
             return Ok(cfg);
         }
     }
 
-    // Hardcoded default
+    info!("[Config] Using hardcoded default scanner config");
     Ok(ScannerFullConfig::default())
 }
 
 /// Save scanner configuration to config.scanner.json.
 pub fn save_scanner_config(path: &Path, cfg: &ScannerFullConfig) -> Result<()> {
+    info!("[Config] Saving scanner config to: {:?}", path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            error!("[Config] Failed to create scanner config directory: {}", e);
+            e
+        })?;
     }
-    let content = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_string_pretty(cfg).map_err(|e| {
+        error!("[Config] Failed to serialize scanner config: {}", e);
+        e
+    })?;
+    std::fs::write(path, content).map_err(|e| {
+        error!("[Config] Failed to write scanner config: {}", e);
+        e
+    })?;
+    info!("[Config] Scanner config saved successfully");
     Ok(())
 }
 
 /// Load skills configuration from config.skills.json.
 /// Three-tier fallback: file -> embedded default -> hardcoded default.
 pub fn load_skills_config(path: &Path) -> Result<SkillsFullConfig> {
+    info!("[Config] Loading skills config from: {:?}", path);
     if path.exists() {
-        let content = std::fs::read_to_string(path)?;
-        let cfg: SkillsFullConfig = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            error!("[Config] Failed to read skills config: {}", e);
+            e
+        })?;
+        let cfg: SkillsFullConfig = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse skills config JSON: {}", e);
+            e
+        })?;
+        info!("[Config] Skills config loaded from file");
         return Ok(cfg);
     }
 
-    // Try embedded default
+    info!("[Config] Skills config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.skills.is_empty() {
         if let Ok(cfg) = serde_json::from_slice::<SkillsFullConfig>(&defaults.skills) {
+            info!("[Config] Skills config loaded from embedded default");
             return Ok(cfg);
         }
     }
 
-    // Hardcoded default
+    info!("[Config] Using hardcoded default skills config");
     Ok(SkillsFullConfig::default())
 }
 
 /// Save skills configuration to config.skills.json.
 pub fn save_skills_config(path: &Path, cfg: &SkillsFullConfig) -> Result<()> {
+    info!("[Config] Saving skills config to: {:?}", path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            error!("[Config] Failed to create skills config directory: {}", e);
+            e
+        })?;
     }
-    let content = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(path, content)?;
+    let content = serde_json::to_string_pretty(cfg).map_err(|e| {
+        error!("[Config] Failed to serialize skills config: {}", e);
+        e
+    })?;
+    std::fs::write(path, content).map_err(|e| {
+        error!("[Config] Failed to write skills config: {}", e);
+        e
+    })?;
+    info!("[Config] Skills config saved successfully");
     Ok(())
 }
 

@@ -34,8 +34,18 @@ impl ToolExecutor {
     pub async fn execute(&self, tool_name: &str, args: &serde_json::Value) -> ToolResult {
         let tool = match self.registry.get(tool_name) {
             Some(t) => t,
-            None => return ToolResult::error(&format!("unknown tool: {}", tool_name)),
+            None => {
+                tracing::error!(tool = tool_name, "[Tools] Unknown tool requested");
+                return ToolResult::error(&format!("unknown tool: {}", tool_name));
+            }
         };
+
+        let start = std::time::Instant::now();
+        tracing::debug!(
+            tool = tool_name,
+            timeout_secs = self.config.timeout_secs,
+            "[Tools] Executing via executor"
+        );
 
         // Execute with timeout
         match tokio::time::timeout(
@@ -44,11 +54,34 @@ impl ToolExecutor {
         )
         .await
         {
-            Ok(result) => result,
-            Err(_) => ToolResult::error(&format!(
-                "tool {} timed out after {}s",
-                tool_name, self.config.timeout_secs
-            )),
+            Ok(result) => {
+                let elapsed = start.elapsed();
+                if result.is_error {
+                    tracing::warn!(
+                        tool = tool_name,
+                        duration_ms = elapsed.as_millis() as u64,
+                        "[Tools] Executor: tool failed"
+                    );
+                } else {
+                    tracing::debug!(
+                        tool = tool_name,
+                        duration_ms = elapsed.as_millis() as u64,
+                        "[Tools] Executor: tool completed"
+                    );
+                }
+                result
+            }
+            Err(_) => {
+                tracing::error!(
+                    tool = tool_name,
+                    timeout_secs = self.config.timeout_secs,
+                    "[Tools] Executor: tool timed out"
+                );
+                ToolResult::error(&format!(
+                    "tool {} timed out after {}s",
+                    tool_name, self.config.timeout_secs
+                ))
+            }
         }
     }
 
