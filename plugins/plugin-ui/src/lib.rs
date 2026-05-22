@@ -361,10 +361,13 @@ pub fn set_approval_result(result: &str) {
     CLOSE_REQUESTED.store(true, Ordering::SeqCst);
 
     // Also post WM_CLOSE as a secondary mechanism to wake the event loop
-    let hwnd = get_active_hwnd();
-    if hwnd != 0 {
-        // WM_CLOSE = 0x0010
-        unsafe { PostMessageW(hwnd, 0x0010, 0, 0); }
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd = get_active_hwnd();
+        if hwnd != 0 {
+            // WM_CLOSE = 0x0010
+            unsafe { PostMessageW(hwnd, 0x0010, 0, 0); }
+        }
     }
 }
 

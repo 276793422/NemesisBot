@@ -1,5 +1,5 @@
 /target
-/.git.back
+/target_linux
 # Ralph
 plan.md
 prd.json
@@ -9,6 +9,7 @@ archive/
 /docs
 /test
 /bin
+/bin_linux
 /plugins/*/target
 /web/node_modules/
 /crates/nemesis-web/static
