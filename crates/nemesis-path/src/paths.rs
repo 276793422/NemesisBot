@@ -198,19 +198,19 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
         return Ok(expanded.join(DEFAULT_HOME_DIR));
     }
 
-    // Priority 3: Auto-detect cwd
-    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {}", e))?;
-    if cwd.join(DEFAULT_HOME_DIR).is_dir() {
-        return Ok(cwd.join(DEFAULT_HOME_DIR));
-    }
-
-    // Priority 4: Exe directory
+    // Priority 3: Exe directory
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             if exe_dir.join(DEFAULT_HOME_DIR).is_dir() {
                 return Ok(exe_dir.join(DEFAULT_HOME_DIR));
             }
         }
+    }
+
+    // Priority 4: Auto-detect cwd
+    let cwd = std::env::current_dir().map_err(|e| format!("cwd: {}", e))?;
+    if cwd.join(DEFAULT_HOME_DIR).is_dir() {
+        return Ok(cwd.join(DEFAULT_HOME_DIR));
     }
 
     // Priority 5: Default ~/.nemesisbot

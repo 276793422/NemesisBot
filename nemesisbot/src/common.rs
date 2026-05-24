@@ -23,18 +23,18 @@ pub fn resolve_home(local: bool) -> PathBuf {
     if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
         return PathBuf::from(home).join(".nemesisbot");
     }
-    // Priority 3: Auto-detect cwd
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if cwd.join(".nemesisbot").exists() {
-        return cwd.join(".nemesisbot");
-    }
-    // Priority 4: Exe directory
+    // Priority 3: Exe directory
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             if exe_dir.join(".nemesisbot").exists() {
                 return exe_dir.join(".nemesisbot");
             }
         }
+    }
+    // Priority 4: Auto-detect cwd
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if cwd.join(".nemesisbot").exists() {
+        return cwd.join(".nemesisbot");
     }
     // Priority 5: Default ~/.nemesisbot
     dirs::home_dir()

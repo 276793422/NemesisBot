@@ -48,6 +48,8 @@ pub struct WebServerConfig {
     pub ws_path: String,
     /// Optional workspace path for config/log access.
     pub workspace: Option<String>,
+    /// Home directory where config.json resides.
+    pub home: Option<String>,
     /// Application version string.
     pub version: String,
     /// Optional path to static files directory for serving the Web UI (legacy disk-based).
@@ -66,8 +68,8 @@ impl std::fmt::Debug for WebServerConfig {
             .field("cors_origins", &self.cors_origins)
             .field("ws_path", &self.ws_path)
             .field("workspace", &self.workspace)
+            .field("home", &self.home)
             .field("version", &self.version)
-            .field("static_dir", &self.static_dir)
             .field("static_files", &self.static_files.as_ref().map(|_| "..."))
             .field("index_file", &self.index_file)
             .finish()
@@ -82,6 +84,7 @@ impl Default for WebServerConfig {
             cors_origins: vec![],
             ws_path: "/ws".to_string(),
             workspace: None,
+            home: None,
             version: String::new(),
             static_dir: None,
             static_files: None,
@@ -105,8 +108,14 @@ pub struct WebServer {
     message_bus: Option<Arc<MessageBus>>,
     /// Current LLM model name (shared with AppState via Arc).
     model_name: Arc<parking_lot::Mutex<String>>,
+    /// Active model API base URL.
+    model_base: Arc<parking_lot::Mutex<String>>,
+    /// Whether the active model has an API key configured.
+    model_has_key: Arc<std::sync::atomic::AtomicBool>,
     /// Optional streaming LLM provider for SSE chat endpoint.
     streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
+    /// Agent loop service for start/stop/status control.
+    agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
 }
 
 impl WebServer {
@@ -126,7 +135,10 @@ impl WebServer {
             start_time: Instant::now(),
             message_bus: None,
             model_name: Arc::new(parking_lot::Mutex::new(String::new())),
+            model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+            model_has_key: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             streaming_provider: None,
+            agent_service: None,
         }
     }
 
@@ -135,9 +147,11 @@ impl WebServer {
         self.message_bus = Some(bus);
     }
 
-    /// Set the current LLM model name.
-    pub fn set_model_name(&self, name: &str) {
+    /// Set model info: name, API base URL, and whether a key is configured.
+    pub fn set_model_info(&self, name: &str, base_url: &str, has_key: bool) {
         *self.model_name.lock() = name.to_string();
+        *self.model_base.lock() = base_url.to_string();
+        self.model_has_key.store(has_key, std::sync::atomic::Ordering::Release);
     }
 
     /// Set the workspace path for config/log access.
@@ -150,6 +164,11 @@ impl WebServer {
         self.streaming_provider = Some(provider);
     }
 
+    /// Set the agent loop service for start/stop/status control.
+    pub fn set_agent_service(&mut self, service: Arc<dyn nemesis_services::bot_service::AgentLoopService>) {
+        self.agent_service = Some(service);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -158,9 +177,12 @@ impl WebServer {
             auth_token: self.config.auth_token.clone(),
             session_count: self.session_count.clone(),
             workspace: self.config.workspace.clone(),
+            home: self.config.home.clone(),
             version: self.config.version.clone(),
             start_time: self.start_time,
             model_name: self.model_name.clone(),
+            model_base: self.model_base.clone(),
+            model_has_key: self.model_has_key.clone(),
             event_hub: self.event_hub.clone(),
             running: self.running.clone(),
             session_manager: self.session_manager.clone(),
@@ -171,6 +193,7 @@ impl WebServer {
                 crate::handlers::register_all(&mut ws_router);
                 Some(Arc::new(ws_router))
             },
+            agent_service: self.agent_service.clone(),
         };
 
         let state = Arc::new(state);

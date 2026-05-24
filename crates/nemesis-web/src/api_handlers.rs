@@ -19,6 +19,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 
+use nemesis_services::bot_service::AgentLoopService;
 use nemesis_types::utils;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -40,12 +41,18 @@ pub struct AppState {
     pub session_count: Arc<AtomicUsize>,
     /// Workspace path for config/log file access.
     pub workspace: Option<String>,
+    /// Home directory (e.g. ~/.nemesisbot), where config.json resides.
+    pub home: Option<String>,
     /// Application version.
     pub version: String,
     /// Server start time.
     pub start_time: Instant,
     /// Current LLM model name (wrapped in Arc<Mutex> for Clone).
     pub model_name: Arc<Mutex<String>>,
+    /// Active model API base URL.
+    pub model_base: Arc<Mutex<String>>,
+    /// Whether the active model has an API key configured.
+    pub model_has_key: Arc<AtomicBool>,
     /// SSE event hub.
     pub event_hub: Arc<EventHub>,
     /// Server running state.
@@ -58,6 +65,8 @@ pub struct AppState {
     pub streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
     /// WS API Router for request/response dispatch (optional — set during server setup).
     pub ws_router: Option<Arc<crate::ws_router::WsRouter>>,
+    /// Agent loop service for start/stop/status control.
+    pub agent_service: Option<Arc<dyn AgentLoopService>>,
 }
 
 impl AppState {
@@ -104,6 +113,14 @@ pub async fn handle_api_status(
         response.as_object_mut().unwrap().insert(
             "model".to_string(),
             serde_json::Value::String(model_name),
+        );
+        response.as_object_mut().unwrap().insert(
+            "model_base".to_string(),
+            serde_json::Value::String(state.model_base.lock().clone()),
+        );
+        response.as_object_mut().unwrap().insert(
+            "model_has_key".to_string(),
+            serde_json::Value::Bool(state.model_has_key.load(std::sync::atomic::Ordering::SeqCst)),
         );
     }
 
@@ -187,17 +204,17 @@ pub async fn handle_api_scanner_status(
 pub async fn handle_api_config(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let workspace = match &state.workspace {
-        Some(ws) => ws.clone(),
+    let home = match &state.home {
+        Some(h) => h.clone(),
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "workspace not configured"})),
+                Json(serde_json::json!({"error": "home not configured"})),
             ));
         }
     };
 
-    let config_path = PathBuf::from(&workspace).join("config").join("config.json");
+    let config_path = PathBuf::from(&home).join("config.json");
     let data = match std::fs::read_to_string(&config_path) {
         Ok(d) => d,
         Err(_) => {
@@ -251,17 +268,17 @@ pub async fn handle_api_version(
 pub async fn handle_api_models(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let workspace = match &state.workspace {
-        Some(ws) => ws.clone(),
+    let home = match &state.home {
+        Some(h) => h.clone(),
         None => {
             return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "workspace not configured"})),
+                Json(serde_json::json!({"error": "home not configured"})),
             ));
         }
     };
 
-    let config_path = PathBuf::from(&workspace).join("config").join("config.json");
+    let config_path = PathBuf::from(&home).join("config.json");
     let data = match std::fs::read_to_string(&config_path) {
         Ok(d) => d,
         Err(_) => {
@@ -399,21 +416,44 @@ fn load_scanner_status(workspace: &str) -> serde_json::Value {
 
     let mut engines: Vec<serde_json::Value> = cfg
         .engines
-        .into_iter()
+        .iter()
         .map(|(name, config)| {
-            let is_enabled = cfg.enabled.iter().any(|e| e.eq_ignore_ascii_case(&name));
-            let state = if is_enabled { "ready" } else { "disabled" };
-            let description = config
-                .get("url")
+            let is_enabled = cfg.enabled.iter().any(|e| e.eq_ignore_ascii_case(name));
+            // Read actual state from config instead of inferring
+            let install_status = config
+                .get("state")
+                .and_then(|s| s.get("install_status"))
                 .and_then(|v| v.as_str())
-                .map(|_| "病毒扫描引擎")
-                .unwrap_or("扫描引擎");
-            serde_json::json!({
+                .unwrap_or("");
+            let db_status = config
+                .get("state")
+                .and_then(|s| s.get("db_status"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let state = if !is_enabled {
+                "disabled"
+            } else if install_status == "installed" && db_status == "ready" {
+                "ready"
+            } else if install_status == "failed" {
+                "failed"
+            } else if install_status == "pending" || install_status.is_empty() {
+                "pending"
+            } else {
+                "installed"
+            };
+            let mut engine_json = serde_json::json!({
                 "name": name,
                 "state": state,
-                "description": description,
-                "config": config,
-            })
+                "enabled": is_enabled,
+            });
+            // Merge all config fields
+            if let Some(obj) = config.as_object() {
+                let map = engine_json.as_object_mut().unwrap();
+                for (k, v) in obj {
+                    map.entry(k.clone()).or_insert(v.clone());
+                }
+            }
+            engine_json
         })
         .collect();
 

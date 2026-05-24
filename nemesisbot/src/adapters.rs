@@ -304,7 +304,11 @@ impl LifecycleService for AgentLoopServiceAdapter {
     }
 }
 
-impl AgentLoopServiceTrait for AgentLoopServiceAdapter {}
+impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
+    fn is_running(&self) -> bool {
+        self.inner.is_running()
+    }
+}
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,6 @@
 //! Channels handler — list/get/update/test channel configurations.
 
-use crate::handlers::{mask_sensitive, require_workspace};
+use crate::handlers::{mask_sensitive, require_home};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 
@@ -26,18 +26,18 @@ impl ModuleHandler for ChannelsHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let workspace = require_workspace(ctx)?;
+        let home = require_home(ctx)?;
         match cmd {
-            "list" => self.list(workspace),
+            "list" => self.list(home),
             "get" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
-                self.get(workspace, &name)
+                self.get(home, &name)
             }
             "update" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
-                self.update(workspace, &name, &data)
+                self.update(home, &name, &data)
             }
             "test" => {
                 let data = data.ok_or("missing data")?;
@@ -49,19 +49,19 @@ impl ModuleHandler for ChannelsHandler {
     }
 }
 
-fn load_config(workspace: &str) -> Result<nemesis_config::Config, String> {
-    let path = PathBuf::from(workspace).join("config.json");
+fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+    let path = PathBuf::from(home).join("config.json");
     nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
 }
 
-fn save_config(workspace: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
-    let path = PathBuf::from(workspace).join("config.json");
+fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    let path = PathBuf::from(home).join("config.json");
     nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
 }
 
 impl ChannelsHandler {
-    fn list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(workspace)?;
+    fn list(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(home)?;
         let json = serde_json::to_value(&config.channels)
             .map_err(|e| format!("failed to serialize channels: {}", e))?;
         // Return the channels object with enabled status summary
@@ -83,8 +83,8 @@ impl ChannelsHandler {
         Ok(Some(serde_json::json!({ "channels": summary })))
     }
 
-    fn get(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(workspace)?;
+    fn get(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(home)?;
         let json = serde_json::to_value(&config.channels)
             .map_err(|e| format!("failed to serialize channels: {}", e))?;
         let channel = json
@@ -98,7 +98,7 @@ impl ChannelsHandler {
 
     fn update(
         &self,
-        workspace: &str,
+        home: &str,
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
@@ -106,7 +106,7 @@ impl ChannelsHandler {
             .get("config")
             .ok_or("missing config field")?
             .clone();
-        let mut config = load_config(workspace)?;
+        let mut config = load_config(home)?;
 
         // Serialize channels to a mutable JSON object, update the channel, then re-parse
         let mut channels_json = serde_json::to_value(&config.channels)
@@ -118,7 +118,7 @@ impl ChannelsHandler {
         config.channels = serde_json::from_value(channels_json)
             .map_err(|e| format!("failed to parse updated channels: {}", e))?;
 
-        save_config(workspace, &mut config)?;
+        save_config(home, &mut config)?;
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))
     }
 

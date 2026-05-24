@@ -51,9 +51,15 @@ const levels = [
 ]
 
 const filteredEntries = computed(() => {
-  if (!filter.value) return entries.value
+  let result = entries.value
+  // Filter by level if one is selected
+  if (level.value) {
+    result = result.filter(e => e.level === level.value)
+  }
+  // Filter by text
+  if (!filter.value) return result
   const f = filter.value.toLowerCase()
-  return entries.value.filter(e =>
+  return result.filter(e =>
     (e.message && e.message.toLowerCase().includes(f)) ||
     (e.component && e.component.toLowerCase().includes(f))
   )
@@ -124,7 +130,6 @@ onMounted(() => {
   loadInitial()
   _onLog = (entry: LogEntry) => {
     if (entry.source && entry.source !== source.value) return
-    if (level.value && entry.level !== level.value) return
     entries.value.push(entry)
     if (entries.value.length > 1000) entries.value = entries.value.slice(-500)
     if (autoScroll.value) nextTick(() => scrollToBottom())
@@ -174,7 +179,7 @@ onUnmounted(() => {
           <span class="log-component">{{ entry.component || '' }}</span>
           <span class="log-message">{{ entry.message || '' }}</span>
         </div>
-        <div v-if="!loading && entries.length === 0" class="empty-state"><p>暂无日志</p></div>
+        <div v-if="!loading && filteredEntries.length === 0" class="empty-state"><p>暂无日志</p></div>
       </div>
     </template>
 

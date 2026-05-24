@@ -997,7 +997,7 @@ fn test_resolve_home_dir_fallback_to_home_dir() {
 
 #[test]
 fn test_resolve_home_dir_exe_dir() {
-    // Priority 4: when cwd has no .nemesisbot, check exe directory.
+    // Priority 3: exe directory takes precedence over cwd.
     // We verify the function still returns a valid path (either exe dir
     // match or final fallback to home dir).
     let _g = EnvGuard::remove(ENV_HOME);

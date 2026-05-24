@@ -150,7 +150,7 @@ impl Manager {
 
         if updater.is_database_stale(Duration::from_secs(24 * 3600)) {
             tracing::info!("[Scanner] Downloading virus database before starting clamd");
-            match updater.update().await {
+            match updater.update(tokio_util::sync::CancellationToken::new(), None).await {
                 Ok(()) => {
                     tracing::info!("[Scanner] Virus database downloaded successfully");
                 }

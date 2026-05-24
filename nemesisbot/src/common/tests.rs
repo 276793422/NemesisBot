@@ -372,7 +372,7 @@ fn test_resolve_home_env_var_custom_path() {
 
 #[test]
 fn test_resolve_home_exe_dir() {
-    // Priority 4: when cwd has no .nemesisbot, check exe directory
+    // Priority 3: exe directory takes precedence over cwd
     // This test verifies the exe directory branch is exercised.
     // We can't easily create .nemesisbot next to the test binary,
     // but we can verify the function still returns a valid path.

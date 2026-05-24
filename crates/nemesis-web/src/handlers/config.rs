@@ -1,6 +1,6 @@
 //! Config handler — get/save/set_field config.json + CORS commands.
 
-use crate::handlers::require_workspace;
+use crate::handlers::require_home;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 
@@ -26,18 +26,18 @@ impl ModuleHandler for ConfigHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let workspace = require_workspace(ctx)?;
+        let home = require_home(ctx)?;
         match cmd {
-            "get" => self.get(workspace),
+            "get" => self.get(home),
             "save" => {
                 let data = data.ok_or("missing data")?;
-                self.save(workspace, &data)
+                self.save(home, &data)
             }
             "set_field" => {
                 let data = data.ok_or("missing data")?;
                 let path = crate::handlers::get_str(&data, "path")?;
                 let value = data.get("value").cloned().unwrap_or(serde_json::Value::Null);
-                self.set_field(workspace, &path, &value)
+                self.set_field(home, &path, &value)
             }
             "cors.list" => self.cors_list(),
             "cors.add" => {
@@ -63,21 +63,21 @@ impl ModuleHandler for ConfigHandler {
     }
 }
 
-fn config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config.json")
+fn config_path(home: &str) -> PathBuf {
+    PathBuf::from(home).join("config.json")
 }
 
-fn load_config(workspace: &str) -> Result<nemesis_config::Config, String> {
-    nemesis_config::load_config(&config_path(workspace)).map_err(|e| format!("failed to load config: {}", e))
+fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+    nemesis_config::load_config(&config_path(home)).map_err(|e| format!("failed to load config: {}", e))
 }
 
-fn save_config_to_disk(workspace: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
-    nemesis_config::save_config(&config_path(workspace), config).map_err(|e| format!("failed to save config: {}", e))
+fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    nemesis_config::save_config(&config_path(home), config).map_err(|e| format!("failed to save config: {}", e))
 }
 
 impl ConfigHandler {
-    fn get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(workspace)?;
+    fn get(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(home)?;
         let mut json = serde_json::to_value(&config)
             .map_err(|e| format!("failed to serialize config: {}", e))?;
         // Mask sensitive fields
@@ -85,20 +85,20 @@ impl ConfigHandler {
         Ok(Some(json))
     }
 
-    fn save(&self, workspace: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn save(&self, home: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
         let mut config: nemesis_config::Config = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid config data: {}", e))?;
-        save_config_to_disk(workspace, &mut config)?;
+        save_config_to_disk(home, &mut config)?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
     fn set_field(
         &self,
-        workspace: &str,
+        home: &str,
         path: &str,
         value: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let mut config = load_config(workspace)?;
+        let mut config = load_config(home)?;
         let mut json = serde_json::to_value(&config)
             .map_err(|e| format!("failed to serialize config: {}", e))?;
 
@@ -106,7 +106,7 @@ impl ConfigHandler {
 
         config = serde_json::from_value(json)
             .map_err(|e| format!("invalid config after field update: {}", e))?;
-        save_config_to_disk(workspace, &mut config)?;
+        save_config_to_disk(home, &mut config)?;
         Ok(Some(serde_json::json!({ "updated": true, "path": path })))
     }
 

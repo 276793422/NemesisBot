@@ -23,7 +23,7 @@ const titles: Record<Toast['type'], string> = {
       v-for="toast in toasts"
       :key="toast.id"
       class="toast"
-      :class="toast.type"
+      :class="[toast.type, { removing: toast.removing }]"
     >
       <div class="toast-icon">{{ icons[toast.type] }}</div>
       <div class="toast-body">

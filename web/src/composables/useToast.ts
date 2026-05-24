@@ -4,6 +4,7 @@ export interface Toast {
   id: number
   message: string
   type: 'info' | 'success' | 'warn' | 'error'
+  removing?: boolean
 }
 
 const toasts = reactive<Toast[]>([])
@@ -18,8 +19,13 @@ function addToast(message: string, type: Toast['type'] = 'info', duration = 4000
 }
 
 function removeToast(id: number) {
-  const idx = toasts.findIndex(t => t.id === id)
-  if (idx !== -1) toasts.splice(idx, 1)
+  const toast = toasts.find(t => t.id === id)
+  if (!toast || toast.removing) return
+  toast.removing = true
+  setTimeout(() => {
+    const idx = toasts.findIndex(t => t.id === id)
+    if (idx !== -1) toasts.splice(idx, 1)
+  }, 200)
 }
 
 export function useToast() {

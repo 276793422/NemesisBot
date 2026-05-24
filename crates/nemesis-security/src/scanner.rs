@@ -365,7 +365,16 @@ pub trait InstallableEngine: VirusScanner {
     fn get_engine_state(&self) -> EngineState;
 
     /// Download the engine distribution to the given directory.
-    async fn download(&self, dir: &str) -> Result<(), String>;
+    ///
+    /// `cancel_token` allows the caller to abort the download mid-stream.
+    /// `on_progress` is called periodically with `(bytes_written, total_bytes)`
+    /// where `total_bytes` is 0 if the server did not provide Content-Length.
+    async fn download(
+        &self,
+        dir: &str,
+        cancel_token: tokio_util::sync::CancellationToken,
+        on_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
+    ) -> Result<(), String>;
 
     /// Validate that the directory contains a valid installation.
     fn validate(&self, dir: &str) -> Result<(), String>;
@@ -628,7 +637,12 @@ impl InstallableEngine for ClamAVEngine {
         self.config.read().state.clone()
     }
 
-    async fn download(&self, dir: &str) -> Result<(), String> {
+    async fn download(
+        &self,
+        dir: &str,
+        cancel_token: tokio_util::sync::CancellationToken,
+        on_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
+    ) -> Result<(), String> {
         let url = {
             let cfg = self.config.read();
             if cfg.url.is_empty() {
@@ -659,41 +673,70 @@ impl InstallableEngine for ClamAVEngine {
             .await
             .map_err(|e| format!("failed to create temp file: {}", e))?;
 
-        // Stream download with progress logging every 2 seconds
+        // Stream download with progress and cancellation support
         let mut stream = response.bytes_stream();
         use futures_util::StreamExt;
         let mut written: u64 = 0;
         let mut last_log = std::time::Instant::now();
+        let mut last_progress = std::time::Instant::now();
         use tokio::io::AsyncWriteExt;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("download read failed: {}", e))?;
-            tmp_file.write_all(&chunk)
-                .await
-                .map_err(|e| {
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    drop(tmp_file);
                     let _ = std::fs::remove_file(&tmp_path);
-                    format!("download write failed: {}", e)
-                })?;
-            written += chunk.len() as u64;
+                    return Err("download cancelled".to_string());
+                }
+                chunk = stream.next() => {
+                    match chunk {
+                        Some(Ok(data)) => {
+                            tmp_file.write_all(&data)
+                                .await
+                                .map_err(|e| {
+                                    let _ = std::fs::remove_file(&tmp_path);
+                                    format!("download write failed: {}", e)
+                                })?;
+                            written += data.len() as u64;
 
-            // Log progress every 2 seconds
-            if last_log.elapsed() >= std::time::Duration::from_secs(2) {
-                match total_size {
-                    Some(total) => {
-                        let pct = written as f64 / total as f64 * 100.0;
-                        debug!(
-                            "Downloading ClamAV: {:.1}% ({}/{} bytes)",
-                            pct,
-                            format_bytes(written),
-                            format_bytes(total)
-                        );
-                    }
-                    None => {
-                        debug!("Downloading ClamAV: {} bytes", format_bytes(written));
+                            // Report progress via callback (throttled to ~500ms)
+                            if let Some(ref cb) = on_progress {
+                                if last_progress.elapsed() >= std::time::Duration::from_millis(500) {
+                                    cb(written, total_size.unwrap_or(0));
+                                    last_progress = std::time::Instant::now();
+                                }
+                            }
+
+                            // Log progress every 10 seconds
+                            if last_log.elapsed() >= std::time::Duration::from_secs(10) {
+                                match total_size {
+                                    Some(total) => {
+                                        let pct = written as f64 / total as f64 * 100.0;
+                                        debug!(
+                                            "Downloading ClamAV: {:.1}% ({}/{} bytes)",
+                                            pct, format_bytes(written), format_bytes(total)
+                                        );
+                                    }
+                                    None => {
+                                        debug!("Downloading ClamAV: {} bytes", format_bytes(written));
+                                    }
+                                }
+                                last_log = std::time::Instant::now();
+                            }
+                        }
+                        Some(Err(e)) => {
+                            let _ = std::fs::remove_file(&tmp_path);
+                            return Err(format!("download read failed: {}", e));
+                        }
+                        None => break,
                     }
                 }
-                last_log = std::time::Instant::now();
             }
+        }
+
+        // Final progress report
+        if let Some(ref cb) = on_progress {
+            cb(written, total_size.unwrap_or(written));
         }
 
         tmp_file.flush().await.map_err(|e| format!("flush failed: {}", e))?;

@@ -1960,6 +1960,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         cors_origins,
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
+        home: Some(home.to_string_lossy().to_string()),
         version: crate::common::VERSION_INFO.version.to_string(),
         static_dir: None,
         static_files: Some(static_files),
@@ -1967,7 +1968,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
     web_server.set_message_bus(bus.clone());
-    web_server.set_model_name(&model_name);
+    web_server.set_model_info(&model_name, &resolution.api_base, !resolution.api_key.is_empty());
 
     // Wire streaming provider for SSE chat endpoint.
     // Create an HttpProvider from the same config used for the main provider.
@@ -1988,6 +1989,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     info!("[Gateway] Web server created for {}:{}", web_host, web_port);
+
+    // Inject agent service into web server for start/stop control
+    web_server.set_agent_service(agent_adapter.clone());
+    info!("[Gateway] Agent service injected into web server");
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;

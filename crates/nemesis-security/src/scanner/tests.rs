@@ -1218,7 +1218,7 @@ async fn test_clamav_engine_download_no_url() {
         ..Default::default()
     };
     let engine = ClamAVEngine::new(config);
-    let result = engine.download("/tmp/test").await;
+    let result = engine.download("/tmp/test", tokio_util::sync::CancellationToken::new(), None).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("no download URL"));
 }

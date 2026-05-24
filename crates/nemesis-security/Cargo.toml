@@ -22,6 +22,7 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 zip = "2"
 base64 = "0.22"
 walkdir = "2"

@@ -45,6 +45,8 @@ pub struct RequestContext {
     pub session_id: String,
     /// Optional workspace path.
     pub workspace: Option<String>,
+    /// Home directory where config.json resides.
+    pub home: Option<String>,
     /// Shared application state.
     pub state: Arc<AppState>,
 }

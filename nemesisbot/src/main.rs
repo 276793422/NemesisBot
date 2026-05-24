@@ -294,6 +294,9 @@ async fn main() -> Result<()> {
                         if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults")) {
                             if let Some(obj) = agents.as_object_mut() {
                                 obj.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(false));
+                                if local_mode {
+                                    obj.insert("workspace".to_string(), serde_json::Value::String(".nemesisbot/workspace".to_string()));
+                                }
                             }
                         }
 

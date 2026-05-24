@@ -1006,7 +1006,7 @@ async fn cmd_clamav_install_inner(
                 },
             );
 
-            match tokio::time::timeout(Duration::from_secs(120), updater.update()).await {
+            match tokio::time::timeout(Duration::from_secs(120), updater.update(tokio_util::sync::CancellationToken::new(), None)).await {
                 Ok(Ok(())) => {
                     state.db_status = "ready".to_string();
                     state.last_db_update = chrono::Utc::now().to_rfc3339();
@@ -1091,7 +1091,7 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     );
 
     println!("  Running freshclam to update virus database...");
-    updater.update().await.map_err(|e| anyhow::anyhow!("freshclam failed: {}", e))?;
+    updater.update(tokio_util::sync::CancellationToken::new(), None).await.map_err(|e| anyhow::anyhow!("freshclam failed: {}", e))?;
     println!("  Virus database updated.");
 
     // Update config.scanner.json

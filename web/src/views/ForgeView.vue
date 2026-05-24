@@ -10,6 +10,14 @@ const enabled = ref(false)
 const artifacts = ref<any[]>([])
 const loading = ref(true)
 
+function formatSize(bytes: number | undefined): string {
+  if (!bytes) return '--'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
+}
+
 async function loadStatus() {
   try {
     const data = await request('forge', 'status')
@@ -97,7 +105,7 @@ onMounted(async () => {
                   <tr v-for="(a, idx) in artifacts" :key="idx">
                     <td>{{ a.name || '--' }}</td>
                     <td><span class="badge badge-info">{{ a.type || '--' }}</span></td>
-                    <td>{{ a.type === 'file' ? (a.size ? (a.size < 1024 ? a.size + ' B' : (a.size / 1024).toFixed(1) + ' KB') : '--') : '--' }}</td>
+                    <td>{{ a.type === 'file' ? formatSize(a.size) : '--' }}</td>
                   </tr>
                 </tbody>
               </table>

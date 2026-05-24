@@ -175,6 +175,13 @@ pub fn require_workspace(ctx: &crate::ws_router::RequestContext) -> Result<&str,
         .ok_or_else(|| "workspace not configured".to_string())
 }
 
+/// Get home directory from context or return error.
+pub fn require_home(ctx: &crate::ws_router::RequestContext) -> Result<&str, String> {
+    ctx.home
+        .as_deref()
+        .ok_or_else(|| "home not configured".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

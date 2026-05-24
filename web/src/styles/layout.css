@@ -318,6 +318,13 @@
   overflow: hidden;
 }
 
+/* ===== All Page Views ===== */
+.main-content > [class^="page-"] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 /* Page */
 .page-header {
   display: flex;
@@ -353,12 +360,6 @@
 }
 
 /* ===== Page-Specific: Chat ===== */
-.page-chat {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -402,8 +403,7 @@
   color: var(--text-muted);
 }
 
-/* ===== Page-Specific: Overview ===== */
-.page-overview .stats-grid {
+.stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: var(--space-4);
@@ -411,12 +411,6 @@
 }
 
 /* ===== Page-Specific: Logs ===== */
-.page-logs {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
 .logs-toolbar {
   display: flex;
   align-items: center;
@@ -528,10 +522,100 @@
 
 /* ===== Page-Specific: Scanner ===== */
 .page-scanner .engines-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: var(--space-4);
 }
+
+.page-scanner .engine-status-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+}
+
+.page-scanner .engine-status-key {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.page-scanner .engine-status-val {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  word-break: break-all;
+}
+
+.page-scanner .engine-error {
+  background: var(--bg-error, rgba(220, 38, 38, 0.1));
+  border: 1px solid var(--border-error, rgba(220, 38, 38, 0.3));
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-error, #dc2626);
+  margin-bottom: var(--space-3);
+}
+
+.page-scanner .engine-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.page-scanner .engine-progress {
+  margin-bottom: var(--space-3);
+}
+
+.page-scanner .engine-progress-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.page-scanner .engine-progress .progress {
+  height: 6px;
+}
+
+.page-scanner .editable-val {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast);
+}
+
+.page-scanner .editable-val:hover {
+  background: var(--bg-hover);
+}
+
+.page-scanner .editable-placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.page-scanner .inline-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.page-scanner .inline-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+}
+
+/* ===== Page-Specific: Channels ===== */
+
+/* ===== Page-Specific: Forge ===== */
 
 /* ===== Page-Specific: Settings ===== */
 .page-settings .settings-section {

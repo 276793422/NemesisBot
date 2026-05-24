@@ -14,19 +14,23 @@ interface StatusData {
   ws_connected?: boolean
   session_count?: number
   model?: string
+  model_base?: string
+  model_has_key?: boolean
   scanner_status?: { enabled: boolean; engines?: { name: string; config?: any }[] } | null
   cluster_status?: { enabled: boolean; node_count?: number } | null
   running?: boolean
 }
 
 const status = ref<StatusData>({})
+const displayUptime = ref(-1)
 const loading = ref(true)
 const agentRunning = ref(true)
 const agentLoading = ref(false)
 let _onStatus: ((data: StatusData) => void) | null = null
+let uptimeTimer: ReturnType<typeof setInterval> | null = null
 
-function formatUptime(seconds?: number): string {
-  if (!seconds) return '--'
+function formatUptime(seconds: number): string {
+  if (seconds < 0) return '--'
   const d = Math.floor(seconds / 86400)
   const h = Math.floor((seconds % 86400) / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -37,6 +41,21 @@ function formatUptime(seconds?: number): string {
   if (m > 0) parts.push(m + '分钟')
   if (s > 0 && d === 0) parts.push(s + '秒')
   return parts.join(' ') || '0秒'
+}
+
+function startUptimeTimer(baseSeconds: number) {
+  stopUptimeTimer()
+  displayUptime.value = baseSeconds
+  uptimeTimer = setInterval(() => {
+    displayUptime.value++
+  }, 1000)
+}
+
+function stopUptimeTimer() {
+  if (uptimeTimer) {
+    clearInterval(uptimeTimer)
+    uptimeTimer = null
+  }
 }
 
 async function loadAgentStatus() {
@@ -53,8 +72,6 @@ async function startAgent() {
     if (data?.started) {
       agentRunning.value = true
       toast.success('Agent 已启动')
-    } else {
-      toast.info(data?.message || 'Agent 启动功能尚未集成')
     }
   } catch (e: any) {
     toast.error('启动失败: ' + e)
@@ -70,8 +87,6 @@ async function stopAgent() {
     if (data?.stopped) {
       agentRunning.value = false
       toast.success('Agent 已暂停')
-    } else {
-      toast.info(data?.message || 'Agent 停止功能尚未集成')
     }
   } catch (e: any) {
     toast.error('停止失败: ' + e)
@@ -82,6 +97,9 @@ async function stopAgent() {
 onMounted(async () => {
   try {
     status.value = await httpGet<StatusData>('/api/status')
+    if (status.value.uptime_seconds != null) {
+      startUptimeTimer(status.value.uptime_seconds)
+    }
   } catch (err) {
     console.error('[Overview] Failed to load status:', err)
   }
@@ -90,14 +108,18 @@ onMounted(async () => {
   await loadAgentStatus()
 
   _onStatus = (data: StatusData) => {
-    status.value = data
+    status.value = { ...status.value, ...data }
     loading.value = false
+    if (data.uptime_seconds != null) {
+      startUptimeTimer(data.uptime_seconds)
+    }
   }
   sseOn('status', _onStatus)
 })
 
 onUnmounted(() => {
   if (_onStatus) sseOff('status', _onStatus)
+  stopUptimeTimer()
 })
 </script>
 
@@ -119,7 +141,7 @@ onUnmounted(() => {
         </div>
         <div class="stat-card">
           <div class="stat-label">运行时间</div>
-          <div class="stat-value">{{ formatUptime(status.uptime_seconds) }}</div>
+          <div class="stat-value">{{ formatUptime(displayUptime) }}</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">WebSocket 连接</div>
@@ -139,20 +161,20 @@ onUnmounted(() => {
           <div class="card-header">
             <h3>Agent</h3>
             <div style="display: flex; align-items: center; gap: var(--space-3);">
-              <span class="badge" :class="agentRunning ? 'badge-success' : 'badge-warning'">
-                {{ agentRunning ? '运行中' : '已暂停' }}
-              </span>
-              <div v-if="agentLoading" class="spinner" style="width: 16px; height: 16px;"></div>
-              <template v-else>
-                <button v-if="!agentRunning" class="btn btn-sm btn-primary" @click="startAgent">启动</button>
-                <button v-else class="btn btn-sm btn-danger" @click="stopAgent">暂停</button>
-              </template>
+              <span class="badge" :class="agentRunning ? 'badge-success' : 'badge-error'">{{ agentRunning ? '启动中' : '停止中' }}</span>
+              <div v-if="agentLoading" class="spinner" style="width: 14px; height: 14px;"></div>
+              <div v-else class="toggle" :class="{ active: agentRunning }" @click="agentRunning ? stopAgent() : startAgent()"></div>
             </div>
           </div>
           <div class="card-body">
-            <div class="stat-card">
-              <div class="stat-label">当前模型</div>
-              <div class="stat-value" style="font-size: var(--text-lg);">{{ status.model || '未配置' }}</div>
+            <div class="settings-grid">
+              <span class="settings-key">模型</span>
+              <span class="settings-value">{{ status.model || '未配置' }}</span>
+              <span class="settings-key">地址</span>
+              <span class="settings-value">{{ status.model_base || '--' }}</span>
+              <span class="settings-key">Key</span>
+              <span class="settings-value" v-if="status.model_has_key">******</span>
+              <span class="settings-value" v-else style="color: var(--text-muted);">--</span>
             </div>
           </div>
         </div>

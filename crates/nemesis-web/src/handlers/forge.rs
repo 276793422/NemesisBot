@@ -1,6 +1,6 @@
 //! Forge handler — status/artifacts/reflect/config.save.
 
-use crate::handlers::{list_workspace_dir, require_workspace};
+use crate::handlers::{list_workspace_dir, require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 
@@ -26,35 +26,36 @@ impl ModuleHandler for ForgeHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        let home = require_home(ctx)?;
         let workspace = require_workspace(ctx)?;
         match cmd {
-            "status" => self.status(workspace),
+            "status" => self.status(home, workspace),
             "artifacts" => self.artifacts(workspace),
             "reflect" => self.reflect(),
             "config.save" => {
                 let data = data.ok_or("missing data")?;
-                self.config_save(workspace, &data)
+                self.config_save(home, &data)
             }
             _ => Err(format!("unknown command: forge.{}", cmd)),
         }
     }
 }
 
-fn config_path(workspace: &str) -> PathBuf {
-    PathBuf::from(workspace).join("config.json")
+fn config_path(home: &str) -> PathBuf {
+    PathBuf::from(home).join("config.json")
 }
 
-fn load_config(workspace: &str) -> Result<nemesis_config::Config, String> {
-    nemesis_config::load_config(&config_path(workspace)).map_err(|e| format!("failed to load config: {}", e))
+fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+    nemesis_config::load_config(&config_path(home)).map_err(|e| format!("failed to load config: {}", e))
 }
 
-fn save_config_to_disk(workspace: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
-    nemesis_config::save_config(&config_path(workspace), config).map_err(|e| format!("failed to save config: {}", e))
+fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    nemesis_config::save_config(&config_path(home), config).map_err(|e| format!("failed to save config: {}", e))
 }
 
 impl ForgeHandler {
-    fn status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let config = load_config(workspace)?;
+    fn status(&self, home: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(home)?;
         let enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         let forge_dir = PathBuf::from(workspace).join("forge");
@@ -111,7 +112,7 @@ impl ForgeHandler {
 
     fn config_save(
         &self,
-        workspace: &str,
+        home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let enabled = data
@@ -119,10 +120,10 @@ impl ForgeHandler {
             .and_then(|v| v.as_bool())
             .ok_or("missing or invalid 'enabled' field")?;
 
-        let mut config = load_config(workspace)?;
+        let mut config = load_config(home)?;
         let forge = config.forge.get_or_insert_with(Default::default);
         forge.enabled = enabled;
-        save_config_to_disk(workspace, &mut config)?;
+        save_config_to_disk(home, &mut config)?;
         Ok(Some(serde_json::json!({ "saved": true, "enabled": enabled })))
     }
 }

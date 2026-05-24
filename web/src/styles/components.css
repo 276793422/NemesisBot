@@ -46,6 +46,15 @@
   border-color: var(--accent-hover);
 }
 
+.btn-success {
+  background: var(--success);
+  border-color: var(--success);
+  color: #FFFFFF;
+}
+.btn-success:hover {
+  opacity: 0.9;
+}
+
 .btn-danger {
   background: transparent;
   border-color: var(--error);

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 
@@ -32,7 +33,15 @@ impl Updater {
     }
 
     /// Run a virus database update.
-    pub async fn update(&self) -> Result<(), String> {
+    ///
+    /// `cancel_token` allows the caller to abort the update by killing the
+    /// freshclam child process. `on_progress` is called with `(0, 0)` at the
+    /// start and `(100, 100)` on completion.
+    pub async fn update(
+        &self,
+        cancel_token: tokio_util::sync::CancellationToken,
+        on_progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
+    ) -> Result<(), String> {
         let freshclam_exe = super::find_executable(&self.config.clamav_path, "freshclam");
         if !Path::new(&freshclam_exe).exists() {
             return Err(format!("freshclam not found at {}", freshclam_exe));
@@ -54,14 +63,32 @@ impl Updater {
             cmd.arg("--datadir").arg(&self.config.database_dir);
         }
 
-        let output = cmd.output().await.map_err(|e| format!("freshclam failed: {}", e))?;
+        if let Some(ref cb) = on_progress {
+            cb(0, 0);
+        }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("freshclam failed: {}", stderr));
+        let mut child = cmd.spawn().map_err(|e| format!("freshclam failed: {}", e))?;
+
+        let status = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                let _ = child.kill().await;
+                return Err("database update cancelled".to_string());
+            }
+            result = child.wait() => {
+                result.map_err(|e| format!("freshclam wait failed: {}", e))?
+            }
+        };
+
+        if !status.success() {
+            return Err("freshclam exited with non-zero status".to_string());
         }
 
         *self.last_update.lock().unwrap() = Some(SystemTime::now());
+
+        if let Some(ref cb) = on_progress {
+            cb(100, 100);
+        }
+
         tracing::info!("[Scanner] Virus database updated");
         Ok(())
     }
@@ -120,7 +147,7 @@ impl Updater {
             // Perform update with a 5-minute timeout
             match tokio::time::timeout(
                 Duration::from_secs(300),
-                self.update(),
+                self.update(tokio_util::sync::CancellationToken::new(), None),
             ).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {

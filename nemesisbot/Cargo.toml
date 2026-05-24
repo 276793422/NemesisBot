@@ -11,6 +11,7 @@ path = "src/main.rs"
 nemesis-types = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-security = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 nemesis-bus = { workspace = true }
 nemesis-agent = { workspace = true }
 nemesis-channels = { workspace = true }
