@@ -23,8 +23,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
----
-
-NemesisBot is heavily inspired by and based on :
-- [nanobot](https://github.com/HKUDS/nanobot) by HKUDS.
-- [sipeed](https://github.com/sipeed/picoclaw) by sipeed.
