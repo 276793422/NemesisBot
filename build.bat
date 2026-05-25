@@ -97,6 +97,16 @@ echo [Step 2/5] Building Vue frontend...
 
 if exist "web\package.json" (
     pushd web
+
+    REM Detect wrong-platform node_modules (e.g. Linux binaries from WSL build)
+    if exist "node_modules\@rollup\rollup-linux-x64-gnu\package.json" (
+        if not exist "node_modules\@rollup\rollup-win32-x64-msvc\package.json" (
+            echo   Detected Linux node_modules, reinstalling for Windows...
+            rmdir /s /q "node_modules" 2>nul
+            if exist "package-lock.json" del /q "package-lock.json" 2>nul
+        )
+    )
+
     if not exist "node_modules" (
         echo   Installing npm dependencies...
         call npm install --silent

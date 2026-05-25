@@ -351,15 +351,19 @@ use super::*;
             auth_token: "test".to_string(),
             session_count: Arc::new(AtomicUsize::new(0)),
             workspace: None,
+            home: None,
             version: "1.0.0".to_string(),
             start_time: std::time::Instant::now(),
             model_name: Arc::new(Mutex::new("test-model".to_string())),
+            model_base: Arc::new(Mutex::new(String::new())),
+            model_has_key: Arc::new(AtomicBool::new(false)),
             event_hub: Arc::new(EventHub::new()),
             running: Arc::new(AtomicBool::new(false)),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
             ws_router: None,
+            agent_service: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -555,15 +559,19 @@ use super::*;
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(5)),
             workspace: Some("/tmp".to_string()),
+            home: None,
             version: "1.0.0".to_string(),
             start_time: std::time::Instant::now(),
             model_name: Arc::new(Mutex::new("gpt-4".to_string())),
+            model_base: Arc::new(Mutex::new(String::new())),
+            model_has_key: Arc::new(AtomicBool::new(false)),
             event_hub: Arc::new(EventHub::new()),
             running: Arc::new(AtomicBool::new(true)),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
             ws_router: None,
+            agent_service: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -656,15 +664,19 @@ use super::*;
             auth_token: auth_token.to_string(),
             session_count: Arc::new(AtomicUsize::new(2)),
             workspace,
+            home: None,
             version: "1.0.0-test".to_string(),
             start_time: std::time::Instant::now(),
             model_name: Arc::new(Mutex::new("test-model".to_string())),
+            model_base: Arc::new(Mutex::new(String::new())),
+            model_has_key: Arc::new(AtomicBool::new(false)),
             event_hub: Arc::new(EventHub::new()),
             running: Arc::new(AtomicBool::new(true)),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
             ws_router: None,
+            agent_service: None,
         })
     }
 

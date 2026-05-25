@@ -9,6 +9,7 @@ async fn test_build_router() {
         cors_origins: vec![],
         ws_path: "/ws".to_string(),
         workspace: None,
+        home: None,
         version: String::new(),
         static_dir: None,
         static_files: None,
@@ -27,6 +28,7 @@ async fn test_build_router_with_static_dir() {
         cors_origins: vec![],
         ws_path: "/ws".to_string(),
         workspace: None,
+        home: None,
         version: String::new(),
         static_dir: Some(dir.path().to_string_lossy().to_string()),
         static_files: None,
@@ -44,6 +46,7 @@ async fn test_build_router_with_nonexistent_static_dir() {
         cors_origins: vec![],
         ws_path: "/ws".to_string(),
         workspace: None,
+        home: None,
         version: String::new(),
         static_dir: Some("/nonexistent/path".to_string()),
         static_files: None,
@@ -224,7 +227,7 @@ fn test_web_server_default_is_not_running() {
 fn test_web_server_set_model_name() {
     let config = WebServerConfig::default();
     let server = WebServer::new(config);
-    server.set_model_name("gpt-4");
+    server.set_model_info("gpt-4", "", false);
     assert_eq!(*server.model_name.lock(), "gpt-4");
 }
 
@@ -276,6 +279,7 @@ fn test_config_custom_values() {
         cors_origins: vec!["https://example.com".to_string()],
         ws_path: "/websocket".to_string(),
         workspace: Some("/data".to_string()),
+        home: None,
         version: "2.0.0".to_string(),
         static_dir: Some("/static".to_string()),
         static_files: None,
@@ -459,6 +463,7 @@ fn test_web_server_new_custom_config() {
         cors_origins: vec![],
         ws_path: "/websocket".to_string(),
         workspace: Some("/tmp/ws".to_string()),
+        home: None,
         version: "1.0.0".to_string(),
         static_dir: None,
         static_files: None,
@@ -520,15 +525,19 @@ async fn test_handle_health_endpoint() {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(3)),
         workspace: None,
+        home: None,
         version: "1.0.0".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("test".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
         event_hub: Arc::new(EventHub::new()),
         running: Arc::new(AtomicBool::new(true)),
         session_manager: Arc::new(SessionManager::with_default_timeout()),
         inbound_tx: None,
         streaming_provider: None,
         ws_router: None,
+        agent_service: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -543,15 +552,19 @@ async fn test_handle_health_not_running() {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
+        home: None,
         version: "1.0.0".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
         event_hub: Arc::new(EventHub::new()),
         running: Arc::new(AtomicBool::new(false)),
         session_manager: Arc::new(SessionManager::with_default_timeout()),
         inbound_tx: None,
         streaming_provider: None,
         ws_router: None,
+        agent_service: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -665,6 +678,7 @@ fn test_web_server_config_clone() {
         cors_origins: vec!["https://example.com".to_string()],
         ws_path: "/ws".to_string(),
         workspace: Some("/tmp".to_string()),
+        home: None,
         version: "1.0".to_string(),
         static_dir: None,
         static_files: None,
@@ -822,9 +836,9 @@ async fn test_build_router_api_events_endpoint() {
 fn test_web_server_set_model_name_multiple() {
     let config = WebServerConfig::default();
     let server = WebServer::new(config);
-    server.set_model_name("gpt-4");
+    server.set_model_info("gpt-4", "", false);
     assert_eq!(*server.model_name.lock(), "gpt-4");
-    server.set_model_name("claude-3");
+    server.set_model_info("claude-3", "", false);
     assert_eq!(*server.model_name.lock(), "claude-3");
 }
 
@@ -1025,15 +1039,19 @@ async fn test_handle_health_with_model_state() {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(5)),
         workspace: Some("/test".to_string()),
+        home: None,
         version: "3.0.0".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("gpt-4o".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
         event_hub: Arc::new(EventHub::new()),
         running: Arc::new(AtomicBool::new(true)),
         session_manager: Arc::new(SessionManager::with_default_timeout()),
         inbound_tx: None,
         streaming_provider: None,
         ws_router: None,
+        agent_service: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

@@ -2985,3 +2985,271 @@ async fn test_exec_tool_no_output_command() {
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("no output") || result.is_empty() || !result.contains("Exit code"));
 }
+
+// =========================================================================
+// Additional coverage tests for loop_tools.rs (targeting 95%+)
+// =========================================================================
+
+#[tokio::test]
+async fn test_write_file_tool_with_parent_dir_creation() {
+    let tmp = TempDir::new().unwrap();
+    let deep_path = tmp.path().join("a").join("b").join("c").join("deep.txt");
+
+    let tool = WriteFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "path": deep_path.to_string_lossy(),
+        "content": "deeply nested content"
+    }).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("Successfully wrote"));
+    assert!(deep_path.exists());
+    assert_eq!(tokio::fs::read_to_string(&deep_path).await.unwrap(), "deeply nested content");
+}
+
+#[tokio::test]
+async fn test_read_file_tool_with_json_args() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("json_test.txt");
+    tokio::fs::write(&file_path, "json content").await.unwrap();
+
+    let tool = ReadFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"path": file_path.to_string_lossy()}).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert_eq!(result, "json content");
+}
+
+#[tokio::test]
+async fn test_edit_file_tool_with_multiple_replacements() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("multi_edit.txt");
+    tokio::fs::write(&file_path, "aaa bbb ccc bbb").await.unwrap();
+
+    let tool = EditFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "path": file_path.to_string_lossy(),
+        "old_text": "bbb",
+        "new_text": "xxx"
+    }).to_string();
+
+    let result = tool.execute(&args, &ctx).await;
+    // Should fail because "bbb" appears twice
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("appears 2 times"));
+}
+
+#[tokio::test]
+async fn test_append_file_tool_with_existing_content() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("existing_append.txt");
+    tokio::fs::write(&file_path, "First line").await.unwrap();
+
+    let tool = AppendFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "path": file_path.to_string_lossy(),
+        "content": "\nSecond line"
+    }).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("Appended"));
+    let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+    assert_eq!(content, "First line\nSecond line");
+}
+
+#[tokio::test]
+async fn test_delete_file_tool_success() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("delete_success.txt");
+    tokio::fs::write(&file_path, "content to delete").await.unwrap();
+    assert!(file_path.exists());
+
+    let tool = DeleteFileTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"path": file_path.to_string_lossy()}).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("Deleted"));
+    assert!(!file_path.exists());
+}
+
+#[tokio::test]
+async fn test_create_dir_tool_nested() {
+    let tmp = TempDir::new().unwrap();
+    let nested_path = tmp.path().join("level1").join("level2").join("level3");
+
+    let tool = CreateDirTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"path": nested_path.to_string_lossy()}).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("created"));
+    assert!(nested_path.is_dir());
+}
+
+#[tokio::test]
+async fn test_delete_dir_tool_with_contents() {
+    let tmp = TempDir::new().unwrap();
+    let dir_path = tmp.path().join("dir_with_files");
+    tokio::fs::create_dir_all(&dir_path).await.unwrap();
+    tokio::fs::write(dir_path.join("file1.txt"), "content1").await.unwrap();
+    tokio::fs::write(dir_path.join("file2.txt"), "content2").await.unwrap();
+
+    let tool = DeleteDirTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"path": dir_path.to_string_lossy()}).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("removed"));
+    assert!(!dir_path.exists());
+}
+
+#[tokio::test]
+async fn test_exec_tool_with_args() {
+    let tmp = TempDir::new().unwrap();
+    let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let cmd = if cfg!(target_os = "windows") {
+        "echo test output"
+    } else {
+        "echo test output"
+    };
+    let args = serde_json::json!({"command": cmd, "timeout": 10}).to_string();
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("test output"));
+}
+
+#[test]
+fn test_extract_path_with_whitespace() {
+    let result = extract_path("  /path/with/spaces  ").unwrap();
+    assert_eq!(result, "/path/with/spaces");
+}
+
+#[test]
+fn test_extract_path_and_content_with_extra_fields() {
+    let result = extract_path_and_content(r#"{"path": "/tmp/test.txt", "content": "hello", "extra": "ignored"}"#);
+    assert!(result.is_ok());
+    let (path, content) = result.unwrap();
+    assert_eq!(path, "/tmp/test.txt");
+    assert_eq!(content, "hello");
+}
+
+#[test]
+fn test_extract_edit_args_success() {
+    let result = extract_edit_args(r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar", "extra": 42}"#);
+    assert!(result.is_ok());
+    let (path, old, new) = result.unwrap();
+    assert_eq!(path, "/a.txt");
+    assert_eq!(old, "foo");
+    assert_eq!(new, "bar");
+}
+
+#[tokio::test]
+async fn test_message_tool_json_without_content_field_v2() {
+    let tool = MessageTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"other": "value"}"#, &ctx).await.unwrap();
+    // Falls back to raw args
+    assert_eq!(result, r#"{"other": "value"}"#);
+}
+
+#[tokio::test]
+async fn test_message_tool_with_empty_content() {
+    let tool = MessageTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"content": ""}"#, &ctx).await.unwrap();
+    assert_eq!(result, "");
+}
+
+#[tokio::test]
+async fn test_list_directory_tool_with_files_and_dirs() {
+    let tmp = TempDir::new().unwrap();
+    tokio::fs::write(tmp.path().join("file1.txt"), "a").await.unwrap();
+    tokio::fs::write(tmp.path().join("file2.py"), "b").await.unwrap();
+    tokio::fs::create_dir(tmp.path().join("subdir1")).await.unwrap();
+    tokio::fs::create_dir(tmp.path().join("subdir2")).await.unwrap();
+
+    let tool = ListDirectoryTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"path": tmp.path().to_string_lossy()}).to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    assert!(result.contains("file1.txt"));
+    assert!(result.contains("file2.py"));
+    assert!(result.contains("subdir1"));
+    assert!(result.contains("subdir2"));
+}
+
+#[tokio::test]
+async fn test_sleep_tool_with_json_duration() {
+    let tool = SleepTool;
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({"duration": 1}).to_string();
+    let start = std::time::Instant::now();
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    let elapsed = start.elapsed();
+    assert!(result.contains("Slept for 1 seconds"));
+    assert!(elapsed.as_secs() >= 1);
+}
+
+#[test]
+fn test_register_default_tools_tool_names() {
+    let tools = register_default_tools();
+    let expected = ["message", "read_file", "write_file", "list_dir", "edit_file", "append_file", "delete_file", "create_dir", "delete_dir", "sleep"];
+    for name in &expected {
+        assert!(tools.contains_key(*name), "Missing tool: {}", name);
+    }
+}
+
+#[tokio::test]
+async fn test_exec_tool_workspace_restriction_enabled() {
+    let tmp = TempDir::new().unwrap();
+    let tool = ExecTool::new(&tmp.path().to_string_lossy(), true);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // Try to execute with cwd outside workspace
+    let args = serde_json::json!({
+        "command": "echo hello",
+        "cwd": "/etc"
+    }).to_string();
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_exec_tool_workspace_restriction_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let tool = ExecTool::new(&tmp.path().to_string_lossy(), false);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // Without restriction, cwd outside workspace should work
+    let args = serde_json::json!({
+        "command": "echo hello",
+        "cwd": tmp.path().to_string_lossy().to_string()
+    }).to_string();
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_async_exec_tool_with_wait_seconds() {
+    let tmp = TempDir::new().unwrap();
+    let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let cmd = if cfg!(target_os = "windows") { "echo hello" } else { "echo hello" };
+    let args = serde_json::json!({"command": cmd, "wait_seconds": 5}).to_string();
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_tool_descriptions_not_empty_all_tools() {
+    let tools = register_default_tools();
+    for (name, tool) in &tools {
+        assert!(!tool.description().is_empty(), "Tool '{}' has empty description", name);
+        let params = tool.parameters();
+        assert!(params.is_object(), "Tool '{}' has non-object parameters", name);
+    }
+}

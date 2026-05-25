@@ -35,6 +35,7 @@ use crate::common;
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Request global shutdown from any component.
+#[cfg(not(target_os = "android"))]
 pub fn trigger_global_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 }
@@ -441,6 +442,7 @@ fn load_scanner_full_config(
 }
 
 /// Open a URL in the default browser.
+#[cfg(not(target_os = "android"))]
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -485,6 +487,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 /// child is terminated and a new one is spawned.
 ///
 /// Falls back to browser if the plugin-ui.dll is not found.
+#[cfg(not(target_os = "android"))]
 fn open_plugin_window(
     process_manager: &Arc<nemesis_desktop::process::ProcessManager>,
     window_type: &str,
@@ -2254,7 +2257,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 20: Compute display URLs (real_port already resolved via oneshot in Step 17)
-    let web_url = format!("http://{}:{}", web_host, real_port);
+    let _web_url = format!("http://{}:{}", web_host, real_port);
     let _chat_url = format!("http://{}:{}/chat/", web_host, real_port);
 
     // Step 21: Print startup banner
@@ -2297,7 +2300,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Approval manager wired (popup via ProcessManager)");
     }
 
-    // Step 22: Configure system tray
+    // Step 22: Configure system tray (desktop only)
+    #[cfg(not(target_os = "android"))]
     {
         use nemesis_desktop::PlatformTray;
 
@@ -2318,7 +2322,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }));
 
         let pm = Arc::clone(&process_manager);
-        let dashboard_url = web_url.clone();
+        let dashboard_url = _web_url.clone();
         let dashboard_token = cfg.channels.web.auth_token.clone();
         tray.set_on_open_dashboard(Box::new(move || {
             let _ = open_plugin_window(&pm, "dashboard", &dashboard_url, &dashboard_token);

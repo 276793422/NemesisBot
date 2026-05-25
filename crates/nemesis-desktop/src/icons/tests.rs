@@ -327,6 +327,7 @@ fn test_embedded_icon_png_is_valid() {
     assert_eq!(&png_data[1..4], b"PNG");
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_embedded_icon_decodable() {
     let png_data = embedded_icon_png();
@@ -339,6 +340,7 @@ fn test_embedded_icon_decodable() {
     assert!(w >= 16, "icon should be at least 16x16, got {}x{}", w, h);
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_header_format() {
     let png_data = embedded_icon_png();
@@ -353,6 +355,7 @@ fn test_png_to_ico_header_format() {
     assert_eq!(&ico_data[4..6], &[0x01, 0x00]);
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_entry_dimensions() {
     let png_data = embedded_icon_png();
@@ -373,6 +376,7 @@ fn test_png_to_ico_entry_dimensions() {
     assert_eq!(&ico_data[12..14], &[32, 0]);
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_embeds_original_png() {
     let png_data = embedded_icon_png();
@@ -382,6 +386,7 @@ fn test_png_to_ico_embeds_original_png() {
     assert_eq!(embedded, png_data, "embedded PNG data should match original");
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_size_field() {
     let png_data = embedded_icon_png();
@@ -393,6 +398,7 @@ fn test_png_to_ico_size_field() {
     assert_eq!(size, png_data.len() as u32, "size field should match PNG data length");
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_offset_field() {
     let png_data = embedded_icon_png();
@@ -404,6 +410,7 @@ fn test_png_to_ico_offset_field() {
     assert_eq!(offset, 22, "offset should be 22 (6 header + 16 entry)");
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_with_synthetic_small_png() {
     // Create a tiny 2x2 red PNG
@@ -417,6 +424,7 @@ fn test_png_to_ico_with_synthetic_small_png() {
     assert_eq!(ico_data[7], 2); // height
 }
 
+#[cfg(not(target_os = "android"))]
 #[test]
 fn test_png_to_ico_invalid_data_fallback() {
     // Invalid PNG data should fall back to returning original bytes

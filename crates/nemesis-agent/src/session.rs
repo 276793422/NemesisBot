@@ -693,6 +693,8 @@ impl Summarizer {
             self.session_store.set_history(session_key, stored);
 
             // Keep only last 4 messages.
+            // NOTE: 此处有与 loop.rs::maybe_summarize 相同的 tool 对完整性问题。
+            // 当前为死代码（仅测试使用）。若未来启用，需同步修复。
             let truncated: Vec<StoredMessage> = history[history.len().saturating_sub(4)..]
                 .iter()
                 .map(|t| t.into())

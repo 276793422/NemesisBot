@@ -140,18 +140,17 @@ impl Icon {
 }
 
 // ---------------------------------------------------------------------------
-// Tray icon loading
+// Tray icon loading (desktop only)
 // ---------------------------------------------------------------------------
 
 /// Load the embedded icon as a `tray_icon::Icon` for use in the system tray.
-///
-/// Decodes the embedded PNG to RGBA data and creates a platform-native icon.
-/// On Windows, `tray-icon` handles the RGBA → HICON conversion internally.
+#[cfg(not(target_os = "android"))]
 pub fn load_tray_icon() -> tray_icon::Icon {
     load_tray_icon_checked().expect("failed to load tray icon")
 }
 
 /// Same as [`load_tray_icon`] but returns a `Result` instead of panicking.
+#[cfg(not(target_os = "android"))]
 pub fn load_tray_icon_checked() -> Result<tray_icon::Icon, String> {
     let png_data = include_bytes!("../icons/icon.png");
     let img = image::load_from_memory(png_data)
@@ -172,6 +171,7 @@ pub fn embedded_icon_png() -> &'static [u8] {
 /// This is the same algorithm as Go's `pngToIco` in icons.go:
 /// ICO Header (6 bytes) + Icon Directory Entry (16 bytes) + PNG data.
 /// The PNG is embedded directly in the ICO container (supported by Windows Vista+).
+#[cfg(not(target_os = "android"))]
 pub fn png_to_ico(png_data: &[u8]) -> Vec<u8> {
     // Decode PNG to get dimensions
     let img = match image::load_from_memory(png_data) {

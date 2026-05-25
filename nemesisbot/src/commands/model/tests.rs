@@ -148,7 +148,7 @@ fn test_model_list_no_default() {
 
 #[test]
 fn test_model_entry_duplicate_detection() {
-    let mut arr: Vec<serde_json::Value> = vec![
+    let arr: Vec<serde_json::Value> = vec![
         serde_json::json!({"model": "openai/gpt-4o", "model_name": "gpt-4o"}),
     ];
     let model = "openai/gpt-4o";
@@ -221,7 +221,7 @@ fn test_set_default_model_in_config() {
 
 #[test]
 fn test_auto_default_single_model() {
-    let mut cfg = serde_json::json!({
+    let cfg = serde_json::json!({
         "model_list": [{"model": "openai/gpt-4o"}],
     });
     let model_count = cfg.get("model_list")
@@ -400,7 +400,7 @@ fn test_model_entry_construction_full() {
 fn test_model_entry_construction_minimal() {
     let model = "zhipu/glm-4.7";
 
-    let mut entry = serde_json::json!({
+    let entry = serde_json::json!({
         "model_name": model.splitn(2, '/').nth(1).unwrap_or(model),
         "model": model,
     });

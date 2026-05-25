@@ -44,15 +44,19 @@ fn make_test_state() -> Arc<AppState> {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
+        home: None,
         version: "test".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
         event_hub: Arc::new(EventHub::new()),
         running: Arc::new(AtomicBool::new(true)),
         session_manager: Arc::new(SessionManager::with_default_timeout()),
         inbound_tx: None,
         streaming_provider: None,
         ws_router: None,
+        agent_service: None,
     })
 }
 
@@ -82,6 +86,7 @@ async fn test_dispatch_unknown_module() {
     let ctx = RequestContext {
         session_id: "s1".to_string(),
         workspace: None,
+        home: None,
         state,
     };
 
@@ -107,6 +112,7 @@ async fn test_dispatch_success() {
     let ctx = RequestContext {
         session_id: "s1".to_string(),
         workspace: None,
+        home: None,
         state,
     };
 
@@ -133,6 +139,7 @@ async fn test_dispatch_handler_error() {
     let ctx = RequestContext {
         session_id: "s1".to_string(),
         workspace: None,
+        home: None,
         state,
     };
 
@@ -158,6 +165,7 @@ async fn test_dispatch_no_data_response() {
     let ctx = RequestContext {
         session_id: "s1".to_string(),
         workspace: None,
+        home: None,
         state,
     };
 
@@ -182,6 +190,7 @@ async fn test_dispatch_req_id_roundtrip() {
     let ctx = RequestContext {
         session_id: "s1".to_string(),
         workspace: None,
+        home: None,
         state,
     };
 

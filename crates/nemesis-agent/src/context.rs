@@ -7,6 +7,7 @@
 //! `ContextBuilder` builds system prompts from workspace files (identity,
 //! bootstrap, skills, memory context).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -500,15 +501,27 @@ impl ContextBuilder {
             reasoning_content: None,
         });
 
-        // History messages: skip ALL orphaned tool messages at the start of history.
-        // Mirrors Go's loop: `for len(history) > 0 && history[0].Role == "tool" { history = history[1:] }`.
-        let mut history_iter = history.iter().peekable();
-        while history_iter.peek().map_or(false, |t| t.role == "tool") {
-            debug!("[ContextBuilder] Skipping orphaned tool message from history");
-            history_iter.next();
-        }
+        // History messages: filter orphaned tool messages anywhere in history.
+        let mut active_tool_call_ids: HashSet<String> = HashSet::new();
 
-        for turn in history_iter {
+        for turn in history.iter() {
+            if turn.role == "tool" {
+                match turn.tool_call_id {
+                    Some(ref id) if active_tool_call_ids.contains(id) => {}
+                    _ => {
+                        debug!("[ContextBuilder] Skipping orphaned tool message from history");
+                        continue;
+                    }
+                }
+            }
+
+            if turn.role == "assistant" && !turn.tool_calls.is_empty() {
+                active_tool_call_ids.clear();
+                for tc in &turn.tool_calls {
+                    active_tool_call_ids.insert(tc.id.clone());
+                }
+            }
+
             messages.push(crate::r#loop::LlmMessage {
                 role: turn.role.clone(),
                 content: turn.content.clone(),

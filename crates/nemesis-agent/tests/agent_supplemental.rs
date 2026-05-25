@@ -2042,9 +2042,8 @@ fn test_context_builder_build_messages_tool_in_middle() {
         },
     ];
     let messages = builder.build_messages(&history, "", "Next", "web", "c1", false);
-    // system + 3 history + 1 current = 5
-    // (tool in middle is NOT orphaned, only leading tools are skipped)
-    assert_eq!(messages.len(), 5);
+    // system + 2 history (tool in middle is filtered — no matching assistant tool_calls) + 1 current = 4
+    assert_eq!(messages.len(), 4);
 }
 
 #[test]

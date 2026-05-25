@@ -3,7 +3,10 @@
 //! These types represent conversation turns, tool results, agent state,
 //! and events emitted during the agent loop execution.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Configuration for an agent instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +182,68 @@ pub enum AgentEvent {
     Error(String),
     /// The agent loop has finished processing.
     Done(String),
+}
+
+/// Fix orphaned tool message pairs in-place.
+///
+/// Guarantees two invariants:
+/// 1. Every role="tool" message has a preceding role="assistant" with matching tool_call id
+/// 2. Every assistant tool_call id has a corresponding tool response after it
+///
+/// When violated:
+/// - Orphaned tool messages are removed
+/// - Assistant tool_calls without responses are cleared
+pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
+    if messages.is_empty() {
+        return;
+    }
+
+    // Pass 1: remove orphaned tool messages via retain.
+    let mut seen_call_ids: HashSet<String> = HashSet::new();
+    messages.retain(|msg| {
+        let keep = if msg.role == "tool" {
+            match msg.tool_call_id {
+                Some(ref id) => seen_call_ids.contains(id),
+                None => false,
+            }
+        } else {
+            true
+        };
+
+        if msg.role == "assistant" {
+            for tc in &msg.tool_calls {
+                seen_call_ids.insert(tc.id.clone());
+            }
+        }
+
+        if !keep {
+            debug!("[repair_tool_message_pairs] Removing orphaned tool message");
+        }
+        keep
+    });
+
+    // Pass 2: clear incomplete assistant tool_calls.
+    let n = messages.len();
+    for i in 0..n {
+        if messages[i].role == "assistant" && !messages[i].tool_calls.is_empty() {
+            let call_ids: Vec<String> = messages[i].tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            let mut found_ids: HashSet<String> = HashSet::new();
+            for j in (i + 1)..n {
+                if messages[j].role == "tool" {
+                    if let Some(ref tc_id) = messages[j].tool_call_id {
+                        if call_ids.contains(tc_id) {
+                            found_ids.insert(tc_id.clone());
+                        }
+                    }
+                } else if messages[j].role == "assistant" {
+                    break;
+                }
+            }
+            if found_ids.len() < call_ids.len() {
+                messages[i].tool_calls.retain(|tc| found_ids.contains(&tc.id));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

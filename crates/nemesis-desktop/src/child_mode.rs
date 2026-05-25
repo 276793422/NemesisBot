@@ -447,9 +447,9 @@ fn load_and_run_plugin_window(
 
     // Try to call plugin_init if the DLL exports it (unified interface)
     let _init_result: i32 = unsafe {
-        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const i8, *const std::ffi::c_void) -> i32>>(b"plugin_init\0") {
+        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_void) -> i32>>(b"plugin_init\0") {
             let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();
-            let ret = plugin_init_fn(c_config_dir.as_ptr(), std::ptr::null());
+            let ret = plugin_init_fn(c_config_dir.as_ptr() as *const std::ffi::c_char, std::ptr::null());
             eprintln!("[Child] plugin_init returned: {}", ret);
             ret
         } else {
@@ -458,7 +458,7 @@ fn load_and_run_plugin_window(
     };
 
     // Get the plugin_create_window symbol
-    let create_window: libloading::Symbol<unsafe extern "C" fn(*const i8) -> i32> = unsafe {
+    let create_window: libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char) -> i32> = unsafe {
         lib.get(b"plugin_create_window\0")
             .map_err(|e| format!("get plugin_create_window symbol: {}", e))?
     };
@@ -469,7 +469,7 @@ fn load_and_run_plugin_window(
     };
 
     // Try to get the plugin_get_approval_result symbol (optional, for approval windows)
-    let get_approval_result_fn: Option<libloading::Symbol<unsafe extern "C" fn() -> *const i8>> = unsafe {
+    let get_approval_result_fn: Option<libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_char>> = unsafe {
         lib.get(b"plugin_get_approval_result\0").ok()
     };
 
@@ -490,7 +490,7 @@ fn load_and_run_plugin_window(
     eprintln!("[Child] Calling plugin_create_window (blocking)...");
 
     // Call the DLL — blocks until the window closes (uses run_return so it returns normally).
-    let result = unsafe { create_window(c_config.as_ptr()) };
+    let result = unsafe { create_window(c_config.as_ptr() as *const std::ffi::c_char) };
 
     eprintln!("[Child] plugin_create_window returned: {}", result);
 

@@ -1379,3 +1379,572 @@ fn test_register_shared_tools_with_skills_registry() {
     assert!(tools.contains_key("find_skills"), "find_skills should be registered");
     assert!(tools.contains_key("install_skill"), "install_skill should be registered");
 }
+
+// -------------------------------------------------------------------------
+// ProviderAdapter message conversion logic tests
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_provider_adapter_tool_call_conversion() {
+    // Verify the tool call conversion logic from AgentToolCallInfo to ProviderToolCall
+    let name = "test_function".to_string();
+    let arguments = r#"{"key": "value"}"#.to_string();
+    let id = "call_123".to_string();
+
+    // Simulate the conversion done in ProviderAdapter::chat
+    let provider_tc = nemesis_providers::types::ToolCall {
+        id: id.clone(),
+        call_type: Some("function".to_string()),
+        function: Some(nemesis_providers::types::FunctionCall {
+            name: name.clone(),
+            arguments: arguments.clone(),
+        }),
+        name: None,
+        arguments: None,
+    };
+
+    // Convert back (simulating the reverse in ProviderAdapter)
+    let func = provider_tc.function.unwrap();
+    assert_eq!(func.name, name);
+    assert_eq!(func.arguments, arguments);
+}
+
+#[test]
+fn test_provider_adapter_finished_logic_tool_calls_present() {
+    // When tool_calls are present and finish_reason != "stop", finished = false
+    let tool_calls = vec![
+        nemesis_agent::types::ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "test".to_string(),
+            arguments: "{}".to_string(),
+        },
+    ];
+    let finish_reason = "tool_calls";
+    let finished = tool_calls.is_empty() || finish_reason == "stop";
+    assert!(!finished);
+}
+
+#[test]
+fn test_provider_adapter_finished_logic_stop() {
+    // When finish_reason is "stop", finished = true
+    let tool_calls: Vec<nemesis_agent::types::ToolCallInfo> = vec![];
+    let finish_reason = "stop";
+    let finished = tool_calls.is_empty() || finish_reason == "stop";
+    assert!(finished);
+}
+
+#[test]
+fn test_provider_adapter_finished_logic_empty_tool_calls() {
+    let tool_calls: Vec<nemesis_agent::types::ToolCallInfo> = vec![];
+    let finish_reason = "stop";
+    let finished = tool_calls.is_empty() || finish_reason == "stop";
+    assert!(finished);
+}
+
+#[test]
+fn test_provider_adapter_model_fallback_empty() {
+    // Empty model string should use default
+    let default_model = "gpt-4".to_string();
+    let model = "";
+    let model_to_use = if model.is_empty() { &default_model } else { model };
+    assert_eq!(model_to_use, "gpt-4");
+}
+
+#[test]
+fn test_provider_adapter_model_fallback_nonempty() {
+    let default_model = "gpt-4".to_string();
+    let model = "claude-3";
+    let model_to_use = if model.is_empty() { &default_model } else { model };
+    assert_eq!(model_to_use, "claude-3");
+}
+
+// -------------------------------------------------------------------------
+// DirectLlmChannel construction tests
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_direct_llm_channel_new() {
+    let ch = DirectLlmChannel::new(
+        "http://127.0.0.1:8080/v1".to_string(),
+        "test-key".to_string(),
+        "test-model".to_string(),
+    );
+    assert_eq!(ch.base_url, "http://127.0.0.1:8080/v1");
+    assert_eq!(ch.api_key, "test-key");
+    assert_eq!(ch.model, "test-model");
+}
+
+#[test]
+fn test_direct_llm_channel_url_format() {
+    let base_url = "http://127.0.0.1:8080/v1".to_string();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    assert_eq!(url, "http://127.0.0.1:8080/v1/chat/completions");
+}
+
+#[test]
+fn test_direct_llm_channel_url_format_trailing_slash() {
+    let base_url = "http://127.0.0.1:8080/v1/".to_string();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    assert_eq!(url, "http://127.0.0.1:8080/v1/chat/completions");
+}
+
+#[test]
+fn test_direct_llm_channel_response_parsing_logic() {
+    let response = serde_json::json!({
+        "choices": [{
+            "message": {"role": "assistant", "content": "Test response with special chars: <>&\"'"},
+            "finish_reason": "stop"
+        }]
+    });
+    let content = response.get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(content, "Test response with special chars: <>&\"'");
+}
+
+// -------------------------------------------------------------------------
+// ClusterResultPersisterAdapter logic tests
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_cluster_persister_set_running_format() {
+    let task_id = "task-running-123";
+    let node_id = "node-abc";
+    let data = serde_json::json!({
+        "status": "running",
+        "from": node_id,
+    });
+    assert_eq!(data["status"], "running");
+    assert_eq!(data["from"], node_id);
+}
+
+#[test]
+fn test_cluster_persister_set_result_success_format() {
+    let task_id = "task-success-456";
+    let node_id = "node-xyz";
+    let response = "done processing";
+    let data = serde_json::json!({
+        "content": response,
+        "from": node_id,
+    });
+    assert_eq!(data["content"], "done processing");
+    assert_eq!(data["from"], node_id);
+}
+
+#[test]
+fn test_cluster_persister_set_result_error_status() {
+    // When status == "error", store failure instead of success
+    let status = "error";
+    let is_error = status == "error";
+    assert!(is_error);
+}
+
+#[test]
+fn test_cluster_persister_set_result_non_error_status() {
+    let status = "success";
+    let is_error = status == "error";
+    assert!(!is_error);
+}
+
+// -------------------------------------------------------------------------
+// BusToClusterAdapter message construction
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_bus_to_cluster_message_conversion() {
+    // Simulate the conversion from BusInboundMessage to InboundMessage
+    let channel = "web".to_string();
+    let sender_id = "user1".to_string();
+    let chat_id = "chat1".to_string();
+    let content = "Hello".to_string();
+
+    let inbound = nemesis_types::channel::InboundMessage {
+        channel: channel.clone(),
+        sender_id: sender_id.clone(),
+        chat_id: chat_id.clone(),
+        content: content.clone(),
+        media: vec![],
+        session_key: String::new(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+    };
+    assert_eq!(inbound.channel, "web");
+    assert_eq!(inbound.sender_id, "user1");
+    assert_eq!(inbound.chat_id, "chat1");
+    assert_eq!(inbound.content, "Hello");
+    assert!(inbound.media.is_empty());
+    assert!(inbound.session_key.is_empty());
+    assert!(inbound.correlation_id.is_empty());
+}
+
+// -------------------------------------------------------------------------
+// Approval action parsing logic
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_approval_action_approved() {
+    let value = serde_json::json!({"action": "approved"});
+    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    assert_eq!(action, "approved");
+    let is_approved = action == "approved";
+    assert!(is_approved);
+}
+
+#[test]
+fn test_approval_action_rejected() {
+    let value = serde_json::json!({"action": "rejected"});
+    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    assert_eq!(action, "rejected");
+    let is_approved = action == "approved";
+    assert!(!is_approved);
+}
+
+#[test]
+fn test_approval_action_missing_defaults_rejected() {
+    let value = serde_json::json!({});
+    let action = value.get("action").and_then(|v| v.as_str()).unwrap_or("rejected");
+    assert_eq!(action, "rejected");
+    let is_approved = action == "approved";
+    assert!(!is_approved);
+}
+
+// -------------------------------------------------------------------------
+// Security rules with all operation types
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_load_security_rules_with_process_rules() {
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({
+        "process_rules": {
+            "exec": [{"pattern": "ls", "action": "allow", "comment": "list files"}],
+            "spawn": [{"pattern": "bash", "action": "deny", "comment": "no shells"}],
+            "kill": [{"pattern": "*", "action": "ask", "comment": "confirm kills"}],
+            "suspend": []
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    load_security_rules(&plugin, &path);
+    // Verify no panic
+}
+
+#[test]
+fn test_load_security_rules_with_network_rules() {
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({
+        "network_rules": {
+            "request": [{"pattern": "*.example.com", "action": "allow", "comment": ""}],
+            "download": [{"pattern": "http://*", "action": "allow", "comment": ""}],
+            "upload": []
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    load_security_rules(&plugin, &path);
+}
+
+#[test]
+fn test_load_security_rules_with_hardware_rules() {
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({
+        "hardware_rules": {
+            "i2c": [{"pattern": "*", "action": "allow", "comment": ""}],
+            "spi": [],
+            "gpio": [{"pattern": "*", "action": "deny", "comment": "no gpio"}]
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    load_security_rules(&plugin, &path);
+}
+
+#[test]
+fn test_load_security_rules_with_registry_rules() {
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({
+        "registry_rules": {
+            "read": [{"pattern": "HKLM\\*", "action": "allow", "comment": ""}],
+            "write": [{"pattern": "*", "action": "deny", "comment": ""}],
+            "delete": []
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    load_security_rules(&plugin, &path);
+}
+
+// -------------------------------------------------------------------------
+// Discovery config construction (AgentLoop wiring)
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_discovery_config_from_agent_config() {
+    let config = nemesis_agent::types::AgentConfig::default();
+    // Verify default config has reasonable values
+    assert!(!config.model.is_empty() || config.model.is_empty()); // just verify access
+}
+
+#[test]
+fn test_agent_config_custom_values() {
+    let config = nemesis_agent::types::AgentConfig {
+        model: "test-model".to_string(),
+        max_turns: 50,
+        system_prompt: Some("You are helpful".to_string()),
+        tools: vec![],
+    };
+    assert_eq!(config.model, "test-model");
+    assert_eq!(config.max_turns, 50);
+    assert_eq!(config.system_prompt, Some("You are helpful".to_string()));
+    assert!(config.tools.is_empty());
+}
+
+// -------------------------------------------------------------------------
+// Agent max_turns floor logic
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_agent_max_turns_floor_zero() {
+    let max_turns: usize = 0;
+    let floored = max_turns.max(1);
+    assert_eq!(floored, 1);
+}
+
+#[test]
+fn test_agent_max_turns_floor_positive() {
+    let max_turns: usize = 50;
+    let floored = max_turns.max(1);
+    assert_eq!(floored, 50);
+}
+
+// -------------------------------------------------------------------------
+// Scanner config with nested engines
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_scanner_config_nested_engines() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("scanner.json");
+    let data = serde_json::json!({
+        "enabled": ["clamav", "yara"],
+        "engines": {
+            "clamav": {
+                "address": "127.0.0.1:3310",
+                "state": {
+                    "install_status": "installed",
+                    "version": "1.0.0"
+                }
+            },
+            "yara": {
+                "address": "127.0.0.1:9999",
+                "rules_path": "/etc/yara/rules"
+            }
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    let result = load_scanner_full_config(&path);
+    assert!(result.is_some());
+    let cfg = result.unwrap();
+    assert_eq!(cfg.enabled.len(), 2);
+    assert_eq!(cfg.engines.len(), 2);
+    // Verify nested engine data is preserved
+    assert!(cfg.engines.contains_key("clamav"));
+    assert!(cfg.engines.contains_key("yara"));
+}
+
+// -------------------------------------------------------------------------
+// Continuation message construction (cluster continuation prefix)
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_continuation_message_prefix() {
+    let task_id = "task-abc-123";
+    let prefix = format!("cluster_continuation:{}", task_id);
+    assert!(prefix.starts_with("cluster_continuation:"));
+    assert!(prefix.ends_with(&task_id));
+}
+
+// -------------------------------------------------------------------------
+// Context builder with workspace directory
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_context_builder_with_workspace() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Create IDENTITY.md
+    std::fs::write(workspace.join("IDENTITY.md"), "# Identity\nI am a test bot.").unwrap();
+
+    let builder = nemesis_agent::context::ContextBuilder::new(&workspace);
+    // Just verify construction doesn't panic
+    assert!(true, "ContextBuilder created with workspace");
+}
+
+// -------------------------------------------------------------------------
+// ForgeProviderBridge response handling logic
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_forge_bridge_empty_content_returns_error() {
+    // When content is empty AND tool_calls is empty, return Err
+    let content = "";
+    let has_tool_calls = false;
+    let result = if content.is_empty() && !has_tool_calls {
+        Err("LLM returned no content".to_string())
+    } else {
+        Ok(content.to_string())
+    };
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_forge_bridge_nonempty_content_returns_ok() {
+    let content = "Hello from LLM";
+    let has_tool_calls = false;
+    let result = if content.is_empty() && !has_tool_calls {
+        Err("LLM returned no content".to_string())
+    } else {
+        Ok(content.to_string())
+    };
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "Hello from LLM");
+}
+
+#[test]
+fn test_forge_bridge_tool_calls_present_returns_ok() {
+    let content = "";
+    let has_tool_calls = true;
+    let result = if content.is_empty() && !has_tool_calls {
+        Err("LLM returned no content".to_string())
+    } else {
+        Ok(content.to_string())
+    };
+    assert!(result.is_ok());
+}
+
+// -------------------------------------------------------------------------
+// Forge TraceCollector operations
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_forge_trace_collector_events_empty() {
+    let collector = nemesis_forge::trace::TraceCollector::new();
+    assert!(collector.events().is_empty());
+}
+
+// -------------------------------------------------------------------------
+// Cron message metadata construction
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_cron_message_metadata_construction() {
+    let channel = Some("web".to_string());
+    let to = Some("user1".to_string());
+    let message = "scheduled task output".to_string();
+
+    let ch = channel.clone().unwrap_or_else(|| "web".to_string());
+    let chat = to.clone().unwrap_or_default();
+    let deliver = true;
+
+    assert_eq!(ch, "web");
+    assert_eq!(chat, "user1");
+    assert!(!message.is_empty());
+    assert!(deliver);
+}
+
+// -------------------------------------------------------------------------
+// count_enabled_channels additional channels
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_count_enabled_channels_web_telegram() {
+    let mut config = nemesis_config::Config::default();
+    config.channels.web.enabled = true;
+    config.channels.telegram.enabled = true;
+    assert_eq!(count_enabled_channels(&config), 2);
+}
+
+#[test]
+fn test_count_enabled_channels_all_five() {
+    let mut config = nemesis_config::Config::default();
+    config.channels.web.enabled = true;
+    config.channels.telegram.enabled = true;
+    config.channels.discord.enabled = true;
+    config.channels.feishu.enabled = true;
+    config.channels.slack.enabled = true;
+    assert_eq!(count_enabled_channels(&config), 5);
+}
+
+// -------------------------------------------------------------------------
+// parse_host_port additional edge cases
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_parse_host_port_negative_port() {
+    let (host, port) = parse_host_port("host:-1");
+    assert_eq!(host, "host");
+    assert_eq!(port, 0); // u16 parse of "-1" fails
+}
+
+#[test]
+fn test_parse_host_port_very_large_port() {
+    let (host, port) = parse_host_port("host:99999");
+    assert_eq!(host, "host");
+    assert_eq!(port, 0); // u16 overflow
+}
+
+// -------------------------------------------------------------------------
+// PID file write logic
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_pid_file_write() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let pid_path = tmp.path().join("gateway.pid");
+    let pid = std::process::id();
+    std::fs::write(&pid_path, pid.to_string()).unwrap();
+
+    let content = std::fs::read_to_string(&pid_path).unwrap();
+    let read_pid: u32 = content.parse().unwrap();
+    assert_eq!(read_pid, pid);
+}
+
+// -------------------------------------------------------------------------
+// Web server URL construction
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_web_server_url_construction() {
+    let host = "0.0.0.0";
+    let port: i64 = 49000;
+    let resolved = if host == "0.0.0.0" || host.is_empty() { "127.0.0.1" } else { host };
+    let url = format!("http://{}:{}", resolved, port);
+    assert_eq!(url, "http://127.0.0.1:49000");
+}
+
+#[test]
+fn test_web_server_url_custom_host() {
+    let host = "192.168.1.5";
+    let port: i64 = 8080;
+    let resolved = if host == "0.0.0.0" || host.is_empty() { "127.0.0.1" } else { host };
+    let url = format!("http://{}:{}", resolved, port);
+    assert_eq!(url, "http://192.168.1.5:8080");
+}

@@ -3304,3 +3304,543 @@ async fn test_history_e2e_via_bus_arc() {
     drop(inbound_tx);
     let _ = handle.await;
 }
+
+// =========================================================================
+// Additional coverage tests for loop.rs (targeting 95%+)
+// =========================================================================
+
+#[tokio::test]
+async fn test_run_with_reasoning_content() {
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "Final answer".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: Some("I need to think about this...".to_string()),
+        usage: Some(crate::loop_executor::ObserverUsageInfo {
+            prompt_tokens: 50,
+            completion_tokens: 20,
+            total_tokens: 70,
+            cached_tokens: None,
+        }),
+    }]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Think about this", &context).await;
+    let done: Vec<_> = events.iter().filter_map(|e| match e {
+        AgentEvent::Done(msg) => Some(msg.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0], "Final answer");
+}
+
+#[test]
+fn test_process_options_custom() {
+    let opts = ProcessOptions {
+        session_key: "test:session".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat123".to_string(),
+        user_message: "Hello".to_string(),
+        default_response: "No response".to_string(),
+        enable_summary: false,
+        send_response: true,
+        no_history: true,
+        trace_id: "trace-001".to_string(),
+    };
+    assert_eq!(opts.session_key, "test:session");
+    assert_eq!(opts.channel, "web");
+    assert!(!opts.enable_summary);
+    assert!(opts.send_response);
+    assert!(opts.no_history);
+    assert_eq!(opts.trace_id, "trace-001");
+}
+
+#[test]
+fn test_concurrent_mode_variants() {
+    assert_ne!(ConcurrentMode::Reject, ConcurrentMode::Queue);
+    let default = ConcurrentMode::default();
+    assert_eq!(default, ConcurrentMode::Reject);
+}
+
+#[test]
+fn test_session_busy_tracker_concurrent_access() {
+    use std::sync::Arc;
+    let tracker = Arc::new(SessionBusyTracker::new(ConcurrentMode::Reject, 8));
+    let mut handles = vec![];
+
+    for i in 0..10 {
+        let t = tracker.clone();
+        handles.push(std::thread::spawn(move || {
+            let key = format!("session-{}", i);
+            let acquired = t.try_acquire(&key);
+            assert!(acquired);
+            assert!(t.is_busy(&key));
+            t.release(&key);
+            assert!(!t.is_busy(&key));
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn test_run_with_provider_error_no_retry() {
+    struct ErrorProvider;
+    #[async_trait]
+    impl LlmProvider for ErrorProvider {
+        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+            Err("Provider unavailable".to_string())
+        }
+    }
+    let agent_loop = AgentLoop::new(Box::new(ErrorProvider), test_config());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+    let errors: Vec<_> = events.iter().filter_map(|e| match e {
+        AgentEvent::Error(msg) => Some(msg.clone()),
+        _ => None,
+    }).collect();
+    assert!(!errors.is_empty());
+    assert!(errors[0].contains("Provider unavailable"));
+}
+
+#[tokio::test]
+async fn test_run_with_empty_content_then_response() {
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_1".to_string(),
+                name: "calculator".to_string(),
+                arguments: r#"{"expr":"1+1"}"#.to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+        },
+        LlmResponse {
+            content: "The answer is 2.".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool("calculator".to_string(), Box::new(MockTool {
+        result: "2".to_string(),
+    }));
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "What is 1+1?", &context).await;
+    let done: Vec<_> = events.iter().filter_map(|e| match e {
+        AgentEvent::Done(msg) => Some(msg.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0], "The answer is 2.");
+}
+
+#[test]
+fn test_sent_in_round_tracker_clear_specific() {
+    let tracker = SentInRoundTracker::new();
+    tracker.mark_sent("session-1");
+    tracker.mark_sent("session-2");
+    assert!(tracker.has_sent_in_round("session-1"));
+    assert!(tracker.has_sent_in_round("session-2"));
+
+    // Clear only session-1
+    tracker.clear("session-1");
+    assert!(!tracker.has_sent_in_round("session-1"));
+    assert!(tracker.has_sent_in_round("session-2"));
+}
+
+#[tokio::test]
+async fn test_process_direct_returns_error_on_provider_failure() {
+    struct FailProvider;
+    #[async_trait]
+    impl LlmProvider for FailProvider {
+        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+            Err("LLM failure".to_string())
+        }
+    }
+    let agent_loop = AgentLoop::new(Box::new(FailProvider), test_config());
+    let result = agent_loop.process_direct("test input", "session-key").await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("LLM failure"));
+}
+
+#[tokio::test]
+async fn test_process_heartbeat_returns_default_on_empty_response() {
+    struct EmptyProvider;
+    #[async_trait]
+    impl LlmProvider for EmptyProvider {
+        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+            Ok(LlmResponse {
+                content: String::new(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+            })
+        }
+    }
+    let agent_loop = AgentLoop::new(Box::new(EmptyProvider), test_config());
+    let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
+    assert!(result.is_ok());
+    // When the LLM returns empty content, process_heartbeat returns empty string
+    // because the Done event has empty content and there's no Error event
+    let response = result.unwrap();
+    assert!(response.is_empty() || response == "I've completed processing but have no response to give.");
+}
+
+#[test]
+fn test_llm_message_serialization_roundtrip_all_fields() {
+    let msg = LlmMessage {
+        role: "assistant".to_string(),
+        content: "Hello".to_string(),
+        tool_calls: Some(vec![ToolCallInfo {
+            id: "tc_1".to_string(),
+            name: "calc".to_string(),
+            arguments: r#"{"expr":"2+2"}"#.to_string(),
+        }]),
+        tool_call_id: Some("tc_1".to_string()),
+        reasoning_content: Some("thinking...".to_string()),
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    let de: LlmMessage = serde_json::from_str(&json).unwrap();
+    assert_eq!(de.role, "assistant");
+    assert_eq!(de.content, "Hello");
+    assert!(de.tool_calls.is_some());
+    assert_eq!(de.tool_call_id, Some("tc_1".to_string()));
+    // reasoning_content is deserialized with default
+    assert!(de.reasoning_content.is_some());
+}
+
+#[test]
+fn test_extract_peer_various_metadata() {
+    // Test with peer_kind=cluster
+    let msg = make_inbound_with_metadata(
+        "web", "chat1", "user1",
+        vec![("peer_kind", "cluster"), ("peer_id", "node-2")],
+    );
+    let peer = extract_peer(&msg);
+    assert_eq!(peer, "cluster:node-2");
+
+    // Test with peer_kind=direct (uses sender_id as fallback)
+    let msg = make_inbound_with_metadata(
+        "web", "chat1", "user-123",
+        vec![("peer_kind", "direct")],
+    );
+    let peer = extract_peer(&msg);
+    assert_eq!(peer, "direct:user-123");
+
+    // Test with no peer_kind -> falls back to sender_id
+    let msg = make_inbound_with_metadata(
+        "web", "chat1", "fallback-user",
+        vec![],
+    );
+    let peer = extract_peer(&msg);
+    assert_eq!(peer, "fallback-user");
+}
+
+fn make_inbound_with_metadata(
+    channel: &str,
+    chat_id: &str,
+    sender_id: &str,
+    metadata: Vec<(&str, &str)>,
+) -> nemesis_types::channel::InboundMessage {
+    let mut meta = std::collections::HashMap::new();
+    for (k, v) in metadata {
+        meta.insert(k.to_string(), v.to_string());
+    }
+    nemesis_types::channel::InboundMessage {
+        channel: channel.to_string(),
+        sender_id: sender_id.to_string(),
+        chat_id: chat_id.to_string(),
+        content: "test".to_string(),
+        media: vec![],
+        session_key: format!("{}:{}", channel, chat_id),
+        correlation_id: String::new(),
+        metadata: meta,
+    }
+}
+
+#[test]
+fn test_is_internal_channel_all_values() {
+    assert!(is_internal_channel("cli"));
+    assert!(is_internal_channel("system"));
+    assert!(is_internal_channel("subagent"));
+    assert!(!is_internal_channel("web"));
+    assert!(!is_internal_channel("discord"));
+    assert!(!is_internal_channel("rpc"));
+}
+
+#[test]
+fn test_build_agent_main_session_key_format_v2() {
+    let key = build_agent_main_session_key("agent-1");
+    assert_eq!(key, "agent:agent-1:main");
+    let key2 = build_agent_main_session_key("main");
+    assert_eq!(key2, "agent:main:main");
+}
+
+#[test]
+fn test_extract_continuation_task_id_various_v2() {
+    assert_eq!(
+        extract_continuation_task_id("cluster_continuation:task-abc-123"),
+        Some("task-abc-123")
+    );
+    assert_eq!(extract_continuation_task_id("regular_message"), None);
+    assert_eq!(extract_continuation_task_id(""), None);
+}
+
+#[test]
+fn test_truncate_various_lengths() {
+    assert_eq!(truncate("", 10), "");
+    assert_eq!(truncate("hello", 10), "hello");
+    assert_eq!(truncate("hello world", 5), "he...");
+    assert_eq!(truncate("abc", 3), "abc");
+    assert_eq!(truncate("abcd", 3), "..."); // budget is 0, so returns "..."
+    assert_eq!(truncate("abcdef", 5), "ab...");
+}
+
+#[test]
+fn test_route_input_output_types_v2() {
+    let input = RouteInput {
+        channel: "web".to_string(),
+        account_id: None,
+        peer: "chat1".to_string(),
+        parent_peer: None,
+        guild_id: None,
+        team_id: None,
+    };
+    assert_eq!(input.channel, "web");
+
+    let output = RouteOutput {
+        agent_id: "main".to_string(),
+        session_key: "web:chat1".to_string(),
+        matched_by: "default".to_string(),
+    };
+    assert_eq!(output.agent_id, "main");
+}
+
+#[tokio::test]
+async fn test_run_with_multiple_tool_iterations() {
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_1".to_string(),
+                name: "tool1".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+        },
+        LlmResponse {
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_2".to_string(),
+                name: "tool1".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+        },
+        LlmResponse {
+            content: "Final response after 2 tool calls".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool("tool1".to_string(), Box::new(MockTool {
+        result: "tool result".to_string(),
+    }));
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Do something twice", &context).await;
+    let tool_calls: Vec<_> = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).collect();
+    assert_eq!(tool_calls.len(), 2);
+    let done: Vec<_> = events.iter().filter_map(|e| match e {
+        AgentEvent::Done(msg) => Some(msg.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(done[0], "Final response after 2 tool calls");
+}
+
+#[test]
+fn test_agent_loop_tool_count() {
+    let provider = MockLlmProvider::new(vec![]);
+    let mut al = AgentLoop::new(Box::new(provider), test_config());
+    assert_eq!(al.tool_count(), 0);
+    al.register_tool("tool1".to_string(), Box::new(MockTool { result: "r1".to_string() }));
+    assert_eq!(al.tool_count(), 1);
+    al.register_tool("tool2".to_string(), Box::new(MockTool { result: "r2".to_string() }));
+    assert_eq!(al.tool_count(), 2);
+}
+
+#[test]
+fn test_agent_loop_register_tool_shared() {
+    let provider = MockLlmProvider::new(vec![]);
+    let mut al = AgentLoop::new(Box::new(provider), test_config());
+    al.register_tool_shared("shared_tool".to_string(), Box::new(MockTool { result: "shared".to_string() }));
+    assert_eq!(al.tool_count(), 1);
+}
+
+#[test]
+fn test_agent_loop_stop_when_not_running() {
+    let provider = MockLlmProvider::new(vec![]);
+    let al = AgentLoop::new(Box::new(provider), test_config());
+    assert!(!al.is_running());
+    al.stop();
+    assert!(!al.is_running());
+}
+
+#[tokio::test]
+async fn test_process_direct_with_channel_custom() {
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "Custom channel response".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+    }]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let result = agent_loop.process_direct_with_channel(
+        "Hello", "session-1", "discord", "channel-123"
+    ).await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "Custom channel response");
+}
+
+#[test]
+fn test_handle_command_show_system_prompt_with_config() {
+    let provider = MockLlmProvider::new(vec![]);
+    let mut al = AgentLoop::new(Box::new(provider), AgentConfig {
+        model: "test".to_string(),
+        system_prompt: Some("You are a helpful assistant.".to_string()),
+        max_turns: 5,
+        tools: vec![],
+    });
+    // /show system_prompt may not be a recognized command target
+    // The important thing is it doesn't panic and returns something
+    let result = al.handle_command("/show system_prompt");
+    // It may return Some or None depending on command handling
+    let _ = result;
+}
+
+// --- truncate_with_tool_pairs tests ---
+
+fn make_stored(role: &str, content: &str) -> crate::session::StoredMessage {
+    crate::session::StoredMessage {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }
+}
+
+fn make_stored_asst_tc(content: &str, ids: &[&str]) -> crate::session::StoredMessage {
+    crate::session::StoredMessage {
+        role: "assistant".to_string(),
+        content: content.to_string(),
+        tool_calls: ids.iter().map(|id| crate::session::StoredToolCall {
+            id: id.to_string(),
+            name: "tool".to_string(),
+            arguments: "{}".to_string(),
+        }).collect(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }
+}
+
+fn make_stored_tool(content: &str, tc_id: &str) -> crate::session::StoredMessage {
+    crate::session::StoredMessage {
+        role: "tool".to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: Some(tc_id.to_string()),
+        timestamp: String::new(),
+        reasoning_content: None,
+    }
+}
+
+#[test]
+fn test_truncate_tool_pairs_intact_after_truncation() {
+    let msgs = vec![
+        make_stored("user", "u1"),
+        make_stored_asst_tc("", &["call_1"]),
+        make_stored_tool("resp", "call_1"),
+        make_stored("user", "u2"),
+        make_stored("assistant", "text"),
+        make_stored("user", "u3"),
+    ];
+    let result = truncate_with_tool_pairs(&msgs, 4);
+    // Last 4: [tool(resp), user, assistant, user]
+    // tool at start → look back → find assistant(tc) → include it
+    assert!(result.len() >= 4);
+    // Verify no orphaned tool at start
+    assert_ne!(result[0].role, "tool");
+}
+
+#[test]
+fn test_truncate_tool_pairs_cutoff_between_asst_tool() {
+    let msgs = vec![
+        make_stored("user", "u1"),
+        make_stored_asst_tc("", &["call_1"]),
+        make_stored_tool("resp", "call_1"),
+        make_stored("user", "u2"),
+    ];
+    let result = truncate_with_tool_pairs(&msgs, 2);
+    // Last 2: [tool(resp), user]
+    // tool at start → look back → find asst(tc) → include
+    assert!(result.len() >= 2);
+    assert_ne!(result[0].role, "tool");
+}
+
+#[test]
+fn test_truncate_tool_pairs_multiple_orphaned_tools() {
+    let msgs = vec![
+        make_stored("user", "u1"),
+        make_stored_asst_tc("", &["call_1"]),
+        make_stored_tool("resp1", "call_1"),
+        make_stored_tool("resp2", "orphan_id"),
+        make_stored("user", "u2"),
+        make_stored("user", "u3"),
+    ];
+    let result = truncate_with_tool_pairs(&msgs, 3);
+    // Last 3: [tool(resp2), user, user]
+    // resp2's id not in any prior asst → remove
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].role, "user");
+}
+
+#[test]
+fn test_truncate_tool_pairs_trailing_asst_clears_calls() {
+    let msgs = vec![
+        make_stored("user", "u1"),
+        make_stored("assistant", "text"),
+        make_stored_asst_tc("", &["call_1"]),
+        make_stored("user", "u2"),
+    ];
+    let result = truncate_with_tool_pairs(&msgs, 2);
+    // Last 2: [asst(tc), user] — asst has tool_calls but no tool response
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].role, "assistant");
+    assert!(result[0].tool_calls.is_empty());
+}

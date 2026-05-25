@@ -234,9 +234,10 @@ fn test_set_menu_enabled_toggle_multiple() {
 }
 
 // ============================================================
-// PlatformTray tests (feature-gated, no display server needed)
+// PlatformTray tests (desktop only — requires tray-icon)
 // ============================================================
 
+#[cfg(not(target_os = "android"))]
 mod platform_tray_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};

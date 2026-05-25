@@ -18,19 +18,24 @@ use super::*;
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(0)),
             workspace: Some(dir.path().to_string_lossy().to_string()),
+            home: None,
             version: "test".to_string(),
             start_time: Instant::now(),
             model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
+            model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+            model_has_key: Arc::new(AtomicBool::new(false)),
             event_hub: Arc::new(EventHub::new()),
             running: Arc::new(AtomicBool::new(true)),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
             ws_router: None,
+            agent_service: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
             workspace: Some(dir.path().to_string_lossy().to_string()),
+            home: None,
             state,
         }
     }
@@ -41,19 +46,24 @@ use super::*;
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(0)),
             workspace: None,
+            home: None,
             version: "test".to_string(),
             start_time: Instant::now(),
             model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
+            model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+            model_has_key: Arc::new(AtomicBool::new(false)),
             event_hub: Arc::new(EventHub::new()),
             running: Arc::new(AtomicBool::new(true)),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             inbound_tx: None,
             streaming_provider: None,
             ws_router: None,
+            agent_service: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
             workspace: None,
+            home: None,
             state,
         }
     }

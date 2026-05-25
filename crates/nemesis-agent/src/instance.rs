@@ -460,6 +460,8 @@ impl AgentInstance {
         }
         let start = non_system.len().saturating_sub(keep_count);
         history.extend(non_system.into_iter().skip(start));
+
+        crate::types::repair_tool_message_pairs(&mut *history);
     }
 }
 

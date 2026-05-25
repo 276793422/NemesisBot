@@ -1557,12 +1557,8 @@ impl AgentLoop {
                         .map(|m| crate::session::StoredMessage::from(m))
                         .collect();
 
-                    // Keep last 4 messages for continuity.
-                    let retained = if stored_messages.len() > 4 {
-                        stored_messages[stored_messages.len() - 4..].to_vec()
-                    } else {
-                        stored_messages
-                    };
+                    // Keep last 4 messages for continuity, preserving tool message pairs.
+                    let retained = truncate_with_tool_pairs(&stored_messages, 4);
 
                     store.set_history(&session_key_owned, retained);
                     store.set_summary(&session_key_owned, &summary);
@@ -1709,6 +1705,8 @@ impl AgentLoop {
         if retained.last().map(|m| m.content.as_str()) != Some(&last_msg.content) {
             retained.push(last_msg.clone());
         }
+
+        crate::types::repair_tool_message_pairs(&mut retained);
 
         let total = history.len();
         instance.set_history(retained);
@@ -2511,6 +2509,64 @@ impl AgentLoop {
 // ---------------------------------------------------------------------------
 // Standalone summarization helpers (usable from spawned tasks)
 // ---------------------------------------------------------------------------
+
+/// Truncate message list to last `keep_count`, preserving tool message pairs.
+/// Operates on `StoredMessage` (session store layer).
+fn truncate_with_tool_pairs(
+    messages: &[crate::session::StoredMessage],
+    keep_count: usize,
+) -> Vec<crate::session::StoredMessage> {
+    if messages.len() <= keep_count {
+        return messages.to_vec();
+    }
+
+    let start = messages.len() - keep_count;
+    let mut retained: Vec<crate::session::StoredMessage> = messages[start..].to_vec();
+
+    while !retained.is_empty() && retained[0].role == "tool" {
+        let tool_call_id = retained[0].tool_call_id.clone();
+
+        if let Some(ref tc_id) = tool_call_id {
+            let mut found = false;
+            if start > 0 {
+                for i in (0..start).rev() {
+                    if messages[i].role == "assistant" {
+                        if messages[i].tool_calls.iter().any(|tc| tc.id == *tc_id) {
+                            retained.insert(0, messages[i].clone());
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        retained.remove(0);
+    }
+
+    if !retained.is_empty() {
+        // Check ALL assistant messages for incomplete tool_calls.
+        // An assistant has tool_calls but no corresponding tool responses
+        // means the responses were cut off by truncation.
+        let n = retained.len();
+        for i in 0..n {
+            if retained[i].role == "assistant" && !retained[i].tool_calls.is_empty() {
+                let call_ids: Vec<&str> = retained[i].tool_calls.iter().map(|tc| tc.id.as_str()).collect();
+                let has_responses = retained[i + 1..].iter().any(|m| {
+                    m.role == "tool"
+                        && m.tool_call_id.as_ref().map_or(false, |id| call_ids.contains(&id.as_str()))
+                });
+                if !has_responses {
+                    retained[i].tool_calls.clear();
+                }
+            }
+        }
+    }
+
+    retained
+}
 
 /// Standalone summarization function that can run in a spawned task.
 /// Takes ownership of all data it needs (history, provider Arc, model).
