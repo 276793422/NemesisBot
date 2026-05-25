@@ -10,7 +10,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Rust Version](https://img.shields.io/badge/Rust-1.85+-000000?logo=rust)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macos-lightgrey)](https://github.com/276793422/NemesisBot)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-lightgrey)](https://github.com/276793422/NemesisBot)
 
 
 本仓库是 [NemesisBot Go 版](https://github.com/276793422/NemesisBot) 的 Rust 重写，实现 100% 功能对等。原仓库不再更新，本仓库继续。
@@ -59,7 +59,7 @@
 
 - Rust 1.85+（edition 2024）
 - Cargo
-- Windows / Linux / macOS
+- Windows / Linux / macOS / Android
 
 ### 安装
 
@@ -68,7 +68,17 @@
 git clone https://github.com/276793422/NemesisBot_Rust.git
 cd NemesisBot_Rust
 
-# 编译
+# Windows 编译
+build.bat
+
+# Linux/macOS 编译
+./build.sh
+
+# Android 交叉编译（需先搭建环境）
+setup-android.bat    # 自动检测/安装 Android NDK + Rust targets
+build-android.bat    # 编译 Android arm64 版本
+
+# 或手动编译
 cargo build --release -p nemesisbot
 
 # 编译 plugin-ui DLL（可选，用于桌面审批弹窗）
@@ -462,6 +472,11 @@ NemesisBot_Rust/
 ├── docs/                            # 文档目录
 │   └── REPORT/                      # 分析报告
 │       └── 2026-05-13_GO_VS_RUST_COMPARISON_FINAL.md
+├── build.bat                        # Windows 构建脚本
+├── build.sh                         # Linux/macOS 构建脚本
+├── build-android.bat                # Android 交叉编译脚本
+├── setup-linux.sh                   # Linux 环境搭建脚本
+├── setup-android.bat                # Android 环境搭建脚本
 └── Cargo.toml                       # Workspace 配置
 ```
 
@@ -472,6 +487,8 @@ NemesisBot_Rust/
 - **379 个 Rust 源文件** - 清晰的 workspace crate 架构
 - **34 个核心 crate** - 模块化设计，职责清晰
 - **6,500+ 单元测试** - 全部通过，覆盖率与 Go 版本持平
+- **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
+- **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照
