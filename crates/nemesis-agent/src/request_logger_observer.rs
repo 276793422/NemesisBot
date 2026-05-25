@@ -118,7 +118,6 @@ pub struct ToolCallEventData {
 /// Per-conversation state tracked by the observer.
 struct ConversationState {
     logger: RequestLogger,
-    operations: HashMap<usize, Vec<OperationInfo>>,
     start_time: chrono::DateTime<Utc>,
 }
 
@@ -203,7 +202,6 @@ impl RequestLoggerObserver {
             trace_id.to_string(),
             ConversationState {
                 logger,
-                operations: HashMap::new(),
                 start_time: timestamp,
             },
         );
@@ -285,11 +283,11 @@ impl RequestLoggerObserver {
                 arguments: data.arguments.clone(),
                 result: data.result.clone(),
             };
-            state
-                .operations
-                .entry(data.llm_round)
-                .or_insert_with(Vec::new)
-                .push(op);
+            state.logger.log_local_operations(&LocalOperationInfo {
+                round: data.llm_round,
+                timestamp: chrono::Utc::now(),
+                operations: vec![op],
+            });
         }
     }
 
@@ -301,19 +299,6 @@ impl RequestLoggerObserver {
     ) {
         let mut active = self.active.lock().unwrap();
         if let Some(state) = active.remove(trace_id) {
-            // Flush collected operations per round
-            for round in 1..=data.total_rounds {
-                if let Some(ops) = state.operations.get(&round) {
-                    if !ops.is_empty() {
-                        state.logger.log_local_operations(&LocalOperationInfo {
-                            round,
-                            timestamp,
-                            operations: ops.clone(),
-                        });
-                    }
-                }
-            }
-
             let total_duration_ms = if data.total_duration_ms == 0 {
                 timestamp
                     .signed_duration_since(state.start_time)

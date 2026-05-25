@@ -52,6 +52,13 @@ const navGroups = [
       { id: 'scanner', label: '扫描器', path: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
     ],
   },
+  {
+    title: '其他',
+    items: [
+      { id: 'about', label: '关于', path: '/about', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 8v4M12 16h.01' },
+      { id: 'license', label: 'License', path: '/license', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8' },
+    ],
+  },
 ]
 </script>
 

@@ -377,6 +377,34 @@ pub async fn handle_api_events(
 }
 
 // ---------------------------------------------------------------------------
+// Handler: API readme
+// ---------------------------------------------------------------------------
+
+/// Embedded README.md content.
+static EMBEDDED_README: &str = include_str!("../../../README.md");
+
+/// `GET /api/system/readme` — returns the embedded README.md content.
+pub async fn handle_api_readme() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "content": EMBEDDED_README,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Handler: API license
+// ---------------------------------------------------------------------------
+
+/// Embedded LICENSE content.
+static EMBEDDED_LICENSE: &str = include_str!("../../../LICENSE");
+
+/// `GET /api/system/license` — returns the embedded LICENSE content.
+pub async fn handle_api_license() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "content": EMBEDDED_LICENSE,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 

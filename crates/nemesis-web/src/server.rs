@@ -12,6 +12,7 @@ use crate::api_handlers::{
     AppState,
     handle_api_config, handle_api_logs, handle_api_scanner_status, handle_api_status,
     handle_api_version, handle_api_models, handle_api_sessions, handle_api_events,
+    handle_api_readme, handle_api_license,
 };
 use crate::cors::dev_cors_layer;
 use crate::events::EventHub;
@@ -227,6 +228,9 @@ impl WebServer {
             .route("/api/models", get(handle_api_models))
             .route("/api/sessions", get(handle_api_sessions))
             .route("/api/events", get(handle_api_events))
+            // System info endpoints (readme, license)
+            .route("/api/system/readme", get(handle_api_readme))
+            .route("/api/system/license", get(handle_api_license))
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
