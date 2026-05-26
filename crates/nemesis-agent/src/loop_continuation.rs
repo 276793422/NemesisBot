@@ -23,21 +23,20 @@ use crate::context::RequestContext;
 use crate::r#loop::{LlmMessage, LlmProvider, Tool};
 use crate::types::ToolCallInfo;
 
-/// Trait for looking up tools by name. Implemented for both
-/// `HashMap<String, Box<dyn Tool>>` and `HashMap<String, Arc<dyn Tool>>`.
+/// Trait for looking up tools by name.
 pub trait ToolLookup {
-    fn get_tool(&self, name: &str) -> Option<&dyn Tool>;
+    fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>>;
 }
 
-impl ToolLookup for std::collections::HashMap<String, Box<dyn Tool>> {
-    fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
-        self.get(name).map(|b| b.as_ref() as &dyn Tool)
+impl ToolLookup for std::collections::HashMap<String, Arc<dyn Tool>> {
+    fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.get(name).cloned()
     }
 }
 
-impl ToolLookup for std::collections::HashMap<String, std::sync::Arc<dyn Tool>> {
-    fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
-        self.get(name).map(|a| a.as_ref() as &dyn Tool)
+impl ToolLookup for parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn Tool>>> {
+    fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.read().get(name).cloned()
     }
 }
 
@@ -640,7 +639,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         }
 
         let round_start = std::time::Instant::now();
-        let response = match provider.chat(model, messages.clone(), None, vec![]).await {
+        let mut response = match provider.chat(model, messages.clone(), None, vec![]).await {
             Ok(resp) => resp,
             Err(e) => {
                 warn!("[Continuation] Continuation LLM call failed: {}", e);
@@ -666,6 +665,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
                 usage: response.usage.clone(),
+                raw_request_body: response.raw_request_body.take(),
+                raw_response_body: response.raw_response_body.take(),
             }.to_conversation_event();
             let mgr = Arc::clone(mgr);
             tokio::spawn(async move { mgr.emit(event).await });

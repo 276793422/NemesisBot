@@ -6,6 +6,7 @@ fn test_config() -> LoggingConfig {
         enabled: true,
         detail_level: DetailLevel::Full,
         log_dir: "logs/llm".to_string(),
+        save_raw: false,
     }
 }
 
@@ -15,6 +16,7 @@ fn disabled_logger_is_noop() {
         enabled: false,
         detail_level: DetailLevel::Full,
         log_dir: String::new(),
+        save_raw: false,
     };
     let tmp = TempDir::new().unwrap();
     let logger = RequestLogger::new(config, tmp.path());
@@ -234,6 +236,7 @@ fn truncated_mode_truncates_long_content() {
         enabled: true,
         detail_level: DetailLevel::Truncated,
         log_dir: "logs/llm".to_string(),
+        save_raw: false,
     };
     let tmp = TempDir::new().unwrap();
     let logger = RequestLogger::new(config, tmp.path());
@@ -380,6 +383,7 @@ fn disabled_logger_all_methods_noop() {
         enabled: false,
         detail_level: DetailLevel::Full,
         log_dir: String::new(),
+        save_raw: false,
     };
     let tmp = TempDir::new().unwrap();
     let logger = RequestLogger::new(config, tmp.path());

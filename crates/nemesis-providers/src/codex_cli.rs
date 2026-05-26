@@ -231,6 +231,8 @@ impl CodexCliProvider {
             usage,
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
         })
     }
 }

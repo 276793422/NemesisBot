@@ -744,6 +744,8 @@ impl LlmProvider for ProviderAdapter {
                         total_tokens: u.total_tokens,
                         cached_tokens: u.cached_tokens,
                     }),
+                    raw_request_body: resp.raw_request_body,
+                    raw_response_body: resp.raw_response_body,
                 })
             }
             Err(e) => {
@@ -931,6 +933,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         eprintln!("Error: Configuration directory not found: {}", home.display());
         eprintln!("  Run 'nemesisbot onboard default' to create configuration.");
         std::process::exit(1);
+    }
+
+    // Step 3a: Ensure exe directory is in PATH so LLM shell tools can find nemesisbot
+    if common::ensure_exe_in_path() {
+        tracing::info!("[Gateway] Added exe directory to PATH for LLM shell access");
     }
 
     // Step 4: Load configuration
@@ -1150,28 +1157,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
 
     let mcp_enabled = cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false);
-    let mcp_servers: Vec<nemesis_agent::loop_tools::McpServerConfig> = if mcp_enabled {
-        cfg.mcp.as_ref().map(|m| {
-            m.servers.iter().map(|s| {
-                nemesis_agent::loop_tools::McpServerConfig {
-                    name: s.name.clone(),
-                    command: s.command.clone(),
-                    args: s.args.clone(),
-                    env: s.env.iter().filter_map(|e| {
-                        let parts: Vec<&str> = e.splitn(2, '=').collect();
-                        if parts.len() == 2 {
-                            Some((parts[0].to_string(), parts[1].to_string()))
-                        } else {
-                            None
-                        }
-                    }).collect(),
-                    timeout_secs: if s.timeout > 0 { s.timeout as u64 } else { 30 },
-                }
-            }).collect()
-        }).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
 
     let shared_config = nemesis_agent::SharedToolConfig {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
@@ -1260,8 +1245,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 None
             }
         },
-        mcp_enabled,
-        mcp_servers: mcp_servers.clone(),
         ..Default::default()
     };
 
@@ -1271,24 +1254,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         agent_loop.register_tool(name, tool);
     }
 
-    // Discover and register MCP tools from configured servers (async).
-    if mcp_enabled && !mcp_servers.is_empty() {
-        info!("[Gateway] MCP enabled with {} server(s), discovering tools...", mcp_servers.len());
-        for server_cfg in &mcp_servers {
-            let server_name = server_cfg.name.clone();
-            match nemesis_agent::loop_tools::register_mcp_tools(server_cfg).await {
-                Ok(mcp_tools) => {
-                    let tool_count = mcp_tools.len();
-                    for (name, tool) in mcp_tools {
-                        agent_loop.register_tool(name, tool);
-                    }
-                    info!("[Gateway] MCP server '{}': discovered {} tools", server_name, tool_count);
-                }
-                Err(e) => {
-                    warn!("[Gateway] MCP server '{}' discovery failed: {}", server_name, e);
-                }
-            }
-        }
+    // Enable MCP dynamic reload via McpManager.
+    // config.json's mcp.enabled is the master switch (gate).
+    // McpManager reads config.mcp.json for the actual server list.
+    let mcp_config_path = common::mcp_config_path(&home);
+    if !mcp_enabled {
+        info!("[Gateway] MCP disabled in config.json (mcp.enabled = false), skipping");
+    } else {
+        agent_loop.enable_mcp_reload(mcp_config_path);
     }
     info!("[Gateway] Agent loop created with shared tools (default + memory + skills + hardware + exec + cron{})",
           if mcp_enabled { " + MCP" } else { "" });
@@ -1879,6 +1852,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         } else {
                             llm_cfg.log_dir.clone()
                         },
+                        save_raw: llm_cfg.save_raw,
                     };
                     let workspace_path = home.join("workspace");
                     let rl_observer = Arc::new(

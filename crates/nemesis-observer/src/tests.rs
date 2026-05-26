@@ -345,6 +345,8 @@ fn test_llm_response_data_construction() {
         tool_calls_count: tool_calls.len(),
         usage: Some(usage.clone()),
         finish_reason: Some("stop".to_string()),
+        raw_request_body: None,
+        raw_response_body: None,
     };
 
     assert_eq!(data.round, 2);
@@ -369,6 +371,8 @@ fn test_llm_response_data_no_usage() {
         tool_calls_count: 0,
         usage: None,
         finish_reason: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
 
     assert!(data.usage.is_none());
@@ -467,6 +471,8 @@ async fn test_event_data_llm_response_variant() {
                 cached_tokens: None,
             }),
             finish_reason: Some("stop".to_string()),
+            raw_request_body: None,
+            raw_response_body: None,
         }),
     };
 

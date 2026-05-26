@@ -41,6 +41,12 @@ pub struct LLMResponse {
     /// Captured via serde flatten so future API fields are never silently dropped.
     #[serde(flatten, default)]
     pub extra: HashMap<String, serde_json::Value>,
+    /// Raw HTTP request body sent to the LLM API (for logging).
+    #[serde(skip)]
+    pub raw_request_body: Option<serde_json::Value>,
+    /// Raw HTTP response body received from the LLM API (for logging).
+    #[serde(skip)]
+    pub raw_response_body: Option<String>,
 }
 
 /// Token usage info.

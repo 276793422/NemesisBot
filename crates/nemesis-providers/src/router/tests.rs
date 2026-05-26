@@ -599,7 +599,7 @@ fn test_router_register_and_use_provider() {
     #[async_trait::async_trait]
     impl LLMProvider for MockProvider {
         async fn chat(&self, _: &[Message], _: &[ToolDefinition], _: &str, _: &ChatOptions) -> Result<LLMResponse, FailoverError> {
-            Ok(LLMResponse { content: "mock".into(), tool_calls: vec![], finish_reason: "stop".into(), usage: None, reasoning_content: None, extra: HashMap::new() })
+            Ok(LLMResponse { content: "mock".into(), tool_calls: vec![], finish_reason: "stop".into(), usage: None, reasoning_content: None, extra: HashMap::new(), raw_request_body: None, raw_response_body: None })
         }
         fn default_model(&self) -> &str { "mock-model" }
         fn name(&self) -> &str { "mock" }

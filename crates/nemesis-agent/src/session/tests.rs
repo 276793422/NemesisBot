@@ -826,6 +826,8 @@ impl LlmProvider for NullLlmProvider {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 }

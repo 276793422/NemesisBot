@@ -373,6 +373,8 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
         usage,
         reasoning_content: None,
         extra: HashMap::new(),
+        raw_request_body: None,
+        raw_response_body: None,
     }
 }
 

@@ -154,7 +154,8 @@
     "llm": {
       "enabled": false,
       "log_dir": "logs/request_logs",
-      "detail_level": "summary"
+      "detail_level": "summary",
+      "save_raw": false
     },
     "general": {
       "enabled": true,
@@ -176,6 +177,6 @@
     "enabled": false
   },
   "mcp": {
-    "enabled": false
+    "enabled": true
   }
 }

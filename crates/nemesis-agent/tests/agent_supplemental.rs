@@ -2470,6 +2470,7 @@ fn test_logging_config_custom() {
         enabled: true,
         detail_level: DetailLevel::Truncated,
         log_dir: "custom/logs".to_string(),
+        save_raw: false,
     };
     assert!(config.enabled);
     assert_eq!(config.detail_level, DetailLevel::Truncated);

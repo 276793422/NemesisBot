@@ -618,6 +618,7 @@ pub struct LlmLogConfig {
     #[serde(default)] pub enabled: bool,
     #[serde(default)] pub log_dir: String,
     #[serde(default = "default_detail_level")] pub detail_level: String,
+    #[serde(default)] pub save_raw: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1398,7 +1399,7 @@ pub fn default_config() -> Config {
         },
         heartbeat: HeartbeatConfig { enabled: true, interval: 30 },
         devices: DevicesConfig { monitor_usb: true, ..Default::default() },
-        logging: Some(LoggingConfig { llm: Some(LlmLogConfig { enabled: false, log_dir: "logs/request_logs".to_string(), detail_level: "full".to_string() }), general: None }),
+        logging: Some(LoggingConfig { llm: Some(LlmLogConfig { enabled: false, log_dir: "logs/request_logs".to_string(), detail_level: "full".to_string(), save_raw: false }), general: None }),
         security: Some(SecurityFlagConfig { enabled: false }),
         forge: Some(ForgeFlagConfig { enabled: false }),
         memory: None,

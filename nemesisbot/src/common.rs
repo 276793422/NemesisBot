@@ -6,6 +6,66 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+/// Ensure the directory containing the current executable is in PATH.
+///
+/// When users launch nemesisbot from a different working directory,
+/// the shell tools invoked by the LLM cannot find `nemesisbot.exe`.
+/// This function adds the exe's parent to the process PATH if missing.
+///
+/// Returns `true` if PATH was modified, `false` if already present.
+pub fn ensure_exe_in_path() -> bool {
+    let exe_dir = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        Some(d) => d,
+        None => return false,
+    };
+
+    let canonical_exe_dir = match std::fs::canonicalize(&exe_dir) {
+        Ok(c) => c,
+        Err(_) => exe_dir,
+    };
+
+    let path_var = match std::env::var("PATH") {
+        Ok(v) => v,
+        Err(_) => {
+            // No PATH at all — just set it
+            // SAFETY: This runs during gateway startup, single-threaded init phase.
+            // No other threads are reading or writing the PATH environment variable.
+            unsafe { std::env::set_var("PATH", &canonical_exe_dir) };
+            return true;
+        }
+    };
+
+    let separator = if cfg!(windows) { ';' } else { ':' };
+
+    for entry in path_var.split(separator) {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let canonical_entry = std::fs::canonicalize(trimmed);
+        if canonical_entry.as_ref().ok() == Some(&canonical_exe_dir) {
+            return false;
+        }
+        // Fallback: direct comparison (canonicalize may fail for missing dirs)
+        if Path::new(trimmed) == canonical_exe_dir {
+            return false;
+        }
+    }
+
+    let new_path = if path_var.is_empty() {
+        canonical_exe_dir.to_string_lossy().to_string()
+    } else {
+        format!("{}{}{}", path_var, separator, canonical_exe_dir.display())
+    };
+    // SAFETY: This runs during gateway startup, single-threaded init phase.
+    // No other threads are reading or writing the PATH environment variable.
+    unsafe { std::env::set_var("PATH", &new_path) };
+    true
+}
+
 /// Resolve the NemesisBot home directory.
 ///
 /// Priority:

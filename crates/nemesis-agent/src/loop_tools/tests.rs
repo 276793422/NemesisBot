@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use super::*;
 use tempfile::TempDir;
 

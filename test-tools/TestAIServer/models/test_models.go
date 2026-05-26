@@ -416,3 +416,87 @@ func (m *TestAI50) Process(messages []Message) string {
 func (m *TestAI50) Delay() time.Duration {
 	return 0
 }
+
+// TestAI70 - MCP 工具调用测试模型
+// 功能：
+// 1. 第一轮：检测 <MCP_CALL>{JSON}</MCP_CALL} 标签，返回 MCP 工具调用
+// 2. 如果没有标签，默认调用 mcp_test_echo 工具
+// 3. 第二轮（tool 消息）：返回工具执行结果摘要
+//
+// JSON 格式：
+//
+//	{"tool": "mcp_test_echo", "args": {"text": "hello"}}
+//
+// 如果不指定标签，默认使用 mcp_test_echo 工具
+type TestAI70 struct{}
+
+func NewTestAI70() *TestAI70 {
+	return &TestAI70{}
+}
+
+func (m *TestAI70) Name() string {
+	return "testai-7.0"
+}
+
+func (m *TestAI70) Process(messages []Message) string {
+	// 第二轮：最后一条消息是 tool 消息，返回结果摘要
+	if len(messages) > 0 {
+		lastMsg := messages[len(messages)-1]
+		if lastMsg.Role == "tool" {
+			return fmt.Sprintf("MCP工具执行成功，结果: %s", lastMsg.Content)
+		}
+	}
+
+	// 第一轮：检测 MCP_CALL 标签或使用默认工具
+	toolName := "mcp_test_echo"
+	toolArgs := map[string]interface{}{"text": "hello from MCP test"}
+
+	// 查找用户消息中的 <MCP_CALL> 标签
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		start := strings.Index(msg.Content, "<MCP_CALL>")
+		end := strings.Index(msg.Content, "</MCP_CALL>")
+		if start >= 0 && end > start {
+			jsonStr := msg.Content[start+len("<MCP_CALL>") : end]
+			var call struct {
+				Tool string                 `json:"tool"`
+				Args map[string]interface{} `json:"args"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &call); err == nil {
+				if call.Tool != "" {
+					toolName = call.Tool
+				}
+				if len(call.Args) > 0 {
+					toolArgs = call.Args
+				}
+			}
+			break
+		}
+	}
+
+	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
+	argsJSON, _ := json.Marshal(toolArgs)
+
+	response := ProcessedResponse{
+		Content: "",
+		ToolCalls: []ToolCall{
+			{
+				ID:   toolCallID,
+				Type: "function",
+				Function: &FunctionCall{
+					Name:      toolName,
+					Arguments: string(argsJSON),
+				},
+			},
+		},
+	}
+
+	responseJSON, _ := json.Marshal(response)
+	return string(responseJSON)
+}
+
+func (m *TestAI70) Delay() time.Duration {
+	return 0
+}

@@ -3,13 +3,14 @@ use crate::client::ClientResult;
 
 #[test]
 fn sanitize_name_basic() {
-    assert_eq!(sanitize_name("hello-world"), "hello-world");
+    assert_eq!(sanitize_name("hello-world"), "hello_world");
     assert_eq!(sanitize_name("hello_world"), "hello_world");
     assert_eq!(sanitize_name("hello world"), "hello_world");
     assert_eq!(sanitize_name("hello.world"), "hello_world");
     assert_eq!(sanitize_name("hello@world!"), "hello_world_");
     assert_eq!(sanitize_name("abc123"), "abc123");
     assert_eq!(sanitize_name(""), "");
+    assert_eq!(sanitize_name("Hello-World"), "hello_world");
 }
 
 #[test]
@@ -131,18 +132,16 @@ fn sanitize_name_long_string() {
 #[test]
 fn sanitize_name_mixed_chars() {
     let result = sanitize_name("My Tool Name!@#$%");
-    assert!(!result.contains('!'));
-    assert!(!result.contains('@'));
-    assert!(!result.contains('#'));
-    assert!(!result.contains('$'));
-    assert!(!result.contains('%'));
+    assert!(result.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+    assert_eq!(result, "my_tool_name_____");
 }
 
 // ---- New tests ----
 
 #[test]
-fn sanitize_name_preserves_hyphens() {
-    assert_eq!(sanitize_name("hello-world-test"), "hello-world-test");
+fn sanitize_name_lowercases_and_replaces() {
+    assert_eq!(sanitize_name("hello-world-test"), "hello_world_test");
+    assert_eq!(sanitize_name("Hello-World"), "hello_world");
 }
 
 #[test]
@@ -360,7 +359,7 @@ fn test_mcp_adapter_name_sanitization() {
     let adapter = McpAdapter::new(Box::new(mock), mcp_tool);
 
     let def = adapter.definition();
-    // Spaces and special chars should be replaced with underscores
+    // sanitize_name lowercases and replaces special chars with underscores
     assert!(def.name.contains("my_server_"));
     assert!(def.name.contains("my_tool_1"));
 }

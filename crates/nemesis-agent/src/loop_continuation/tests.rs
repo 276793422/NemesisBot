@@ -425,20 +425,18 @@ fn test_tool_lookup_trait() {
         }
     }
 
-    struct TestLookup {
-        tool: MockLookupTool,
-    }
+    struct TestLookup;
     impl ToolLookup for TestLookup {
-        fn get_tool(&self, name: &str) -> Option<&dyn Tool> {
+        fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
             if name == "known_tool" {
-                Some(&self.tool)
+                Some(Arc::new(MockLookupTool))
             } else {
                 None
             }
         }
     }
 
-    let lookup = TestLookup { tool: MockLookupTool };
+    let lookup = TestLookup;
     assert!(lookup.get_tool("known_tool").is_some());
     assert!(lookup.get_tool("unknown_tool").is_none());
 }
@@ -591,25 +589,6 @@ fn test_continuation_store_recover_corrupted_messages() {
 }
 
 #[test]
-fn test_tool_lookup_hashmap_box() {
-    use async_trait::async_trait;
-
-    struct TestTool;
-    #[async_trait]
-    impl Tool for TestTool {
-        async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
-            Ok("test".to_string())
-        }
-    }
-
-    let mut map: HashMap<String, Box<dyn Tool>> = HashMap::new();
-    map.insert("tool1".to_string(), Box::new(TestTool));
-
-    assert!(map.get_tool("tool1").is_some());
-    assert!(map.get_tool("unknown").is_none());
-}
-
-#[test]
 fn test_tool_lookup_hashmap_arc() {
     use async_trait::async_trait;
 
@@ -674,6 +653,8 @@ async fn test_handle_cluster_continuation_simple_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     handle_cluster_continuation(
@@ -714,6 +695,8 @@ async fn test_handle_cluster_continuation_failed_task() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     handle_cluster_continuation(
@@ -757,6 +740,8 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Tool executed".to_string(),
@@ -764,6 +749,8 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -849,6 +836,8 @@ async fn test_handle_cluster_continuation_unknown_tool() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Handled unknown tool".to_string(),
@@ -856,6 +845,8 @@ async fn test_handle_cluster_continuation_unknown_tool() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -994,6 +985,8 @@ impl crate::r#loop::LlmProvider for MockContinuationProvider {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         } else {
             Ok(responses.remove(0))
@@ -1125,6 +1118,8 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     // task_failed = true but error is None

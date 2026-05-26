@@ -10,3 +10,4 @@ pub mod stdio_transport;
 pub mod client;
 pub mod server;
 pub mod adapter;
+pub mod manager;

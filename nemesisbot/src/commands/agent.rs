@@ -159,6 +159,8 @@ impl LlmProvider for ProviderAdapter {
                         total_tokens: u.total_tokens,
                         cached_tokens: u.cached_tokens,
                     }),
+                    raw_request_body: resp.raw_request_body,
+                    raw_response_body: resp.raw_response_body,
                 })
             }
             Err(e) => {

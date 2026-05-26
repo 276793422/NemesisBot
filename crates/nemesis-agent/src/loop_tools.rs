@@ -8,6 +8,8 @@
 //! Also provides additional tools:
 //! - Web search (Brave, DuckDuckGo, Perplexity)
 //! - Web fetch
+
+#![allow(deprecated)] // Legacy MCP types (McpServerConfig, McpTool, etc.) — kept for backward compat
 //! - Cluster RPC
 //! - Spawn (sub-agent management)
 //! - Memory tools
@@ -2407,10 +2409,11 @@ impl Tool for SPITool {
 }
 
 // ===========================================================================
-// MCP tool registration helper
+// MCP tool registration helper (legacy — prefer McpManager + mcp_bridge)
 // ===========================================================================
 
 /// Configuration for an MCP server.
+#[deprecated(note = "Use nemesis_mcp::manager::McpManager instead")]
 #[derive(Debug, Clone)]
 pub struct McpServerConfig {
     /// Name of the MCP server.
@@ -2429,6 +2432,7 @@ pub struct McpServerConfig {
 ///
 /// This tool uses a closure-based approach to communicate with the MCP server,
 /// allowing the agent layer to remain decoupled from the MCP transport layer.
+#[deprecated(note = "Use crate::mcp_bridge::McpToolBridge instead")]
 pub struct McpTool {
     /// Tool name as exposed by the MCP server.
     pub name: String,
@@ -2501,6 +2505,7 @@ impl Tool for McpTool {
 }
 
 /// Result of discovering MCP tools from a server.
+#[deprecated(note = "Use nemesis_mcp::manager::McpManager instead")]
 pub struct McpDiscoveryResult {
     /// The tools discovered from the MCP server.
     pub tools: Vec<McpTool>,
@@ -2522,6 +2527,7 @@ pub struct McpDiscoveryResult {
 ///
 /// # Returns
 /// A discovery result with the tools and server name.
+#[deprecated(note = "Use nemesis_mcp::manager::McpManager::discover_tools instead")]
 pub async fn discover_mcp_tools<F, Fut>(
     server_name: &str,
     discover_fn: F,
@@ -2579,6 +2585,7 @@ where
 /// Returns a list of discovered tools, or an error if connection fails.
 /// Individual server failures are logged but do not prevent other servers from
 /// being processed (each server is processed in isolation).
+#[deprecated(note = "Use AgentLoop::enable_mcp_reload instead")]
 pub async fn register_mcp_tools(
     server_config: &McpServerConfig,
 ) -> Result<Vec<(String, Box<dyn Tool>)>, String> {

@@ -169,6 +169,8 @@ impl nemesis_agent::r#loop::LlmProvider for MockLlmProvider {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }
 }

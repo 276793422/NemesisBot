@@ -70,6 +70,11 @@ pub enum LlmAction {
         #[arg(long)]
         log_dir: Option<String>,
     },
+    /// Set LLM log type: raw (original JSON) or default (Markdown summaries)
+    Type {
+        /// Log type: raw or default
+        log_type: String,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -358,6 +363,43 @@ fn cmd_llm_config(cfg_path: &std::path::Path, workspace: &std::path::Path, detai
 // General logging sub-commands
 // ---------------------------------------------------------------------------
 
+fn cmd_llm_type(cfg_path: &std::path::Path, log_type: &str) -> Result<()> {
+    match log_type {
+        "raw" => {
+            let mut logging = read_logging_config(cfg_path)?;
+            if logging.get("llm").is_none() {
+                logging["llm"] = serde_json::json!({
+                    "enabled": false,
+                    "detail_level": "full",
+                    "log_dir": "logs/request_logs",
+                    "save_raw": true
+                });
+            }
+            if let Some(llm) = logging.get_mut("llm").and_then(|v| v.as_object_mut()) {
+                llm.insert("save_raw".to_string(), serde_json::Value::Bool(true));
+            }
+            write_logging_config(cfg_path, &logging)?;
+            println!("LLM log type: raw (original JSON)");
+        }
+        "default" => {
+            let mut logging = read_logging_config(cfg_path)?;
+            if let Some(llm) = logging.get_mut("llm").and_then(|v| v.as_object_mut()) {
+                llm.insert("save_raw".to_string(), serde_json::Value::Bool(false));
+            }
+            write_logging_config(cfg_path, &logging)?;
+            println!("LLM log type: default (Markdown summaries)");
+        }
+        other => {
+            anyhow::bail!("Unknown log type: {}. Valid: raw, default", other);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// General logging sub-commands (continued)
+// ---------------------------------------------------------------------------
+
 fn cmd_general_enable(cfg_path: &std::path::Path) -> Result<()> {
     let mut logging = read_logging_config(cfg_path)?;
     if let Some(general) = logging.get_mut("general").and_then(|v| v.as_object_mut()) {
@@ -473,6 +515,9 @@ pub fn run(action: LogAction, local: bool) -> Result<()> {
                 LlmAction::Status => cmd_llm_status(&cfg_path, &workspace)?,
                 LlmAction::Config { detail_level, log_dir } => {
                     cmd_llm_config(&cfg_path, &workspace, detail_level.as_deref(), log_dir.as_deref())?
+                }
+                LlmAction::Type { log_type } => {
+                    cmd_llm_type(&cfg_path, &log_type)?
                 }
             }
         }

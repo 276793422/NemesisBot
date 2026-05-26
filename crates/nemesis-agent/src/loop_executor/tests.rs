@@ -26,6 +26,8 @@ impl LlmProvider for MockProvider {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         } else {
             Ok(responses.remove(0))
@@ -109,6 +111,8 @@ async fn test_simple_text_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
     let (inbound_tx, inbound_rx) = mpsc::channel(16);
     let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
@@ -146,6 +150,8 @@ async fn test_tool_call_and_final_response() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         // Second call: final text.
         LlmResponse {
@@ -154,6 +160,8 @@ async fn test_tool_call_and_final_response() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
 
@@ -189,6 +197,8 @@ async fn test_rpc_correlation_id_formatting() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
 
     let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -220,6 +230,8 @@ async fn test_unknown_tool_returns_error_in_result() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Tool not found.".to_string(),
@@ -227,6 +239,8 @@ async fn test_unknown_tool_returns_error_in_result() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
 
@@ -258,6 +272,8 @@ async fn test_max_turns_limit() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
         .collect();
 
@@ -307,6 +323,8 @@ async fn test_session_busy_reject_mode() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         // Second response: final.
         LlmResponse {
@@ -315,6 +333,8 @@ async fn test_session_busy_reject_mode() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
 
@@ -353,6 +373,8 @@ async fn test_observer_events_emitted() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
 
     let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -388,6 +410,8 @@ async fn test_process_and_publish() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
 
     let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -462,6 +486,8 @@ fn test_fallback_executor_single_candidate_success() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }));
 
@@ -565,6 +591,8 @@ fn test_fallback_executor_no_candidates() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }));
 
@@ -603,6 +631,8 @@ fn test_fallback_executor_first_fails_second_succeeds() {
                     finished: true,
                     reasoning_content: None,
                     usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
                 })
             }
         }
@@ -631,6 +661,8 @@ fn test_fallback_executor_default() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }));
 
@@ -786,6 +818,8 @@ fn test_observer_event_llm_response() {
         tool_calls_count: 0,
         finish_reason: Some("stop".to_string()),
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let conv_event = event.to_conversation_event();
     assert_eq!(conv_event.event_type, nemesis_observer::EventType::LlmResponse);
@@ -814,6 +848,8 @@ async fn test_process_message_empty_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
 
     let (_inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -877,6 +913,8 @@ fn test_fallback_result_debug() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         attempts: 1,
     };
@@ -955,6 +993,8 @@ async fn test_process_and_publish_with_tool_call() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Tool done.".to_string(),
@@ -962,6 +1002,8 @@ async fn test_process_and_publish_with_tool_call() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
 
@@ -991,6 +1033,8 @@ async fn test_executor_runs_with_channel_close() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]));
 
     let (inbound_tx, inbound_rx) = mpsc::channel(16);
@@ -1028,6 +1072,8 @@ async fn test_executor_context_window_error_retry() {
                     finished: true,
                     reasoning_content: None,
                     usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
                 })
             }
         }
@@ -1077,6 +1123,8 @@ async fn test_run_agent_loop_simple() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
     let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -1104,6 +1152,8 @@ async fn test_run_agent_loop_with_tool_call() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         crate::r#loop::LlmResponse {
             content: "The answer is 2".to_string(),
@@ -1111,6 +1161,8 @@ async fn test_run_agent_loop_with_tool_call() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
     let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -1139,6 +1191,8 @@ async fn test_run_agent_loop_max_iterations() {
         finished: false,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let responses: Vec<_> = (0..15).map(|_| infinite_response.clone()).collect();
     let provider = Arc::new(MockProvider::new(responses));
@@ -1276,6 +1330,8 @@ fn test_fallback_result_fields() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         provider: "provider1".to_string(),
         model: "model1".to_string(),
@@ -1298,6 +1354,8 @@ async fn test_call_llm_with_fallback_no_candidates() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
     let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -1358,6 +1416,8 @@ fn test_session_persistence_with_storage_creation() {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         }
     }
@@ -1451,6 +1511,8 @@ fn test_observer_event_all_variants_debug() {
         tool_calls_count: 0,
         finish_reason: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     assert!(format!("{:?}", resp).contains("t4"));
 
@@ -1494,6 +1556,8 @@ fn test_fallback_executor_cooldown_skips() {
                     finished: true,
                     reasoning_content: None,
                     usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
                 })
             }
         }
@@ -1533,6 +1597,8 @@ fn test_session_persistence_with_storage_save() {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         }
     }
@@ -1563,6 +1629,8 @@ async fn test_call_llm_with_fallback_with_candidates() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]));
     let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
@@ -1623,6 +1691,8 @@ fn test_observer_event_to_conversation_event_all() {
         tool_calls_count: 0,
         finish_reason: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let ce = event.to_conversation_event();
     assert_eq!(ce.event_type, nemesis_observer::EventType::LlmResponse);
@@ -1700,6 +1770,8 @@ fn test_fallback_executor_clears_cooldown_on_success() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }));
     assert!(result.is_ok());
@@ -1712,6 +1784,8 @@ fn test_fallback_executor_clears_cooldown_on_success() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         })
     }));
     assert!(result2.is_ok());

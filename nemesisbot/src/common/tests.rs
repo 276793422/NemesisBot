@@ -622,3 +622,36 @@ fn test_log_flag_constants() {
     assert_eq!(LOG_QUIET, 2);
     assert_eq!(LOG_NO_CONSOLE, 4);
 }
+
+// --- ensure_exe_in_path tests ---
+
+#[test]
+fn test_ensure_exe_in_path() {
+    let exe_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let canonical = std::fs::canonicalize(&exe_dir).unwrap();
+    let original = std::env::var("PATH").unwrap_or_default();
+    let separator = if cfg!(windows) { ';' } else { ':' };
+
+    // Case 1: PATH does not contain exe dir → should add
+    // SAFETY: test-only, single-threaded, restored at end
+    unsafe { std::env::set_var("PATH", "/usr/nonexistent") };
+    assert!(ensure_exe_in_path(), "should add when exe dir missing");
+    let after_add = std::env::var("PATH").unwrap();
+    assert!(after_add.contains(&canonical.to_string_lossy().to_string()));
+
+    // Case 2: PATH already contains exe dir → should NOT add
+    assert!(!ensure_exe_in_path(), "should not add duplicate");
+
+    // Case 3: Empty PATH → should set to exe dir
+    unsafe { std::env::set_var("PATH", "") };
+    assert!(ensure_exe_in_path(), "should add when PATH is empty");
+    let after_empty = std::env::var("PATH").unwrap();
+    assert_eq!(after_empty, canonical.to_string_lossy().to_string());
+
+    // Restore
+    unsafe { std::env::set_var("PATH", &original) };
+}

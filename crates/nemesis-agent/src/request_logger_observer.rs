@@ -99,9 +99,11 @@ pub struct LLMResponseEventData {
     pub completion_tokens: i64,
     pub total_tokens: i64,
     pub cached_tokens: Option<i64>,
+    /// Raw HTTP request body (for raw logging mode).
+    pub raw_request_body: Option<serde_json::Value>,
+    /// Raw HTTP response body (for raw logging mode).
+    pub raw_response_body: Option<String>,
 }
-
-/// Data for tool_call events.
 #[derive(Debug, Clone)]
 pub struct ToolCallEventData {
     pub tool_name: String,
@@ -119,6 +121,8 @@ pub struct ToolCallEventData {
 struct ConversationState {
     logger: RequestLogger,
     start_time: chrono::DateTime<Utc>,
+    /// Timestamp captured at LlmRequest event (for raw logging mode).
+    last_request_time: Option<chrono::DateTime<Utc>>,
 }
 
 /// Observer adapter that creates a new RequestLogger per conversation
@@ -203,63 +207,90 @@ impl RequestLoggerObserver {
             ConversationState {
                 logger,
                 start_time: timestamp,
+                last_request_time: None,
             },
         );
     }
 
     fn handle_llm_request(&self, trace_id: &str, data: &LLMRequestEventData) {
-        let active = self.active.lock().unwrap();
-        if let Some(state) = active.get(trace_id) {
-            // Convert serde_json::Value messages to LlmMessage structs.
-            let messages: Vec<crate::r#loop::LlmMessage> = data.messages.iter()
-                .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                .collect();
+        let mut active = self.active.lock().unwrap();
+        if let Some(state) = active.get_mut(trace_id) {
+            if self.config.save_raw {
+                // Raw mode: write request file immediately so it's captured
+                // even if the LLM call fails. Record timestamp for response file.
+                state.last_request_time = Some(chrono::Utc::now());
+                let envelope = serde_json::json!({
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "round": data.round,
+                    "body": {
+                        "model": data.model,
+                        "messages": data.messages,
+                        "tools": data.tools,
+                        "messages_count": data.messages_count,
+                        "tools_count": data.tools_count,
+                    }
+                });
+                state.logger.log_raw_request_envelope(&envelope);
+            } else {
+                // Convert serde_json::Value messages to LlmMessage structs.
+                let messages: Vec<crate::r#loop::LlmMessage> = data.messages.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
 
-            state.logger.log_llm_request(&LLMRequestInfo {
-                round: data.round,
-                timestamp: Utc::now(),
-                model: data.model.clone(),
-                provider_name: data.provider_name.clone(),
-                api_key: data.api_key.clone(),
-                api_base: data.api_base.clone(),
-                messages_count: data.messages_count,
-                tools_count: data.tools_count,
-                messages,
-                http_headers: Vec::new(),
-                config: std::collections::HashMap::new(),
-                fallback_attempts: Vec::new(),
-            });
+                state.logger.log_llm_request(&LLMRequestInfo {
+                    round: data.round,
+                    timestamp: Utc::now(),
+                    model: data.model.clone(),
+                    provider_name: data.provider_name.clone(),
+                    api_key: data.api_key.clone(),
+                    api_base: data.api_base.clone(),
+                    messages_count: data.messages_count,
+                    tools_count: data.tools_count,
+                    messages,
+                    http_headers: Vec::new(),
+                    config: std::collections::HashMap::new(),
+                    fallback_attempts: Vec::new(),
+                });
+            }
         }
     }
 
     fn handle_llm_response(&self, trace_id: &str, data: &LLMResponseEventData) {
-        let active = self.active.lock().unwrap();
-        if let Some(state) = active.get(trace_id) {
-            // Convert serde_json::Value tool calls to ToolCallDetail structs.
-            let tool_calls: Vec<crate::request_logger::ToolCallDetail> = data.tool_calls.iter()
-                .filter_map(|v| {
-                    let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let name = v.get("name").or_else(|| v.get("function").and_then(|f| f.get("name"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let arguments = v.get("arguments").or_else(|| v.get("function").and_then(|f| f.get("arguments"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    if name.is_empty() { None } else { Some(crate::request_logger::ToolCallDetail { id, name, arguments }) }
-                })
-                .collect();
+        let mut active = self.active.lock().unwrap();
+        if let Some(state) = active.get_mut(trace_id) {
+            if self.config.save_raw {
+                // Raw mode: write response file only (request already written in handle_llm_request)
+                let response_time = chrono::Utc::now();
+                if let Some(ref resp_body) = data.raw_response_body {
+                    state.logger.log_raw_response(resp_body, response_time, data.round, data.duration_ms);
+                }
+            } else {
+                // Markdown mode: existing logic
+                let tool_calls: Vec<crate::request_logger::ToolCallDetail> = data.tool_calls.iter()
+                    .filter_map(|v| {
+                        let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let name = v.get("name").or_else(|| v.get("function").and_then(|f| f.get("name"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let arguments = v.get("arguments").or_else(|| v.get("function").and_then(|f| f.get("arguments"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if name.is_empty() { None } else { Some(crate::request_logger::ToolCallDetail { id, name, arguments }) }
+                    })
+                    .collect();
 
-            state.logger.log_llm_response(&LLMResponseInfo {
-                round: data.round,
-                timestamp: Utc::now(),
-                duration_ms: data.duration_ms,
-                content: data.content.clone(),
-                tool_calls_count: data.tool_calls_count,
-                finish_reason: data.finish_reason.clone(),
-                tool_calls,
-                usage: crate::request_logger::UsageInfo {
-                    prompt_tokens: data.prompt_tokens as u32,
-                    completion_tokens: data.completion_tokens as u32,
-                    total_tokens: data.total_tokens as u32,
-                    cached_tokens: data.cached_tokens.unwrap_or(0) as u32,
-                },
-            });
+                state.logger.log_llm_response(&LLMResponseInfo {
+                    round: data.round,
+                    timestamp: Utc::now(),
+                    duration_ms: data.duration_ms,
+                    content: data.content.clone(),
+                    tool_calls_count: data.tool_calls_count,
+                    finish_reason: data.finish_reason.clone(),
+                    tool_calls,
+                    usage: crate::request_logger::UsageInfo {
+                        prompt_tokens: data.prompt_tokens as u32,
+                        completion_tokens: data.completion_tokens as u32,
+                        total_tokens: data.total_tokens as u32,
+                        cached_tokens: data.cached_tokens.unwrap_or(0) as u32,
+                    },
+                });
+            }
         }
     }
 
@@ -406,6 +437,8 @@ fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<Conversati
                 completion_tokens: d.usage.as_ref().map(|u| u.completion_tokens).unwrap_or(0),
                 total_tokens: d.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
                 cached_tokens: d.usage.as_ref().and_then(|u| u.cached_tokens),
+                raw_request_body: d.raw_request_body.clone(),
+                raw_response_body: d.raw_response_body.clone(),
             }),
         }),
         nemesis_observer::EventData::ToolCall(d) => Some(ConversationEvent {

@@ -115,6 +115,8 @@ mod types_extra {
             usage: None,
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
         };
         assert_eq!(resp.finish_reason, "stop");
     }
@@ -137,6 +139,8 @@ mod types_extra {
             usage: None,
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
         };
         assert_eq!(resp.finish_reason, "tool_calls");
         assert_eq!(resp.tool_calls.len(), 1);
@@ -250,6 +254,8 @@ mod types_extra {
             usage: None,
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(!json.contains("tool_calls"));
@@ -269,6 +275,8 @@ mod types_extra {
             }),
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("usage"));
@@ -1626,6 +1634,8 @@ mod fallback_provider_extra {
                 usage: None,
                 reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
             })
         }
 
@@ -1731,6 +1741,8 @@ mod fallback_provider_extra {
                 usage: None,
                 reasoning_content: None,
     extra: std::collections::HashMap::new(),
+    raw_request_body: None,
+    raw_response_body: None,
             }),
             attempts: vec![FallbackAttempt {
                 provider: "p1".to_string(),

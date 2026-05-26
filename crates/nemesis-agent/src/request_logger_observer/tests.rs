@@ -6,6 +6,7 @@ fn test_config() -> LoggingConfig {
         enabled: true,
         detail_level: crate::request_logger::DetailLevel::Full,
         log_dir: "logs/llm".to_string(),
+        save_raw: false,
     }
 }
 
@@ -64,6 +65,8 @@ fn make_llm_response_event(trace: &str, round: usize) -> ConversationEvent {
             completion_tokens: 0,
             total_tokens: 0,
             cached_tokens: None,
+            raw_request_body: None,
+            raw_response_body: None,
         }),
     }
 }
@@ -158,6 +161,7 @@ fn disabled_config_does_not_create_session() {
         enabled: false,
         detail_level: crate::request_logger::DetailLevel::Full,
         log_dir: "logs/llm".to_string(),
+        save_raw: false,
     };
     let tmp = TempDir::new().unwrap();
     let observer = RequestLoggerObserver::new(config, tmp.path());
@@ -224,6 +228,8 @@ fn full_lifecycle_with_tool_calls_and_response() {
             completion_tokens: 0,
             total_tokens: 0,
             cached_tokens: None,
+            raw_request_body: None,
+            raw_response_body: None,
         }),
     });
 
@@ -328,6 +334,8 @@ fn llm_response_with_tool_call_details() {
             completion_tokens: 0,
             total_tokens: 0,
             cached_tokens: None,
+            raw_request_body: None,
+            raw_response_body: None,
         }),
     });
 

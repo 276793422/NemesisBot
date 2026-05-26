@@ -141,6 +141,10 @@ pub enum ObserverEvent {
         finish_reason: Option<String>,
         /// Token usage from the provider response.
         usage: Option<ObserverUsageInfo>,
+        /// Raw HTTP request body (for raw logging mode).
+        raw_request_body: Option<serde_json::Value>,
+        /// Raw HTTP response body (for raw logging mode).
+        raw_response_body: Option<String>,
     },
     /// Tool call executed.
     ToolCall {
@@ -239,6 +243,8 @@ impl ObserverEvent {
                 tool_calls_count,
                 finish_reason,
                 usage,
+                raw_request_body,
+                raw_response_body,
             } => ConversationEvent {
                 event_type: EventType::LlmResponse,
                 trace_id: trace_id.clone(),
@@ -256,6 +262,8 @@ impl ObserverEvent {
                         cached_tokens: u.cached_tokens,
                     }),
                     finish_reason: finish_reason.clone(),
+                    raw_request_body: raw_request_body.clone(),
+                    raw_response_body: raw_response_body.clone(),
                 }),
             },
             ObserverEvent::ToolCall {
@@ -371,6 +379,8 @@ impl ObserverEvent {
                 tool_calls_count,
                 finish_reason,
                 usage,
+                raw_request_body: _,
+                raw_response_body: _,
             } => (
                 "llm_response",
                 serde_json::json!({
@@ -1227,7 +1237,7 @@ impl AgentLoopExecutor {
             instance.set_state(AgentState::Thinking);
             let round_start = std::time::Instant::now();
 
-            let response = self
+            let mut response = self
                 .call_llm_with_retry(instance, messages, max_retries, context, trace_id, iteration, Some(crate::types::ChatOptions::default()), tool_defs)
                 .await;
 
@@ -1248,6 +1258,8 @@ impl AgentLoopExecutor {
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
                 usage: response.usage.clone(),
+                raw_request_body: response.raw_request_body.take(),
+                raw_response_body: response.raw_response_body.take(),
             });
 
             // Check if no tool calls - we're done.
@@ -1482,6 +1494,8 @@ impl AgentLoopExecutor {
                             finished: true,
                             reasoning_content: None,
                             usage: None,
+                            raw_request_body: None,
+                            raw_response_body: None,
                         };
                     }
 

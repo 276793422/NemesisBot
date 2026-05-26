@@ -109,11 +109,7 @@ impl McpAdapter {
             None => format!("[MCP:{server_name}] MCP tool: {tool_name}"),
         };
 
-        let parameters = serde_json::json!({
-            "type": "object",
-            "properties": mcp_tool.input_schema,
-            "additionalProperties": false,
-        });
+        let parameters = sanitize_schema(mcp_tool.input_schema.clone());
 
         let tool_def = ToolDefinition {
             name: prefixed_name,
@@ -260,11 +256,7 @@ pub async fn create_tools_from_client(
                     None => format!("[MCP:{server_name}] MCP tool: {tool_name}"),
                 };
 
-                let parameters = serde_json::json!({
-                    "type": "object",
-                    "properties": mcp_tool.input_schema,
-                    "additionalProperties": false,
-                });
+                let parameters = sanitize_schema(mcp_tool.input_schema.clone());
 
                 ToolDefinition {
                     name: prefixed_name,
@@ -273,6 +265,53 @@ pub async fn create_tools_from_client(
                 }
             },
             timeout: Duration::from_secs(30),
+        };
+        adapters.push(Box::new(adapter));
+    }
+
+    Ok(adapters)
+}
+
+/// Create tool adapters using an explicit server name (instead of server_info).
+///
+/// Use this when the config name differs from the server's self-reported name.
+pub async fn create_tools_from_client_named(
+    client: Box<dyn Client>,
+    server_name: &str,
+    timeout_secs: u64,
+) -> Result<Vec<Box<dyn Tool>>, ClientError> {
+    let shared = std::sync::Arc::new(tokio::sync::Mutex::new(client));
+    let srv = sanitize_name(server_name);
+
+    let tools = {
+        let mut guard = shared.lock().await;
+        guard.list_tools().await?
+    };
+
+    let mut adapters: Vec<Box<dyn Tool>> = Vec::new();
+
+    for mcp_tool in tools {
+        let tool_name = sanitize_name(&mcp_tool.name);
+        let prefixed_name = format!("mcp_{srv}_{tool_name}");
+
+        let description = match &mcp_tool.description {
+            Some(desc) => format!("[MCP:{server_name}] {desc}"),
+            None => format!("[MCP:{server_name}] MCP tool: {tool_name}"),
+        };
+
+        let parameters = sanitize_schema(mcp_tool.input_schema.clone());
+
+        let tool_def = ToolDefinition {
+            name: prefixed_name,
+            description,
+            parameters,
+        };
+
+        let adapter = ArcClientAdapter {
+            client: shared.clone(),
+            mcp_tool,
+            tool_def,
+            timeout: Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 30 }),
         };
         adapters.push(Box::new(adapter));
     }
@@ -361,18 +400,66 @@ impl Tool for ArcClientAdapter {
 
 /// Sanitize a string for use as a tool identifier component.
 ///
-/// Replaces any character that's not alphanumeric, hyphen, or underscore
-/// with an underscore.
-fn sanitize_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            result.push(ch);
-        } else {
-            result.push('_');
+/// Lowercases the input and replaces any character that's not alphanumeric
+/// or an underscore with an underscore.
+pub fn sanitize_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Sanitize an MCP input_schema for use as a function-calling parameters schema.
+///
+/// Some MCP servers return schemas with constructs that certain LLM providers
+/// reject (e.g. `type: ["string", "null"]` as an array). This function ensures
+/// the schema is compatible by:
+/// - Flattening `type` arrays to the first type
+/// - Recursively cleaning nested property schemas
+/// - Ensuring top-level has `type: "object"` and `additionalProperties: false`
+fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    // Ensure top-level is an object
+    if !schema.is_object() {
+        return serde_json::json!({"type": "object", "properties": {}, "additionalProperties": false});
+    }
+
+    // Ensure type is "object" at top level
+    schema["type"] = serde_json::Value::String("object".to_string());
+
+    // Ensure additionalProperties is set
+    if schema.get("additionalProperties").is_none() {
+        schema["additionalProperties"] = serde_json::json!(false);
+    }
+
+    // Sanitize nested property schemas
+    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        for (_key, prop_schema) in props.iter_mut() {
+            flatten_type(prop_schema);
+            // Recursively sanitize nested object properties
+            if let Some(nested) = prop_schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                for (_nk, ns) in nested.iter_mut() {
+                    flatten_type(ns);
+                }
+            }
         }
     }
-    result
+
+    schema
+}
+
+/// Flatten `type` arrays to the first element (e.g. `["string", "null"]` → `"string"`).
+fn flatten_type(schema: &mut serde_json::Value) {
+    if let Some(types) = schema.get("type").and_then(|t| t.as_array()) {
+        if let Some(first) = types.first() {
+            schema["type"] = first.clone();
+        }
+    }
 }
 
 // ===========================================================================

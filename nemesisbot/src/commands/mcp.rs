@@ -125,6 +125,33 @@ async fn connect_to_server(server: &serde_json::Value) -> Result<nemesis_mcp::cl
 // Command implementations
 // ---------------------------------------------------------------------------
 
+/// Sync the master MCP switch in config.json.
+///
+/// When `mcp add` adds the first server, we flip `mcp.enabled = true` in
+/// config.json so that the gateway sees MCP is enabled on next start.
+fn sync_mcp_master_switch(mcp_cfg_path: &std::path::Path, enabled: bool) -> Result<()> {
+    // Derive config.json path from config.mcp.json path (same parent dir)
+    let config_dir = match mcp_cfg_path.parent() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    let config_json = config_dir.join("config.json");
+    if !config_json.exists() {
+        return Ok(());
+    }
+
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_json)?)?;
+    if cfg.get("mcp").and_then(|m| m.get("enabled")).and_then(|v| v.as_bool()) == Some(enabled) {
+        return Ok(()); // already in desired state
+    }
+
+    cfg["mcp"]["enabled"] = serde_json::Value::Bool(enabled);
+    std::fs::write(&config_json, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    tracing::info!("[MCP] Synced master switch: config.json mcp.enabled = {}", enabled);
+    Ok(())
+}
+
 fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     // Check if MCP is explicitly disabled (even if config file doesn't exist yet)
     if let Ok(data) = std::fs::read_to_string(mcp_cfg_path) {
@@ -221,6 +248,10 @@ fn cmd_add(mcp_cfg_path: &std::path::Path, name: &str, command: &str, args: Opti
     cfg["enabled"] = serde_json::Value::Bool(true);
 
     std::fs::write(mcp_cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+
+    // Sync master switch in config.json: set mcp.enabled = true
+    sync_mcp_master_switch(mcp_cfg_path, true)?;
+
     println!("🔌 MCP server '{}' added.", name);
     println!("Configuration saved to: {}", mcp_cfg_path.display());
     println!();

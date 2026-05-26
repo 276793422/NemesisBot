@@ -37,6 +37,8 @@ pub struct LoggingConfig {
     pub detail_level: DetailLevel,
     /// Log directory (relative to workspace or absolute).
     pub log_dir: String,
+    /// Save raw HTTP request/response JSON instead of markdown summaries.
+    pub save_raw: bool,
 }
 
 impl Default for LoggingConfig {
@@ -45,6 +47,7 @@ impl Default for LoggingConfig {
             enabled: false,
             detail_level: DetailLevel::Full,
             log_dir: "logs/llm".to_string(),
+            save_raw: false,
         }
     }
 }
@@ -495,6 +498,49 @@ impl RequestLogger {
 
         content.push_str(&format!("\n## Finish Reason\n\n{}\n", info.finish_reason));
 
+        let _ = self.write_file(&filename, &content);
+    }
+
+    /// Log raw LLM request in JSON envelope format.
+    pub fn log_raw_request(&self, body: &serde_json::Value, timestamp: chrono::DateTime<chrono::Utc>, round: usize) {
+        if !self.enabled { return; }
+        let index = self.next_index();
+        let filename = format!("{}.AI.Request.raw.json", index);
+        let envelope = serde_json::json!({
+            "timestamp": timestamp.to_rfc3339(),
+            "round": round,
+            "body": body,
+        });
+        let content = serde_json::to_string_pretty(&envelope)
+            .unwrap_or_else(|_| envelope.to_string());
+        let _ = self.write_file(&filename, &content);
+    }
+
+    /// Log raw LLM request using a pre-built envelope (written immediately at request time).
+    pub fn log_raw_request_envelope(&self, envelope: &serde_json::Value) {
+        if !self.enabled { return; }
+        let index = self.next_index();
+        let filename = format!("{}.AI.Request.raw.json", index);
+        let content = serde_json::to_string_pretty(envelope)
+            .unwrap_or_else(|_| envelope.to_string());
+        let _ = self.write_file(&filename, &content);
+    }
+
+    /// Log raw LLM response in JSON envelope format.
+    pub fn log_raw_response(&self, body: &str, timestamp: chrono::DateTime<chrono::Utc>, round: usize, duration_ms: u64) {
+        if !self.enabled { return; }
+        let index = self.next_index();
+        let filename = format!("{}.AI.Response.raw.json", index);
+        let body_value: serde_json::Value = serde_json::from_str(body)
+            .unwrap_or(serde_json::Value::String(body.to_string()));
+        let envelope = serde_json::json!({
+            "timestamp": timestamp.to_rfc3339(),
+            "round": round,
+            "duration_ms": duration_ms,
+            "body": body_value,
+        });
+        let content = serde_json::to_string_pretty(&envelope)
+            .unwrap_or_else(|_| envelope.to_string());
         let _ = self.write_file(&filename, &content);
     }
 

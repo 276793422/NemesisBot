@@ -24,6 +24,8 @@ impl LlmProvider for MockLlmProvider {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         } else {
             Ok(responses.remove(0))
@@ -60,6 +62,8 @@ async fn simple_text_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let instance = AgentInstance::new(test_config());
@@ -93,6 +97,8 @@ async fn tool_call_and_response() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         // Second call: LLM returns final text.
         LlmResponse {
@@ -101,6 +107,8 @@ async fn tool_call_and_response() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -139,6 +147,8 @@ async fn rpc_correlation_id_formatting() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let instance = AgentInstance::new(test_config());
@@ -170,6 +180,8 @@ async fn unknown_tool_returns_error() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "I couldn't find that tool.".to_string(),
@@ -177,6 +189,8 @@ async fn unknown_tool_returns_error() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -212,6 +226,8 @@ async fn max_turns_limit() {
         finished: false,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     // Create enough responses to exceed max_turns=3.
     let responses: Vec<LlmResponse> = (0..10).map(|_| infinite_response.clone()).collect();
@@ -728,6 +744,8 @@ fn test_process_direct() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -748,6 +766,8 @@ fn test_process_heartbeat() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -809,6 +829,8 @@ fn test_llm_response_clone() {
         finished: false,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     };
     let cloned = resp.clone();
     assert_eq!(cloned.content, "Hello");
@@ -900,6 +922,8 @@ async fn test_run_with_context_error_and_retry_success() {
                     finished: true,
                     reasoning_content: None,
                     usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
                 })
             }
         }
@@ -1045,6 +1069,8 @@ async fn test_tool_execution_error() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "I see the error.".to_string(),
@@ -1052,6 +1078,8 @@ async fn test_tool_execution_error() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -1289,6 +1317,8 @@ fn test_process_direct_with_channel() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1328,6 +1358,8 @@ async fn test_multiple_tool_calls_in_single_response() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Both results: 4 and 6.".to_string(),
@@ -1335,6 +1367,8 @@ async fn test_multiple_tool_calls_in_single_response() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -1398,6 +1432,8 @@ async fn test_finished_flag_stops_loop() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -1566,6 +1602,8 @@ async fn test_run_with_empty_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -1710,6 +1748,8 @@ fn test_process_heartbeat_with_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1795,6 +1835,8 @@ async fn test_process_inbound_message_system_internal_channel() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -1854,6 +1896,8 @@ async fn test_process_inbound_message_session_busy() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -1891,6 +1935,8 @@ async fn test_process_inbound_message_route_resolver() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -1911,6 +1957,8 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -1938,6 +1986,8 @@ async fn test_process_inbound_message_no_resolver_fallback() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     // Use AgentLoop::new (standalone) which has no route resolver
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -1960,6 +2010,8 @@ async fn test_run_bus_owned_sends_outbound() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -1987,6 +2039,8 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -2028,6 +2082,8 @@ async fn test_process_system_message_with_result_extraction() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -2054,6 +2110,8 @@ async fn test_process_system_message_without_result_prefix() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
 
@@ -2222,6 +2280,8 @@ async fn test_process_heartbeat_empty_response() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -2241,6 +2301,8 @@ async fn test_process_heartbeat_no_done_event() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
@@ -2380,6 +2442,8 @@ async fn test_maybe_summarize_already_summarizing() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
     let instance = AgentInstance::new(test_config());
@@ -2412,6 +2476,8 @@ async fn test_run_with_tool_call_and_rpc_context() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "The answer is 2.".to_string(),
@@ -2419,6 +2485,8 @@ async fn test_run_with_tool_call_and_rpc_context() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -2486,6 +2554,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: String::new(),
@@ -2497,6 +2567,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Combined result: found and calculated.".to_string(),
@@ -2504,6 +2576,8 @@ async fn test_run_multiple_iterations_with_different_tools() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -2535,6 +2609,8 @@ async fn test_run_with_empty_response_then_final() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -2577,6 +2653,8 @@ async fn test_run_with_tool_error_continues() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "I see the tool failed, let me explain.".to_string(),
@@ -2584,6 +2662,8 @@ async fn test_run_with_tool_error_continues() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -2673,6 +2753,8 @@ async fn test_run_bus_owned_multiple_messages() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Response 2".to_string(),
@@ -2680,6 +2762,8 @@ async fn test_run_bus_owned_multiple_messages() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
     let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
@@ -2709,6 +2793,8 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
 
     let config = nemesis_routing::RouteConfig {
@@ -2861,6 +2947,8 @@ async fn test_process_direct_with_tool_calls() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "The answer is 21".to_string(),
@@ -2868,6 +2956,8 @@ async fn test_process_direct_with_tool_calls() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
 
@@ -3322,6 +3412,8 @@ async fn test_run_with_reasoning_content() {
             total_tokens: 70,
             cached_tokens: None,
         }),
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let instance = AgentInstance::new(test_config());
@@ -3422,6 +3514,8 @@ async fn test_run_with_empty_content_then_response() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "The answer is 2.".to_string(),
@@ -3429,6 +3523,8 @@ async fn test_run_with_empty_content_then_response() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -3488,6 +3584,8 @@ async fn test_process_heartbeat_returns_default_on_empty_response() {
                 finished: true,
                 reasoning_content: None,
                 usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
             })
         }
     }
@@ -3643,6 +3741,8 @@ async fn test_run_with_multiple_tool_iterations() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: String::new(),
@@ -3654,6 +3754,8 @@ async fn test_run_with_multiple_tool_iterations() {
             finished: false,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
         LlmResponse {
             content: "Final response after 2 tool calls".to_string(),
@@ -3661,6 +3763,8 @@ async fn test_run_with_multiple_tool_iterations() {
             finished: true,
             reasoning_content: None,
             usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
         },
     ]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
@@ -3716,6 +3820,8 @@ async fn test_process_direct_with_channel_custom() {
         finished: true,
         reasoning_content: None,
         usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
     }]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let result = agent_loop.process_direct_with_channel(

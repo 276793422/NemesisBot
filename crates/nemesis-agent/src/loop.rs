@@ -60,6 +60,10 @@ pub struct LlmResponse {
     pub reasoning_content: Option<String>,
     /// Token usage from the provider response.
     pub usage: Option<crate::loop_executor::ObserverUsageInfo>,
+    /// Raw HTTP request body (for raw logging mode).
+    pub raw_request_body: Option<serde_json::Value>,
+    /// Raw HTTP response body (for raw logging mode).
+    pub raw_response_body: Option<String>,
 }
 
 /// Trait for LLM providers used by the agent loop.
@@ -295,7 +299,9 @@ pub struct AgentLoop {
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
-    tools: HashMap<String, Arc<dyn Tool>>,
+    /// Wrapped in `RwLock` for interior mutability — MCP hot-reload needs
+    /// to register new tools from `&self` methods (inside the run loop).
+    tools: parking_lot::RwLock<HashMap<String, Arc<dyn Tool>>>,
     /// Agent configuration.
     config: AgentConfig,
 
@@ -345,6 +351,8 @@ pub struct AgentLoop {
     /// Security plugin for pre-execution tool safety checks.
     /// Mirrors Go's SecurityPlugin registered via PluginManager.
     security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    /// MCP Manager for dynamic tool discovery and hot-reload.
+    mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
 }
 
 impl AgentLoop {
@@ -354,7 +362,7 @@ impl AgentLoop {
         info!("[AgentLoop] Created in standalone mode, model={}", model);
         Self {
             provider: Arc::from(provider),
-            tools: HashMap::new(),
+            tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: None,
             registry: None,
@@ -373,6 +381,7 @@ impl AgentLoop {
             cluster: None,
             observer_manager: None,
             security_plugin: None,
+            mcp_manager: None,
         }
     }
 
@@ -413,7 +422,7 @@ impl AgentLoop {
 
         Self {
             provider: Arc::from(provider),
-            tools: HashMap::new(),
+            tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: Some(outbound_tx),
             registry: Some(registry),
@@ -432,6 +441,7 @@ impl AgentLoop {
             cluster: None,
             observer_manager: None,
             security_plugin: None,
+            mcp_manager: None,
         }
     }
 
@@ -442,19 +452,126 @@ impl AgentLoop {
     /// Register a tool with the agent loop (standalone mode).
     pub fn register_tool(&mut self, name: String, tool: Box<dyn Tool>) {
         debug!("[AgentLoop] Registered tool: {}", name);
-        self.tools.insert(name, Arc::from(tool));
+        self.tools.write().insert(name, Arc::from(tool));
     }
 
     /// Register a tool across all agents in the registry (bus mode).
     /// Mirrors Go's `AgentLoop.RegisterTool()`.
     pub fn register_tool_shared(&mut self, name: String, tool: Box<dyn Tool>) {
         debug!("[AgentLoop] Registered shared tool: {}", name);
-        self.tools.insert(name, Arc::from(tool));
+        self.tools.write().insert(name, Arc::from(tool));
     }
 
     /// Return the number of registered tools.
     pub fn tool_count(&self) -> usize {
-        self.tools.len()
+        self.tools.read().len()
+    }
+
+    /// Enable automatic MCP tool reload via mtime-based change detection.
+    ///
+    /// Creates an `McpManager` for the given config path, discovers tools from
+    /// all currently configured servers, and registers them. On each LLM round,
+    /// the manager checks if the config file changed and loads new servers.
+    pub fn enable_mcp_reload(&mut self, config_path: std::path::PathBuf) {
+        let mgr = nemesis_mcp::manager::McpManager::new(config_path);
+        if mgr.is_enabled() {
+            for server in mgr.list_servers().to_vec() {
+                let server_name = server.name.clone();
+                match tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(mgr.discover_tools(&server))
+                }) {
+                    Ok(tools) => {
+                        let count = tools.len();
+                        for tool in tools {
+                            let def = tool.definition();
+                            let name = def.name.clone();
+                            self.register_tool(name, Box::new(crate::mcp_bridge::McpToolBridge::new(tool)));
+                        }
+                        info!("[AgentLoop] MCP: registered {} tools from '{}'", count, server_name);
+                    }
+                    Err(e) => {
+                        warn!("[AgentLoop] MCP: server '{}' discovery failed: {}", server_name, e);
+                    }
+                }
+            }
+            self.mcp_manager = Some(std::sync::Mutex::new(mgr));
+            info!("[AgentLoop] MCP dynamic reload enabled (mtime-based)");
+        } else {
+            // Store manager even when disabled so we can detect future enable via config change
+            self.mcp_manager = Some(std::sync::Mutex::new(mgr));
+            info!("[AgentLoop] MCP config disabled; reload watcher active for future changes");
+        }
+    }
+
+    /// Check MCP config for changes and register tools from new servers.
+    /// Uses interior mutability since the run loop borrows `&self`.
+    fn check_mcp_reload(&self) {
+        let mgr = match self.mcp_manager.as_ref() {
+            Some(m) => m,
+            None => return,
+        };
+
+        let changed = {
+            match mgr.lock() {
+                Ok(mut m) => m.check_config_changed(),
+                Err(_) => return,
+            }
+        };
+
+        if !changed {
+            return;
+        }
+
+        // Collect existing MCP tool prefixes to detect what's new
+        let registered: Vec<String> = self.tools.read().keys()
+            .filter(|k| k.starts_with("mcp_"))
+            .map(|k| {
+                // "mcp_<srv>_<tool>" → "mcp_<srv>_"
+                let chars: Vec<char> = k.chars().collect();
+                let underscores: Vec<usize> = chars.iter().enumerate()
+                    .filter(|&(_, &c)| c == '_')
+                    .map(|(i, _)| i)
+                    .collect();
+                if underscores.len() >= 2 {
+                    k[..underscores[2]].to_string()
+                } else {
+                    k.clone()
+                }
+            })
+            .collect();
+
+        let new_servers: Vec<_> = {
+            match mgr.lock() {
+                Ok(m) => m.find_new_servers(&registered).into_iter().cloned().collect(),
+                Err(_) => return,
+            }
+        };
+
+        for server in new_servers {
+            let server_name = server.name.clone();
+            let tools = match mgr.lock() {
+                Ok(m) => tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(m.discover_tools(&server))
+                }),
+                Err(_) => continue,
+            };
+
+            match tools {
+                Ok(tools) => {
+                    let count = tools.len();
+                    for tool in tools {
+                        let name = tool.definition().name.clone();
+                        // tools is behind Arc, need interior mutability for self.tools
+                        // Use the atomic swap pattern via tools_mut
+                        self.tools.write().insert(name, Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool)) as Box<dyn Tool>));
+                    }
+                    info!("[AgentLoop] MCP reload: registered {} tools from '{}'", count, server_name);
+                }
+                Err(e) => {
+                    warn!("[AgentLoop] MCP reload: server '{}' failed: {}", server_name, e);
+                }
+            }
+        }
     }
 
     /// Set the channel manager reference for listing enabled channels.
@@ -584,7 +701,7 @@ impl AgentLoop {
                         // Mirrors Go's `go al.handleClusterContinuation(ctx, taskID)`.
                         let provider = self.provider.clone();       // Arc clone (cheap)
                         let model = self.config.model.clone();
-                        let tools = self.tools.clone();             // HashMap of Arc clones (cheap)
+                        let tools = self.tools.read().clone();             // HashMap of Arc clones (cheap)
                         let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
                         let continuation_manager = self.continuation_manager.clone(); // Option<Arc> clone
                         let observer_manager = self.observer_manager.clone(); // Option<Arc> clone
@@ -704,7 +821,7 @@ impl AgentLoop {
 
                         let provider = self.provider.clone();
                         let model = self.config.model.clone();
-                        let tools = self.tools.clone();
+                        let tools = self.tools.read().clone();
                         let outbound_tx = self.outbound_tx.clone();
                         let continuation_manager = self.continuation_manager.clone();
                         let observer_manager = self.observer_manager.clone();
@@ -1969,6 +2086,9 @@ impl AgentLoop {
         let mut turns_used = 0u32;
 
         loop {
+            // Auto-reload MCP tools if config file changed.
+            self.check_mcp_reload();
+
             if turns_used >= self.config.max_turns {
                 warn!(
                     "[AgentLoop] Agent loop reached max turns ({})",
@@ -1986,7 +2106,7 @@ impl AgentLoop {
 
             // Build tool definitions from registered tools for LLM function calling.
             // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
-            let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.iter()
+            let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
                 .map(|(name, tool)| {
                     crate::types::ToolDefinition {
                         tool_type: "function".to_string(),
@@ -2023,7 +2143,7 @@ impl AgentLoop {
             // Call LLM.
             instance.set_state(crate::types::AgentState::Thinking);
             let round_start = std::time::Instant::now();
-            let response = match self.provider.chat(&self.config.model, messages, Some(chat_opts.clone()), tool_defs).await {
+            let mut response = match self.provider.chat(&self.config.model, messages, Some(chat_opts.clone()), tool_defs).await {
                 Ok(resp) => resp,
                 Err(err) => {
                     let err_lower = err.to_lowercase();
@@ -2059,7 +2179,7 @@ impl AgentLoop {
                                 compressed_messages.len()
                             );
 
-                            let retry_tool_defs: Vec<crate::types::ToolDefinition> = self.tools.iter()
+                            let retry_tool_defs: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
                                 .map(|(name, tool)| {
                                     crate::types::ToolDefinition {
                                         tool_type: "function".to_string(),
@@ -2088,6 +2208,21 @@ impl AgentLoop {
                             Some(resp) => resp,
                             None => {
                                 warn!("[AgentLoop] All LLM retries exhausted: {}", retry_err);
+                                let error_round = turns_used + 1;
+                                let error_duration = round_start.elapsed();
+                                self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+                                    trace_id: trace_id.to_string(),
+                                    round: error_round,
+                                    duration_ms: error_duration.as_millis() as u64,
+                                    has_tool_calls: false,
+                                    content: format!("Error: {}", retry_err),
+                                    tool_calls: vec![],
+                                    tool_calls_count: 0,
+                                    finish_reason: Some("error".to_string()),
+                                    usage: None,
+                                    raw_request_body: None,
+                                    raw_response_body: None,
+                                });
                                 instance.add_assistant_message(
                                     &format!("Error: {}", retry_err),
                                     Vec::new(),
@@ -2100,6 +2235,21 @@ impl AgentLoop {
                         }
                     } else {
                         warn!("[AgentLoop] LLM call failed: {}", err);
+                        let error_round = turns_used + 1;
+                        let error_duration = round_start.elapsed();
+                        self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+                            trace_id: trace_id.to_string(),
+                            round: error_round,
+                            duration_ms: error_duration.as_millis() as u64,
+                            has_tool_calls: false,
+                            content: format!("Error: {}", err),
+                            tool_calls: vec![],
+                            tool_calls_count: 0,
+                            finish_reason: Some("error".to_string()),
+                            usage: None,
+                            raw_request_body: None,
+                            raw_response_body: None,
+                        });
                         instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
                         let formatted = context.format_rpc_message(&format!("Error: {}", err));
                         events.push(AgentEvent::Error(formatted));
@@ -2125,6 +2275,8 @@ impl AgentLoop {
                 tool_calls_count: tc_count,
                 finish_reason: if response.finished { Some("stop".to_string()) } else { None },
                 usage: response.usage.clone(),
+                raw_request_body: response.raw_request_body.take(),
+                raw_response_body: response.raw_response_body.take(),
             });
 
             if response.tool_calls.is_empty() || response.finished {
@@ -2275,11 +2427,15 @@ impl AgentLoop {
 
         // Inject channel/chat_id into context-aware tools before execution.
         // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
-        if let Some(tool) = self.tools.get(&tool_call.name) {
-            tool.set_context(&context.channel, &context.chat_id);
+        {
+            let guard = self.tools.read();
+            if let Some(tool) = guard.get(&tool_call.name) {
+                tool.set_context(&context.channel, &context.chat_id);
+            }
         }
 
-        match self.tools.get(&tool_call.name) {
+        let tool_opt = self.tools.read().get(&tool_call.name).cloned();
+        match tool_opt {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {
                     debug!("[AgentLoop] Tool {} returned: {} bytes", tool_call.name, result.len());
@@ -2377,8 +2533,9 @@ impl AgentLoop {
                             .map(|r| r.list_agent_ids())
                             .unwrap_or_default();
                         if agent_ids.is_empty() {
+                            let guard = self.tools.read();
                             let tool_names: Vec<&str> =
-                                self.tools.keys().map(|s| s.as_str()).collect();
+                                guard.keys().map(|s| s.as_str()).collect();
                             Some(format!("Registered agents (tools): {}", tool_names.join(", ")))
                         } else {
                             Some(format!("Registered agents: {}", agent_ids.join(", ")))
@@ -2393,8 +2550,9 @@ impl AgentLoop {
                 }
                 match parts[1] {
                     "tools" => {
+                        let guard = self.tools.read();
                         let tool_names: Vec<&str> =
-                            self.tools.keys().map(|s| s.as_str()).collect();
+                            guard.keys().map(|s| s.as_str()).collect();
                         Some(format!("Available tools: {}", tool_names.join(", ")))
                     }
                     "model" | "models" => Some(format!(
@@ -2416,8 +2574,9 @@ impl AgentLoop {
                             .map(|r| r.list_agent_ids())
                             .unwrap_or_default();
                         if agent_ids.is_empty() {
+                            let guard = self.tools.read();
                             let tool_names: Vec<&str> =
-                                self.tools.keys().map(|s| s.as_str()).collect();
+                                guard.keys().map(|s| s.as_str()).collect();
                             Some(format!("Registered agents: {}", tool_names.join(", ")))
                         } else {
                             Some(format!("Registered agents: {}", agent_ids.join(", ")))
@@ -2456,7 +2615,8 @@ impl AgentLoop {
     /// Get startup information about the agent loop for logging.
     /// Mirrors Go's `GetStartupInfo()`.
     pub fn get_startup_info(&self) -> serde_json::Value {
-        let tool_names: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
+        let guard = self.tools.read();
+        let tool_names: Vec<&str> = guard.keys().map(|s| s.as_str()).collect();
 
         let agent_ids = self
             .registry
@@ -2484,8 +2644,8 @@ impl AgentLoop {
     // -----------------------------------------------------------------------
 
     /// Returns a reference to the tool registry.
-    pub fn tools(&self) -> &HashMap<String, Arc<dyn Tool>> {
-        &self.tools
+    pub fn tools(&self) -> parking_lot::RwLockReadGuard<'_, HashMap<String, Arc<dyn Tool>>> {
+        self.tools.read()
     }
 
     /// Returns a reference to the agent config.
@@ -2818,14 +2978,19 @@ where
 
     // Execute the LLM call.
     let start = std::time::Instant::now();
-    let response = llm_call();
+    let mut response = llm_call();
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // Extract response content for observer events.
-    let response_content = response.as_ref()
-        .and_then(|r| r.as_ref().ok())
-        .map(|r| r.content.clone())
-        .unwrap_or_default();
+    // Extract response content and raw fields for observer events.
+    let (response_content, raw_req, raw_resp) = match &mut response {
+        Some(Ok(r)) => {
+            let content = r.content.clone();
+            let req = r.raw_request_body.take();
+            let resp = r.raw_response_body.take();
+            (content, req, resp)
+        }
+        _ => (String::new(), None, None),
+    };
 
     // Emit LlmResponse and ConversationEnd after the call.
     if let Some(mgr) = observer_manager {
@@ -2839,17 +3004,21 @@ where
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
             usage: None,
+            raw_request_body: raw_req,
+            raw_response_body: raw_resp,
         };
         let conv_event = response_event.to_conversation_event();
-        let mgr_clone = Arc::clone(mgr);
+        // Use emit_sync (not async) to guarantee LlmResponse is fully
+        // processed before ConversationEnd removes the ConversationState.
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(async move {
-                    mgr_clone.emit(conv_event).await;
+            Ok(_handle) => {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
                 });
             }
             Err(_) => {
-                // No runtime available, just skip async emit for response
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(mgr.emit_sync(conv_event));
             }
         }
 

@@ -1747,6 +1747,7 @@ fn test_adjust_paths_for_environment_log_dir() {
             enabled: true,
             log_dir: String::new(),
             detail_level: "full".to_string(),
+            save_raw: false,
         }),
         general: None,
     });
@@ -1762,6 +1763,7 @@ fn test_adjust_paths_for_environment_existing_log_dir() {
             enabled: true,
             log_dir: "custom/logs".to_string(),
             detail_level: "full".to_string(),
+            save_raw: false,
         }),
         general: None,
     });

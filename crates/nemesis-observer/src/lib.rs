@@ -116,6 +116,10 @@ pub struct LlmResponseData {
     /// Token usage information.
     pub usage: Option<UsageInfo>,
     pub finish_reason: Option<String>,
+    /// Raw HTTP request body sent to the LLM API (for logging).
+    pub raw_request_body: Option<serde_json::Value>,
+    /// Raw HTTP response body received from the LLM API (for logging).
+    pub raw_response_body: Option<String>,
 }
 
 /// Token usage information, mirroring Go's `providers.UsageInfo`.

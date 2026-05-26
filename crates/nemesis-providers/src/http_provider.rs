@@ -516,9 +516,14 @@ impl LLMProvider for HttpProvider {
             ));
         }
 
-        let data: serde_json::Value = resp
-            .json()
+        let raw_response_text = resp
+            .text()
             .await
+            .map_err(|e| FailoverError::Format {
+                provider: self.config.name.clone(),
+                message: e.to_string(),
+            })?;
+        let data: serde_json::Value = serde_json::from_str(&raw_response_text)
             .map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),
                 message: e.to_string(),
@@ -577,6 +582,8 @@ impl LLMProvider for HttpProvider {
                 .as_str()
                 .map(|s| s.to_string()),
             extra: HashMap::new(),
+            raw_request_body: Some(body),
+            raw_response_body: Some(raw_response_text),
         })
     }
 

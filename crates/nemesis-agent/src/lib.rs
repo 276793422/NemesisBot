@@ -32,6 +32,7 @@ pub mod registry;
 pub mod request_logger;
 pub mod request_logger_observer;
 pub mod loop_continuation;
+pub mod mcp_bridge;
 
 pub use types::*;
 pub use instance::AgentInstance;

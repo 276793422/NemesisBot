@@ -244,6 +244,8 @@ fn test_llm_response_no_usage_serialization() {
         usage: None,
         reasoning_content: None,
 extra: HashMap::new(),
+raw_request_body: None,
+raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(!json.contains("usage"));
@@ -272,6 +274,8 @@ fn test_llm_response_with_tool_calls_serialization() {
         }),
         reasoning_content: None,
 extra: HashMap::new(),
+raw_request_body: None,
+raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let deserialized: LLMResponse = serde_json::from_str(&json).unwrap();
@@ -455,6 +459,8 @@ fn test_llm_response_serialization() {
         }),
         reasoning_content: None,
 extra: HashMap::new(),
+raw_request_body: None,
+raw_response_body: None,
     };
     let json = serde_json::to_string(&resp).unwrap();
     let parsed: LLMResponse = serde_json::from_str(&json).unwrap();

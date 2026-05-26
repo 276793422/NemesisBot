@@ -765,11 +765,19 @@ impl Summarizer {
             api_base: String::new(),
         });
         let start = std::time::Instant::now();
-        let response = tokio_block_on(async {
+        let mut response = tokio_block_on(async {
             self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
         });
         let duration_ms = start.elapsed().as_millis() as u64;
-        let response_content = response.as_ref().ok().map(|r| r.content.clone()).unwrap_or_default();
+        let (response_content, raw_req, raw_resp) = match &mut response {
+            Ok(r) => {
+                let content = r.content.clone();
+                let req = r.raw_request_body.take();
+                let resp = r.raw_response_body.take();
+                (content, req, resp)
+            }
+            Err(_) => (String::new(), None, None),
+        };
         self.emit_observer_async_event(ObserverEvent::LlmResponse {
             trace_id: trace_id.clone(),
             round: 0,
@@ -780,6 +788,8 @@ impl Summarizer {
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
             usage: None,
+            raw_request_body: raw_req,
+            raw_response_body: raw_resp,
         });
         self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
             trace_id,
@@ -852,11 +862,19 @@ impl Summarizer {
             api_base: String::new(),
         });
         let start = std::time::Instant::now();
-        let response = tokio_block_on(async {
+        let mut response = tokio_block_on(async {
             self.provider.chat(&self.model, messages, summarize_opts, vec![]).await
         });
         let duration_ms = start.elapsed().as_millis() as u64;
-        let response_content = response.as_ref().ok().map(|r| r.content.clone()).unwrap_or_default();
+        let (response_content, raw_req, raw_resp) = match &mut response {
+            Ok(r) => {
+                let content = r.content.clone();
+                let req = r.raw_request_body.take();
+                let resp = r.raw_response_body.take();
+                (content, req, resp)
+            }
+            Err(_) => (String::new(), None, None),
+        };
         self.emit_observer_async_event(ObserverEvent::LlmResponse {
             trace_id: trace_id.clone(),
             round: 0,
@@ -867,6 +885,8 @@ impl Summarizer {
             tool_calls_count: 0,
             finish_reason: Some("stop".to_string()),
             usage: None,
+            raw_request_body: raw_req,
+            raw_response_body: raw_resp,
         });
         self.emit_observer_sync_event(ObserverEvent::ConversationEnd {
             trace_id,
