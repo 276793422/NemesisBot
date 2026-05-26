@@ -414,14 +414,14 @@ nemesisbot gateway --no-console # 仅记录到文件
 NemesisBot_Rust/
 ├── crates/                          # 核心模块（34 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
-│   ├── nemesis-tools/               # 工具系统（20+ 工具）
+│   ├── nemesis-tools/               # 工具系统（29+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
 │   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照）
 │   ├── nemesis-channels/            # 通讯渠道（21 种通道）
 │   ├── nemesis-providers/           # LLM 提供商（含 SSE 流式）
 │   ├── nemesis-forge/               # Forge 自学习框架
 │   ├── nemesis-memory/              # 持久化记忆（含 ONNX 嵌入）
-│   ├── nemesis-mcp/                 # MCP 协议（含本地 MCP Server）
+│   ├── nemesis-mcp/                 # MCP 协议（stdio + HTTP/SSE 传输）
 │   ├── nemesis-skills/              # 技能系统
 │   ├── nemesis-workflow/            # 工作流引擎
 │   ├── nemesis-cron/                # 定时任务（croner 解析器）
@@ -429,7 +429,7 @@ NemesisBot_Rust/
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理）
-│   ├── nemesis-web/                 # Web API + SSE（12 个端点）
+│   ├── nemesis-web/                 # Web API + SSE（16 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -464,9 +464,9 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       └── ...                      # 其他命令
 ├── test-tools/                      # 测试工具
-│   ├── ai-server/                   # AI 服务器模拟器
-│   ├── mcp-server/                  # MCP 服务器模拟器
-│   ├── integration-test/            # 集成测试（16 模块，298 断言）
+│   ├── TestAIServer/                # AI 服务器模拟器（Go）
+│   ├── mcp/                         # MCP 协议测试
+│   ├── integration-test/            # 集成测试（22 个命令，298 断言）
 │   ├── cluster-test/                # P2P 集群测试
 │   └── test-harness/                # 测试辅助工具
 ├── docs/                            # 文档目录
@@ -484,9 +484,9 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **379 个 Rust 源文件** - 清晰的 workspace crate 架构
+- **617 个 Rust 源文件** - 清晰的 workspace crate 架构
 - **34 个核心 crate** - 模块化设计，职责清晰
-- **6,500+ 单元测试** - 全部通过，覆盖率与 Go 版本持平
+- **8,600+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
@@ -515,7 +515,7 @@ nemesisbot security         # 安全配置（scanner/audit）
 nemesisbot skills           # 技能管理（search/install/add-source）
 nemesisbot forge            # 自学习管理（status/enable/reflect）
 nemesisbot cron             # 定时任务管理
-nemesisbot mcp              # MCP 协议管理（inspect/tools/resources/prompts）
+nemesisbot mcp              # MCP 协议管理（inspect/tools/resources/prompts/discover）
 nemesisbot workflow         # 工作流管理（validate/template/create）
 nemesisbot log              # 日志管理（set-level/enable-file/disable-file）
 nemesisbot auth             # 认证管理
@@ -534,7 +534,7 @@ nemesisbot agent            # Agent 管理
 
 > **NemesisBot Rust 版本是 Go 版本的 1:1 功能替代品**
 
-在当前版本实现了完全的功能对等 —— 所有 21 个通道、20+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
+在当前版本实现了完全的功能对等 —— 所有 21 个通道、29+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
 
 参照 Golang 的版本是：8524282c14e86f92883933f44345ca941fd90252
 
@@ -542,24 +542,29 @@ nemesisbot agent            # Agent 管理
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
 | CLI 命令 | 21 个顶级 | 21 个顶级 |
-| 工具 | 20+ | 20+（含 complete_bootstrap、exec_async） |
+| 工具 | 20+ | 29+（含 mcp_discover、cli_reference、exec_async 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
-| Web API 端点 | 7 | 12（含 SSE /api/chat/stream） |
+| Web API 端点 | 7 | 16（含 SSE /api/chat/stream） |
 | SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
 | 系统托盘 | fyne.io/systray | tray-icon + winit |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
-| 单元测试 | ~6,500 | ~6,500+ |
+| 单元测试 | ~6,500 | ~8,600+ |
 
 ### Rust 版本额外功能
 
 - `model default` 命令 — 设置默认模型
+- `mcp discover` 命令 — 发现 MCP 服务器能力（支持 stdio + HTTP 模式）
+- MCP HTTP/SSE 传输 — 支持 Streamable HTTP 协议的 MCP 服务器
 - `mcp inspect/tools/resources/prompts` — 更多 MCP 子命令
+- `cli_reference` 工具 — LLM 可按需查询 CLI 命令用法
+- `mcp_discover` / `mcp_list` 工具 — LLM 可发现和列出 MCP 工具
 - `skills validate/cache/install-builtin` — 更多技能管理
 - `workflow validate/template show/create` — 更完整工作流命令
 - `log set-level/enable-file/disable-file` — 更细粒度日志控制
-- 5 个额外 Web API 端点 — /api/version, /models, /sessions, /events, /api/chat/stream
+- 9 个额外 Web API 端点 — /api/version, /models, /sessions, /events, /api/chat/stream 等
 - MCP Server — Rust 有本地 MCP 服务器
+- MCP HTTP Transport — 支持 Streamable HTTP 协议连接远程 MCP 服务器
 - ToolExecutor — 独立批处理执行器
 - 审批 DLL 安全降级 — plugin-ui.dll 缺失时自动拒绝，不放行
 
