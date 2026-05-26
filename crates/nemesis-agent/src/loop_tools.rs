@@ -8,8 +8,6 @@
 //! Also provides additional tools:
 //! - Web search (Brave, DuckDuckGo, Perplexity)
 //! - Web fetch
-
-#![allow(deprecated)] // Legacy MCP types (McpServerConfig, McpTool, etc.) — kept for backward compat
 //! - Cluster RPC
 //! - Spawn (sub-agent management)
 //! - Memory tools
@@ -985,9 +983,10 @@ impl Tool for SleepTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let seconds = if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
-            val.get("duration")
+            val.get("seconds")
+                .or_else(|| val.get("duration"))
                 .and_then(|v| v.as_u64())
-                .ok_or("Missing or invalid 'duration' field (must be a positive integer)")?
+                .ok_or("Missing or invalid 'seconds' field (must be a positive integer)")?
         } else {
             args.trim()
                 .parse::<u64>()
@@ -1331,6 +1330,17 @@ fn extract_search_query(args: &str) -> Result<String, String> {
         }
     }
     // Fallback: treat the entire argument as a query.
+    Ok(args.trim().to_string())
+}
+
+/// Extract the "name" argument from tool arguments.
+fn extract_name_arg(args: &str) -> Result<String, String> {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
+        if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+            return Ok(name.to_string());
+        }
+    }
+    // Fallback: treat the entire argument as a name.
     Ok(args.trim().to_string())
 }
 
@@ -2165,7 +2175,7 @@ impl Tool for SkillsInfoTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let skill_name = extract_search_query(args)?;
+        let skill_name = extract_name_arg(args)?;
 
         match &self.loader {
             Some(loader) => {
@@ -2293,7 +2303,7 @@ impl Tool for InstallSkillTool {
         let val: serde_json::Value = serde_json::from_str(args)
             .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
-        let slug = match val["slug"].as_str() {
+        let slug = match val["name"].as_str().or_else(|| val["slug"].as_str()) {
             Some(s) if !s.is_empty() => s,
             _ => return Err("slug parameter is required and must be a non-empty string".to_string()),
         };
@@ -2406,350 +2416,6 @@ impl Tool for SPITool {
             _ => Err(format!("Unknown SPI action: {} (valid: list, transfer, read)", action)),
         }
     }
-}
-
-// ===========================================================================
-// MCP tool registration helper (legacy — prefer McpManager + mcp_bridge)
-// ===========================================================================
-
-/// Configuration for an MCP server.
-#[deprecated(note = "Use nemesis_mcp::manager::McpManager instead")]
-#[derive(Debug, Clone)]
-pub struct McpServerConfig {
-    /// Name of the MCP server.
-    pub name: String,
-    /// Command to start the server.
-    pub command: String,
-    /// Arguments for the command.
-    pub args: Vec<String>,
-    /// Environment variables.
-    pub env: HashMap<String, String>,
-    /// Timeout in seconds for initialization.
-    pub timeout_secs: u64,
-}
-
-/// MCP tool that wraps an MCP server tool discovered at runtime.
-///
-/// This tool uses a closure-based approach to communicate with the MCP server,
-/// allowing the agent layer to remain decoupled from the MCP transport layer.
-#[deprecated(note = "Use crate::mcp_bridge::McpToolBridge instead")]
-pub struct McpTool {
-    /// Tool name as exposed by the MCP server.
-    pub name: String,
-    /// Tool description.
-    pub description: String,
-    /// MCP server name.
-    pub server_name: String,
-    /// Tool parameter schema (JSON Schema).
-    pub input_schema: Option<serde_json::Value>,
-    /// Execution function that communicates with the MCP server.
-    executor: Box<dyn Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send + Sync>,
-}
-
-impl McpTool {
-    /// Create a new MCP tool with a custom executor.
-    pub fn new<F, Fut>(name: &str, description: &str, server_name: &str, executor: F) -> Self
-    where
-        F: Fn(&str) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
-    {
-        Self {
-            name: name.to_string(),
-            description: description.to_string(),
-            server_name: server_name.to_string(),
-            input_schema: None,
-            executor: Box::new(move |args| Box::pin(executor(args))),
-        }
-    }
-
-    /// Create a simulated MCP tool (for testing).
-    pub fn new_simulated(name: &str, description: &str, server_name: &str) -> Self {
-        let server_name_owned = server_name.to_string();
-        let name_owned = name.to_string();
-        Self {
-            name: name.to_string(),
-            description: description.to_string(),
-            server_name: server_name.to_string(),
-            input_schema: None,
-            executor: Box::new(move |args| {
-                let srv = server_name_owned.clone();
-                let n = name_owned.clone();
-                let args_owned = args.to_string();
-                Box::pin(async move {
-                    Ok(format!("[MCP/{}] Tool '{}' executed with args: {} (simulated)", srv, n, args_owned))
-                })
-            }),
-        }
-    }
-
-    /// Set the input schema for this tool.
-    pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
-        self.input_schema = Some(schema);
-        self
-    }
-}
-
-#[async_trait]
-impl Tool for McpTool {
-    fn description(&self) -> String {
-        "Call a tool provided by an MCP (Model Context Protocol) server".to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"server":{"type":"string","description":"MCP server name"},"tool":{"type":"string","description":"Tool name on the MCP server"},"arguments":{"type":"object","description":"Tool arguments"}},"required":["server","tool"]})
-    }
-
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        (self.executor)(args).await
-    }
-}
-
-/// Result of discovering MCP tools from a server.
-#[deprecated(note = "Use nemesis_mcp::manager::McpManager instead")]
-pub struct McpDiscoveryResult {
-    /// The tools discovered from the MCP server.
-    pub tools: Vec<McpTool>,
-    /// The server name.
-    pub server_name: String,
-}
-
-/// Discover and register MCP tools from a server configuration.
-///
-/// Takes a discovery function (typically provided by the service layer)
-/// that connects to the MCP server, performs the handshake, lists tools,
-/// and returns the discovered tool definitions.
-///
-/// This design keeps the agent layer decoupled from the MCP transport.
-///
-/// # Arguments
-/// * `server_config` - Configuration for the MCP server
-/// * `discover_fn` - Async function that connects and discovers tools
-///
-/// # Returns
-/// A discovery result with the tools and server name.
-#[deprecated(note = "Use nemesis_mcp::manager::McpManager::discover_tools instead")]
-pub async fn discover_mcp_tools<F, Fut>(
-    server_name: &str,
-    discover_fn: F,
-) -> Result<McpDiscoveryResult, String>
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<(String, String, Option<serde_json::Value>)>, String>>,
-{
-    let raw_tools = discover_fn().await?;
-
-    let tools: Vec<McpTool> = raw_tools
-        .into_iter()
-        .map(|(name, description, schema)| {
-            let server_name_owned = server_name.to_string();
-            let name_owned = name.clone();
-            let tool = McpTool {
-                name: name.clone(),
-                description,
-                server_name: server_name.to_string(),
-                input_schema: schema.clone(),
-                executor: Box::new(move |args| {
-                    let srv = server_name_owned.clone();
-                    let n = name_owned.clone();
-                    let _args = args.to_string();
-                    Box::pin(async move {
-                        Ok(format!(
-                            "[MCP/{}] Tool '{}' executed (discovered, simulated executor)",
-                            srv, n
-                        ))
-                    })
-                }),
-            };
-            tool
-        })
-        .collect();
-
-    tracing::info!(
-        server = server_name,
-        tool_count = tools.len(),
-        "[MCP] Discovered MCP tools"
-    );
-
-    Ok(McpDiscoveryResult {
-        tools,
-        server_name: server_name.to_string(),
-    })
-}
-
-/// Register MCP tools from a server configuration by connecting to the server
-/// and discovering available tools.
-///
-/// Mirrors Go's `registerMCPTools`. Creates an MCP client, performs handshake,
-/// lists available tools, and wraps them in agent-compatible `McpTool` instances.
-///
-/// Returns a list of discovered tools, or an error if connection fails.
-/// Individual server failures are logged but do not prevent other servers from
-/// being processed (each server is processed in isolation).
-#[deprecated(note = "Use AgentLoop::enable_mcp_reload instead")]
-pub async fn register_mcp_tools(
-    server_config: &McpServerConfig,
-) -> Result<Vec<(String, Box<dyn Tool>)>, String> {
-    // Build the MCP server configuration
-    let env_list: Vec<String> = server_config
-        .env
-        .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect();
-
-    let mcp_config = nemesis_mcp::types::ServerConfig {
-        name: server_config.name.clone(),
-        command: server_config.command.clone(),
-        args: server_config.args.clone(),
-        env: if env_list.is_empty() {
-            None
-        } else {
-            Some(env_list)
-        },
-        timeout_secs: if server_config.timeout_secs > 0 {
-            server_config.timeout_secs
-        } else {
-            30
-        },
-    };
-
-    // Create the MCP transport and client
-    let transport = nemesis_mcp::stdio_transport::StdioTransport::new(
-        &mcp_config.command,
-        mcp_config.args.clone(),
-        mcp_config.env.clone().unwrap_or_default(),
-    );
-    let mut client: Box<dyn nemesis_mcp::client::Client> =
-        Box::new(nemesis_mcp::client::McpClient::new(Box::new(transport)));
-
-    // Initialize with timeout
-    let timeout = std::time::Duration::from_secs(mcp_config.timeout_secs);
-    let init_result = tokio::time::timeout(timeout, client.initialize())
-        .await
-        .map_err(|_| format!("MCP server '{}' initialization timed out", server_config.name))?
-        .map_err(|e| {
-            format!(
-                "MCP server '{}' initialization failed: {}",
-                server_config.name, e
-            )
-        })?;
-
-    tracing::info!(
-        server = %server_config.name,
-        protocol_version = %init_result.protocol_version,
-        "[MCP] MCP server initialized"
-    );
-
-    // List tools from server
-    let mcp_tools = client
-        .list_tools()
-        .await
-        .map_err(|e| {
-            format!(
-                "Failed to list tools from '{}': {}",
-                server_config.name, e
-            )
-        })?;
-
-    tracing::info!(
-        server = %server_config.name,
-        tool_count = mcp_tools.len(),
-        "[MCP] Discovered MCP tools"
-    );
-
-    // Wrap the client in a shared Mutex for thread-safe access from all tool executors
-    let shared_client = std::sync::Arc::new(tokio::sync::Mutex::new(client));
-
-    // Wrap each MCP tool in an agent-compatible McpTool
-    let server_name = server_config.name.clone();
-    let mut tools: Vec<(String, Box<dyn Tool>)> = Vec::new();
-
-    for mcp_tool in &mcp_tools {
-        let tool_name = sanitize_mcp_name(&mcp_tool.name);
-        let srv_name = sanitize_mcp_name(&server_name);
-        let prefixed_name = format!("mcp_{}_{}", srv_name, tool_name);
-
-        let description = match &mcp_tool.description {
-            Some(desc) => format!("[MCP:{}] {}", server_name, desc),
-            None => format!("[MCP:{}] MCP tool: {}", server_name, tool_name),
-        };
-
-        let schema = mcp_tool.input_schema.clone();
-
-        // Create executor that calls the MCP tool through the shared client
-        let client_arc = shared_client.clone();
-        let mcp_tool_name = mcp_tool.name.clone();
-        let tool_timeout = timeout;
-        let srv_name_for_log = server_name.clone();
-
-        let executor = Box::new(
-            move |args: &str|
-                  -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
-            > {
-                let client = client_arc.clone();
-                let tool_name = mcp_tool_name.clone();
-                let args_owned = args.to_string();
-                let tool_timeout = tool_timeout;
-                let srv = srv_name_for_log.clone();
-
-                Box::pin(async move {
-                    let args_value: serde_json::Value = serde_json::from_str(&args_owned)
-                        .unwrap_or(serde_json::json!({}));
-
-                    let result = {
-                        let mut guard = client.lock().await;
-                        tokio::time::timeout(tool_timeout, guard.call_tool(&tool_name, args_value))
-                            .await
-                            .map_err(|_| format!("MCP tool '{}' on '{}' timed out", tool_name, srv))?
-                            .map_err(|e| format!("MCP tool '{}' on '{}' error: {}", tool_name, srv, e))?
-                    };
-
-                    // Extract text content from the result
-                    let content_parts: Vec<String> = result
-                        .content
-                        .iter()
-                        .filter_map(|c| c.text.clone())
-                        .collect();
-
-                    if content_parts.is_empty() {
-                        if result.is_error {
-                            Err(format!(
-                                "MCP tool '{}' returned an error with no content",
-                                tool_name
-                            ))
-                        } else {
-                            Ok(format!(
-                                "[MCP/{}] Tool '{}' executed successfully (no text content)",
-                                srv, tool_name
-                            ))
-                        }
-                    } else {
-                        Ok(content_parts.join("\n"))
-                    }
-                })
-            },
-        );
-
-        let tool = McpTool {
-            name: prefixed_name.clone(),
-            description,
-            server_name: server_name.clone(),
-            input_schema: Some(schema),
-            executor,
-        };
-
-        tools.push((prefixed_name, Box::new(tool)));
-    }
-
-    Ok(tools)
-}
-
-/// Sanitize a name for use in tool identifiers (lowercase, replace spaces/dots with underscores).
-fn sanitize_mcp_name(name: &str) -> String {
-    name.to_lowercase()
-        .replace(' ', "_")
-        .replace('.', "_")
-        .replace('-', "_")
 }
 
 // ===========================================================================
@@ -2912,6 +2578,637 @@ impl Tool for ForgeBridgeTool {
     }
 }
 
+// ===========================================================================
+// MCP Discovery Tools
+// ===========================================================================
+
+/// Tool for discovering what tools, resources, and prompts an MCP server provides.
+///
+/// Connects to an MCP server via stdio or HTTP, performs the handshake, collects
+/// metadata, formats it as markdown, and closes the connection.
+pub struct McpDiscoverTool;
+
+impl McpDiscoverTool {
+    pub fn new() -> Self { Self }
+}
+
+#[async_trait]
+impl Tool for McpDiscoverTool {
+    fn description(&self) -> String {
+        "Discover what tools, resources, and prompts an MCP server provides. \
+         For stdio-based servers provide the 'command' (executable path); \
+         for HTTP-based servers provide the 'url' (e.g. 'http://localhost:8080/mcp'). \
+         This tool will connect, query capabilities, and return a formatted summary.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Command to start the MCP server for stdio-based servers (e.g. '/path/to/server.exe', 'npx', 'python')"
+                },
+                "args": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Arguments to pass to the command (stdio only, optional)"
+                },
+                "url": {
+                    "type": "string",
+                    "description": "URL of an HTTP-based MCP server (e.g. 'http://localhost:8080/mcp')"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Timeout in seconds (default: 15)"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let parsed = serde_json::from_str::<serde_json::Value>(args)
+            .unwrap_or(serde_json::Value::Null);
+
+        let url = parsed["url"].as_str();
+        let command = parsed["command"].as_str();
+        let timeout_secs = parsed["timeout"].as_u64().unwrap_or(15);
+
+        let result = match (url, command) {
+            (Some(url), _) => {
+                nemesis_mcp::manager::discover_server_metadata_http(url, timeout_secs).await
+            }
+            (None, Some(command)) => {
+                let tool_args: Vec<String> = parsed["args"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                nemesis_mcp::manager::discover_server_metadata(
+                    command, tool_args, vec![], timeout_secs,
+                ).await
+            }
+            (None, None) => {
+                return Err("missing required 'command' or 'url' parameter".to_string());
+            }
+        };
+
+        match result {
+            Ok(info) => Ok(format_discovery_result(&info)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CliReferenceTool — CLI 命令按需查询
+// ---------------------------------------------------------------------------
+
+/// Tool for looking up NemesisBot CLI commands.
+///
+/// Without parameters returns a compact overview of all commands.
+/// With a `command` parameter returns detailed help for that command area.
+/// Keep data in sync with `nemesisbot/src/commands/*.rs`.
+pub struct CliReferenceTool;
+
+impl CliReferenceTool {
+    pub fn new() -> Self { Self }
+}
+
+#[async_trait]
+impl Tool for CliReferenceTool {
+    fn description(&self) -> String {
+        "Look up NemesisBot CLI commands. Without parameters returns an overview of all commands. \
+         Pass a command name for detailed help (e.g. 'model', 'mcp', 'cluster', 'scanner').".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Command name for detailed help. Omit for overview of all commands."
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let parsed = serde_json::from_str::<serde_json::Value>(args)
+            .unwrap_or(serde_json::Value::Null);
+        let command = parsed["command"].as_str().unwrap_or("").trim();
+
+        if command.is_empty() {
+            Ok(cli_overview())
+        } else {
+            cli_detail(command)
+        }
+    }
+}
+
+fn cli_overview() -> String {
+    r#"## NemesisBot CLI 命令概览
+
+| 命令 | 说明 | 关键子命令 |
+|------|------|-----------|
+| model | 管理 LLM 模型 | add, list, remove, default |
+| mcp | 管理 MCP 服务器 | list, add, remove, test, tools, resources, prompts, discover |
+| channel | 管理通信通道 | list, enable, disable, status, web, websocket, external |
+| cluster | 管理集群 | status, config, info, peers, token, init, enable, disable, reset |
+| skills | 管理技能 | list, search, install, remove, source, add-source, install-builtin |
+| forge | 管理自学习模块 | status, enable, disable, reflect, list, evaluate, export, learning |
+| cron | 管理定时任务 | list, add, remove, enable, disable |
+| security | 管理安全设置 | status, enable, disable, config, audit, rules, test, approve, deny, pending |
+| scanner | 管理病毒扫描引擎 | list, add, remove, check, install, clamav |
+| log | 管理日志配置 | llm (enable/disable/status/config/type), general (enable/disable/level/file/console) |
+| auth | 管理认证 | login, logout, status |
+| memory | 管理增强内存 | enable, disable, status |
+| workflow | 管理工作流 | list, run, status, template, validate |
+| cors | 管理 CORS 配置 | list, add, remove, dev-mode, show, validate |
+| status | 显示系统状态 | — |
+| version | 显示版本信息 | — |
+
+使用方式: `nemesisbot <命令> <子命令> [参数]`
+示例: `nemesisbot model add --model zhipu/glm-4.7 --key YOUR_KEY --default`
+
+查询具体命令的详细用法请传入 command 参数。"#.to_string()
+}
+
+fn cli_detail(command: &str) -> Result<String, String> {
+    match command.to_lowercase().as_str() {
+        "model" => Ok(r#"## model — 管理 LLM 模型
+
+用法: `nemesisbot model <子命令>`
+
+子命令:
+  add       添加模型配置
+            --model <vendor/model>（必填）如 zhipu/glm-4.7
+            --key <api-key>        API 密钥
+            --base <url>           自定义 API 地址
+            --proxy <url>          代理地址
+            --auth <method>        认证方式
+            --default              设为默认模型
+  list      列出已配置的模型
+            --verbose              显示详细信息
+  remove    删除模型配置
+            <name>                 模型名称
+            --force                跳过确认
+  default   显示当前默认模型
+
+示例:
+  nemesisbot model add --model openai/gpt-4o --key sk-xxx --default
+  nemesisbot model list --verbose
+  nemesisbot model remove gpt-4o --force"#.to_string()),
+
+        "mcp" => Ok(r#"## mcp — 管理 MCP 服务器
+
+用法: `nemesisbot mcp <子命令>`
+
+子命令:
+  list                          列出已配置的 MCP 服务器
+  add -n <名称> -c <命令>       添加 MCP 服务器
+            --args <参数>        启动参数
+            --env <变量>         环境变量（KEY=VALUE）
+            --timeout <秒>       超时时间（默认 30）
+  remove <名称>                 删除 MCP 服务器
+  test <名称>                   测试服务器连接
+  inspect <名称>                查看服务器配置详情
+  tools <名称>                  列出服务器提供的工具
+  resources <名称>              列出服务器提供的资源
+  prompts <名称>                列出服务器提供的提示词
+  discover --command <路径>     发现 MCP 服务器能力（stdio 模式）
+            --url <URL>          发现 MCP 服务器能力（HTTP 模式）
+            --args <参数>        启动参数（stdio）
+            --timeout <秒>       超时时间（默认 15）
+
+示例:
+  nemesisbot mcp add -n desktop -c C:\AI\MCP\desktop-mcp.exe
+  nemesisbot mcp tools desktop
+  nemesisbot mcp discover --command C:\AI\MCP\server.exe"#.to_string()),
+
+        "channel" => Ok(r#"## channel — 管理通信通道
+
+用法: `nemesisbot channel <子命令>`
+
+子命令:
+  list                          列出所有通道及状态
+  enable <名称>                 启用通道
+  disable <名称>                禁用通道
+  status <名称>                 查看通道详情
+
+  web <操作>                    Web 通道管理:
+    auth                        交互式设置认证令牌
+    auth-set <token>            直接设置令牌
+    auth-get                    查看当前令牌（掩码）
+    host <地址>                 设置服务器地址
+    port <端口>                 设置端口
+    status / config / clear     状态/配置/清除令牌
+
+  websocket <操作>              WebSocket 通道管理:
+    setup / config              设置/查看配置
+    set <key> <value>           设置配置项
+    get <key>                   获取配置项
+
+  external <操作>               External 通道管理:
+    setup / config / test       设置/配置/测试
+    set <key> <value>           设置配置项
+    get <key>                   获取配置项
+
+示例:
+  nemesisbot channel list
+  nemesisbot channel enable discord
+  nemesisbot channel web port 49000"#.to_string()),
+
+        "cluster" => Ok(r#"## cluster — 管理集群
+
+用法: `nemesisbot cluster <子命令>`
+
+子命令:
+  status                        显示集群状态
+  config                        显示/修改集群配置
+    --udp-port / --rpc-port / --broadcast-interval
+  info                          显示/修改本节点信息
+    --name / --role / --category / --tags / --address / --capabilities
+  init                          初始化集群
+    --name / --role / --category / --tags / --address / --capabilities
+  enable / disable / start / stop   启用/禁用集群
+  reset --hard                  重置集群配置
+
+  peers <操作>                  管理对等节点:
+    list / add / remove / enable / disable
+    add --id <ID> --name <名称> --address <地址>
+
+  token <操作>                  管理 RPC 认证令牌:
+    generate --length 32 --save   生成令牌
+    show --full                   显示令牌
+    set <token> / verify <token>  设置/验证令牌
+    revoke                        撤销令牌
+
+示例:
+  nemesisbot cluster init --name bot1 --role worker
+  nemesisbot cluster peers list
+  nemesisbot cluster token generate --save"#.to_string()),
+
+        "skills" => Ok(r#"## skills — 管理技能
+
+用法: `nemesisbot skills <子命令>`
+
+子命令:
+  list                          列出已安装的技能
+  search [关键词] --limit <N>   搜索远程技能
+  install <技能>                安装技能
+  remove <名称>                 删除技能
+  show <名称>                   查看技能详情
+  validate <路径>               验证技能文件
+  add-source <url>              添加技能源（GitHub）
+  install-builtin [名称]        安装内置技能
+  list-builtin                  列出可用的内置技能
+
+  source <操作>                 管理技能源:
+    list / add <url> / remove <名称>
+
+  cache <操作>                  管理搜索缓存:
+    stats / clear
+
+示例:
+  nemesisbot skills search weather
+  nemesisbot skills install clawhub/author/weather
+  nemesisbot skills list"#.to_string()),
+
+        "forge" => Ok(r#"## forge — 管理自学习模块
+
+用法: `nemesisbot forge <子命令>`
+
+子命令:
+  status                        显示 forge 状态
+  enable / disable              启用/禁用
+  reflect                       手动触发反思
+  list --type <类型>            列出制品（默认 all）
+  evaluate <id>                 评估制品
+  export [id] --output <路径> --all  导出制品
+
+  learning <操作>               学习管理:
+    status / enable / disable
+    history --limit <N>
+
+示例:
+  nemesisbot forge status
+  nemesisbot forge reflect
+  nemesisbot forge list"#.to_string()),
+
+        "cron" => Ok(r#"## cron — 管理定时任务
+
+用法: `nemesisbot cron <子命令>`
+
+子命令:
+  list                          列出所有任务
+  add -n <名称> -m <消息>       添加任务
+            --every <秒>         间隔执行
+            --cron <表达式>      Cron 表达式执行
+            --deliver            投递响应到通道
+            --to <接收者>        指定接收者
+            --channel <通道>     指定通道
+  remove <id>                   删除任务
+  enable <id>                   启用任务
+  disable <id>                  禁用任务
+
+示例:
+  nemesisbot cron add -n "每日问候" -m "早上好" --cron "0 9 * * *"
+  nemesisbot cron list
+  nemesisbot cron remove abc123"#.to_string()),
+
+        "security" => Ok(r#"## security — 管理安全设置
+
+用法: `nemesisbot security <子命令>`
+
+子命令:
+  status                        显示安全状态
+  enable / disable              启用/禁用安全模块
+  edit                          编辑安全配置
+  config-reset                  重置为默认配置
+
+  config <操作>                 配置管理:
+    show / edit / reset
+
+  audit <操作>                  审计日志:
+    show --limit <N>             查看日志
+    export <文件>                导出日志
+    denied                       查看被拒绝的操作
+
+  rules <操作>                  安全规则:
+    list [类型]                  列出规则
+    add <类型> <操作> --pattern <模式> --action <deny/allow>
+    remove <类型> <操作> <索引>
+    test <类型> <操作> <目标>
+  类型: file, directory, process, network, hardware, registry
+
+  test --tool <工具> --args <JSON>  测试安全检查
+  approve <id>                  批准待审批操作
+  deny <id> [原因]              拒绝待审批操作
+  pending                       列出待审批操作
+
+示例:
+  nemesisbot security status
+  nemesisbot security rules list
+  nemesisbot security approve 123"#.to_string()),
+
+        "scanner" => Ok(r#"## scanner — 管理病毒扫描引擎
+
+用法: `nemesisbot scanner <子命令>`
+
+子命令:
+  list                          列出所有引擎
+  add <名称> --url <URL> --path <路径> --address <地址>  添加引擎
+  remove <名称>                 删除引擎
+  check                         检查所有引擎的安装状态
+  install [--dir <目录>]        安装所有待安装引擎
+
+  <引擎名> <操作>               引擎级操作（如 clamav）:
+    install [--force] [--url <URL>] [--dir <目录>]  安装
+    enable / disable                                启用/禁用
+    update                                          更新病毒库
+    test <文件路径>                                  测试扫描
+    info                                            引擎详情
+
+示例:
+  nemesisbot scanner list
+  nemesisbot scanner check
+  nemesisbot scanner clamav install
+  nemesisbot scanner clamav test /path/to/file"#.to_string()),
+
+        "log" => Ok(r#"## log — 管理日志配置
+
+用法: `nemesisbot log <子命令>`
+
+LLM 日志:
+  llm enable / disable          启用/禁用 LLM 日志
+  llm status                    查看状态
+  llm config --detail-level <级别> --log-dir <目录>  配置
+  llm type <raw|default>        设置日志类型（原始 JSON / Markdown 摘要）
+
+通用日志:
+  general enable / disable       启用/禁用
+  general status                 查看状态
+  general level <级别>           设置日志级别（debug/info/warn/error）
+  general file <路径>            设置日志文件路径
+  general console                切换控制台输出
+
+兼容性别名:
+  log enable / disable / status / config / set-level
+  log enable-file / disable-file / enable-console / disable-console
+
+示例:
+  nemesisbot log llm enable
+  nemesisbot log llm type raw
+  nemesisbot log general level debug"#.to_string()),
+
+        "auth" => Ok(r#"## auth — 管理认证
+
+用法: `nemesisbot auth <子命令>`
+
+子命令:
+  login --provider <名称>       登录（OAuth 或粘贴令牌）
+            --device-code       使用设备码流程
+  logout --provider <名称>      登出（省略名称则登出全部）
+  status                        查看认证状态
+
+示例:
+  nemesisbot auth login --provider openai
+  nemesisbot auth status"#.to_string()),
+
+        "memory" => Ok(r#"## memory — 管理增强内存
+
+用法: `nemesisbot memory <子命令>`
+
+子命令:
+  enable    启用增强内存（需要 plugin_onnx.dll 在 plugins/ 目录）
+  disable   禁用增强内存
+  status    查看内存系统状态
+
+示例:
+  nemesisbot memory status
+  nemesisbot memory enable"#.to_string()),
+
+        "workflow" => Ok(r#"## workflow — 管理工作流
+
+用法: `nemesisbot workflow <子命令>`
+
+子命令:
+  list                          列出工作流
+  run <名称> [key=value ...]    运行工作流
+  status [执行ID]               查看执行状态
+  validate <文件路径>           验证工作流定义
+
+  template <操作>               模板管理:
+    list                        列出可用模板
+    show <名称>                 查看模板详情
+    create <模板> --output <路径>  从模板创建
+
+示例:
+  nemesisbot workflow list
+  nemesisbot workflow run my-flow input=hello
+  nemesisbot workflow template list"#.to_string()),
+
+        "cors" => Ok(r#"## cors — 管理 CORS 配置
+
+用法: `nemesisbot cors <子命令>`
+
+子命令:
+  list                          列出所有允许的来源
+  add <来源> --cdn              添加允许的来源（--cdn 添加为 CDN 域名）
+  remove <来源> --cdn           删除来源
+  show                          显示完整 CORS 配置
+  validate <来源>               验证来源是否被允许
+
+  dev-mode <操作>               开发模式管理:
+    enable / disable / status   允许所有 localhost 来源
+
+示例:
+  nemesisbot cors add https://example.com
+  nemesisbot cors dev-mode enable"#.to_string()),
+
+        "status" => Ok(r#"## status — 显示系统状态
+
+用法: `nemesisbot status`
+
+显示当前系统配置和运行状态。"#.to_string()),
+
+        "version" => Ok(r#"## version — 显示版本信息
+
+用法: `nemesisbot version`
+
+显示 NemesisBot 版本号和构建信息。"#.to_string()),
+
+        _ => Err(format!(
+            "Unknown command '{}'. Call cli_reference without parameters to see all commands.",
+            command
+        )),
+    }
+}
+
+fn format_discovery_result(result: &nemesis_mcp::manager::DiscoveryResult) -> String {
+    let mut lines = Vec::new();
+
+    // Server info
+    if let Some(ref info) = result.server_info {
+        lines.push(format!("## MCP Server: {} v{}\n", info.name, info.version));
+    } else {
+        lines.push("## MCP Server (unknown)\n".to_string());
+    }
+
+    // Tools
+    if result.tools.is_empty() {
+        lines.push("### Tools\nNone.\n".to_string());
+    } else {
+        lines.push(format!("### Tools ({})\n", result.tools.len()));
+        for tool in &result.tools {
+            let desc = tool.description.as_deref().unwrap_or("no description");
+            lines.push(format!("- **{}**: {}", tool.name, desc));
+
+            // Parameter summary
+            if let Some(props) = tool.input_schema.get("properties").and_then(|p| p.as_object()) {
+                let required: Vec<&str> = tool.input_schema.get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
+                let param_summary: Vec<String> = props.iter().map(|(name, schema)| {
+                    let type_str = schema.get("type")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("any");
+                    if required.contains(&name.as_str()) {
+                        format!("{}* ({})", name, type_str)
+                    } else {
+                        format!("{} ({})", name, type_str)
+                    }
+                }).collect();
+
+                if !param_summary.is_empty() {
+                    lines.push(format!("  - Parameters: {}", param_summary.join(", ")));
+                }
+            }
+        }
+        lines.push(String::new());
+    }
+
+    // Resources
+    if result.resources.is_empty() {
+        lines.push("### Resources\nNone.\n".to_string());
+    } else {
+        lines.push(format!("### Resources ({})\n", result.resources.len()));
+        for res in &result.resources {
+            let desc = res.description.as_deref().unwrap_or("");
+            if desc.is_empty() {
+                lines.push(format!("- **{}** ({})", res.name, res.uri));
+            } else {
+                lines.push(format!("- **{}** ({}): {}", res.name, res.uri, desc));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    // Prompts
+    if result.prompts.is_empty() {
+        lines.push("### Prompts\nNone.".to_string());
+    } else {
+        lines.push(format!("### Prompts ({})\n", result.prompts.len()));
+        for prompt in &result.prompts {
+            let desc = prompt.description.as_deref().unwrap_or("no description");
+            lines.push(format!("- **{}**: {}", prompt.name, desc));
+            if !prompt.arguments.is_empty() {
+                let args: Vec<String> = prompt.arguments.iter().map(|a| {
+                    let req = if a.required.unwrap_or(false) { "*" } else { "" };
+                    let desc = a.description.as_deref().unwrap_or("");
+                    if desc.is_empty() {
+                        format!("{}{}", a.name, req)
+                    } else {
+                        format!("{}{} ({})", a.name, req, desc)
+                    }
+                }).collect();
+                lines.push(format!("  - Arguments: {} (* = required)", args.join(", ")));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Tool for listing all currently registered MCP tools.
+///
+/// Reads from a shared snapshot updated by AgentLoop when MCP tools change.
+pub struct McpListTool {
+    mcp_tools: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+}
+
+impl McpListTool {
+    pub fn new(mcp_tools: Arc<parking_lot::RwLock<Vec<(String, String)>>>) -> Self {
+        Self { mcp_tools }
+    }
+}
+
+#[async_trait]
+impl Tool for McpListTool {
+    fn description(&self) -> String {
+        "List all currently registered MCP tools and their descriptions. \
+         Use this to see what MCP tools are available in the current session.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        let tools = self.mcp_tools.read();
+        if tools.is_empty() {
+            return Ok("No MCP tools are currently registered.".to_string());
+        }
+        let mut lines = vec![format!("## Registered MCP Tools ({})\n", tools.len())];
+        for (name, desc) in tools.iter() {
+            lines.push(format!("- **{}**: {}", name, desc));
+        }
+        Ok(lines.join("\n"))
+    }
+}
+
 /// Extended tool registration configuration.
 ///
 /// Mirrors Go's `registerSharedTools` parameters, bundling all the
@@ -2924,10 +3221,6 @@ pub struct SharedToolConfig {
     pub cluster_rpc: Option<ClusterRpcConfig>,
     /// Spawn/subagent configuration.
     pub spawn: Option<SpawnConfig>,
-    /// Whether MCP tools should be loaded.
-    pub mcp_enabled: bool,
-    /// MCP server configurations to discover tools from.
-    pub mcp_servers: Vec<McpServerConfig>,
     /// Skills registry manager for find/install tools.
     pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
     /// Skills loader for listing local skills.
@@ -2940,6 +3233,8 @@ pub struct SharedToolConfig {
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
     /// Memory tool executor for memory_search, memory_store, etc.
     pub memory_executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
+    /// Snapshot of registered MCP tool names and descriptions for McpListTool.
+    pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
 }
 
 impl Default for SharedToolConfig {
@@ -2948,14 +3243,13 @@ impl Default for SharedToolConfig {
             web_search: None,
             cluster_rpc: None,
             spawn: None,
-            mcp_enabled: false,
-            mcp_servers: Vec::new(),
             skills_registry: None,
             skills_loader: None,
             workspace: None,
             cron_service: None,
             forge_executor: None,
             memory_executor: None,
+            mcp_tool_snapshot: None,
         }
     }
 }
@@ -2966,12 +3260,11 @@ impl std::fmt::Debug for SharedToolConfig {
             .field("web_search", &self.web_search)
             .field("cluster_rpc", &self.cluster_rpc)
             .field("spawn", &self.spawn)
-            .field("mcp_enabled", &self.mcp_enabled)
-            .field("mcp_servers", &self.mcp_servers)
             .field("skills_registry", &self.skills_registry.as_ref().map(|_| "RegistryManager"))
             .field("skills_loader", &self.skills_loader.as_ref().map(|_| "SkillsLoader"))
             .field("workspace", &self.workspace)
             .field("memory_executor", &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"))
+            .field("mcp_tool_snapshot", &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"))
             .finish()
     }
 }
@@ -3110,69 +3403,31 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         info!("[AgentTools] Registered {} forge tools", forge_count);
     }
 
+    // MCP discovery and listing tools.
+    tools.insert(
+        "mcp_discover".to_string(),
+        Box::new(McpDiscoverTool::new()),
+    );
+    tools.insert(
+        "cli_reference".to_string(),
+        Box::new(CliReferenceTool::new()),
+    );
+    {
+        let snapshot = config.mcp_tool_snapshot.clone()
+            .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(Vec::new())));
+        tools.insert(
+            "mcp_list".to_string(),
+            Box::new(McpListTool::new(snapshot)),
+        );
+    }
+
     info!(
-        "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={}, mcp={})",
+        "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={})",
         tools.len(),
         config.web_search.is_some(),
         config.cluster_rpc.is_some(),
         config.spawn.is_some(),
-        config.mcp_enabled,
     );
-
-    tools
-}
-
-/// Async version of `register_shared_tools` that also discovers MCP tools.
-///
-/// This function first calls the synchronous `register_shared_tools` to get
-/// all standard tools, then iterates over configured MCP servers and discovers
-/// tools from each one using the provided discovery closure.
-///
-/// # Arguments
-/// * `config` - Configuration for all tools including MCP servers
-/// * `mcp_discover_fn` - Optional async function that discovers tools from an MCP server.
-///   Takes server name, returns a list of (tool_name, description, input_schema) tuples.
-///
-/// # Returns
-/// A HashMap of tool name -> tool implementation including MCP tools.
-pub async fn register_shared_tools_async<F, Fut>(
-    config: &SharedToolConfig,
-    mcp_discover_fn: Option<F>,
-) -> HashMap<String, Box<dyn Tool>>
-where
-    F: Fn(String) -> Fut + Send + Sync,
-    Fut: std::future::Future<Output = Result<Vec<(String, String, Option<serde_json::Value>)>, String>> + Send,
-{
-    let mut tools = register_shared_tools(config);
-
-    // Discover MCP tools if enabled and servers are configured.
-    if config.mcp_enabled && !config.mcp_servers.is_empty() {
-        if let Some(ref discover_fn) = mcp_discover_fn {
-            for server in &config.mcp_servers {
-                let server_name = server.name.clone();
-                match discover_mcp_tools(&server_name, || discover_fn(server_name.clone())).await {
-                    Ok(result) => {
-                        for tool in result.tools {
-                            let tool_name = format!("mcp_{}_{}", tool.server_name, tool.name);
-                            tools.insert(tool_name, Box::new(tool));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "[MCP] Failed to discover MCP tools from server '{}': {}",
-                            server.name,
-                            e
-                        );
-                    }
-                }
-            }
-        } else {
-            tracing::debug!(
-                "[MCP] MCP enabled with {} servers but no discovery function provided",
-                config.mcp_servers.len()
-            );
-        }
-    }
 
     tools
 }
@@ -3189,14 +3444,13 @@ pub fn register_extended_tools(
         web_search: web_config,
         cluster_rpc: cluster_config,
         spawn: spawn_config,
-        mcp_enabled: false,
-        mcp_servers: Vec::new(),
         skills_registry: None,
         skills_loader: None,
         workspace: None,
         cron_service: None,
         forge_executor: None,
         memory_executor: None,
+        mcp_tool_snapshot: None,
     };
     register_shared_tools(&shared_config)
 }

@@ -1,10 +1,10 @@
 discovered = []
-last_sync = "2026-05-23T05:44:43.719456800+00:00"
+last_sync = "2026-05-26T10:34:40.416865500+00:00"
 
 [cluster]
 id = "auto-discovered"
 auto_discovery = true
-last_updated = "2026-05-23T05:44:43.719455800+00:00"
+last_updated = "2026-05-26T10:34:40.416864+00:00"
 rpc_auth_token = ""
 
 [local_node]

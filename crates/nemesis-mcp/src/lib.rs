@@ -7,6 +7,7 @@
 pub mod types;
 pub mod transport;
 pub mod stdio_transport;
+pub mod http_transport;
 pub mod client;
 pub mod server;
 pub mod adapter;

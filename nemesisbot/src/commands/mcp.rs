@@ -59,6 +59,21 @@ pub enum McpAction {
         /// Server name
         name: String,
     },
+    /// Discover capabilities of an MCP server (stdio or HTTP)
+    Discover {
+        /// Command to start the MCP server (for stdio-based servers)
+        #[arg(short, long)]
+        command: Option<String>,
+        /// URL of the MCP server (for HTTP-based servers, e.g. 'http://localhost:8080/mcp')
+        #[arg(short, long)]
+        url: Option<String>,
+        /// Arguments for the command (stdio only, comma-separated)
+        #[arg(short, long)]
+        args: Option<String>,
+        /// Timeout in seconds
+        #[arg(short, long, default_value_t = 15)]
+        timeout: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +500,105 @@ fn cmd_inspect(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_discover(command: Option<&str>, url: Option<&str>, args: Option<&str>, timeout: u64) -> Result<()> {
+    let result = match (url, command) {
+        (Some(url), _) => {
+            println!("Discovering MCP HTTP server: {}", url);
+            nemesis_mcp::manager::discover_server_metadata_http(url, timeout).await
+        }
+        (None, Some(command)) => {
+            println!("Discovering MCP server: {}", command);
+            let tool_args: Vec<String> = args
+                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            nemesis_mcp::manager::discover_server_metadata(command, tool_args, vec![], timeout).await
+        }
+        (None, None) => {
+            println!("Error: provide either --command <path> or --url <url>");
+            return Ok(());
+        }
+    };
+
+    match result {
+        Ok(result) => {
+            // Server info
+            if let Some(ref info) = result.server_info {
+                println!("\n  Server: {} v{}", info.name, info.version);
+            } else {
+                println!("\n  Server: (unknown)");
+            }
+
+            // Tools
+            if result.tools.is_empty() {
+                println!("\n  Tools: (none)");
+            } else {
+                println!("\n  Tools ({}):", result.tools.len());
+                println!("  -------------------");
+                for (i, tool) in result.tools.iter().enumerate() {
+                    let desc = tool.description.as_deref().unwrap_or("(no description)");
+                    println!("  {}. {}", i + 1, tool.name);
+                    println!("     {}", desc);
+
+                    if let Some(props) = tool.input_schema.get("properties").and_then(|p| p.as_object()) {
+                        let required: Vec<&str> = tool.input_schema.get("required")
+                            .and_then(|r| r.as_array())
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+                        let param_names: Vec<String> = props.keys().map(|k| {
+                            if required.contains(&k.as_str()) {
+                                format!("{}*", k)
+                            } else {
+                                k.clone()
+                            }
+                        }).collect();
+                        if !param_names.is_empty() {
+                            println!("     Parameters: {}", param_names.join(", "));
+                        }
+                    }
+                }
+            }
+
+            // Resources
+            if result.resources.is_empty() {
+                println!("\n  Resources: (none)");
+            } else {
+                println!("\n  Resources ({}):", result.resources.len());
+                println!("  -------------------");
+                for (i, res) in result.resources.iter().enumerate() {
+                    println!("  {}. {} ({})", i + 1, res.name, res.uri);
+                    if let Some(desc) = res.description.as_deref() {
+                        if !desc.is_empty() {
+                            println!("     {}", desc);
+                        }
+                    }
+                }
+            }
+
+            // Prompts
+            if result.prompts.is_empty() {
+                println!("\n  Prompts: (none)");
+            } else {
+                println!("\n  Prompts ({}):", result.prompts.len());
+                println!("  -------------------");
+                for (i, p) in result.prompts.iter().enumerate() {
+                    println!("  {}. {}", i + 1, p.name);
+                    if let Some(desc) = p.description.as_deref() {
+                        if !desc.is_empty() {
+                            println!("     {}", desc);
+                        }
+                    }
+                }
+            }
+
+            println!("\nDiscovery complete.");
+        }
+        Err(e) => {
+            println!("Discovery failed: {}", e);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
@@ -521,6 +635,12 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
         McpAction::Prompts { name } => {
             let result = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_prompts(&mcp_cfg_path, &name))
+            })?;
+            result
+        }
+        McpAction::Discover { command, url, args, timeout } => {
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(cmd_discover(command.as_deref(), url.as_deref(), args.as_deref(), timeout))
             })?;
             result
         }

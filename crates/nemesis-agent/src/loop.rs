@@ -353,6 +353,9 @@ pub struct AgentLoop {
     security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
+    /// Snapshot of registered MCP tool names and descriptions.
+    /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
+    mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
 }
 
 impl AgentLoop {
@@ -382,6 +385,7 @@ impl AgentLoop {
             observer_manager: None,
             security_plugin: None,
             mcp_manager: None,
+            mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
         }
     }
 
@@ -442,6 +446,7 @@ impl AgentLoop {
             observer_manager: None,
             security_plugin: None,
             mcp_manager: None,
+            mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
         }
     }
 
@@ -501,6 +506,7 @@ impl AgentLoop {
             self.mcp_manager = Some(std::sync::Mutex::new(mgr));
             info!("[AgentLoop] MCP config disabled; reload watcher active for future changes");
         }
+        self.refresh_mcp_snapshot();
     }
 
     /// Check MCP config for changes and register tools from new servers.
@@ -572,6 +578,22 @@ impl AgentLoop {
                 }
             }
         }
+        self.refresh_mcp_snapshot();
+    }
+
+    /// Refresh the MCP tool snapshot from the tool registry.
+    fn refresh_mcp_snapshot(&self) {
+        let snapshot: Vec<(String, String)> = self.tools.read().iter()
+            .filter(|(name, _)| name.starts_with("mcp_"))
+            .map(|(name, tool)| (name.clone(), tool.description()))
+            .collect();
+        *self.mcp_tool_snapshot.write() = snapshot;
+    }
+
+    /// Return a shared reference to the MCP tool snapshot.
+    /// Used to wire up McpListTool.
+    pub fn mcp_tool_snapshot(&self) -> Arc<parking_lot::RwLock<Vec<(String, String)>>> {
+        self.mcp_tool_snapshot.clone()
     }
 
     /// Set the channel manager reference for listing enabled channels.

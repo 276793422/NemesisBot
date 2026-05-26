@@ -1245,6 +1245,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 None
             }
         },
+        mcp_tool_snapshot: Some(agent_loop.mcp_tool_snapshot()),
         ..Default::default()
     };
 

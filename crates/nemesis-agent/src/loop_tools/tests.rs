@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 use super::*;
 use tempfile::TempDir;
 
@@ -601,7 +600,8 @@ async fn test_skills_tools_with_loader() {
 
     // SkillsInfoTool with loader
     let info = SkillsInfoTool::new(Some(loader));
-    let result = info.execute("test-skill", &ctx).await.unwrap();
+    // Test with JSON format (how LLM actually calls the tool)
+    let result = info.execute(r#"{"name": "test-skill"}"#, &ctx).await.unwrap();
     assert!(result.contains("test-skill"));
     assert!(result.contains("Does test things"));
 
@@ -609,19 +609,6 @@ async fn test_skills_tools_with_loader() {
     let info2 = SkillsInfoTool::new(None);
     let result = info2.execute("nonexistent", &ctx).await.unwrap();
     assert!(result.contains("skills loader not configured"));
-}
-
-#[tokio::test]
-async fn test_mcp_tool() {
-    let tool = McpTool::new_simulated("search", "Search tool", "test-server");
-    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-
-    let result = tool
-        .execute(r#"{"query": "test"}"#, &ctx)
-        .await
-        .unwrap();
-    assert!(result.contains("MCP/test-server"));
-    assert!(result.contains("search"));
 }
 
 #[test]
@@ -1368,33 +1355,6 @@ fn test_register_shared_tools_with_cron() {
     assert!(tools.contains_key("cron"));
 }
 
-// --- SharedToolConfig default ---
-
-#[test]
-fn test_shared_tool_config_default() {
-    let config = SharedToolConfig::default();
-    assert!(config.web_search.is_none());
-    assert!(config.cluster_rpc.is_none());
-    assert!(config.spawn.is_none());
-    assert!(!config.mcp_enabled);
-    assert!(config.mcp_servers.is_empty());
-    assert!(config.skills_registry.is_none());
-    assert!(config.skills_loader.is_none());
-    assert!(config.workspace.is_none());
-    assert!(config.cron_service.is_none());
-    assert!(config.forge_executor.is_none());
-}
-
-// --- McpTool coverage ---
-
-#[test]
-fn test_mcp_tool_description_and_params() {
-    let tool = McpTool::new_simulated("search", "Search tool", "my-server");
-    assert!(!tool.description().is_empty());
-    let params = tool.parameters();
-    assert!(params.is_object());
-}
-
 // --- Tool trait methods coverage ---
 
 #[test]
@@ -1770,25 +1730,6 @@ fn test_register_shared_tools_with_workspace() {
 }
 
 #[test]
-fn test_shared_tool_config_default_values() {
-    let config = SharedToolConfig::default();
-    assert!(config.web_search.is_none());
-    assert!(config.cluster_rpc.is_none());
-    assert!(config.spawn.is_none());
-    assert!(!config.mcp_enabled);
-    assert!(config.mcp_servers.is_empty());
-    assert!(config.workspace.is_none());
-}
-
-#[test]
-fn test_shared_tool_config_debug_output() {
-    let config = SharedToolConfig::default();
-    let debug = format!("{:?}", config);
-    assert!(debug.contains("SharedToolConfig"));
-    assert!(debug.contains("mcp_enabled"));
-}
-
-#[test]
 fn test_spawn_config_fields() {
     let config = SpawnConfig {
         default_model: "gpt-4".to_string(),
@@ -1796,62 +1737,6 @@ fn test_spawn_config_fields() {
     };
     assert_eq!(config.default_model, "gpt-4");
     assert_eq!(config.max_concurrent, 5);
-}
-
-#[test]
-fn test_mcp_server_config_fields() {
-    let config = McpServerConfig {
-        name: "test-server".to_string(),
-        command: "test-cmd".to_string(),
-        args: vec!["arg1".to_string()],
-        env: std::collections::HashMap::new(),
-        timeout_secs: 30,
-    };
-    assert_eq!(config.name, "test-server");
-    assert_eq!(config.command, "test-cmd");
-    assert_eq!(config.timeout_secs, 30);
-}
-
-#[tokio::test]
-async fn test_register_shared_tools_async_mcp_disabled() {
-    let config = SharedToolConfig {
-        mcp_enabled: false,
-        mcp_servers: vec![McpServerConfig {
-            name: "test".to_string(),
-            command: "test".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            timeout_secs: 30,
-        }],
-        ..Default::default()
-    };
-    // Pass a discovery closure that returns an error
-    let tools = register_shared_tools_async(&config, Some(|_name: String| {
-        async { Err("no mcp".to_string()) }
-    })).await;
-    assert!(!tools.keys().any(|k| k.starts_with("mcp_")));
-}
-
-#[tokio::test]
-async fn test_register_shared_tools_async_mcp_enabled_with_failing_discovery() {
-    let config = SharedToolConfig {
-        mcp_enabled: true,
-        mcp_servers: vec![McpServerConfig {
-            name: "test".to_string(),
-            command: "test".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            timeout_secs: 30,
-        }],
-        ..Default::default()
-    };
-    // Pass a discovery closure that returns an error
-    let tools = register_shared_tools_async(&config, Some(|_name: String| {
-        async { Err("discovery failed".to_string()) }
-    })).await;
-    assert!(tools.contains_key("web_fetch"));
-    // MCP discovery failed, so no MCP tools
-    assert!(!tools.keys().any(|k| k.starts_with("mcp_")));
 }
 
 #[test]
@@ -1897,19 +1782,6 @@ fn test_extract_url_empty() {
 }
 
 #[test]
-fn test_mcp_server_config_debug() {
-    let config = McpServerConfig {
-        name: "test".to_string(),
-        command: "cmd".to_string(),
-        args: vec![],
-        env: std::collections::HashMap::new(),
-        timeout_secs: 30,
-    };
-    let debug = format!("{:?}", config);
-    assert!(debug.contains("test"));
-}
-
-#[test]
 fn test_spawn_config_debug() {
     let config = SpawnConfig {
         default_model: "gpt-4".to_string(),
@@ -1939,94 +1811,6 @@ fn test_web_search_config_with_all_providers() {
 // --- Additional unique coverage tests for loop_tools.rs ---
 
 #[test]
-fn test_shared_tool_config_debug_with_none_fields() {
-    let config = SharedToolConfig::default();
-    let debug = format!("{:?}", config);
-    assert!(debug.contains("SharedToolConfig"));
-    assert!(debug.contains("web_search: None"));
-    assert!(debug.contains("mcp_enabled: false"));
-}
-
-#[test]
-fn test_register_shared_tools_combined_options() {
-    let cron_svc = make_cron_service();
-    let config = SharedToolConfig {
-        web_search: Some(WebSearchConfig {
-            duckduckgo_enabled: true,
-            ..Default::default()
-        }),
-        cluster_rpc: Some(ClusterRpcConfig {
-            local_node_id: "node-1".to_string(),
-            timeout_secs: 60,
-            local_rpc_port: 21949,
-        }),
-        spawn: Some(SpawnConfig {
-            default_model: "test".to_string(),
-            max_concurrent: 5,
-        }),
-        mcp_enabled: true,
-        mcp_servers: vec![McpServerConfig {
-            name: "test-server".to_string(),
-            command: "echo".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            timeout_secs: 30,
-        }],
-        workspace: Some("/tmp/ws".to_string()),
-        cron_service: Some(cron_svc),
-        ..Default::default()
-    };
-    let tools = register_shared_tools(&config);
-    assert!(tools.contains_key("web_search"));
-    assert!(tools.contains_key("cluster_rpc"));
-    assert!(tools.contains_key("spawn"));
-    assert!(tools.contains_key("exec"));
-    assert!(tools.contains_key("cron"));
-}
-
-#[tokio::test]
-async fn test_register_shared_tools_async_with_successful_discovery() {
-    let config = SharedToolConfig {
-        mcp_enabled: true,
-        mcp_servers: vec![McpServerConfig {
-            name: "test-server".to_string(),
-            command: "echo".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            timeout_secs: 30,
-        }],
-        ..Default::default()
-    };
-    let discover_fn = |_server_name: String| {
-        async move {
-            Ok(vec![
-                ("search".to_string(), "Search tool".to_string(), Some(serde_json::json!({"type": "object"}))),
-            ])
-        }
-    };
-    let tools = register_shared_tools_async(&config, Some(discover_fn)).await;
-    // Tool name is format!("mcp_{}_{}", server_name, tool_name)
-    assert!(tools.contains_key("mcp_test-server_search"));
-}
-
-#[tokio::test]
-async fn test_register_shared_tools_async_mcp_enabled_no_discover_fn() {
-    let config = SharedToolConfig {
-        mcp_enabled: true,
-        mcp_servers: vec![McpServerConfig {
-            name: "test".to_string(),
-            command: "echo".to_string(),
-            args: vec![],
-            env: std::collections::HashMap::new(),
-            timeout_secs: 30,
-        }],
-        ..Default::default()
-    };
-    let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools_async(&config, Option::<fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<(String, String, Option<serde_json::Value>)>, String>> + Send>>>::None).await;
-    assert!(tools.contains_key("message"));
-}
-
-#[test]
 fn test_cluster_rpc_channel_config_default() {
     let config = ClusterRpcChannelConfig::default();
     assert!(config.request_timeout.as_secs() > 0);
@@ -2045,70 +1829,6 @@ fn test_setup_cluster_rpc_channel_with_continuation() {
     let cm = Arc::new(crate::loop_continuation::ContinuationManager::new());
     let setup = setup_cluster_rpc_channel(Some(cm));
     assert!(setup.continuation_manager.is_some());
-}
-
-#[tokio::test]
-async fn test_discover_mcp_tools_success() {
-    let result = discover_mcp_tools("test-server", || async {
-        Ok(vec![
-            ("tool1".to_string(), "Tool 1".to_string(), Some(serde_json::json!({"type":"object"}))),
-            ("tool2".to_string(), "Tool 2".to_string(), None),
-        ])
-    }).await.unwrap();
-    assert_eq!(result.server_name, "test-server");
-    assert_eq!(result.tools.len(), 2);
-    assert_eq!(result.tools[0].name, "tool1");
-    assert_eq!(result.tools[1].name, "tool2");
-}
-
-#[tokio::test]
-async fn test_discover_mcp_tools_empty() {
-    let result = discover_mcp_tools("empty-server", || async {
-        Ok(vec![])
-    }).await.unwrap();
-    assert_eq!(result.tools.len(), 0);
-}
-
-#[tokio::test]
-async fn test_discover_mcp_tools_error() {
-    let result = discover_mcp_tools("fail-server", || async {
-        Err("Connection refused".to_string())
-    }).await;
-    assert!(result.is_err());
-    let err_msg = result.err().unwrap();
-    assert!(err_msg.contains("Connection refused"));
-}
-
-#[tokio::test]
-async fn test_discovered_mcp_tool_execute() {
-    let result = discover_mcp_tools("srv", || async {
-        Ok(vec![
-            ("my_tool".to_string(), "My tool".to_string(), None),
-        ])
-    }).await.unwrap();
-    let tool = &result.tools[0];
-    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let exec_result = tool.execute("args", &ctx).await.unwrap();
-    assert!(exec_result.contains("MCP/srv"));
-    assert!(exec_result.contains("my_tool"));
-}
-
-#[test]
-fn test_mcp_tool_with_schema() {
-    let tool = McpTool::new_simulated("test", "A test tool", "server1")
-        .with_schema(serde_json::json!({"type": "object"}));
-    assert!(tool.input_schema.is_some());
-}
-
-#[tokio::test]
-async fn test_mcp_tool_new_custom_executor() {
-    let tool = McpTool::new("custom", "Custom tool", "srv", |args: &str| {
-        let args_owned = args.to_string();
-        async move { Ok(format!("Custom: {}", args_owned)) }
-    });
-    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute("hello", &ctx).await.unwrap();
-    assert_eq!(result, "Custom: hello");
 }
 
 #[tokio::test]
@@ -2159,15 +1879,6 @@ async fn test_spi_tool_invalid_json() {
     } else {
         assert!(result.is_err());
     }
-}
-
-#[test]
-fn test_sanitize_mcp_name() {
-    assert_eq!(sanitize_mcp_name("My Tool"), "my_tool");
-    assert_eq!(sanitize_mcp_name("my-tool"), "my_tool");
-    assert_eq!(sanitize_mcp_name("my.tool"), "my_tool");
-    assert_eq!(sanitize_mcp_name("MyTool"), "mytool");
-    assert_eq!(sanitize_mcp_name("a b c.d-e"), "a_b_c_d_e");
 }
 
 #[tokio::test]
@@ -2576,7 +2287,10 @@ async fn test_install_skill_tool_missing_slug() {
 
     let result = tool.execute(r#"{"name": "test"}"#, &ctx).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("slug parameter is required"));
+    // Empty registry cannot find the skill
+    let err = result.unwrap_err();
+    assert!(err.contains("Failed to install skill") || err.contains("not found") || err.contains("error"),
+        "Expected install failure, got: {}", err);
 }
 
 #[tokio::test]
@@ -2789,20 +2503,6 @@ fn test_register_shared_tools_includes_complete_bootstrap() {
 }
 
 // =========================================================================
-// McpDiscoveryResult fields
-// =========================================================================
-
-#[test]
-fn test_mcp_discovery_result_fields() {
-    let result = McpDiscoveryResult {
-        tools: vec![],
-        server_name: "test".to_string(),
-    };
-    assert!(result.tools.is_empty());
-    assert_eq!(result.server_name, "test");
-}
-
-// =========================================================================
 // Additional percent_decode edge cases
 // =========================================================================
 
@@ -2854,23 +2554,6 @@ fn test_shared_tool_config_clone() {
     };
     let cloned = config.clone();
     assert!(cloned.web_search.is_some());
-}
-
-// =========================================================================
-// register_shared_tools_async: MCP enabled with no servers
-// =========================================================================
-
-#[tokio::test]
-async fn test_register_shared_tools_async_mcp_enabled_no_servers() {
-    let config = SharedToolConfig {
-        mcp_enabled: true,
-        mcp_servers: vec![],
-        ..Default::default()
-    };
-    let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools_async(&config, Option::<fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<(String, String, Option<serde_json::Value>)>, String>> + Send>>>::None).await;
-    assert!(tools.contains_key("message"));
-    // No MCP servers configured -> no MCP tools
-    assert!(!tools.keys().any(|k| k.starts_with("mcp_")));
 }
 
 // =========================================================================
@@ -3253,4 +2936,215 @@ fn test_tool_descriptions_not_empty_all_tools() {
         let params = tool.parameters();
         assert!(params.is_object(), "Tool '{}' has non-object parameters", name);
     }
+}
+
+// =========================================================================
+// McpDiscoverTool tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_mcp_discover_tool_missing_command() {
+    let tool = McpDiscoverTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("{}", &ctx).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("'command' or 'url'"));
+}
+
+#[tokio::test]
+async fn test_mcp_discover_tool_nonexistent_command() {
+    let tool = McpDiscoverTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(
+        r#"{"command": "/nonexistent/path/to/server.exe", "timeout": 2}"#,
+        &ctx,
+    ).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_mcp_discover_tool_url_mode() {
+    let tool = McpDiscoverTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    // URL mode should attempt HTTP connection (will fail since no server running)
+    let result = tool.execute(
+        r#"{"url": "http://127.0.0.1:1/mcp", "timeout": 1}"#,
+        &ctx,
+    ).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("HTTP"));
+}
+
+#[test]
+fn test_format_discovery_result_basic() {
+    let result = nemesis_mcp::manager::DiscoveryResult {
+        server_info: Some(nemesis_mcp::types::ServerInfo {
+            name: "test-server".to_string(),
+            version: "1.0.0".to_string(),
+        }),
+        tools: vec![nemesis_mcp::types::McpTool {
+            name: "do_something".to_string(),
+            description: Some("Does something useful".to_string()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results"}
+                },
+                "required": ["query"]
+            }),
+        }],
+        resources: vec![nemesis_mcp::types::Resource {
+            uri: "file:///test.txt".to_string(),
+            name: "test-file".to_string(),
+            description: Some("A test file".to_string()),
+            mime_type: None,
+        }],
+        prompts: vec![],
+    };
+
+    let output = format_discovery_result(&result);
+    assert!(output.contains("test-server"));
+    assert!(output.contains("1.0.0"));
+    assert!(output.contains("do_something"));
+    assert!(output.contains("Does something useful"));
+    assert!(output.contains("query*"));
+    assert!(output.contains("limit"));
+    assert!(output.contains("test-file"));
+    assert!(output.contains("file:///test.txt"));
+}
+
+#[test]
+fn test_format_discovery_result_empty() {
+    let result = nemesis_mcp::manager::DiscoveryResult {
+        server_info: None,
+        tools: vec![],
+        resources: vec![],
+        prompts: vec![],
+    };
+    let output = format_discovery_result(&result);
+    assert!(output.contains("unknown"));
+    assert!(output.contains("None"));
+}
+
+// =========================================================================
+// McpListTool tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_mcp_list_tool_empty() {
+    let snapshot = Arc::new(parking_lot::RwLock::new(Vec::new()));
+    let tool = McpListTool::new(snapshot);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("{}", &ctx).await.unwrap();
+    assert!(result.contains("No MCP tools"));
+}
+
+#[tokio::test]
+async fn test_mcp_list_tool_with_tools() {
+    let snapshot = Arc::new(parking_lot::RwLock::new(vec![
+        ("mcp_server_tool1".to_string(), "Tool 1 desc".to_string()),
+        ("mcp_server_tool2".to_string(), "Tool 2 desc".to_string()),
+    ]));
+    let tool = McpListTool::new(snapshot);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("{}", &ctx).await.unwrap();
+    assert!(result.contains("mcp_server_tool1"));
+    assert!(result.contains("Tool 1 desc"));
+    assert!(result.contains("mcp_server_tool2"));
+    assert!(result.contains("2"));
+}
+
+#[tokio::test]
+async fn test_mcp_list_tool_dynamic_update() {
+    let snapshot = Arc::new(parking_lot::RwLock::new(Vec::new()));
+    let tool = McpListTool::new(snapshot.clone());
+
+    // Add tools after creating the tool
+    *snapshot.write() = vec![
+        ("mcp_new_tool".to_string(), "New tool".to_string()),
+    ];
+
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("{}", &ctx).await.unwrap();
+    assert!(result.contains("mcp_new_tool"));
+    assert!(result.contains("1"));
+}
+
+// =========================================================================
+// Shared tool registration includes mcp_discover
+// =========================================================================
+
+#[test]
+fn test_shared_tools_include_mcp_discover() {
+    let tools = register_extended_tools(None, None, None);
+    assert!(tools.contains_key("mcp_discover"), "mcp_discover should be registered by default");
+}
+
+// =========================================================================
+// CliReferenceTool tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_cli_reference_tool_overview() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("{}", &ctx).await.unwrap();
+    assert!(result.contains("model"), "overview should contain 'model'");
+    assert!(result.contains("mcp"), "overview should contain 'mcp'");
+    assert!(result.contains("cluster"), "overview should contain 'cluster'");
+    assert!(result.contains("scanner"), "overview should contain 'scanner'");
+    assert!(!result.contains("gateway"), "overview should NOT contain 'gateway'");
+    assert!(!result.contains("shutdown"), "overview should NOT contain 'shutdown'");
+}
+
+#[tokio::test]
+async fn test_cli_reference_tool_specific_command() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"command": "model"}"#, &ctx).await.unwrap();
+    assert!(result.contains("model"));
+    assert!(result.contains("add"));
+    assert!(result.contains("list"));
+    assert!(result.contains("remove"));
+}
+
+#[tokio::test]
+async fn test_cli_reference_tool_unknown_command() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"command": "nonexistent"}"#, &ctx).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Unknown command"));
+}
+
+#[tokio::test]
+async fn test_cli_reference_tool_empty_command() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(r#"{"command": ""}"#, &ctx).await.unwrap();
+    assert!(result.contains("model"), "empty command should return overview");
+}
+
+#[tokio::test]
+async fn test_cli_reference_tool_invalid_json() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute("not json", &ctx).await.unwrap();
+    assert!(result.contains("model"), "invalid JSON should return overview");
+}
+
+#[test]
+fn test_cli_reference_tool_description_and_params() {
+    let tool = CliReferenceTool::new();
+    assert!(!tool.description().is_empty());
+    let params = tool.parameters();
+    assert_eq!(params["type"], "object");
+    assert!(params["properties"]["command"]["type"].is_string());
+}
+
+#[test]
+fn test_shared_tools_include_cli_reference() {
+    let tools = register_extended_tools(None, None, None);
+    assert!(tools.contains_key("cli_reference"), "cli_reference should be registered by default");
 }

@@ -13,7 +13,8 @@ use tracing::{info, warn};
 use crate::adapter::{self, Tool};
 use crate::client::{Client, McpClient};
 use crate::stdio_transport::StdioTransport;
-use crate::types::ServerConfig;
+use crate::http_transport::HttpTransport;
+use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 
 // ---------------------------------------------------------------------------
 // Config file format
@@ -238,9 +239,144 @@ impl McpManager {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// One-shot discovery (for mcp_discover tool)
+// ---------------------------------------------------------------------------
+
+/// Result of one-shot MCP server discovery.
+///
+/// Contains raw metadata (not adapter objects) for formatting/display.
+pub struct DiscoveryResult {
+    /// Server name and version from the initialize handshake.
+    pub server_info: Option<ServerInfo>,
+    /// Tools exposed by the server.
+    pub tools: Vec<McpTool>,
+    /// Resources exposed by the server.
+    pub resources: Vec<Resource>,
+    /// Prompts exposed by the server.
+    pub prompts: Vec<crate::types::Prompt>,
+}
+
+/// One-shot discovery: connect to an MCP server, collect metadata, close.
+///
+/// This is intended for the `mcp_discover` agent tool. It does NOT keep
+/// the client alive — the subprocess is killed after discovery.
+pub async fn discover_server_metadata(
+    command: &str,
+    args: Vec<String>,
+    env: Vec<String>,
+    timeout_secs: u64,
+) -> Result<DiscoveryResult, String> {
+    let transport = StdioTransport::new(command, args, env);
+    let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
+
+    let duration = std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 });
+
+    // Initialize with timeout
+    let init_result = tokio::time::timeout(duration, client.initialize()).await;
+    match init_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            let _ = client.close().await;
+            return Err(format!(
+                "MCP server '{}' initialization failed: {}. \
+                 If this is an HTTP-based MCP server, stdio discovery will not work.",
+                command, e
+            ));
+        }
+        Err(_) => {
+            let _ = client.close().await;
+            return Err(format!(
+                "MCP server '{}' timed out after {}s. \
+                 If this is an HTTP-based MCP server, use the 'url' parameter instead.",
+                command, timeout_secs
+            ));
+        }
+    }
+
+    let server_info = client.server_info().cloned();
+
+    // Collect metadata — each call is best-effort
+    let tools = client.list_tools().await.unwrap_or_else(|e| {
+        warn!("[McpManager] list_tools failed: {}", e);
+        Vec::new()
+    });
+    let resources = client.list_resources().await.unwrap_or_else(|e| {
+        warn!("[McpManager] list_resources failed: {}", e);
+        Vec::new()
+    });
+    let prompts = client.list_prompts().await.unwrap_or_else(|e| {
+        warn!("[McpManager] list_prompts failed: {}", e);
+        Vec::new()
+    });
+
+    // Always close to kill the subprocess
+    let _ = client.close().await;
+
+    Ok(DiscoveryResult {
+        server_info,
+        tools,
+        resources,
+        prompts,
+    })
+}
+
+/// One-shot HTTP discovery: connect to an MCP server via Streamable HTTP,
+/// collect metadata, close.
+///
+/// This is the HTTP counterpart of [`discover_server_metadata`].
+pub async fn discover_server_metadata_http(
+    url: &str,
+    timeout_secs: u64,
+) -> Result<DiscoveryResult, String> {
+    let transport = HttpTransport::new(url);
+    let mut client: Box<dyn Client> = Box::new(McpClient::new(Box::new(transport)));
+
+    let duration = std::time::Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 15 });
+
+    let init_result = tokio::time::timeout(duration, client.initialize()).await;
+    match init_result {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            let _ = client.close().await;
+            return Err(format!(
+                "MCP HTTP server '{}' initialization failed: {}",
+                url, e
+            ));
+        }
+        Err(_) => {
+            let _ = client.close().await;
+            return Err(format!(
+                "MCP HTTP server '{}' timed out after {}s",
+                url, timeout_secs
+            ));
+        }
+    }
+
+    let server_info = client.server_info().cloned();
+
+    let tools = client.list_tools().await.unwrap_or_else(|e| {
+        warn!("[McpManager] HTTP list_tools failed: {}", e);
+        Vec::new()
+    });
+    let resources = client.list_resources().await.unwrap_or_else(|e| {
+        warn!("[McpManager] HTTP list_resources failed: {}", e);
+        Vec::new()
+    });
+    let prompts = client.list_prompts().await.unwrap_or_else(|e| {
+        warn!("[McpManager] HTTP list_prompts failed: {}", e);
+        Vec::new()
+    });
+
+    let _ = client.close().await;
+
+    Ok(DiscoveryResult {
+        server_info,
+        tools,
+        resources,
+        prompts,
+    })
+}
 
 #[cfg(test)]
 mod tests;

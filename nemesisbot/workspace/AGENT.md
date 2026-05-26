@@ -118,6 +118,8 @@
 
 技能提供你的工具。当你需要时，查看它的 `SKILL.md`。在 `TOOLS.md` 中保留本地笔记（相机名称、SSH详细信息、语音偏好）。
 
+使用 `cli_reference` 工具查询可用的 CLI 命令及用法，当你需要帮助用户管理系统（模型、MCP、Scanner、集群等）时调用它。
+
 ### MCP 工具
 
 除了标准工具，你还可以通过 MCP (Model Context Protocol) 访问外部服务器提供的工具。
