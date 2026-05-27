@@ -99,6 +99,7 @@ function handleWSMessage(data: any) {
   nextTick(() => {
     scrollToBottom()
     renderCodeBlocks()
+    if (!chatStore.streaming) chatInput.value?.focus()
   })
 }
 
@@ -169,6 +170,7 @@ function sendMessage() {
 
   send(content)
   nextTick(() => scrollToBottom())
+  nextTick(() => chatInput.value?.focus())
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -228,6 +230,7 @@ onMounted(() => {
   setupScrollListener()
 
   nextTick(() => {
+    chatInput.value?.focus()
     if (chatMessages.value && scrollHandler) {
       chatMessages.value.addEventListener('scroll', scrollHandler)
     }
