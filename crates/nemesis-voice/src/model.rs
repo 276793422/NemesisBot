@@ -4,12 +4,35 @@
 //! Models stored in {data_dir}/{category}/{model_name}/
 
 use anyhow::{Context, Result};
+use std::cell::RefCell;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::config::AppConfig;
+
+// ---------------------------------------------------------------------------
+// Progress reporting — thread-local callback for UI progress updates
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static PROGRESS_CB: RefCell<Option<Box<dyn Fn(&str) + Send + 'static>>> = RefCell::new(None);
+}
+
+/// Set a progress callback for the current thread's download operations.
+/// Called with messages like "model.onnx ... 70% (217.4/310.5 MB, 7066 KB/s)".
+pub fn set_progress(cb: Option<Box<dyn Fn(&str) + Send + 'static>>) {
+    PROGRESS_CB.with(|p| *p.borrow_mut() = cb);
+}
+
+fn report_progress(msg: &str) {
+    PROGRESS_CB.with(|p| {
+        if let Some(ref cb) = *p.borrow() {
+            cb(msg);
+        }
+    });
+}
 
 /// Check if a model directory has at least the expected files.
 fn check_model_files(dir: &Path, expected_files: &[(&str, &str)]) -> bool {
@@ -186,6 +209,7 @@ fn download_model_files(
 
     let source = if repo.is_empty() { "direct URL" } else { repo };
     tracing::info!("[{}] Downloading from {} ...", model_name, source);
+    report_progress(&format!("开始下载 {} ...", model_name));
 
     let mut client_builder = reqwest::blocking::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0")
@@ -213,7 +237,9 @@ fn download_model_files(
         if target_file.exists() {
             let size = fs::metadata(&target_file)?.len();
             if size > 0 {
-                tracing::info!("{} (already exists, {:.1} MB)", file.local, size as f64 / (1024.0 * 1024.0));
+                let msg = format!("{} (已存在, {:.1} MB)", file.local, size as f64 / (1024.0 * 1024.0));
+                tracing::info!("{}", msg);
+                report_progress(&msg);
                 continue;
             }
         }
@@ -234,6 +260,7 @@ fn download_model_files(
     }
 
     tracing::info!("[{}] Download complete.", model_name);
+    report_progress(&format!("{} 下载完成", model_name));
     Ok(())
 }
 
@@ -275,7 +302,9 @@ fn download_file_resume(
         if total_size.map_or(false, |t| existing_size >= t) {
             fs::rename(part_file, target_file)
                 .with_context(|| format!("Failed to rename {}", display_name))?;
-            tracing::info!("{} (complete, {:.1} MB)", display_name, existing_size as f64 / (1024.0 * 1024.0));
+            let msg = format!("{} (完整, {:.1} MB)", display_name, existing_size as f64 / (1024.0 * 1024.0));
+            tracing::info!("{}", msg);
+            report_progress(&msg);
             return Ok(());
         }
 
@@ -290,12 +319,18 @@ fn download_file_resume(
             let remaining = total_size.map_or("?".to_string(), |t| {
                 format!("{:.1} MB", (t - existing_size) as f64 / (1024.0 * 1024.0))
             });
-            tracing::info!(
-                "{} <- {} (resuming from {:.1} MB, {} remaining)",
+            let msg = format!(
+                "{} (续传 {:.1} MB, 剩余 {})",
+                display_name,
+                existing_size as f64 / (1024.0 * 1024.0),
+                remaining
+            );
+            tracing::info!("{} <- {} (resuming from {:.1} MB, {} remaining)",
                 display_name, url,
                 existing_size as f64 / (1024.0 * 1024.0),
                 remaining
             );
+            report_progress(&msg);
 
             let mut file = fs::OpenOptions::new()
                 .append(true)
@@ -313,6 +348,7 @@ fn download_file_resume(
 
     // Full download
     tracing::info!("{} <- {}", display_name, url);
+    report_progress(&format!("{} 开始下载...", display_name));
 
     let resp = client
         .get(url)
@@ -365,26 +401,30 @@ fn stream_to_file(
                 }
 
                 let now = Instant::now();
-                if now.duration_since(last_print).as_secs() >= 5 {
+                if now.duration_since(last_print).as_secs() >= 2 {
                     let elapsed = now.duration_since(start).as_secs_f64();
                     let downloaded = start_offset + written;
                     let speed_kbs = written as f64 / elapsed / 1024.0;
                     if let Some(total) = total_size {
                         let pct = downloaded as f64 / total as f64 * 100.0;
-                        tracing::info!(
+                        let msg = format!(
                             "{} ... {:.0}% ({:.1}/{:.1} MB, {:.0} KB/s)",
                             display_name, pct,
                             downloaded as f64 / (1024.0 * 1024.0),
                             total as f64 / (1024.0 * 1024.0),
                             speed_kbs
                         );
+                        tracing::info!("{}", msg);
+                        report_progress(&msg);
                     } else {
-                        tracing::info!(
+                        let msg = format!(
                             "{} ... {:.1} MB downloaded ({:.0} KB/s)",
                             display_name,
                             downloaded as f64 / (1024.0 * 1024.0),
                             speed_kbs
                         );
+                        tracing::info!("{}", msg);
+                        report_progress(&msg);
                     }
                     last_print = now;
                 }
@@ -401,12 +441,14 @@ fn stream_to_file(
     let elapsed = start.elapsed().as_secs_f64();
     let total_downloaded = start_offset + written;
     let speed_kbs = if elapsed > 0.0 { written as f64 / elapsed / 1024.0 } else { 0.0 };
-    tracing::info!(
-        "{} saved ({:.1} MB total, {:.0} KB/s)",
+    let msg = format!(
+        "{} 下载完成 ({:.1} MB, {:.0} KB/s)",
         display_name,
         total_downloaded as f64 / (1024.0 * 1024.0),
         speed_kbs
     );
+    tracing::info!("{}", msg);
+    report_progress(&msg);
 
     Ok(())
 }

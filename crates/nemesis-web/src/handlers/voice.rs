@@ -33,6 +33,23 @@ fn setup_cancel() -> &'static std::sync::Mutex<Option<CancellationToken>> {
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+// Per-model install lock — prevents concurrent downloads of the same model.
+// Simple HashSet: insert on start, remove on finish. No nesting, no deadlock.
+fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn model_label(model: &str) -> &str {
+    match model {
+        "stt" => "STT",
+        "vad" => "VAD",
+        "tts" => "TTS",
+        "punct" => "标点",
+        _ => model,
+    }
+}
+
 // Global STT session (only one active dictation at a time)
 fn stt_state() -> &'static Arc<Mutex<Option<SttSession>>> {
     static INSTANCE: OnceLock<Arc<Mutex<Option<SttSession>>>> = OnceLock::new();
@@ -331,6 +348,15 @@ impl VoiceHandler {
     }
 
     async fn cmd_install_model(&self, voice_dir: &std::path::Path, model: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        // Acquire per-model install lock
+        {
+            let mut locks = install_locks().lock().unwrap();
+            if locks.contains(model) {
+                return Err(format!("{}模型正在安装中，请稍候", model_label(model)));
+            }
+            locks.insert(model.to_string());
+        }
+
         let cancel = CancellationToken::new();
         {
             let mut guard = setup_cancel().lock().unwrap();
@@ -349,6 +375,19 @@ impl VoiceHandler {
 
             let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
 
+            // Set up progress callback — pushes download progress to UI via SSE
+            {
+                let hub_progress = hub.clone();
+                let mt = model_type.clone();
+                nemesis_voice::set_progress(Some(Box::new(move |msg: &str| {
+                    hub_progress.publish("voice-setup", serde_json::json!({
+                        "phase": "model", "status": "progress",
+                        "model": &mt,
+                        "message": msg,
+                    }));
+                })));
+            }
+
             hub.publish("voice-setup", serde_json::json!({
                 "phase": "model", "status": "starting",
                 "model": &model_type,
@@ -360,6 +399,7 @@ impl VoiceHandler {
                     "phase": "model", "status": "cancelled",
                     "message": "安装已取消"
                 }));
+                nemesis_voice::set_progress(None);
                 return Err("cancelled".to_string());
             }
 
@@ -370,6 +410,8 @@ impl VoiceHandler {
                 "punct" => nemesis_voice::model::ensure_punct_model(&cfg).map_err(|e| e.to_string()),
                 _ => Err(format!("unknown model type: {}", model_type)),
             };
+
+            nemesis_voice::set_progress(None);
 
             let result: Result<(), String> = result.map(|_| ());
 
@@ -394,6 +436,13 @@ impl VoiceHandler {
         }).await
             .map_err(|e| format!("install task panicked: {}", e))?;
 
+        // Release install lock
+        {
+            let mut locks = install_locks().lock().unwrap();
+            locks.remove(model);
+        }
+
+        // Clear cancel token
         {
             let mut guard = setup_cancel().lock().unwrap();
             *guard = None;

@@ -23,8 +23,9 @@ export function useWSAPI() {
   /**
    * Send a WS API request and return a Promise that resolves with the
    * response data or rejects with an error string.
+   * @param timeoutMs Timeout in ms. 0 = no timeout. Undefined = default (30s).
    */
-  function request(module: string, cmd: string, data?: any): Promise<any> {
+  function request(module: string, cmd: string, data?: any, timeoutMs?: number): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!_sendRaw) {
         reject('WS not initialized')
@@ -32,10 +33,13 @@ export function useWSAPI() {
       }
 
       const reqId = crypto.randomUUID()
-      const timer = setTimeout(() => {
-        removePendingRequest(reqId)
-        reject(`timeout: ${module}.${cmd}`)
-      }, REQUEST_TIMEOUT)
+      const effectiveTimeout = timeoutMs !== undefined ? timeoutMs : REQUEST_TIMEOUT
+      const timer = effectiveTimeout > 0
+        ? setTimeout(() => {
+            removePendingRequest(reqId)
+            reject(`timeout: ${module}.${cmd}`)
+          }, effectiveTimeout)
+        : null
 
       registerPendingRequest(reqId, resolve, reject, timer)
 

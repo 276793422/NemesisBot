@@ -8,7 +8,7 @@
 const pendingRequests = new Map<string, {
   resolve: (data: any) => void
   reject: (error: string) => void
-  timer: ReturnType<typeof setTimeout>
+  timer: ReturnType<typeof setTimeout> | null
 }>()
 
 export const REQUEST_TIMEOUT = 30000
@@ -20,7 +20,7 @@ export function registerPendingRequest(
   reqId: string,
   resolve: (data: any) => void,
   reject: (error: string) => void,
-  timer: ReturnType<typeof setTimeout>,
+  timer: ReturnType<typeof setTimeout> | null,
 ) {
   pendingRequests.set(reqId, { resolve, reject, timer })
 }
@@ -43,7 +43,7 @@ export function handleWSResponse(data: any): boolean {
   const pending = pendingRequests.get(data.reqId)
   if (!pending) return false
 
-  clearTimeout(pending.timer)
+  if (pending.timer) clearTimeout(pending.timer)
   pendingRequests.delete(data.reqId)
 
   if (data.error) {

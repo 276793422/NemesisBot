@@ -111,7 +111,7 @@ async function checkEnv() {
 async function oneClickSetup() {
   setupProgress.value = '正在安装...'
   try {
-    await request('voice', 'setup')
+    await request('voice', 'setup', undefined, 0)
     toast.success('一键安装完成')
     setupProgress.value = ''
     await loadStatus()
@@ -134,7 +134,7 @@ async function stopSetup() {
 async function installRuntime() {
   setupProgress.value = '正在安装运行库...'
   try {
-    await request('voice', 'install_runtime')
+    await request('voice', 'install_runtime', undefined, 0)
     toast.success('运行库安装完成')
     setupProgress.value = ''
     await loadStatus()
@@ -147,7 +147,7 @@ async function installRuntime() {
 async function installModel(model: string, label: string) {
   setupProgress.value = `正在安装${label}模型...`
   try {
-    await request('voice', 'install_model', { model })
+    await request('voice', 'install_model', { model }, 0)
     toast.success(`${label}模型安装完成`)
     setupProgress.value = ''
     await loadStatus()
