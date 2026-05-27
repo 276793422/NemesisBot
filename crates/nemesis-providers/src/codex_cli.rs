@@ -188,6 +188,8 @@ impl CodexCliProvider {
                             completion_tokens: u.output_tokens,
                             total_tokens: prompt + u.output_tokens,
                             cached_tokens: None,
+                            cache_creation_tokens: None,
+                            cache_read_tokens: None,
                         });
                     }
                 }

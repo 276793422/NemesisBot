@@ -743,6 +743,8 @@ impl LlmProvider for ProviderAdapter {
                         completion_tokens: u.completion_tokens,
                         total_tokens: u.total_tokens,
                         cached_tokens: u.cached_tokens,
+                        cache_creation_tokens: u.cache_creation_tokens,
+                        cache_read_tokens: u.cache_read_tokens,
                     }),
                     raw_request_body: resp.raw_request_body,
                     raw_response_body: resp.raw_response_body,
@@ -1888,6 +1890,28 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
+    // Step 9b: Create DataStore for usage statistics
+    let data_store = {
+        let data_dir = home.join("workspace").join("data");
+        let db_path = data_dir.join("nemesisbot_data.db");
+        match nemesis_data::DataStore::open(&db_path) {
+            Ok(store) => {
+                info!("[Gateway] DataStore opened at {}", db_path.display());
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                warn!("[Gateway] Failed to open DataStore: {e}, usage statistics disabled");
+                None
+            }
+        }
+    };
+
+    // Inject DataStore into agent loop for usage recording
+    if let Some(ref ds) = data_store {
+        agent_loop.set_data_store(ds.clone());
+        info!("[Gateway] DataStore injected into agent loop");
+    }
+
     // Wrap agent_loop in Arc for shared access (heartbeat handler, etc.)
     let agent_loop = Arc::new(agent_loop);
 
@@ -1971,6 +1995,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject agent service into web server for start/stop control
     web_server.set_agent_service(agent_adapter.clone());
     info!("[Gateway] Agent service injected into web server");
+
+    // Inject DataStore into web server for usage statistics API
+    if let Some(ref ds) = data_store {
+        web_server.set_data_store(ds.clone());
+        info!("[Gateway] DataStore injected into web server");
+    }
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;

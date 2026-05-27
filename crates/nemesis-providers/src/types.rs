@@ -61,6 +61,12 @@ pub struct UsageInfo {
     /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens in prompt_tokens_details).
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "prompt_cache_hit_tokens")]
     pub cached_tokens: Option<i64>,
+    /// Cache creation tokens (Anthropic: cache_creation_input_tokens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<i64>,
+    /// Cache read tokens (Anthropic: cache_read_input_tokens).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<i64>,
 }
 
 /// A message in the conversation.

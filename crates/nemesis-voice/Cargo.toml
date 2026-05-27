@@ -3,6 +3,10 @@ name = "nemesis-voice"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["download"]
+download = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -10,7 +14,14 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
+toml = { workspace = true }
+futures = { workspace = true }
+nemesis-channels = { workspace = true }
 
-[dev-dependencies]
-tempfile = "3"
-wiremock = "0.6"
+[target.'cfg(target_os = "windows")'.dependencies]
+cpal = "0.15"
+libc = "0.2"
+libloading = { workspace = true }
+
+[build-dependencies]
+cc = "1"

@@ -361,6 +361,8 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
             completion_tokens: completion,
             total_tokens: prompt + completion,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         })
     } else {
         None

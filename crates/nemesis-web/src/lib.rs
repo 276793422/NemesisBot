@@ -16,6 +16,7 @@
 
 pub mod server;
 pub mod api_handlers;
+pub mod api_usage;
 pub mod cors;
 pub mod events;
 pub mod handlers;

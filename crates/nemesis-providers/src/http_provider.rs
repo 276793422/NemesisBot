@@ -22,6 +22,8 @@ fn extract_usage(u: &serde_json::Value) -> UsageInfo {
         completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
         total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
         cached_tokens: cached,
+        cache_creation_tokens: None,
+        cache_read_tokens: cached,
     }
 }
 

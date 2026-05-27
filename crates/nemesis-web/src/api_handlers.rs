@@ -67,6 +67,8 @@ pub struct AppState {
     pub ws_router: Option<Arc<crate::ws_router::WsRouter>>,
     /// Agent loop service for start/stop/status control.
     pub agent_service: Option<Arc<dyn AgentLoopService>>,
+    /// Data store for usage statistics queries.
+    pub data_store: Option<Arc<nemesis_data::DataStore>>,
 }
 
 impl AppState {

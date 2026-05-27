@@ -88,6 +88,10 @@ pub struct ObserverUsageInfo {
     pub total_tokens: i64,
     /// Cached prompt tokens (DeepSeek/OpenAI prefix caching).
     pub cached_tokens: Option<i64>,
+    /// Cache creation tokens (Anthropic).
+    pub cache_creation_tokens: Option<i64>,
+    /// Cache read tokens (Anthropic).
+    pub cache_read_tokens: Option<i64>,
 }
 
 /// An event emitted by the observer system.
@@ -398,6 +402,8 @@ impl ObserverEvent {
                         "completion_tokens": u.completion_tokens,
                         "total_tokens": u.total_tokens,
                         "cached_tokens": u.cached_tokens,
+                        "cache_creation_tokens": u.cache_creation_tokens,
+                        "cache_read_tokens": u.cache_read_tokens,
                     })),
                 }),
             ),
@@ -783,6 +789,8 @@ pub struct AgentLoopExecutor {
     context_window: usize,
     /// Optional continuation manager for async cluster RPC.
     continuation_manager: Option<Arc<crate::loop_continuation::ContinuationManager>>,
+    /// Optional data store for recording LLM usage statistics.
+    data_store: Option<Arc<nemesis_data::DataStore>>,
 }
 
 impl AgentLoopExecutor {
@@ -823,6 +831,7 @@ impl AgentLoopExecutor {
             session_persistence: SessionPersistence::new_in_memory(),
             context_window: 128_000,
             continuation_manager: None,
+            data_store: None,
         }
     }
 
@@ -853,6 +862,11 @@ impl AgentLoopExecutor {
     /// Mirrors Go's `SetObserverManager()`.
     pub fn set_observer_manager(&mut self, mgr: Arc<nemesis_observer::Manager>) {
         self.observer_manager = Some(mgr);
+    }
+
+    /// Set the data store for recording LLM usage statistics.
+    pub fn set_data_store(&mut self, store: Arc<nemesis_data::DataStore>) {
+        self.data_store = Some(store);
     }
 
     /// Get the observer manager, if set.
@@ -1261,6 +1275,31 @@ impl AgentLoopExecutor {
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
             });
+
+            // Record usage statistics if data store is available.
+            if let Some(ref ds) = self.data_store {
+                if let Some(ref usage) = response.usage {
+                    let log = nemesis_data::RequestLog {
+                        id: 0,
+                        trace_id: trace_id.to_string(),
+                        model: self.config.model.clone(),
+                        provider_type: String::new(),
+                        input_tokens: usage.prompt_tokens,
+                        output_tokens: usage.completion_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
+                        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+                        total_cost_usd: 0.0,
+                        latency_ms: round_duration.as_millis() as i64,
+                        status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
+                        error_message: None,
+                        is_streaming: false,
+                        created_at: chrono::Utc::now().timestamp(),
+                    };
+                    if let Err(e) = ds.insert_request_log(&log) {
+                        tracing::warn!("[AgentLoopExecutor] Failed to record usage: {e}");
+                    }
+                }
+            }
 
             // Check if no tool calls - we're done.
             if response.tool_calls.is_empty() || response.finished {

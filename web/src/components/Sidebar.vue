@@ -25,6 +25,7 @@ const navGroups = [
     items: [
       { id: 'chat', label: '聊天', path: '/', icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' },
       { id: 'overview', label: '概览', path: '/overview', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z' },
+      { id: 'usage', label: '使用统计', path: '/usage', icon: 'M18 20V10M12 20V4M6 20v-6' },
     ],
   },
   {

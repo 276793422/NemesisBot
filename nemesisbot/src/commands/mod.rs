@@ -20,4 +20,5 @@ pub mod shutdown;
 pub mod cors;
 pub mod migrate;
 pub mod daemon;
+pub mod voice;
 pub mod test_cmd;

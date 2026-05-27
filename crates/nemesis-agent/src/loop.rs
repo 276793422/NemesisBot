@@ -356,6 +356,8 @@ pub struct AgentLoop {
     /// Snapshot of registered MCP tool names and descriptions.
     /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
     mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
+    /// Optional data store for recording LLM usage statistics.
+    data_store: Option<Arc<nemesis_data::DataStore>>,
 }
 
 impl AgentLoop {
@@ -386,6 +388,7 @@ impl AgentLoop {
             security_plugin: None,
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            data_store: None,
         }
     }
 
@@ -447,6 +450,7 @@ impl AgentLoop {
             security_plugin: None,
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            data_store: None,
         }
     }
 
@@ -670,6 +674,11 @@ impl AgentLoop {
         manager: Arc<crate::loop_continuation::ContinuationManager>,
     ) {
         self.continuation_manager = Some(manager);
+    }
+
+    /// Set the data store for recording LLM usage statistics.
+    pub fn set_data_store(&mut self, store: Arc<nemesis_data::DataStore>) {
+        self.data_store = Some(store);
     }
 
     /// Get the observer manager, if set.
@@ -2300,6 +2309,31 @@ impl AgentLoop {
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
             });
+
+            // Record usage statistics if data store is available.
+            if let Some(ref ds) = self.data_store {
+                if let Some(ref usage) = response.usage {
+                    let log = nemesis_data::RequestLog {
+                        id: 0,
+                        trace_id: trace_id.to_string(),
+                        model: self.config.model.clone(),
+                        provider_type: String::new(),
+                        input_tokens: usage.prompt_tokens,
+                        output_tokens: usage.completion_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
+                        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+                        total_cost_usd: 0.0,
+                        latency_ms: round_duration.as_millis() as i64,
+                        status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
+                        error_message: None,
+                        is_streaming: false,
+                        created_at: chrono::Utc::now().timestamp(),
+                    };
+                    if let Err(e) = ds.insert_request_log(&log) {
+                        tracing::warn!("[AgentLoop] Failed to record usage: {e}");
+                    }
+                }
+            }
 
             if response.tool_calls.is_empty() || response.finished {
                 // No tool calls: this is the final response.

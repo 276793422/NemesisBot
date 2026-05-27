@@ -1,0 +1,161 @@
+# NewSaySomething config
+# 模型下载地址支持 HuggingFace 镜像（hf-mirror.com）或 ModelScope
+
+[stt]
+model_name = "sensevoice-small"
+language = "auto"
+use_itn = true
+num_threads = 1
+
+[vad]
+model_name = "silero_vad"
+threshold = 0.5
+min_silence_duration = 0.3
+min_speech_duration = 0.25
+max_speech_duration = 30.0
+window_size = 512
+
+[tts]
+model_name = "kokoro-multi-lang-v1_1"
+speaker_id = 45
+speed = 1.0
+num_threads = 4
+
+[audio]
+capture_device = ""
+playback_device = ""
+target_sample_rate = 16000
+gain = 3.0
+energy_threshold = 0.015
+
+[models]
+dir = "./data"
+auto_download = true
+
+# ============================================================
+# 代理配置
+# 支持格式：
+#   http://host:port     — HTTP/HTTPS 代理
+#   socks5://host:port   — SOCKS5 代理
+# 留空表示不使用代理
+# ============================================================
+[models.proxy]
+url = ""
+
+# ============================================================
+# 模型下载配置
+# mirror: 下载源前缀，可切换 hf-mirror.com / modelscope / 原始 huggingface
+# 每个模型定义 base_url（仓库地址）和 files（需要下载的文件列表）
+# ============================================================
+
+[models.mirror]
+# 默认使用 hf-mirror.com（国内可访问的 HuggingFace 镜像）
+base = "https://hf-mirror.com"
+
+[[models.sources]]
+name = "sensevoice-small"
+category = "stt"
+repo = "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
+files = [
+    { local = "model.onnx", remote = "model.int8.onnx" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+]
+
+[[models.sources]]
+name = "silero_vad"
+category = "vad"
+repo = ""   # Not on HuggingFace; uses direct URL below
+files = [
+    { local = "silero_vad.onnx", remote = "", url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx" },
+]
+
+[[models.sources]]
+name = "vits-melo-tts-zh_en"
+category = "tts"
+repo = "csukuangfj/vits-melo-tts-zh_en"
+files = [
+    { local = "model.onnx", remote = "model.onnx" },
+    { local = "lexicon.txt", remote = "lexicon.txt" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+    { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
+    { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
+    { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
+    { local = "dict/idf.utf8", remote = "dict/idf.utf8" },
+    { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
+]
+
+[[models.sources]]
+name = "sherpa-onnx-vits-zh-ll"
+category = "tts"
+repo = "csukuangfj/sherpa-onnx-vits-zh-ll"
+files = [
+    { local = "model.onnx", remote = "model.onnx" },
+    { local = "lexicon.txt", remote = "lexicon.txt" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+]
+
+[[models.sources]]
+name = "kokoro-int8-multi-lang-v1_1"
+category = "tts"
+repo = "csukuangfj/kokoro-int8-multi-lang-v1_1"
+files = [
+    { local = "model.onnx", remote = "model.int8.onnx" },
+    { local = "voices.bin", remote = "voices.bin" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+    { local = "lexicon-us-en.txt", remote = "lexicon-us-en.txt" },
+    { local = "lexicon-zh.txt", remote = "lexicon-zh.txt" },
+    { local = "date-zh.fst", remote = "date-zh.fst" },
+    { local = "number-zh.fst", remote = "number-zh.fst" },
+    { local = "phone-zh.fst", remote = "phone-zh.fst" },
+    { local = "espeak-ng-data/phontab", remote = "espeak-ng-data/phontab" },
+    { local = "espeak-ng-data/phonindex", remote = "espeak-ng-data/phonindex" },
+    { local = "espeak-ng-data/phondata", remote = "espeak-ng-data/phondata" },
+    { local = "espeak-ng-data/phondata-manifest", remote = "espeak-ng-data/phondata-manifest" },
+    { local = "espeak-ng-data/intonations", remote = "espeak-ng-data/intonations" },
+    { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
+    { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
+    { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
+    { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
+    { local = "dict/idf.utf8", remote = "dict/idf.utf8" },
+    { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
+]
+
+[[models.sources]]
+name = "kokoro-multi-lang-v1_1"
+category = "tts"
+repo = "csukuangfj/kokoro-multi-lang-v1_1"
+files = [
+    { local = "model.onnx", remote = "model.onnx" },
+    { local = "voices.bin", remote = "voices.bin" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+    { local = "lexicon-us-en.txt", remote = "lexicon-us-en.txt" },
+    { local = "lexicon-zh.txt", remote = "lexicon-zh.txt" },
+    # FST files for Chinese text normalization
+    { local = "date-zh.fst", remote = "date-zh.fst" },
+    { local = "number-zh.fst", remote = "number-zh.fst" },
+    { local = "phone-zh.fst", remote = "phone-zh.fst" },
+    # espeak-ng-data core
+    { local = "espeak-ng-data/phontab", remote = "espeak-ng-data/phontab" },
+    { local = "espeak-ng-data/phonindex", remote = "espeak-ng-data/phonindex" },
+    { local = "espeak-ng-data/phondata", remote = "espeak-ng-data/phondata" },
+    { local = "espeak-ng-data/phondata-manifest", remote = "espeak-ng-data/phondata-manifest" },
+    { local = "espeak-ng-data/intonations", remote = "espeak-ng-data/intonations" },
+    # Language dicts (Chinese + English minimum)
+    { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
+    { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    # Jieba dict for Chinese word segmentation
+    { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
+    { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
+    { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
+    { local = "dict/idf.utf8", remote = "dict/idf.utf8" },
+    { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
+]
+
+[[models.sources]]
+name = "ct-transformer-zh-en"
+category = "punct"
+repo = "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12"
+files = [
+    { local = "model.onnx", remote = "model.onnx" },
+]

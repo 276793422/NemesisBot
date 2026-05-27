@@ -4,6 +4,7 @@ members = [
     "crates/nemesis-types",
     "crates/nemesis-bus",
     "crates/nemesis-config",
+    "crates/nemesis-data",
     "crates/nemesis-observer",
     "crates/nemesis-security",
     "crates/nemesis-providers",
@@ -91,7 +92,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 regex = "1"
 
 # HTTP
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking", "multipart", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking", "multipart", "rustls-tls", "socks"] }
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
@@ -122,6 +123,7 @@ tokio-test = "0.4"
 nemesis-types = { path = "crates/nemesis-types" }
 nemesis-bus = { path = "crates/nemesis-bus" }
 nemesis-config = { path = "crates/nemesis-config" }
+nemesis-data = { path = "crates/nemesis-data" }
 nemesis-observer = { path = "crates/nemesis-observer" }
 nemesis-security = { path = "crates/nemesis-security" }
 nemesis-providers = { path = "crates/nemesis-providers" }

@@ -149,6 +149,11 @@ enum Commands {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
     },
+    /// Manage local voice pipeline
+    Voice {
+        #[command(subcommand)]
+        action: commands::voice::VoiceAction,
+    },
     /// Manage enhanced memory
     Memory {
         #[command(subcommand)]
@@ -517,6 +522,10 @@ async fn main() -> Result<()> {
         Commands::Scanner { action } => {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
+        }
+        Commands::Voice { action } => {
+            common::ensure_default_logger();
+            commands::voice::run(action, cli.local)?;
         }
         Commands::Memory { action } => {
             common::ensure_default_logger();

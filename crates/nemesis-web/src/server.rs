@@ -14,6 +14,7 @@ use crate::api_handlers::{
     handle_api_version, handle_api_models, handle_api_sessions, handle_api_events,
     handle_api_readme, handle_api_license,
 };
+use crate::api_usage::{handle_api_usage_summary, handle_api_usage_trends, handle_api_usage_logs};
 use crate::cors::dev_cors_layer;
 use crate::events::EventHub;
 use crate::session::SessionManager;
@@ -117,6 +118,8 @@ pub struct WebServer {
     streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
     /// Agent loop service for start/stop/status control.
     agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
+    /// Data store for usage statistics queries.
+    data_store: Option<Arc<nemesis_data::DataStore>>,
 }
 
 impl WebServer {
@@ -140,6 +143,7 @@ impl WebServer {
             model_has_key: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             streaming_provider: None,
             agent_service: None,
+            data_store: None,
         }
     }
 
@@ -170,6 +174,11 @@ impl WebServer {
         self.agent_service = Some(service);
     }
 
+    /// Set the data store for usage statistics queries.
+    pub fn set_data_store(&mut self, store: Arc<nemesis_data::DataStore>) {
+        self.data_store = Some(store);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -195,6 +204,7 @@ impl WebServer {
                 Some(Arc::new(ws_router))
             },
             agent_service: self.agent_service.clone(),
+            data_store: self.data_store.clone(),
         };
 
         let state = Arc::new(state);
@@ -231,6 +241,10 @@ impl WebServer {
             // System info endpoints (readme, license)
             .route("/api/system/readme", get(handle_api_readme))
             .route("/api/system/license", get(handle_api_license))
+            // Usage statistics endpoints
+            .route("/api/usage/summary", get(handle_api_usage_summary))
+            .route("/api/usage/trends", get(handle_api_usage_trends))
+            .route("/api/usage/logs", get(handle_api_usage_logs))
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint

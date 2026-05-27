@@ -4,6 +4,7 @@ const routes: RouteRecordRaw[] = [
   // Main
   { path: '/', name: 'chat', component: () => import('../views/ChatView.vue') },
   { path: '/overview', name: 'overview', component: () => import('../views/OverviewView.vue') },
+  { path: '/usage', name: 'usage', component: () => import('../views/UsageView.vue') },
   // Management
   { path: '/logs', name: 'logs', component: () => import('../views/LogsView.vue') },
   { path: '/models', name: 'models', component: () => import('../views/ModelsView.vue') },

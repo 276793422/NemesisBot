@@ -29,11 +29,13 @@ nemesis-auth = { workspace = true }
 nemesis-cluster = { workspace = true }
 nemesis-web = { workspace = true }
 nemesis-health = { workspace = true }
+nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-state = { workspace = true }
 nemesis-desktop = { workspace = true }
 nemesis-devices = { workspace = true }
+nemesis-voice = { workspace = true }
 nemesis-logger = { workspace = true }
 serde_yaml = { workspace = true }
 clap = { workspace = true }

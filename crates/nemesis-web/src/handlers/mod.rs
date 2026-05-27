@@ -20,6 +20,7 @@ pub mod skills;
 pub mod system;
 pub mod tasks;
 pub mod tools;
+pub mod voice;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(cluster::ClusterHandler::new()));
     router.register(Arc::new(logs::LogsHandler));
     router.register(Arc::new(agent::AgentHandler));
+    router.register(Arc::new(voice::VoiceHandler::new()));
 }
 
 // ---------------------------------------------------------------------------

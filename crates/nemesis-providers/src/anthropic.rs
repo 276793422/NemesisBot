@@ -295,11 +295,15 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
     let usage = if let Some(u) = data.get("usage") {
         let prompt = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
         let completion = u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+        let cache_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64());
+        let cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64());
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
-            cached_tokens: None,
+            cached_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            cache_read_tokens: cache_read,
         })
     } else {
         None

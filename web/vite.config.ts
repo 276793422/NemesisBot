@@ -22,6 +22,7 @@ export default defineConfig({
         manualChunks: {
           'vendor-vue': ['vue', 'vue-router', 'pinia'],
           'vendor-highlight': ['highlight.js'],
+          'vendor-echarts': ['echarts/core', 'echarts/charts', 'echarts/renderers', 'echarts/components', 'vue-echarts'],
         },
       },
     },
