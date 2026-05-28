@@ -331,6 +331,8 @@ fn test_llm_response_data_construction() {
         completion_tokens: 50,
         total_tokens: 150,
         cached_tokens: None,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
     };
 
     let tool_calls = vec![
@@ -388,6 +390,8 @@ fn test_usage_info_construction() {
         completion_tokens: 200,
         total_tokens: 700,
         cached_tokens: None,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
     };
     assert_eq!(usage.prompt_tokens, 500);
     assert_eq!(usage.completion_tokens, 200);
@@ -469,6 +473,8 @@ async fn test_event_data_llm_response_variant() {
                 completion_tokens: 5,
                 total_tokens: 15,
                 cached_tokens: None,
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
             }),
             finish_reason: Some("stop".to_string()),
             raw_request_body: None,

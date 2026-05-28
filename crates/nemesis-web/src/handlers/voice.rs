@@ -2,7 +2,8 @@
 //!
 //! Commands: status, check, setup, stop_setup, install_runtime, install_model,
 //!           config_get, config_set, voice_config_get, voice_config_set,
-//!           tts, stt_start, stt_stop, speakers, devices
+//!           tts, stt_start, stt_stop, speakers, devices,
+//!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
@@ -58,6 +59,70 @@ fn stt_state() -> &'static Arc<Mutex<Option<SttSession>>> {
 
 struct SttSession {
     cancel: CancellationToken,
+}
+
+// ---------------------------------------------------------------------------
+// Persistent engine state (Phase 1)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn stt_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SttEngine>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SttEngine>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(target_os = "windows")]
+fn tts_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::TtsEngine>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::TtsEngine>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+// ---------------------------------------------------------------------------
+// STT output interface (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Trait for routing STT recognition results.
+#[cfg(target_os = "windows")]
+trait SttOutput: Send {
+    fn send_text(&self, text: &str);
+}
+
+/// Default implementation: push via WebSocket to the originating session.
+#[cfg(target_os = "windows")]
+struct WsSttOutput {
+    session_id: String,
+    session_mgr: Arc<crate::session::SessionManager>,
+}
+
+#[cfg(target_os = "windows")]
+impl SttOutput for WsSttOutput {
+    fn send_text(&self, text: &str) {
+        push_stt_result(&self.session_id, self.session_mgr.clone(), text);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TTS input interface (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Trait for text input sources that trigger TTS synthesis.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+trait TtsInput: Send {
+    /// Start listening. Calls `callback` for each text to synthesize.
+    fn listen(&self, callback: Box<dyn Fn(&str) + Send + 'static>);
+}
+
+/// No-op TTS input: no source configured, never triggers.
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+struct NoopTtsInput;
+
+#[cfg(target_os = "windows")]
+impl TtsInput for NoopTtsInput {
+    fn listen(&self, _callback: Box<dyn Fn(&str) + Send + 'static>) {
+        // No source configured — never triggers.
+    }
 }
 
 pub struct VoiceHandler {
@@ -124,6 +189,26 @@ impl ModuleHandler for VoiceHandler {
                 "stt_stop" => self.cmd_stt_stop().await,
                 "speakers" => self.cmd_speakers(),
                 "devices" => self.cmd_devices(),
+                "engine_start" => {
+                    let d = data.ok_or("missing data")?;
+                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    self.cmd_engine_start(&voice_dir, &config_dir, model).await
+                }
+                "engine_stop" => {
+                    let d = data.ok_or("missing data")?;
+                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    self.cmd_engine_stop(model)
+                }
+                "pipeline_start" => {
+                    let d = data.ok_or("missing data")?;
+                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    self.cmd_pipeline_start(&voice_dir, model, ctx).await
+                }
+                "pipeline_stop" => {
+                    let d = data.ok_or("missing data")?;
+                    let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
+                    self.cmd_pipeline_stop(model).await
+                }
                 _ => Err(format!("unknown command: voice.{}", cmd)),
             }
         }
@@ -553,14 +638,22 @@ impl VoiceHandler {
                     .map_err(|e| format!("sherpa init failed: {}", e))?;
             }
 
-            let tts_dir = nemesis_voice::model::ensure_tts_model(&cfg)
-                .map_err(|e| format!("TTS model not ready: {}", e))?;
-
-            let tts_engine = nemesis_voice::TtsEngine::new(&tts_dir, cfg.tts.num_threads)
-                .map_err(|e| format!("TTS engine init failed: {}", e))?;
-
-            let (samples, sample_rate) = tts_engine.generate(&text, speaker_id, speed)
-                .map_err(|e| format!("TTS generation failed: {}", e))?;
+            // Use persistent engine if available, otherwise create temporary
+            let (samples, sample_rate) = {
+                let guard = tts_engine_state().lock().unwrap();
+                if let Some(ref engine) = *guard {
+                    engine.generate(&text, speaker_id, speed)
+                        .map_err(|e| format!("TTS generation failed: {}", e))?
+                } else {
+                    drop(guard);
+                    let tts_dir = nemesis_voice::model::ensure_tts_model(&cfg)
+                        .map_err(|e| format!("TTS model not ready: {}", e))?;
+                    let tts_engine = nemesis_voice::TtsEngine::new(&tts_dir, cfg.tts.num_threads)
+                        .map_err(|e| format!("TTS engine init failed: {}", e))?;
+                    tts_engine.generate(&text, speaker_id, speed)
+                        .map_err(|e| format!("TTS generation failed: {}", e))?
+                }
+            };
 
             if samples.is_empty() {
                 return Err("TTS generated empty audio".to_string());
@@ -591,33 +684,17 @@ impl VoiceHandler {
             }
         }
 
-        let voice_cfg = read_voice_config(config_dir);
-
-        let punct_enabled = voice_cfg.get("punct_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Ensure persistent STT engine is loaded
+        let needs_load = stt_engine_state().lock().unwrap().is_none();
+        if needs_load {
+            self.cmd_stt_engine_start(voice_dir, config_dir).await?;
+        }
 
         let config_path = voice_dir.join("config.toml");
-        if !config_path.exists() {
-            return Err("Voice not set up. Run setup first.".to_string());
-        }
-
         let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
-
-        if !nemesis_voice::sherpa_is_initialized() {
-            nemesis_voice::bootstrap::init_sherpa(voice_dir)
-                .map_err(|e| format!("sherpa init failed: {}", e))?;
-        }
-
-        let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)
-            .map_err(|e| format!("STT model not ready: {}", e))?;
-
-        let use_itn = if punct_enabled {
-            match nemesis_voice::model::ensure_punct_model(&cfg) {
-                Ok(_) => false,
-                Err(_) => true,
-            }
-        } else {
-            true
-        };
+        let capture_device = cfg.audio.capture_device.clone();
+        let target_sr = cfg.audio.target_sample_rate;
+        let cfg_for_detector = cfg.clone();
 
         let cancel = CancellationToken::new();
         let session_id = ctx.session_id.clone();
@@ -628,25 +705,18 @@ impl VoiceHandler {
             *state = Some(SttSession { cancel: cancel.clone() });
         }
 
-        let stt_dir_owned = stt_dir.to_path_buf();
-        let stt_language = cfg.stt.language.clone();
-        let stt_threads = cfg.stt.num_threads;
-        let capture_device = cfg.audio.capture_device.clone();
-        let target_sr = cfg.audio.target_sample_rate;
-        let cfg_for_detector = cfg.clone();
+        let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
+            session_id: session_id.clone(),
+            session_mgr: session_mgr.clone(),
+        });
 
         tokio::task::spawn_blocking(move || {
-            run_stt_loop(
-                &stt_dir_owned,
-                &stt_language,
-                use_itn,
-                stt_threads,
+            run_stt_pipeline(
                 &capture_device,
                 target_sr,
                 &cfg_for_detector,
                 &cancel,
-                &session_id,
-                session_mgr,
+                output.as_ref(),
             );
         });
 
@@ -700,13 +770,226 @@ impl VoiceHandler {
             "total": devices.len(),
         })))
     }
+
+    // -----------------------------------------------------------------------
+    // Phase 1: Engine start / stop
+    // -----------------------------------------------------------------------
+
+    async fn cmd_engine_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path, model: &str) -> Result<Option<serde_json::Value>, String> {
+        match model {
+            "stt" => self.cmd_stt_engine_start(voice_dir, config_dir).await,
+            "tts" => self.cmd_tts_engine_start(voice_dir).await,
+            _ => Err(format!("unknown model: {}", model)),
+        }
+    }
+
+    async fn cmd_stt_engine_start(&self, voice_dir: &std::path::Path, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+        {
+            let guard = stt_engine_state().lock().unwrap();
+            if guard.is_some() {
+                return Ok(Some(serde_json::json!({ "started": true, "model": "stt", "already_loaded": true })));
+            }
+        }
+
+        let voice_cfg = read_voice_config(config_dir);
+        let punct_enabled = voice_cfg.get("punct_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dir = voice_dir.to_path_buf();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let config_path = dir.join("config.toml");
+            if !config_path.exists() {
+                return Err("config.toml not found. Run setup first.".to_string());
+            }
+
+            let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
+
+            if !nemesis_voice::sherpa_is_initialized() {
+                nemesis_voice::bootstrap::init_sherpa(&dir)
+                    .map_err(|e| format!("sherpa init failed: {}", e))?;
+            }
+
+            let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)
+                .map_err(|e| format!("STT model not ready: {}", e))?;
+
+            let use_itn = if punct_enabled {
+                match nemesis_voice::model::ensure_punct_model(&cfg) {
+                    Ok(_) => false,
+                    Err(_) => true,
+                }
+            } else {
+                true
+            };
+
+            let engine = nemesis_voice::SttEngine::new(&stt_dir, &cfg.stt.language, use_itn, cfg.stt.num_threads)
+                .map_err(|e| format!("STT engine init failed: {}", e))?;
+
+            Ok(engine)
+        }).await
+            .map_err(|e| format!("engine init panicked: {}", e))?;
+
+        match result {
+            Ok(engine) => {
+                let mut guard = stt_engine_state().lock().unwrap();
+                *guard = Some(engine);
+                tracing::info!("[Voice] STT engine loaded and persistent");
+                Ok(Some(serde_json::json!({ "started": true, "model": "stt" })))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn cmd_tts_engine_start(&self, voice_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+        {
+            let guard = tts_engine_state().lock().unwrap();
+            if guard.is_some() {
+                return Ok(Some(serde_json::json!({ "started": true, "model": "tts", "already_loaded": true })));
+            }
+        }
+
+        let dir = voice_dir.to_path_buf();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let config_path = dir.join("config.toml");
+            if !config_path.exists() {
+                return Err("config.toml not found. Run setup first.".to_string());
+            }
+
+            let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
+
+            if !nemesis_voice::sherpa_is_initialized() {
+                nemesis_voice::bootstrap::init_sherpa(&dir)
+                    .map_err(|e| format!("sherpa init failed: {}", e))?;
+            }
+
+            let tts_dir = nemesis_voice::model::ensure_tts_model(&cfg)
+                .map_err(|e| format!("TTS model not ready: {}", e))?;
+
+            let engine = nemesis_voice::TtsEngine::new(&tts_dir, cfg.tts.num_threads)
+                .map_err(|e| format!("TTS engine init failed: {}", e))?;
+
+            Ok(engine)
+        }).await
+            .map_err(|e| format!("engine init panicked: {}", e))?;
+
+        match result {
+            Ok(engine) => {
+                let mut guard = tts_engine_state().lock().unwrap();
+                *guard = Some(engine);
+                tracing::info!("[Voice] TTS engine loaded and persistent");
+                Ok(Some(serde_json::json!({ "started": true, "model": "tts" })))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn cmd_engine_stop(&self, model: &str) -> Result<Option<serde_json::Value>, String> {
+        match model {
+            "stt" => {
+                let mut guard = stt_engine_state().lock().unwrap();
+                if guard.take().is_some() {
+                    tracing::info!("[Voice] STT engine released");
+                    Ok(Some(serde_json::json!({ "stopped": true, "model": "stt" })))
+                } else {
+                    Ok(Some(serde_json::json!({ "stopped": true, "model": "stt", "was_loaded": false })))
+                }
+            }
+            "tts" => {
+                let mut guard = tts_engine_state().lock().unwrap();
+                if guard.take().is_some() {
+                    tracing::info!("[Voice] TTS engine released");
+                    Ok(Some(serde_json::json!({ "stopped": true, "model": "tts" })))
+                } else {
+                    Ok(Some(serde_json::json!({ "stopped": true, "model": "tts", "was_loaded": false })))
+                }
+            }
+            _ => Err(format!("unknown model: {}", model)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Pipeline start / stop (uses persistent engine)
+    // -----------------------------------------------------------------------
+
+    async fn cmd_pipeline_start(&self, voice_dir: &std::path::Path, model: &str, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        match model {
+            "stt" => self.cmd_stt_pipeline_start(voice_dir, ctx).await,
+            _ => Err(format!("pipeline not supported for model: {}", model)),
+        }
+    }
+
+    async fn cmd_stt_pipeline_start(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        // Check engine is loaded
+        {
+            let guard = stt_engine_state().lock().unwrap();
+            if guard.is_none() {
+                return Err("STT engine not loaded. Enable STT toggle first.".to_string());
+            }
+        }
+
+        // Check no existing pipeline
+        {
+            let state = stt_state().lock().await;
+            if state.is_some() {
+                return Err("STT pipeline already running".to_string());
+            }
+        }
+
+        let config_path = voice_dir.join("config.toml");
+        let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
+        let capture_device = cfg.audio.capture_device.clone();
+        let target_sr = cfg.audio.target_sample_rate;
+        let cfg_for_detector = cfg.clone();
+
+        let cancel = CancellationToken::new();
+        let session_id = ctx.session_id.clone();
+        let session_mgr = ctx.state.session_manager.clone();
+
+        {
+            let mut state = stt_state().lock().await;
+            *state = Some(SttSession { cancel: cancel.clone() });
+        }
+
+        let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
+            session_id: session_id.clone(),
+            session_mgr: session_mgr.clone(),
+        });
+
+        tokio::task::spawn_blocking(move || {
+            run_stt_pipeline(
+                &capture_device,
+                target_sr,
+                &cfg_for_detector,
+                &cancel,
+                output.as_ref(),
+            );
+        });
+
+        Ok(Some(serde_json::json!({ "started": true })))
+    }
+
+    async fn cmd_pipeline_stop(&self, model: &str) -> Result<Option<serde_json::Value>, String> {
+        match model {
+            "stt" => {
+                let mut state = stt_state().lock().await;
+                match state.take() {
+                    Some(session) => {
+                        session.cancel.cancel();
+                        Ok(Some(serde_json::json!({ "stopped": true })))
+                    }
+                    None => Err("STT pipeline not running".to_string()),
+                }
+            }
+            _ => Err(format!("pipeline not supported for model: {}", model)),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// STT loop (blocking)
+// STT loop (blocking, creates its own engine — legacy fallback)
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn run_stt_loop(
     stt_dir: &std::path::Path,
     language: &str,
@@ -799,6 +1082,110 @@ fn run_stt_loop(
 
     tracing::info!("[STT] Dictation stopped (session={}, chunks={}, speech_segments={})", session_id, chunk_count, speech_count);
     push_stt_result(session_id, session_mgr.clone(), "[听写已停止]");
+}
+
+// ---------------------------------------------------------------------------
+// STT pipeline (blocking, uses persistent engine)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn run_stt_pipeline(
+    capture_device: &str,
+    target_sr: u32,
+    cfg: &nemesis_voice::AppConfig,
+    cancel: &CancellationToken,
+    output: &dyn SttOutput,
+) {
+    {
+        let guard = stt_engine_state().lock().unwrap();
+        if guard.is_none() {
+            tracing::error!("[STT Pipeline] Engine not loaded");
+            output.send_text("[错误] STT引擎未加载");
+            return;
+        }
+    }
+
+    let mut detector = nemesis_voice::create_detector(cfg);
+
+    let capture = match nemesis_voice::AudioCapture::new(capture_device) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("[STT Pipeline] Audio capture failed: {}", e);
+            output.send_text(&format!("[错误] 麦克风初始化失败: {}", e));
+            return;
+        }
+    };
+
+    let mut resampler = match nemesis_voice::Resampler::new(capture.sample_rate, target_sr) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("[STT Pipeline] Resampler init failed: {}", e);
+            output.send_text(&format!("[错误] 重采样器初始化失败: {}", e));
+            return;
+        }
+    };
+
+    tracing::info!("[STT Pipeline] Started (detector={})", detector.name());
+    output.send_text("[听写已开始，请说话...]");
+
+    let mut chunk_count: u64 = 0;
+    let mut speech_count: u64 = 0;
+
+    while !cancel.is_cancelled() {
+        match capture.try_receive() {
+            Some(chunk) => {
+                chunk_count += 1;
+                let resampled = resampler.resample(&chunk);
+
+                if let Some(speech) = detector.process(&resampled, target_sr) {
+                    speech_count += 1;
+                    if !speech.is_empty() {
+                        let guard = stt_engine_state().lock().unwrap();
+                        if let Some(ref engine) = *guard {
+                            match engine.recognize(&speech, target_sr) {
+                                Ok(text) => {
+                                    let trimmed = text.trim();
+                                    if !trimmed.is_empty() {
+                                        output.send_text(trimmed);
+                                    }
+                                }
+                                Err(e) => tracing::warn!("[STT Pipeline] Recognition error: {}", e),
+                            }
+                        } else {
+                            tracing::error!("[STT Pipeline] Engine released during pipeline");
+                            output.send_text("[错误] STT引擎已释放");
+                            return;
+                        }
+                    }
+                }
+            }
+            None => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    // Flush remaining audio
+    if let Some(speech) = detector.flush() {
+        if !speech.is_empty() {
+            let guard = stt_engine_state().lock().unwrap();
+            if let Some(ref engine) = *guard {
+                match engine.recognize(&speech, target_sr) {
+                    Ok(text) => {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            tracing::info!("[STT Pipeline] Recognized (final flush): {}", trimmed);
+                            output.send_text(trimmed);
+                        }
+                    }
+                    Err(e) => tracing::warn!("[STT Pipeline] Final recognition error: {}", e),
+                }
+            }
+        }
+    }
+
+    tracing::info!("[STT Pipeline] Stopped (chunks={}, speech_segments={})", chunk_count, speech_count);
+    output.send_text("[听写已停止]");
 }
 
 #[cfg(target_os = "windows")]

@@ -57,6 +57,7 @@ fn make_test_state() -> Arc<AppState> {
         streaming_provider: None,
         ws_router: None,
         agent_service: None,
+        data_store: None,
     })
 }
 

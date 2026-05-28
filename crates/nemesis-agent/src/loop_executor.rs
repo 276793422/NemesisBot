@@ -264,6 +264,8 @@ impl ObserverEvent {
                         completion_tokens: u.completion_tokens,
                         total_tokens: u.total_tokens,
                         cached_tokens: u.cached_tokens,
+                        cache_creation_tokens: u.cache_creation_tokens,
+                        cache_read_tokens: u.cache_read_tokens,
                     }),
                     finish_reason: finish_reason.clone(),
                     raw_request_body: raw_request_body.clone(),

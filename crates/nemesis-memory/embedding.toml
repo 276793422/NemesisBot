@@ -17,8 +17,8 @@ model_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolv
 model_size = 90405214
 tokenizer_url = "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json"
 tokenizer_size = 466247
-local_model_path = './models/all-MiniLM-L6-v2/model.onnx'
-local_tokenizer_path = './models/all-MiniLM-L6-v2/tokenizer.json'
+local_model_path = '.\models\all-MiniLM-L6-v2\model.onnx'
+local_tokenizer_path = '.\models\all-MiniLM-L6-v2\tokenizer.json'
 
 [models.small]
 name = "all-MiniLM-L4-v2"

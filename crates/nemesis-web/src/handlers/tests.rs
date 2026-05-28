@@ -14,11 +14,12 @@ use super::*;
 
     /// Create a RequestContext with a temp workspace directory.
     fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
+        let ws = dir.path().to_string_lossy().to_string();
         let state = Arc::new(AppState {
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(0)),
-            workspace: Some(dir.path().to_string_lossy().to_string()),
-            home: None,
+            workspace: Some(ws.clone()),
+            home: Some(ws.clone()),
             version: "test".to_string(),
             start_time: Instant::now(),
             model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
@@ -31,11 +32,12 @@ use super::*;
             streaming_provider: None,
             ws_router: None,
             agent_service: None,
+            data_store: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
-            workspace: Some(dir.path().to_string_lossy().to_string()),
-            home: None,
+            workspace: Some(ws.clone()),
+            home: Some(ws),
             state,
         }
     }
@@ -59,6 +61,7 @@ use super::*;
             streaming_provider: None,
             ws_router: None,
             agent_service: None,
+            data_store: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -1125,7 +1128,7 @@ use super::*;
         let ctx = make_ctx(&dir);
 
         let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
-        assert!(result["running"].as_bool().unwrap());
+        assert!(!result["running"].as_bool().unwrap());
         assert_eq!(result["model_name"], "test-model");
     }
 
@@ -1135,11 +1138,11 @@ use super::*;
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
 
-        let result = handler.handle_cmd("start", None, &ctx).await.unwrap().unwrap();
-        assert!(!result["started"].as_bool().unwrap());
+        let err = handler.handle_cmd("start", None, &ctx).await.unwrap_err();
+        assert!(err.contains("Agent not available"));
 
-        let result = handler.handle_cmd("stop", None, &ctx).await.unwrap().unwrap();
-        assert!(!result["stopped"].as_bool().unwrap());
+        let err = handler.handle_cmd("stop", None, &ctx).await.unwrap_err();
+        assert!(err.contains("Agent not available"));
     }
 
     // -----------------------------------------------------------------------
@@ -1828,9 +1831,8 @@ address = "192.168.1.11:5000"
         let handler = agent::AgentHandler;
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let result = handler.handle_cmd("start", None, &ctx).await.unwrap().unwrap();
-        assert!(!result["started"].as_bool().unwrap());
-        assert!(result["message"].as_str().unwrap().contains("runtime integration"));
+        let err = handler.handle_cmd("start", None, &ctx).await.unwrap_err();
+        assert!(err.contains("Agent not available"));
     }
 
     #[tokio::test]
@@ -1838,9 +1840,8 @@ address = "192.168.1.11:5000"
         let handler = agent::AgentHandler;
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let result = handler.handle_cmd("stop", None, &ctx).await.unwrap().unwrap();
-        assert!(!result["stopped"].as_bool().unwrap());
-        assert!(result["message"].as_str().unwrap().contains("runtime integration"));
+        let err = handler.handle_cmd("stop", None, &ctx).await.unwrap_err();
+        assert!(err.contains("Agent not available"));
     }
 
     // ===================================================================

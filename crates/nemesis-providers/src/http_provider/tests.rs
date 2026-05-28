@@ -472,6 +472,8 @@ fn test_stream_chunk_with_finish() {
             completion_tokens: 20,
             total_tokens: 30,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         }),
         reasoning_content: None,
     };

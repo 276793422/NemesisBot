@@ -538,6 +538,7 @@ async fn test_handle_health_endpoint() {
         streaming_provider: None,
         ws_router: None,
         agent_service: None,
+        data_store: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -565,6 +566,7 @@ async fn test_handle_health_not_running() {
         streaming_provider: None,
         ws_router: None,
         agent_service: None,
+        data_store: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -1052,6 +1054,7 @@ async fn test_handle_health_with_model_state() {
         streaming_provider: None,
         ws_router: None,
         agent_service: None,
+        data_store: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

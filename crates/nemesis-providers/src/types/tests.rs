@@ -271,6 +271,8 @@ fn test_llm_response_with_tool_calls_serialization() {
             completion_tokens: 5,
             total_tokens: 15,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         }),
         reasoning_content: None,
 extra: HashMap::new(),
@@ -290,6 +292,8 @@ fn test_usage_info_serialization() {
         completion_tokens: 50,
         total_tokens: 150,
         cached_tokens: None,
+        cache_creation_tokens: None,
+        cache_read_tokens: None,
     };
     let json = serde_json::to_string(&usage).unwrap();
     let deserialized: UsageInfo = serde_json::from_str(&json).unwrap();
@@ -456,6 +460,8 @@ fn test_llm_response_serialization() {
             completion_tokens: 5,
             total_tokens: 15,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         }),
         reasoning_content: None,
 extra: HashMap::new(),

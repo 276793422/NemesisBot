@@ -130,6 +130,10 @@ pub struct UsageInfo {
     pub total_tokens: i64,
     /// Cached prompt tokens (DeepSeek: prompt_cache_hit_tokens, OpenAI: cached_tokens).
     pub cached_tokens: Option<i64>,
+    /// Cache creation tokens (Anthropic: cache_creation_input_tokens).
+    pub cache_creation_tokens: Option<i64>,
+    /// Cache read tokens (Anthropic: cache_read_input_tokens).
+    pub cache_read_tokens: Option<i64>,
 }
 
 /// Data for tool call events.

@@ -3411,6 +3411,8 @@ async fn test_run_with_reasoning_content() {
             completion_tokens: 20,
             total_tokens: 70,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         }),
         raw_request_body: None,
         raw_response_body: None,

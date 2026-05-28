@@ -153,6 +153,8 @@ mod types_extra {
             completion_tokens: 50,
             total_tokens: 150,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         };
         assert_eq!(usage.prompt_tokens + usage.completion_tokens, usage.total_tokens);
     }
@@ -164,6 +166,8 @@ mod types_extra {
             completion_tokens: 0,
             total_tokens: 0,
             cached_tokens: None,
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         };
         assert_eq!(usage.total_tokens, 0);
     }
@@ -272,6 +276,8 @@ mod types_extra {
                 completion_tokens: 5,
                 total_tokens: 15,
                 cached_tokens: None,
+                cache_creation_tokens: None,
+                cache_read_tokens: None,
             }),
             reasoning_content: None,
     extra: std::collections::HashMap::new(),
@@ -303,6 +309,8 @@ mod types_extra {
             completion_tokens: 50,
             total_tokens: 1050,
             cached_tokens: Some(600),
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
         };
         assert_eq!(usage.cached_tokens, Some(600));
     }

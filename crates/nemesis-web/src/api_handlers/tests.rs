@@ -364,6 +364,7 @@ use super::*;
             streaming_provider: None,
             ws_router: None,
             agent_service: None,
+            data_store: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -572,6 +573,7 @@ use super::*;
             streaming_provider: None,
             ws_router: None,
             agent_service: None,
+            data_store: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -660,11 +662,12 @@ use super::*;
 
     /// Helper to create a minimal AppState for testing API handlers.
     fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState> {
+        let home = workspace.clone();
         Arc::new(AppState {
             auth_token: auth_token.to_string(),
             session_count: Arc::new(AtomicUsize::new(2)),
             workspace,
-            home: None,
+            home,
             version: "1.0.0-test".to_string(),
             start_time: std::time::Instant::now(),
             model_name: Arc::new(Mutex::new("test-model".to_string())),
@@ -677,6 +680,7 @@ use super::*;
             streaming_provider: None,
             ws_router: None,
             agent_service: None,
+            data_store: None,
         })
     }
 
@@ -866,9 +870,7 @@ use super::*;
     #[tokio::test]
     async fn test_api_config_invalid_json() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("config.json"), "not valid json").unwrap();
+        std::fs::write(dir.path().join("config.json"), "not valid json").unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -883,15 +885,13 @@ use super::*;
     #[tokio::test]
     async fn test_api_config_valid_json_sanitized() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
         let config = serde_json::json!({
             "api_key": "sk-1234567890abcdef",
             "name": "test-config",
             "port": 8080,
         });
         std::fs::write(
-            config_dir.join("config.json"),
+            dir.path().join("config.json"),
             serde_json::to_string_pretty(&config).unwrap(),
         ).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
@@ -943,8 +943,6 @@ use super::*;
     #[tokio::test]
     async fn test_api_models_with_config() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
         let config = serde_json::json!({
             "model_list": [
                 {"name": "gpt-4", "api_key": "sk-1234567890abcdef"},
@@ -953,7 +951,7 @@ use super::*;
             "agents": {"defaults": {"llm": "gpt-4"}}
         });
         std::fs::write(
-            config_dir.join("config.json"),
+            dir.path().join("config.json"),
             serde_json::to_string(&config).unwrap(),
         ).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
@@ -978,9 +976,7 @@ use super::*;
     #[tokio::test]
     async fn test_api_models_invalid_config_json() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("config.json"), "invalid json").unwrap();
+        std::fs::write(dir.path().join("config.json"), "invalid json").unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);

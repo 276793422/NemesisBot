@@ -22,8 +22,8 @@ const volume = ref(50)
 const speed = ref(1.0)
 const captureDevice = ref('')
 const playbackDevice = ref('')
-const sttEnabled = ref(true)
-const ttsEnabled = ref(true)
+const sttEnabled = ref(false)
+const ttsEnabled = ref(false)
 const punctEnabled = ref(false)
 
 // TTS test
@@ -286,14 +286,53 @@ function saveVoiceConfigDebounced() {
   }, 500)
 }
 
+// Engine state initialization flag — prevent engine commands during initial load
+const _engineInitialized = ref(false)
+const _skipEngineWatch = ref(false)
+
 // Watch all config values and auto-save
 watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled], () => {
   saveVoiceConfigDebounced()
 })
 
+// Engine start/stop on STT toggle change
+watch(sttEnabled, async (enabled) => {
+  if (!_engineInitialized.value || _skipEngineWatch.value) return
+  try {
+    if (enabled) {
+      await request('voice', 'engine_start', { model: 'stt' })
+    } else {
+      await request('voice', 'engine_stop', { model: 'stt' })
+    }
+  } catch (e: any) {
+    toast.error(enabled ? `STT引擎启动失败: ${e}` : `STT引擎停止失败: ${e}`)
+    _skipEngineWatch.value = true
+    sttEnabled.value = !enabled
+    _skipEngineWatch.value = false
+  }
+})
+
+// Engine start/stop on TTS toggle change
+watch(ttsEnabled, async (enabled) => {
+  if (!_engineInitialized.value || _skipEngineWatch.value) return
+  try {
+    if (enabled) {
+      await request('voice', 'engine_start', { model: 'tts' })
+    } else {
+      await request('voice', 'engine_stop', { model: 'tts' })
+    }
+  } catch (e: any) {
+    toast.error(enabled ? `TTS引擎启动失败: ${e}` : `TTS引擎停止失败: ${e}`)
+    _skipEngineWatch.value = true
+    ttsEnabled.value = !enabled
+    _skipEngineWatch.value = false
+  }
+})
+
 onMounted(async () => {
   await loadAll()
   await loadVoiceConfig()
+  _engineInitialized.value = true
 })
 
 onUnmounted(() => {
@@ -435,14 +474,6 @@ onUnmounted(() => {
             </option>
           </select>
 
-          <!-- STT toggle -->
-          <span class="settings-key">STT 模型</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="sttEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ sttEnabled ? '启用' : '停用' }}</span>
-          </label>
-
           <!-- TTS toggle -->
           <span class="settings-key">TTS 模型</span>
           <label class="toggle-switch">
@@ -451,10 +482,18 @@ onUnmounted(() => {
             <span class="toggle-label">{{ ttsEnabled ? '启用' : '停用' }}</span>
           </label>
 
+          <!-- STT toggle -->
+          <span class="settings-key">STT 模型</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="sttEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ sttEnabled ? '启用' : '停用' }}</span>
+          </label>
+
           <!-- Punct toggle -->
           <span class="settings-key">标点模型</span>
           <label class="toggle-switch">
-            <input type="checkbox" v-model="punctEnabled" />
+            <input type="checkbox" v-model="punctEnabled" :disabled="sttEnabled" />
             <span class="toggle-slider"></span>
             <span class="toggle-label">{{ punctEnabled ? '启用' : '停用' }}</span>
           </label>
@@ -471,7 +510,7 @@ onUnmounted(() => {
           <div style="font-weight: 500; margin-bottom: var(--space-2);">TTS 合成</div>
           <div style="display: flex; gap: var(--space-2);">
             <textarea class="form-textarea" style="flex: 1; min-height: 80px; resize: vertical;" v-model="ttsText" placeholder="输入要转换的文字..." @keydown.ctrl.enter="playTTS"></textarea>
-            <button class="btn btn-primary" @click="playTTS" :disabled="ttsPlaying || !ttsText.trim()">
+            <button class="btn btn-primary" @click="playTTS" :disabled="ttsPlaying || !ttsText.trim() || ttsEnabled">
               {{ ttsPlaying ? '播放中...' : '播放' }}
             </button>
           </div>
@@ -481,7 +520,7 @@ onUnmounted(() => {
         <div>
           <div style="font-weight: 500; margin-bottom: var(--space-2);">STT 听写</div>
           <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-3);">
-            <button v-if="!sttRunning" class="btn btn-primary" @click="startSTT">开始听写</button>
+            <button v-if="!sttRunning" class="btn btn-primary" @click="startSTT" :disabled="sttEnabled">开始听写</button>
             <button v-if="sttRunning" class="btn btn-danger" @click="stopSTT">停止听写</button>
           </div>
           <div v-if="sttResults.length > 0" style="background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); max-height: 200px; overflow-y: auto;">
@@ -583,5 +622,12 @@ input[type="range"]::-webkit-slider-thumb {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   user-select: none;
+}
+.toggle-switch input:disabled + .toggle-slider {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.toggle-switch input:disabled ~ .toggle-label {
+  opacity: 0.5;
 }
 </style>
