@@ -353,7 +353,7 @@ impl ModuleHandler for VoiceHandler {
                 "stt_stop" => self.cmd_stt_stop().await,
                 "speakers" => self.cmd_speakers(),
                 "devices" => self.cmd_devices(),
-                "engine_status" => self.cmd_engine_status(),
+                "engine_status" => self.cmd_engine_status().await,
                 "chat_config_get" => self.cmd_chat_config_get(&config_dir),
                 "chat_config_set" => {
                     let d = data.ok_or("missing data")?;
@@ -393,7 +393,7 @@ impl ModuleHandler for VoiceHandler {
                 }
                 "tts_playback_stop" => self.cmd_tts_playback_stop().await,
                 // Speaker verification commands
-                "speaker_status" => self.cmd_speaker_status(&config_dir),
+                "speaker_status" => self.cmd_speaker_status(&config_dir).await,
                 "speaker_register_start" => {
                     let d = data.ok_or("missing data")?;
                     let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("owner");
@@ -1143,14 +1143,14 @@ impl VoiceHandler {
         })))
     }
 
-    fn cmd_engine_status(&self) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_engine_status(&self) -> Result<Option<serde_json::Value>, String> {
         #[cfg(target_os = "windows")]
         {
             let stt_ready = stt_engine_state().lock().unwrap().is_some();
             let tts_ready = tts_engine_state().lock().unwrap().is_some();
             let speaker_ready = speaker_engine_state().lock().unwrap().is_some();
             let stt_dialogue_active = {
-                let state = stt_state().blocking_lock();
+                let state = stt_state().lock().await;
                 state.as_ref().map_or(false, |s| s.dialogue_output.is_some())
             };
             Ok(Some(serde_json::json!({
@@ -1387,7 +1387,7 @@ impl VoiceHandler {
     // Speaker verification commands
     // -----------------------------------------------------------------------
 
-    fn cmd_speaker_status(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+    async fn cmd_speaker_status(&self, config_dir: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
         let enabled = *speaker_enabled_state().lock().unwrap();
         #[cfg(target_os = "windows")]
         let ready = speaker_engine_state().lock().unwrap().is_some();
@@ -1400,7 +1400,7 @@ impl VoiceHandler {
         };
         #[cfg(target_os = "windows")]
         let stt_dialogue_active = {
-            let state = stt_state().blocking_lock();
+            let state = stt_state().lock().await;
             state.as_ref().map_or(false, |s| s.dialogue_output.is_some())
         };
         #[cfg(not(target_os = "windows"))]
