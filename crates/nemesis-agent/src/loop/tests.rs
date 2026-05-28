@@ -523,6 +523,7 @@ fn test_extract_peer_no_metadata() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     assert_eq!(extract_peer(&msg), "user123");
 }
@@ -541,6 +542,7 @@ fn test_extract_peer_with_metadata() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(extract_peer(&msg), "guild:guild_12345");
 }
@@ -558,6 +560,7 @@ fn test_extract_peer_direct_kind() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(extract_peer(&msg), "direct:tg_user_456");
 }
@@ -576,6 +579,7 @@ fn test_extract_parent_peer() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(extract_parent_peer(&msg), Some("channel:chan_789".to_string()));
 }
@@ -591,6 +595,7 @@ fn test_extract_parent_peer_missing() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     assert_eq!(extract_parent_peer(&msg), None);
 }
@@ -1220,6 +1225,7 @@ fn test_extract_peer_with_empty_peer_kind() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     // Empty peer_kind should fall through to sender_id
     assert_eq!(extract_peer(&msg), "user123");
@@ -1238,6 +1244,7 @@ fn test_extract_peer_with_peer_kind_no_peer_id() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     // No peer_id, non-direct -> falls back to chat_id
     assert_eq!(extract_peer(&msg), "group:chat_abc");
@@ -1257,6 +1264,7 @@ fn test_extract_parent_peer_empty_values() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(extract_parent_peer(&msg), None);
 }
@@ -1275,6 +1283,7 @@ fn test_extract_parent_peer_missing_id() {
         session_key: "sess1".to_string(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(extract_parent_peer(&msg), None);
 }
@@ -1823,6 +1832,7 @@ fn make_inbound(content: &str, channel: &str, chat_id: &str, sender_id: &str, se
         session_key: session_key.to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     }
 }
 
@@ -1850,6 +1860,7 @@ async fn test_process_inbound_message_system_internal_channel() {
         session_key: String::new(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
@@ -1880,6 +1891,7 @@ async fn test_process_inbound_message_history_request() {
             m.insert("request_type".to_string(), "history".to_string());
             m
         },
+        voice_playback: None,
     };
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
@@ -1971,6 +1983,7 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         session_key: "agent:main:custom_session".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "main");
@@ -2053,6 +2066,7 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
         session_key: "rpc:chat1".to_string(),
         correlation_id: "corr-123".to_string(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     inbound_tx.send(msg).await.unwrap();
     drop(inbound_tx);
@@ -2096,6 +2110,7 @@ async fn test_process_system_message_with_result_extraction() {
         session_key: String::new(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     let (_, response, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("System processed"));
@@ -2124,6 +2139,7 @@ async fn test_process_system_message_without_result_prefix() {
         session_key: String::new(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     let (_, response, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("Direct content"));
@@ -2831,6 +2847,7 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
             m.insert("peer_id".to_string(), "12345".to_string());
             m
         },
+        voice_playback: None,
     };
 
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
@@ -3108,6 +3125,7 @@ fn make_inbound_msg(sender_id: &str, chat_id: &str, metadata: std::collections::
         session_key: String::new(),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     }
 }
 
@@ -3260,6 +3278,7 @@ fn make_history_inbound(
         session_key: format!("web:{}", chat_id),
         correlation_id: String::new(),
         metadata,
+        voice_playback: None,
     }
 }
 
@@ -3669,6 +3688,7 @@ fn make_inbound_with_metadata(
         session_key: format!("{}:{}", channel, chat_id),
         correlation_id: String::new(),
         metadata: meta,
+        voice_playback: None,
     }
 }
 

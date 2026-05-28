@@ -186,6 +186,7 @@ async fn test_process_messages_publishes_to_bus() {
         chat_id: "web:s1".to_string(),
         content: "hello".to_string(),
         metadata: HashMap::new(),
+        voice_playback: None,
     }).unwrap();
     drop(tx); // Close the sender so process_messages exits
 
@@ -391,6 +392,7 @@ async fn test_process_messages_preserves_metadata() {
         chat_id: "web:s1".to_string(),
         content: "test".to_string(),
         metadata,
+        voice_playback: None,
     }).unwrap();
     drop(tx);
 
@@ -657,6 +659,7 @@ async fn test_process_messages_multiple_messages() {
             chat_id: format!("web:s{}", i),
             content: format!("message {}", i),
             metadata: HashMap::new(),
+            voice_playback: None,
         }).unwrap();
     }
     drop(tx);
@@ -1080,6 +1083,7 @@ async fn test_process_messages_with_bus_and_metadata() {
         chat_id: "web:sess-123".to_string(),
         content: "What is the weather?".to_string(),
         metadata,
+        voice_playback: None,
     }).unwrap();
     drop(tx);
 

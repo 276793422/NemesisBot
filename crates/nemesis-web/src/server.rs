@@ -694,6 +694,7 @@ pub async fn process_messages(
             session_key: format!("web:{}", msg.chat_id),
             correlation_id: String::new(),
             metadata: msg.metadata,
+            voice_playback: msg.voice_playback,
         };
 
         bus.publish_inbound(inbound);

@@ -6,5 +6,7 @@
   "playback_device": "",
   "stt_enabled": false,
   "tts_enabled": false,
-  "punct_enabled": false
+  "punct_enabled": false,
+  "speaker_enabled": false,
+  "silence_timeout": 3.0
 }

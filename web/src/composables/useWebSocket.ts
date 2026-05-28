@@ -156,12 +156,16 @@ export function sendRaw(msg: object) {
 // Initialize useWSAPI with sendRaw (breaks circular dependency)
 initWSAPI(sendRaw)
 
-export function send(content: string) {
+export function send(content: string, voicePlayback?: boolean) {
+  const data: any = { content }
+  if (voicePlayback) {
+    data.voice_playback = true
+  }
   sendRaw({
     type: 'message',
     module: 'chat',
     cmd: 'send',
-    data: { content },
+    data,
   })
 }
 

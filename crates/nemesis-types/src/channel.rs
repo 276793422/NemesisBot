@@ -15,6 +15,9 @@ pub struct InboundMessage {
     /// Optional metadata for routing (peer_kind, peer_id, account_id, guild_id, team_id, etc.)
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, String>,
+    /// Whether to inject voice playback prompt in AgentLoop.
+    #[serde(default)]
+    pub voice_playback: Option<bool>,
 }
 
 /// Outbound message from the agent engine to a channel.

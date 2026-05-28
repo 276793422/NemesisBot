@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub tts: TtsConfig,
     #[serde(default)]
     pub punct: PunctConfig,
+    #[serde(default)]
+    pub speaker: SpeakerConfig,
     pub audio: AudioConfig,
     pub models: ModelsConfig,
     /// Directory where config.toml resides. Set on load, not deserialized.
@@ -60,6 +62,16 @@ impl Default for PunctConfig {
             num_threads: default_punct_threads(),
         }
     }
+}
+
+fn default_speaker_model() -> String { "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced".into() }
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SpeakerConfig {
+    #[serde(default = "default_speaker_model")]
+    pub model_name: String,
+    #[serde(default)]
+    pub num_threads: u32,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -182,6 +194,7 @@ impl Default for AppConfig {
                 num_threads: 4,
             },
             punct: PunctConfig::default(),
+            speaker: SpeakerConfig::default(),
             audio: AudioConfig {
                 capture_device: String::new(),
                 playback_device: String::new(),

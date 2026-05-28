@@ -142,6 +142,11 @@ pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
     home.join("workspace").join("config").join("config.enhanced_memory.json")
 }
 
+/// Get the chat config file path.
+pub fn chat_config_path(home: &Path) -> PathBuf {
+    home.join("workspace").join("config").join("config.chat.json")
+}
+
 /// Get the CORS config file path.
 pub fn cors_config_path(home: &Path) -> PathBuf {
     home.join("config").join("cors.json")

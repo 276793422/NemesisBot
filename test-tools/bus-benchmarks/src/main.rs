@@ -30,6 +30,7 @@ fn make_inbound(channel: &str, sender_id: &str, chat_id: &str, content: &str) ->
         session_key: format!("{}:{}", channel, chat_id),
         correlation_id: String::new(),
         metadata: HashMap::new(),
+        voice_playback: None,
     }
 }
 

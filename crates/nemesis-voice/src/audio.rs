@@ -239,6 +239,11 @@ impl AudioPlayback {
 
         Ok(())
     }
+
+    /// Stop playback by clearing the sample queue. Safe to call from any thread.
+    pub fn stop(&self) {
+        self.queue.lock().unwrap().clear();
+    }
 }
 
 // =============================================================================

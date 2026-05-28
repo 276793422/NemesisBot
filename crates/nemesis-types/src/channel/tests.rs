@@ -248,6 +248,7 @@ fn test_inbound_message_roundtrip() {
         session_key: "sk1".to_string(),
         correlation_id: "cid1".to_string(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let msg2: InboundMessage = serde_json::from_str(&json).unwrap();
@@ -255,6 +256,48 @@ fn test_inbound_message_roundtrip() {
     assert_eq!(msg.sender_id, msg2.sender_id);
     assert_eq!(msg.content, msg2.content);
     assert_eq!(msg.correlation_id, msg2.correlation_id);
+}
+
+#[test]
+fn test_inbound_message_voice_playback_serialization() {
+    // voice_playback: None → serializes as null (serde default)
+    let msg = InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "u1".to_string(),
+        chat_id: "c1".to_string(),
+        content: "hello".to_string(),
+        media: vec![],
+        session_key: "sk1".to_string(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed["voice_playback"].is_null());
+
+    // Deserialize without field → defaults to None
+    let input = r#"{"channel":"web","sender_id":"u2","chat_id":"c2","content":"hi","media":[],"session_key":"","correlation_id":"","metadata":{}}"#;
+    let msg2: InboundMessage = serde_json::from_str(input).unwrap();
+    assert_eq!(msg2.voice_playback, None);
+
+    // voice_playback: Some(true) → present in JSON
+    let msg3 = InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "u1".to_string(),
+        chat_id: "c1".to_string(),
+        content: "hello".to_string(),
+        media: vec![],
+        session_key: "sk1".to_string(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: Some(true),
+    };
+    let json3 = serde_json::to_string(&msg3).unwrap();
+    let parsed3: serde_json::Value = serde_json::from_str(&json3).unwrap();
+    assert_eq!(parsed3["voice_playback"], true);
+    let msg4: InboundMessage = serde_json::from_str(&json3).unwrap();
+    assert_eq!(msg4.voice_playback, Some(true));
 }
 
 // --- MediaAttachment edge cases ---

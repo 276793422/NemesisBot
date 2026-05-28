@@ -445,6 +445,33 @@ pub struct SherpaOnnxGeneratedAudio {
 }
 
 // =============================================================================
+// Speaker Embedding (Speaker Verification)
+// =============================================================================
+
+#[repr(C)]
+pub struct SherpaOnnxSpeakerEmbeddingExtractor {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct SherpaOnnxSpeakerEmbeddingManager {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct SherpaOnnxOnlineStream {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct SherpaOnnxSpeakerEmbeddingExtractorConfig {
+    pub model: *const libc::c_char,
+    pub num_threads: libc::c_int,
+    pub debug: libc::c_int,
+    pub provider: *const libc::c_char,
+}
+
+// =============================================================================
 // Wave I/O
 // =============================================================================
 
@@ -677,6 +704,37 @@ sherpa_fn!(SherpaOnnxCreateOfflinePunctuation(config: *const SherpaOnnxOfflinePu
 sherpa_fn!(SherpaOnnxDestroyOfflinePunctuation(punct: *const SherpaOnnxOfflinePunctuation));
 sherpa_fn!(SherpaOfflinePunctuationAddPunct(punct: *const SherpaOnnxOfflinePunctuation, text: *const libc::c_char) -> *const libc::c_char);
 sherpa_fn!(SherpaOfflinePunctuationFreeText(text: *const libc::c_char));
+
+// ---- Speaker Embedding Extractor ----
+
+sherpa_fn!(SherpaOnnxCreateSpeakerEmbeddingExtractor(config: *const SherpaOnnxSpeakerEmbeddingExtractorConfig) -> *const SherpaOnnxSpeakerEmbeddingExtractor);
+sherpa_fn!(SherpaOnnxDestroySpeakerEmbeddingExtractor(extractor: *const SherpaOnnxSpeakerEmbeddingExtractor));
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingExtractorDim(extractor: *const SherpaOnnxSpeakerEmbeddingExtractor) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingExtractorCreateStream(extractor: *const SherpaOnnxSpeakerEmbeddingExtractor) -> *const SherpaOnnxOnlineStream);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingExtractorIsReady(extractor: *const SherpaOnnxSpeakerEmbeddingExtractor, stream: *const SherpaOnnxOnlineStream) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding(extractor: *const SherpaOnnxSpeakerEmbeddingExtractor, stream: *const SherpaOnnxOnlineStream) -> *const libc::c_float);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(v: *const libc::c_float));
+
+// ---- Speaker Embedding OnlineStream ----
+
+sherpa_fn!(SherpaOnnxOnlineStreamAcceptWaveform(stream: *const SherpaOnnxOnlineStream, sample_rate: libc::c_int, samples: *const libc::c_float, n: libc::c_int));
+sherpa_fn!(SherpaOnnxDestroyOnlineStream(stream: *const SherpaOnnxOnlineStream));
+sherpa_fn!(SherpaOnnxOnlineStreamInputFinished(stream: *const SherpaOnnxOnlineStream));
+
+// ---- Speaker Embedding Manager ----
+
+sherpa_fn!(SherpaOnnxCreateSpeakerEmbeddingManager(dim: libc::c_int) -> *const SherpaOnnxSpeakerEmbeddingManager);
+sherpa_fn!(SherpaOnnxDestroySpeakerEmbeddingManager(manager: *const SherpaOnnxSpeakerEmbeddingManager));
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerAdd(manager: *const SherpaOnnxSpeakerEmbeddingManager, name: *const libc::c_char, v: *const libc::c_float) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerAddListFlattened(manager: *const SherpaOnnxSpeakerEmbeddingManager, name: *const libc::c_char, v: *const libc::c_float, n: libc::c_int) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerRemove(manager: *const SherpaOnnxSpeakerEmbeddingManager, name: *const libc::c_char) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerSearch(manager: *const SherpaOnnxSpeakerEmbeddingManager, v: *const libc::c_float, threshold: libc::c_float) -> *const libc::c_char);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerFreeSearch(name: *const libc::c_char));
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerVerify(manager: *const SherpaOnnxSpeakerEmbeddingManager, name: *const libc::c_char, v: *const libc::c_float, threshold: libc::c_float) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerGetAllSpeakers(manager: *const SherpaOnnxSpeakerEmbeddingManager) -> *const *const libc::c_char);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerFreeAllSpeakers(names: *const *const libc::c_char));
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerContains(manager: *const SherpaOnnxSpeakerEmbeddingManager, name: *const libc::c_char) -> libc::c_int);
+sherpa_fn!(SherpaOnnxSpeakerEmbeddingManagerNumSpeakers(manager: *const SherpaOnnxSpeakerEmbeddingManager) -> libc::c_int);
 
 // =============================================================================
 // Helper

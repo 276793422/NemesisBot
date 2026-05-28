@@ -21,6 +21,10 @@ speaker_id = 45
 speed = 1.0
 num_threads = 4
 
+[speaker]
+model_name = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+num_threads = 1
+
 [audio]
 capture_device = ""
 playback_device = ""
@@ -158,4 +162,12 @@ category = "punct"
 repo = "csukuangfj/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12"
 files = [
     { local = "model.onnx", remote = "model.onnx" },
+]
+
+[[models.sources]]
+name = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+category = "speaker"
+repo = "csukuangfj/speaker-embedding-models"
+files = [
+    { local = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx", remote = "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx" },
 ]

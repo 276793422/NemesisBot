@@ -14,6 +14,7 @@ async fn test_publish_subscribe_inbound() {
         session_key: "test:chat1".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     let msg = rx.recv().await.unwrap();
@@ -52,6 +53,7 @@ async fn test_multiple_subscribers() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     let msg1 = rx1.recv().await.unwrap();
@@ -78,6 +80,7 @@ async fn test_close_bus() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     // Receiver should not get the message (timeout)
@@ -109,6 +112,7 @@ async fn test_concurrent_publish() {
                 session_key: "test:chat".to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             });
         }));
     }
@@ -169,6 +173,7 @@ async fn test_inbound_sender() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     }).unwrap();
 
     let msg = rx.recv().await.unwrap();
@@ -205,6 +210,7 @@ async fn test_late_subscriber_misses_messages() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     // Subscribe after publishing - late subscriber should not get the message
@@ -233,6 +239,7 @@ async fn test_inbound_preserves_all_fields() {
         session_key: "rpc:chat456".to_string(),
         correlation_id: "corr-123".to_string(),
         metadata: metadata.clone(),
+        voice_playback: None,
     });
 
     let msg = rx.recv().await.unwrap();
@@ -312,6 +319,7 @@ async fn test_sequential_inbound_messages() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         });
     }
 
@@ -341,6 +349,7 @@ fn test_bus_publish_throughput() {
                 session_key: "t:c".to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             });
         }
         let elapsed = start.elapsed();
@@ -362,6 +371,7 @@ fn test_publish_inbound_no_receivers_no_panic() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     // Should have incremented the dropped counter
     assert_eq!(bus.dropped_inbound(), 1);
@@ -398,6 +408,7 @@ fn test_dropped_inbound_counter_multiple() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         });
     }
     assert_eq!(bus.dropped_inbound(), 3);
@@ -433,6 +444,7 @@ async fn test_dropped_counter_resets_after_subscribe() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     assert_eq!(bus.dropped_inbound(), 1);
 
@@ -447,6 +459,7 @@ async fn test_dropped_counter_resets_after_subscribe() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     let msg = rx.recv().await.unwrap();
@@ -506,6 +519,7 @@ async fn test_publish_inbound_after_close_drops_silently() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     // Closed bus should not increment dropped counter (it returns early)
@@ -550,6 +564,7 @@ async fn test_close_prevents_both_inbound_and_outbound() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     bus.publish_outbound(OutboundMessage {
         channel: "test".to_string(),
@@ -616,6 +631,7 @@ async fn test_publish_inbound_all_receivers_dropped() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     assert_eq!(bus.dropped_inbound(), 1);
@@ -664,6 +680,7 @@ async fn test_publish_inbound_some_receivers_dropped() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     // rx1 should still receive the message.
@@ -741,6 +758,7 @@ async fn test_inbound_sender_cloned_independently() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         })
         .expect("send via cloned sender should succeed");
 
@@ -790,6 +808,7 @@ async fn test_inbound_sender_works_even_after_bus_closed() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     // broadcast::Sender::send should succeed because the underlying
@@ -817,6 +836,7 @@ async fn test_multiple_inbound_senders_share_channel() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         })
         .unwrap();
 
@@ -830,6 +850,7 @@ async fn test_multiple_inbound_senders_share_channel() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         })
         .unwrap();
 
@@ -854,6 +875,7 @@ async fn test_inbound_sender_no_receivers_returns_error() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     assert!(result.is_err(), "send with no receivers should return Err");
 }
@@ -888,6 +910,7 @@ fn test_publish_inbound_no_receivers_multiple_messages_drops_all() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         });
     }
     assert_eq!(bus.dropped_inbound(), 10);
@@ -923,6 +946,7 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     assert_eq!(bus.dropped_inbound(), 1);
 
@@ -937,6 +961,7 @@ async fn test_publish_no_receivers_then_subscribe_delivers_new_messages() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     let msg = rx.recv().await.expect("should receive message after subscribing");
@@ -990,6 +1015,7 @@ async fn test_publish_inbound_subscribe_then_unsubscribe_all() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
     assert_eq!(bus.dropped_inbound(), 1);
 }
@@ -1048,6 +1074,7 @@ async fn test_concurrent_multiple_publishers_multiple_subscribers_inbound() {
                     session_key: "t:c".to_string(),
                     correlation_id: String::new(),
                     metadata: std::collections::HashMap::new(),
+                    voice_playback: None,
                 });
             }
         }));
@@ -1097,6 +1124,7 @@ async fn test_concurrent_inbound_and_outbound_are_independent() {
                 session_key: "t:c".to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             });
         }
     });
@@ -1162,6 +1190,7 @@ async fn test_concurrent_close_during_publish() {
                 session_key: "t:c".to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             });
             // Yield occasionally to interleave with close.
             if i % 10 == 0 {
@@ -1208,6 +1237,7 @@ async fn test_concurrent_subscribers_drop_while_publishing() {
                 session_key: "t:c".to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             });
         }
     });
@@ -1241,6 +1271,7 @@ async fn test_with_capacity_one_does_not_panic() {
         session_key: "t:c".to_string(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     });
 
     let msg = rx.recv().await.expect("should receive first message");
@@ -1263,6 +1294,7 @@ async fn test_with_capacity_overflow_drops_oldest() {
             session_key: "t:c".to_string(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         });
     }
 

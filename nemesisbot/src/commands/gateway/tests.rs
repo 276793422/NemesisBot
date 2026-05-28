@@ -1571,6 +1571,7 @@ fn test_bus_to_cluster_message_conversion() {
         session_key: String::new(),
         correlation_id: String::new(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     };
     assert_eq!(inbound.channel, "web");
     assert_eq!(inbound.sender_id, "user1");

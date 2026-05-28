@@ -41,6 +41,23 @@ const outputDevices = ref<any[]>([])
 // Speakers
 const speakers = ref<any[]>([])
 
+// Speaker verification (voiceprint)
+const speakerEngineEnabled = ref(false)
+const speakerThreshold = ref(0.65)
+const silenceTimeout = ref(3.0)
+const voiceDialogueActive = ref(false)
+const speakerRegistered = ref<string[]>([])
+const speakerRegistering = ref(false)
+const speakerRegisterName = ref('owner')
+const speakerRegisterElapsed = ref(0)
+let _registerTimer: ReturnType<typeof setInterval> | null = null
+const speakerTesting = ref(false)
+const speakerTestResults = ref<{ text: string; similarity: number; matched: boolean }[]>([])
+
+const VOICEPRINT_TEXT = `御街行  土世界
+重重稼穑连天外，无金出，无水溉。点点阴火透幽玄，残木唯存灰蔼。借此幽火，抚耀残木，再待参天开。
+命如朽壤天上来，稼穑破，多滞碍。幸得玄术镇灵台，师言机缘犹在。地利不及，天时不至，静待亦何奈。`
+
 // SSE handler ref for cleanup
 let _onSetupProgress: ((data: any) => void) | null = null
 let _wsHandler: ((data: any) => void) | null = null
@@ -235,11 +252,22 @@ _onSetupProgress = (data: any) => {
 }
 sseOn('voice-setup', _onSetupProgress)
 
-// --- WebSocket push handler for STT results ---
+// --- WebSocket push handler for STT results & speaker test ---
 _wsHandler = (data: any) => {
-  if (data?.type === 'push' && data?.module === 'voice' && data?.cmd === 'stt_result') {
-    const text = data?.data?.text || ''
-    if (text) sttResults.value.push(text)
+  if (data?.type === 'push' && data?.module === 'voice') {
+    if (data?.cmd === 'stt_result') {
+      const text = data?.data?.text || ''
+      if (text) sttResults.value.push(text)
+    } else if (data?.cmd === 'speaker_test_result') {
+      const r = data?.data
+      if (r?.text) {
+        speakerTestResults.value.push({
+          text: r.text,
+          similarity: r.similarity ?? 0,
+          matched: r.matched ?? false,
+        })
+      }
+    }
   }
 }
 addMessageHandler(_wsHandler)
@@ -258,6 +286,8 @@ async function loadVoiceConfig() {
       if (data.stt_enabled != null) sttEnabled.value = data.stt_enabled
       if (data.tts_enabled != null) ttsEnabled.value = data.tts_enabled
       if (data.punct_enabled != null) punctEnabled.value = data.punct_enabled
+      if (data.speaker_enabled != null) speakerEngineEnabled.value = data.speaker_enabled
+      if (data.silence_timeout != null) silenceTimeout.value = data.silence_timeout
     }
   } catch (_e) {
     // Use defaults
@@ -279,6 +309,8 @@ function saveVoiceConfigDebounced() {
         stt_enabled: sttEnabled.value,
         tts_enabled: ttsEnabled.value,
         punct_enabled: punctEnabled.value,
+        speaker_enabled: speakerEngineEnabled.value,
+        silence_timeout: silenceTimeout.value,
       })
     } catch (_e) {
       // Silent fail
@@ -291,7 +323,7 @@ const _engineInitialized = ref(false)
 const _skipEngineWatch = ref(false)
 
 // Watch all config values and auto-save
-watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled], () => {
+watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled, speakerEngineEnabled, silenceTimeout], () => {
   saveVoiceConfigDebounced()
 })
 
@@ -329,9 +361,123 @@ watch(ttsEnabled, async (enabled) => {
   }
 })
 
+// Speaker engine start/stop on toggle change
+watch(speakerEngineEnabled, async (enabled) => {
+  if (!_engineInitialized.value || _skipEngineWatch.value) return
+  try {
+    if (enabled) {
+      await request('voice', 'engine_start', { model: 'speaker' })
+      await loadSpeakerStatus()
+    } else {
+      await request('voice', 'engine_stop', { model: 'speaker' })
+    }
+  } catch (e: any) {
+    toast.error(enabled ? `声纹引擎启动失败: ${e}` : `声纹引擎停止失败: ${e}`)
+    _skipEngineWatch.value = true
+    speakerEngineEnabled.value = !enabled
+    _skipEngineWatch.value = false
+  }
+})
+
+// Speaker verification functions
+async function loadSpeakerStatus() {
+  try {
+    const data = await request('voice', 'speaker_status')
+    if (data) {
+      speakerThreshold.value = data.threshold ?? 0.65
+      speakerRegistered.value = data.speakers ?? []
+      voiceDialogueActive.value = data.stt_dialogue_active ?? false
+    }
+  } catch {}
+}
+
+async function startSpeakerRegister() {
+  try {
+    speakerRegistering.value = true
+    speakerRegisterElapsed.value = 0
+    await request('voice', 'speaker_register_start', { name: speakerRegisterName.value })
+    _registerTimer = setInterval(() => {
+      speakerRegisterElapsed.value += 0.1
+      if (speakerRegisterElapsed.value >= 30) {
+        stopSpeakerRegister()
+      }
+    }, 100)
+  } catch (e: any) {
+    speakerRegistering.value = false
+    toast.error(`开始录制失败: ${e}`)
+  }
+}
+
+async function stopSpeakerRegister() {
+  if (_registerTimer) {
+    clearInterval(_registerTimer)
+    _registerTimer = null
+  }
+  try {
+    const data = await request('voice', 'speaker_register_stop')
+    if (data?.registered) {
+      toast.success(`声纹注册成功: ${data.name} (${data.duration.toFixed(1)}秒)`)
+      await loadSpeakerStatus()
+    }
+  } catch (e: any) {
+    toast.error(`注册失败: ${e}`)
+  } finally {
+    speakerRegistering.value = false
+    speakerRegisterElapsed.value = 0
+  }
+}
+
+function cancelSpeakerRegister() {
+  if (_registerTimer) {
+    clearInterval(_registerTimer)
+    _registerTimer = null
+  }
+  request('voice', 'speaker_register_cancel').catch(() => {})
+  speakerRegistering.value = false
+  speakerRegisterElapsed.value = 0
+}
+
+async function removeSpeakerVoiceprint(name: string) {
+  try {
+    await request('voice', 'speaker_remove', { name })
+    toast.success(`已删除声纹: ${name}`)
+    await loadSpeakerStatus()
+  } catch (e: any) {
+    toast.error(`删除失败: ${e}`)
+  }
+}
+
+async function startSpeakerTest() {
+  speakerTestResults.value = []
+  speakerTesting.value = true
+  try {
+    await request('voice', 'speaker_test_start', undefined, 0)
+  } catch (e: any) {
+    toast.error(`测试失败: ${e}`)
+    speakerTesting.value = false
+  }
+}
+
+async function stopSpeakerTest() {
+  try {
+    await request('voice', 'speaker_test_stop')
+  } catch (e: any) {
+    toast.error(`停止失败: ${e}`)
+  }
+  speakerTesting.value = false
+}
+
+async function updateSpeakerThreshold(value: number) {
+  speakerThreshold.value = value
+  try {
+    await request('voice', 'speaker_set_threshold', { threshold: value })
+  } catch {}
+}
+
 onMounted(async () => {
   await loadAll()
   await loadVoiceConfig()
+  await loadSpeakerStatus()
   _engineInitialized.value = true
 })
 
@@ -356,6 +502,9 @@ onUnmounted(() => {
         <span style="font-size: var(--text-sm); color: var(--accent);">{{ setupProgress }}</span>
       </div>
     </div>
+
+    <!-- Row 1: Environment + Configuration -->
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
 
     <!-- Section 1: Environment Management -->
     <div class="card">
@@ -416,6 +565,13 @@ onUnmounted(() => {
               </span>
               <button class="btn btn-sm" @click="installModel('punct', '标点')" :disabled="!!setupProgress || models.punct?.ready">安装</button>
             </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                <span :style="{ color: models.speaker?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ models.speaker?.ready ? '●' : '○' }}</span>
+                <span>声纹模型</span>
+              </span>
+              <button class="btn btn-sm" @click="installModel('speaker', '声纹')" :disabled="!!setupProgress || models.speaker?.ready">安装</button>
+            </div>
           </div>
         </div>
 
@@ -474,6 +630,14 @@ onUnmounted(() => {
             </option>
           </select>
 
+          <!-- Speaker engine toggle -->
+          <span class="settings-key">声纹模型</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="speakerEngineEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ speakerEngineEnabled ? '启用' : '停用' }}</span>
+          </label>
+
           <!-- TTS toggle -->
           <span class="settings-key">TTS 模型</span>
           <label class="toggle-switch">
@@ -497,11 +661,90 @@ onUnmounted(() => {
             <span class="toggle-slider"></span>
             <span class="toggle-label">{{ punctEnabled ? '启用' : '停用' }}</span>
           </label>
+
+          <!-- Silence timeout -->
+          <span class="settings-key">自动发送</span>
+          <div style="display: flex; align-items: center; gap: var(--space-2);">
+            <input type="number" v-model.number="silenceTimeout" min="1" max="30" step="0.5" style="width: 70px; text-align: center;" :disabled="voiceDialogueActive" />
+            <span style="font-size: var(--text-sm); color: var(--text-secondary);">秒</span>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Section 3: Voice Test -->
+    </div><!-- End Row 1 -->
+
+    <!-- Row 2: Speaker + Voice Test -->
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+
+    <!-- Section 3: Speaker Verification (Voiceprint) -->
+    <div class="card">
+      <div class="card-header"><h3 style="margin: 0;">声纹识别</h3></div>
+      <div class="card-body">
+        <!-- Threshold -->
+        <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3);">
+          <span style="font-size: var(--text-sm); color: var(--text-secondary);">匹配阈值:</span>
+          <input type="range" min="0.3" max="0.95" step="0.01" v-model.number="speakerThreshold" @change="updateSpeakerThreshold(speakerThreshold)" style="width: 120px;" :disabled="!speakerEngineEnabled" />
+          <span style="font-size: var(--text-sm); min-width: 36px;">{{ speakerThreshold.toFixed(2) }}</span>
+        </div>
+
+        <!-- Registered voiceprints -->
+        <div style="margin-bottom: var(--space-3);">
+          <span style="font-weight: 500; font-size: var(--text-sm);">已注册声纹:</span>
+          <div v-if="speakerRegistered.length > 0" style="margin-top: var(--space-1); padding-left: var(--space-4);">
+            <div v-for="name in speakerRegistered" :key="name" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0;">
+              <span style="color: var(--success);">●</span>
+              <span style="font-size: var(--text-sm);">{{ name }}</span>
+              <button class="btn btn-sm btn-danger" @click="removeSpeakerVoiceprint(name)" style="margin-left: auto; font-size: 11px; padding: 1px 6px;" :disabled="speakerEngineEnabled">删除</button>
+            </div>
+          </div>
+          <div v-else style="color: var(--text-secondary); font-size: var(--text-sm); padding-left: var(--space-4);">
+            未注册
+          </div>
+        </div>
+
+        <!-- Register new voiceprint -->
+        <div style="margin-bottom: var(--space-4);">
+          <div style="font-weight: 500; margin-bottom: var(--space-3);">录制新声纹</div>
+          <div style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: var(--space-3); line-height: 1.6;">你有 30 秒的时间，读完如下内容，然后系统会根据你的声音生成新的声纹。系统只给你 30 秒时间，若你读不完，则系统不会等你。</div>
+          <div style="border-left: 3px solid var(--border); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); font-size: var(--text-sm); line-height: 1.8; white-space: pre-line; color: var(--text-secondary);">{{ VOICEPRINT_TEXT }}</div>
+          <div v-if="!speakerRegistering" style="margin-top: var(--space-2);">
+            <button class="btn btn-primary" @click="startSpeakerRegister" :disabled="speakerEngineEnabled || sttEnabled">开始录制</button>
+          </div>
+          <div v-else style="margin-top: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2);">
+              <progress :value="speakerRegisterElapsed" max="30" style="flex: 1; height: 8px;"></progress>
+              <span style="font-size: var(--text-sm); color: var(--accent); min-width: 80px;">{{ speakerRegisterElapsed.toFixed(1) }}s / 30.0s</span>
+            </div>
+            <div style="display: flex; gap: var(--space-2);">
+              <button class="btn btn-danger" @click="stopSpeakerRegister">停止录制</button>
+              <button class="btn" @click="cancelSpeakerRegister">取消</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Test (placeholder — will be redesigned in C) -->
+        <div>
+          <div style="font-weight: 500; margin-bottom: var(--space-2);">声纹测试</div>
+          <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-3);">
+            <button v-if="!speakerTesting" class="btn btn-primary" @click="startSpeakerTest" :disabled="speakerEngineEnabled || sttEnabled">开始测试</button>
+            <button v-if="speakerTesting" class="btn btn-danger" @click="stopSpeakerTest">停止测试</button>
+          </div>
+          <div v-if="speakerTestResults.length > 0" style="border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3); max-height: 250px; overflow-y: auto;">
+            <div v-for="(r, i) in speakerTestResults" :key="i" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; font-size: var(--text-sm);">
+              <span :style="{ color: r.matched ? 'var(--success)' : 'var(--danger)', fontWeight: 500 }">{{ r.matched ? '✓' : '✗' }}</span>
+              <span style="flex: 1;">{{ r.text }}</span>
+              <span style="color: var(--text-secondary); min-width: 100px; text-align: right;">相似度: {{ r.similarity.toFixed(2) }}</span>
+            </div>
+          </div>
+          <div v-else-if="speakerTesting" style="color: var(--text-secondary); font-size: var(--text-sm);">
+            请说话...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 4: Voice Test -->
     <div class="card">
       <div class="card-header"><h3 style="margin: 0;">语音测试</h3></div>
       <div class="card-body">
@@ -534,6 +777,8 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    </div><!-- End Row 2 -->
 
   </div>
 </template>

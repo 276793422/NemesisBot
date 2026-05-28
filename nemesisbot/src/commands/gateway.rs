@@ -906,6 +906,7 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
             session_key: String::new(),
             correlation_id: String::new(),
             metadata: std::collections::HashMap::new(),
+            voice_playback: None,
         };
         self.bus.publish_inbound(inbound);
     }
@@ -1083,6 +1084,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         m.insert("cron_job_name".to_string(), job.name.clone());
                         m
                     },
+                    voice_playback: None,
                 };
                 bus_for_cron.publish_inbound(inbound);
                 Ok(format!("Cron job '{}' triggered", job.name))
@@ -1559,6 +1561,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         session_key: String::new(),
                         correlation_id: String::new(),
                         metadata,
+                        voice_playback: None,
                     };
                     bus_for_cb.publish_inbound(inbound);
                     info!("[Gateway] Published cluster_continuation for task_id={}", task_id);
@@ -2357,6 +2360,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     println!();
     println!("Shutting down...");
     svc_mgr.shutdown();
+
+    // Cancel active voice sessions and release ONNX engines
+    // so spawn_blocking tasks exit before Runtime drop.
+    nemesis_web::handlers::voice::voice_shutdown().await;
 
     // Stop ProcessManager (terminates all child processes)
     if let Err(e) = process_manager.stop() {

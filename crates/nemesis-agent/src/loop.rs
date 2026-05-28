@@ -1100,7 +1100,7 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "cron", session_key);
 
-        let events = self.run_with_trace(&instance, content, &context, &trace_id).await;
+        let events = self.run_with_trace(&instance, content, &context, &trace_id, false).await;
 
         // Extract final response for the conversation end event.
         let final_response = events.iter().rev()
@@ -1166,7 +1166,7 @@ impl AgentLoop {
         let instance = AgentInstance::new(config);
         let context = RequestContext::new(channel, chat_id, "heartbeat", "heartbeat");
 
-        let events = self.run_with_trace(&instance, content, &context, &trace_id).await;
+        let events = self.run_with_trace(&instance, content, &context, &trace_id, false).await;
 
         // Extract final response for the conversation end event.
         let final_response = events.iter().rev()
@@ -1324,8 +1324,9 @@ impl AgentLoop {
         }
 
         // Process with the loop, then release.
+        let voice_playback = msg.voice_playback.unwrap_or(false);
         let result = self
-            .run_agent_loop_internal(&session_key, &msg.content, &msg.channel, &msg.chat_id)
+            .run_agent_loop_internal(&session_key, &msg.content, &msg.channel, &msg.chat_id, voice_playback)
             .await;
         self.release_session(&session_key);
 
@@ -1397,6 +1398,7 @@ impl AgentLoop {
                 &format!("[System: {}] {}", msg.sender_id, content),
                 origin_channel,
                 &origin_chat_id,
+                false,
             )
             .await;
 
@@ -1977,6 +1979,7 @@ impl AgentLoop {
         user_message: &str,
         channel: &str,
         chat_id: &str,
+        voice_playback: bool,
     ) -> Result<String, String> {
         // Generate trace ID and emit conversation_start event.
         let trace_id = format!("{}-{}", session_key, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
@@ -2001,7 +2004,7 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "agent", session_key);
 
-        let events = self.run_with_trace(&instance, user_message, &context, &trace_id).await;
+        let events = self.run_with_trace(&instance, user_message, &context, &trace_id, voice_playback).await;
 
         // Maybe trigger summarization.
         self.maybe_summarize(&instance, session_key, channel, chat_id);
@@ -2085,7 +2088,7 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> Vec<AgentEvent> {
         let trace_id = format!("run-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
-        self.run_with_trace(instance, user_message, context, &trace_id).await
+        self.run_with_trace(instance, user_message, context, &trace_id, false).await
     }
 
     /// Run the agent loop with a specific trace ID for observer event correlation.
@@ -2100,6 +2103,7 @@ impl AgentLoop {
         user_message: &str,
         context: &RequestContext,
         trace_id: &str,
+        voice_playback: bool,
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
@@ -2132,7 +2136,15 @@ impl AgentLoop {
             }
 
             // Build the message list from instance history.
-            let messages = self.build_messages(instance);
+            let mut messages = self.build_messages(instance);
+
+            // Voice playback prompt injection: append to last user message (not stored in history).
+            if voice_playback {
+                if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
+                    last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
+                }
+            }
+
             debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
 
             // Build tool definitions from registered tools for LLM function calling.
@@ -2203,7 +2215,14 @@ impl AgentLoop {
                             self.force_compression(instance);
 
                             // Rebuild messages from compressed history.
-                            let compressed_messages = self.build_messages(instance);
+                            let mut compressed_messages = self.build_messages(instance);
+
+                            // Re-apply voice playback prompt after compression.
+                            if voice_playback {
+                                if let Some(last_user) = compressed_messages.iter_mut().rev().find(|m| m.role == "user") {
+                                    last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
+                                }
+                            }
                             debug!(
                                 "[AgentLoop] Retry {}: sending {} messages after compression",
                                 retry_count,

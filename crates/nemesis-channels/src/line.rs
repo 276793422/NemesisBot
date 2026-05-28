@@ -335,6 +335,7 @@ impl LineChannel {
                 session_key: chat_id.to_string(),
                 correlation_id: String::new(),
                 metadata: std::collections::HashMap::new(),
+                voice_playback: None,
             };
 
             let _ = bus.send(inbound);

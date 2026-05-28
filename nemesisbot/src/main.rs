@@ -17,6 +17,7 @@ const CONFIG_CLUSTER_DEFAULT: &str = include_str!("../config/config.cluster.defa
 const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
 const CONFIG_SCANNER_DEFAULT: &str = include_str!("../config/config.scanner.default.json");
 const CONFIG_ENHANCED_MEMORY_DEFAULT: &str = include_str!("../config/config.enhanced_memory.default.json");
+const CONFIG_CHAT_DEFAULT: &str = include_str!("../config/config.chat.default.json");
 const CONFIG_SECURITY_WINDOWS: &str = include_str!("../config/config.security.windows.json");
 const CONFIG_SECURITY_LINUX: &str = include_str!("../config/config.security.linux.json");
 const CONFIG_SECURITY_DARWIN: &str = include_str!("../config/config.security.darwin.json");
@@ -406,6 +407,11 @@ async fn main() -> Result<()> {
             let em_cfg_path = common::enhanced_memory_config_path(&home);
             let _ = std::fs::write(&em_cfg_path, CONFIG_ENHANCED_MEMORY_DEFAULT);
             println!("  Enhanced memory config created");
+
+            // --- Step 7.6: Chat config (embedded) ---
+            let chat_cfg_path = common::chat_config_path(&home);
+            let _ = std::fs::write(&chat_cfg_path, CONFIG_CHAT_DEFAULT);
+            println!("  Chat config created");
 
             // --- Step 8: Extract embedded workspace templates ---
             // Mirrors Go's copyEmbeddedToTarget() — copies all files from

@@ -35,6 +35,7 @@ pub struct IncomingMessage {
     pub chat_id: String,
     pub content: String,
     pub metadata: HashMap<String, String>,
+    pub voice_playback: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +390,8 @@ fn handle_chat_send(
     #[derive(serde::Deserialize)]
     struct ChatData {
         content: String,
+        #[serde(default)]
+        voice_playback: Option<bool>,
     }
     let data: ChatData = msg.decode_data()?;
     if data.content.is_empty() {
@@ -407,6 +410,7 @@ fn handle_chat_send(
         chat_id: chat_id.to_string(),
         content: data.content,
         metadata: HashMap::new(),
+        voice_playback: data.voice_playback,
     }))
 }
 
@@ -448,6 +452,7 @@ fn handle_history_request(
         chat_id: chat_id.to_string(),
         content: payload.to_string(),
         metadata,
+        voice_playback: None,
     }))
 }
 

@@ -91,6 +91,7 @@ fn make_inbound(
         session_key: "test:chat1".to_string(),
         correlation_id: correlation_id.to_string(),
         metadata: std::collections::HashMap::new(),
+        voice_playback: None,
     }
 }
 

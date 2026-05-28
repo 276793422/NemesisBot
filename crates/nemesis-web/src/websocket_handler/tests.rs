@@ -251,6 +251,7 @@ fn test_incoming_message_debug() {
         chat_id: "web:s1".to_string(),
         content: "hello".to_string(),
         metadata: HashMap::new(),
+        voice_playback: None,
     };
     let debug_str = format!("{:?}", msg);
     assert!(debug_str.contains("s1"));
@@ -265,6 +266,7 @@ fn test_incoming_message_clone() {
         chat_id: "web:s1".to_string(),
         content: "hello".to_string(),
         metadata: HashMap::new(),
+        voice_playback: None,
     };
     let cloned = msg.clone();
     assert_eq!(cloned.session_id, msg.session_id);
@@ -321,6 +323,7 @@ fn test_incoming_message_with_metadata() {
         chat_id: "web:s1".to_string(),
         content: "hello".to_string(),
         metadata,
+        voice_playback: None,
     };
     assert_eq!(msg.metadata.get("key1"), Some(&"val1".to_string()));
 }
@@ -333,10 +336,34 @@ fn test_incoming_message_equality() {
         chat_id: "web:s1".to_string(),
         content: "hello".to_string(),
         metadata: HashMap::new(),
+        voice_playback: None,
     };
     let msg2 = msg1.clone();
     assert_eq!(msg1.session_id, msg2.session_id);
     assert_eq!(msg1.content, msg2.content);
+}
+
+#[test]
+fn test_incoming_message_voice_playback_field() {
+    let msg_none = IncomingMessage {
+        session_id: "s1".to_string(),
+        sender_id: "web:s1".to_string(),
+        chat_id: "web:s1".to_string(),
+        content: "hello".to_string(),
+        metadata: HashMap::new(),
+        voice_playback: None,
+    };
+    assert!(msg_none.voice_playback.is_none());
+
+    let msg_enabled = IncomingMessage {
+        session_id: "s1".to_string(),
+        sender_id: "web:s1".to_string(),
+        chat_id: "web:s1".to_string(),
+        content: "hello".to_string(),
+        metadata: HashMap::new(),
+        voice_playback: Some(true),
+    };
+    assert_eq!(msg_enabled.voice_playback, Some(true));
 }
 
 #[test]
@@ -548,6 +575,7 @@ fn test_incoming_message_default_metadata() {
         chat_id: "w:s".to_string(),
         content: "hi".to_string(),
         metadata: HashMap::new(),
+        voice_playback: None,
     };
     assert!(msg.metadata.is_empty());
     assert_eq!(msg.session_id, "s");
@@ -641,6 +669,7 @@ fn test_incoming_message_clone_equality() {
             m.insert("key".to_string(), "value".to_string());
             m
         },
+        voice_playback: None,
     };
     let cloned = msg.clone();
     assert_eq!(cloned.session_id, msg.session_id);

@@ -4,6 +4,7 @@ import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
+import { useWSAPI } from '../composables/useWSAPI'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.min.css'
@@ -15,6 +16,16 @@ const props = defineProps<{
 const chatStore = useChatStore()
 const appStore = useAppStore()
 const auth = useAuthStore()
+const { request } = useWSAPI()
+
+// Voice toolbar state
+const sttReady = ref(false)
+const ttsReady = ref(false)
+const voiceDictation = ref(false)
+const voiceDialogue = ref(false)
+const voicePlayback = ref(false)
+const toolbarCollapsed = ref(false)
+const silenceTimeout = ref(3.0)
 
 const chatMessages = ref<HTMLDivElement | null>(null)
 const chatInput = ref<HTMLTextAreaElement | null>(null)
@@ -83,6 +94,11 @@ function handleWSMessage(data: any) {
           timestamp: data.timestamp,
         })
         chatStore.streaming = false
+
+        // TTS playback: if enabled, send AI response to backend for synthesis
+        if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
+          request('voice', 'tts_playback', { text: data.data.content }).catch(() => {})
+        }
       } else if (data.cmd === 'history') {
         handleHistoryResponse(data.data)
       }
@@ -93,6 +109,34 @@ function handleWSMessage(data: any) {
         timestamp: data.timestamp,
       })
       chatStore.streaming = false
+    }
+  }
+
+  // Voice push messages
+  if (data.type === 'push' && data.module === 'voice') {
+    if (data.cmd === 'stt_to_input' && data.data?.text) {
+      chatStore.input += data.data.text
+    } else if (data.cmd === 'stt_accumulate' && data.data?.text) {
+      chatStore.input = data.data.text
+    } else if (data.cmd === 'stt_auto_send' && data.data?.text) {
+      chatStore.input = data.data.text
+      sendMessage()
+    } else if (data.cmd === 'engine_fault') {
+      if (data.data?.engine === 'stt') {
+        sttReady.value = false
+        voiceDictation.value = false
+        voiceDialogue.value = false
+      }
+      if (data.data?.engine === 'tts') {
+        ttsReady.value = false
+        voicePlayback.value = false
+      }
+    } else if (data.cmd === 'speaker_rejected') {
+      chatStore.addMessage({
+        role: 'error',
+        content: '⚠ 声纹验证未通过，语音输入已忽略',
+        timestamp: new Date().toISOString(),
+      })
     }
   }
 
@@ -168,9 +212,82 @@ function sendMessage() {
   // Reset textarea height
   if (chatInput.value) chatInput.value.style.height = 'auto'
 
-  send(content)
+  // Send with voice_playback flag if playback is enabled
+  send(content, voicePlayback.value)
+
+  // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
+  if (voiceDialogue.value) {
+    request('voice', 'stt_dialogue_reset').catch(() => {})
+  }
+
   nextTick(() => scrollToBottom())
   nextTick(() => chatInput.value?.focus())
+}
+
+// Voice toolbar toggle functions
+async function toggleDictation() {
+  if (voiceDictation.value) {
+    await request('voice', 'stt_to_input_stop').catch(() => {})
+    voiceDictation.value = false
+  } else {
+    if (!sttReady.value) return
+    // Close dialogue if open
+    if (voiceDialogue.value) {
+      await request('voice', 'stt_dialogue_stop').catch(() => {})
+      voiceDialogue.value = false
+    }
+    try {
+      await request('voice', 'stt_to_input_start')
+      voiceDictation.value = true
+    } catch {}
+  }
+  saveVoiceConfig()
+}
+
+async function toggleDialogue() {
+  if (voiceDialogue.value) {
+    await request('voice', 'stt_dialogue_stop').catch(() => {})
+    voiceDialogue.value = false
+  } else {
+    if (!sttReady.value) return
+    // Close dictation if open
+    if (voiceDictation.value) {
+      await request('voice', 'stt_to_input_stop').catch(() => {})
+      voiceDictation.value = false
+    }
+    try {
+      await request('voice', 'stt_dialogue_start', { silence_timeout: silenceTimeout.value })
+      voiceDialogue.value = true
+    } catch {}
+  }
+  saveVoiceConfig()
+}
+
+async function togglePlayback() {
+  if (voicePlayback.value) {
+    await request('voice', 'tts_playback_stop').catch(() => {})
+    voicePlayback.value = false
+  } else {
+    if (!ttsReady.value) return
+    voicePlayback.value = true
+  }
+  saveVoiceConfig()
+}
+
+function toggleToolbar() {
+  toolbarCollapsed.value = !toolbarCollapsed.value
+  saveVoiceConfig()
+}
+
+async function saveVoiceConfig() {
+  try {
+    await request('voice', 'chat_config_set', {
+      toolbar_collapsed: toolbarCollapsed.value,
+      dictation_enabled: voiceDictation.value,
+      dialogue_enabled: voiceDialogue.value,
+      playback_enabled: voicePlayback.value,
+    })
+  } catch {}
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -194,6 +311,35 @@ function renderCodeBlocks() {
       })
     }
   })
+}
+
+async function initVoiceState() {
+  try {
+    const [config, engines, voiceCfg] = await Promise.all([
+      request('voice', 'chat_config_get'),
+      request('voice', 'engine_status'),
+      request('voice', 'voice_config_get'),
+    ])
+    if (config) {
+      toolbarCollapsed.value = config.toolbar_collapsed ?? false
+      // Visual-only restore: buttons show enabled state but pipelines are NOT started
+      voiceDictation.value = config.dictation_enabled ?? false
+      voiceDialogue.value = config.dialogue_enabled ?? false
+      voicePlayback.value = config.playback_enabled ?? false
+      // Reset to false since pipelines aren't actually running
+      voiceDictation.value = false
+      voiceDialogue.value = false
+    }
+    if (engines) {
+      sttReady.value = engines.stt_ready ?? false
+      ttsReady.value = engines.tts_ready ?? false
+    }
+    if (voiceCfg) {
+      silenceTimeout.value = voiceCfg.silence_timeout ?? 3.0
+    }
+  } catch {
+    // Voice not available — keep buttons disabled
+  }
 }
 
 // Scroll listener for history
@@ -222,6 +368,9 @@ const unwatchStatus = watch(wsStatus, (val) => {
     if (val === 'disconnected' && chatStore.streaming) {
       chatStore.streaming = false
     }
+    if (val === 'connected') {
+      initVoiceState()
+    }
   }
 })
 
@@ -247,6 +396,11 @@ onMounted(() => {
     if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
       loadHistory()
     }
+  }
+
+  // Initialize voice toolbar state after WS is ready
+  if (wsStatus.value === 'connected') {
+    initVoiceState()
   }
 })
 
@@ -301,6 +455,36 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- Voice toolbar -->
+    <div v-if="!toolbarCollapsed" class="voice-toolbar">
+      <div class="voice-toolbar-left">
+        <button
+          class="voice-btn"
+          :class="{ active: voiceDictation }"
+          :disabled="!sttReady"
+          :title="sttReady ? '听写：说话内容追加到输入框' : '请先在语音通道页启用 STT 引擎'"
+          @click="toggleDictation"
+        >&#127908; 听写</button>
+        <button
+          class="voice-btn"
+          :class="{ active: voiceDialogue }"
+          :disabled="!sttReady"
+          :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
+          @click="toggleDialogue"
+        >&#127909; 语音对话</button>
+      </div>
+      <div class="voice-toolbar-right">
+        <button
+          class="voice-btn"
+          :class="{ active: voicePlayback }"
+          :disabled="!ttsReady"
+          :title="ttsReady ? '语音播放：AI 回复自动朗读' : '请先在语音通道页启用 TTS 引擎'"
+          @click="togglePlayback"
+        >&#128266; 语音播放</button>
+        <button class="voice-btn voice-btn-collapse" @click="toggleToolbar" title="收起工具条">&#9650;</button>
+      </div>
+    </div>
+
     <!-- Input -->
     <div class="chat-input-area">
       <textarea
@@ -315,6 +499,60 @@ onUnmounted(() => {
       <button class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim() || chatStore.streaming">
         发送
       </button>
+      <button v-if="toolbarCollapsed" class="voice-btn voice-btn-expand" @click="toggleToolbar" title="展开语音工具条">&#127908;</button>
     </div>
   </div>
 </template>
+
+<style scoped>
+.voice-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  background: var(--bg-secondary, #f5f5f5);
+  border-top: 1px solid var(--border-color, #e0e0e0);
+  min-height: 32px;
+}
+.voice-toolbar-left,
+.voice-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.voice-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-color, #ccc);
+  border-radius: 4px;
+  background: var(--bg-primary, #fff);
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.voice-btn:hover:not(:disabled) {
+  border-color: var(--accent-color, #4a9eff);
+  color: var(--accent-color, #4a9eff);
+}
+.voice-btn.active {
+  background: var(--accent-color, #4a9eff);
+  color: #fff;
+  border-color: var(--accent-color, #4a9eff);
+}
+.voice-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.voice-btn-collapse {
+  font-size: 10px;
+  padding: 2px 6px;
+}
+.voice-btn-expand {
+  font-size: 16px;
+  padding: 4px 8px;
+}
+</style>

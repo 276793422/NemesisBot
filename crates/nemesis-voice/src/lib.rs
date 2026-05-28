@@ -22,6 +22,8 @@ pub mod model;
 #[cfg(target_os = "windows")]
 pub mod punct;
 #[cfg(target_os = "windows")]
+pub mod speaker;
+#[cfg(target_os = "windows")]
 pub mod sherpa;
 #[cfg(target_os = "windows")]
 pub mod stt;
@@ -45,6 +47,10 @@ pub use bootstrap::{init_sherpa, run_in_dir as bootstrap_run_in_dir};
 pub use sherpa::is_initialized as sherpa_is_initialized;
 #[cfg(target_os = "windows")]
 pub use punct::PunctEngine;
+#[cfg(target_os = "windows")]
+pub use speaker::{SpeakerEngine, SpeakerManager};
+#[cfg(target_os = "windows")]
+pub use speaker::cosine_similarity;
 #[cfg(target_os = "windows")]
 pub use stt::SttEngine;
 #[cfg(target_os = "windows")]

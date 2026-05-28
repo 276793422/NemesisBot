@@ -193,6 +193,42 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Ensure speaker embedding model is ready. Returns the model directory path.
+pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
+    let model_name = &cfg.speaker.model_name;
+    let dir = cfg.model_dir().join("speaker").join(model_name);
+
+    let source = cfg.find_model_source(model_name);
+    let files: Vec<(&str, &str)> = source
+        .map(|s| s.files.iter().map(|f| (f.local.as_str(), f.remote.as_str())).collect())
+        .unwrap_or_default();
+
+    if !files.is_empty() && check_model_files(&dir, &files) {
+        tracing::info!("[Speaker] Model '{}' found at {}", model_name, dir.display());
+        return Ok(dir);
+    }
+
+    if !cfg.models.auto_download {
+        anyhow::bail!("Speaker model '{}' not found and auto_download is disabled", model_name);
+    }
+
+    let source = source.context(format!(
+        "Speaker model '{}' not found in config [models.sources]. Add it to config.toml.",
+        model_name
+    ))?;
+
+    download_model_files(
+        &cfg.models.mirror.base,
+        &source.name,
+        &source.repo,
+        &source.files,
+        &dir,
+        &cfg.models.proxy.url,
+    )?;
+
+    Ok(dir)
+}
+
 /// Download all files for a model from the configured mirror with resume support.
 /// Downloads to `.part` temp files, renames to final name on completion.
 #[cfg(feature = "download")]
