@@ -2,7 +2,6 @@
 import { ref, onMounted, computed } from 'vue'
 import { useAppStore } from '../stores/app'
 import { marked } from 'marked'
-import hljs from 'highlight.js'
 
 const appStore = useAppStore()
 const activeTab = ref('about')
