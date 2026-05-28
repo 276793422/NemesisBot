@@ -168,26 +168,32 @@ fn cmd_download(voice_dir: &std::path::Path) -> Result<()> {
 
     std::fs::create_dir_all(cfg.model_dir())?;
 
-    println!("[1/4] STT ({})", cfg.stt.model_name);
+    println!("[1/5] STT ({})", cfg.stt.model_name);
     match nemesis_voice::model::ensure_stt_model(&cfg) {
         Ok(path) => println!("  Ready: {}\n", path.display()),
         Err(e) => eprintln!("  Failed: {}\n", e),
     }
 
-    println!("[2/4] VAD ({})", cfg.vad.model_name);
+    println!("[2/5] VAD ({})", cfg.vad.model_name);
     match nemesis_voice::model::ensure_vad_model(&cfg) {
         Ok(path) => println!("  Ready: {}\n", path.display()),
         Err(e) => eprintln!("  Failed: {}\n", e),
     }
 
-    println!("[3/4] TTS ({})", cfg.tts.model_name);
+    println!("[3/5] TTS ({})", cfg.tts.model_name);
     match nemesis_voice::model::ensure_tts_model(&cfg) {
         Ok(path) => println!("  Ready: {}\n", path.display()),
         Err(e) => eprintln!("  Failed: {}\n", e),
     }
 
-    println!("[4/4] Punct ({})", cfg.punct.model_name);
+    println!("[4/5] Punct ({})", cfg.punct.model_name);
     match nemesis_voice::model::ensure_punct_model(&cfg) {
+        Ok(path) => println!("  Ready: {}\n", path.display()),
+        Err(e) => eprintln!("  Failed: {}\n", e),
+    }
+
+    println!("[5/5] Speaker ({})", cfg.speaker.model_name);
+    match nemesis_voice::model::ensure_speaker_model(&cfg) {
         Ok(path) => println!("  Ready: {}\n", path.display()),
         Err(e) => eprintln!("  Failed: {}\n", e),
     }
