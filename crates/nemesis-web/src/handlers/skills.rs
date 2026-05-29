@@ -34,6 +34,11 @@ impl ModuleHandler for SkillsHandler {
                 let name = crate::handlers::get_str(&data, "name")?;
                 self.detail(workspace, &name)
             }
+            "open_dir" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                self.open_dir(workspace, &name)
+            }
             "uninstall" => {
                 let data = data.ok_or("missing data")?;
                 let name = crate::handlers::get_str(&data, "name")?;
@@ -142,13 +147,11 @@ impl SkillsHandler {
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
-                let has_skill_md = path.join("SKILL.md").exists();
+                let skill_md = path.join("SKILL.md");
+                let has_skill_md = skill_md.exists();
                 let description = if has_skill_md {
-                    read_workspace_file(workspace, &format!("skills/{}/SKILL.md", name))
-                        .ok()
-                        .and_then(|content| {
-                            content.lines().next().map(|l| l.trim_start_matches('#').trim().to_string())
-                        })
+                    nemesis_skills::loader::get_skill_metadata(&skill_md)
+                        .map(|m| m.description)
                         .unwrap_or_default()
                 } else {
                     String::new()
@@ -171,6 +174,21 @@ impl SkillsHandler {
             "name": name,
             "content": content,
         })))
+    }
+
+    fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let skill_dir = PathBuf::from(workspace).join("skills").join(name);
+        if !skill_dir.exists() {
+            return Err(format!("skill '{}' directory not found: {}", name, skill_dir.display()));
+        }
+        let path = skill_dir.to_string_lossy().to_string();
+        #[cfg(target_os = "windows")]
+        std::process::Command::new("explorer").arg(&path).spawn().ok();
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open").arg(&path).spawn().ok();
+        #[cfg(target_os = "linux")]
+        std::process::Command::new("xdg-open").arg(&path).spawn().ok();
+        Ok(Some(serde_json::json!({ "opened": true, "path": path })))
     }
 
     fn uninstall(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
@@ -244,6 +262,18 @@ impl SkillsHandler {
     async fn install(&self, data: &serde_json::Value, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let registry = crate::handlers::get_str(data, "registry")?;
         let slug = crate::handlers::get_str(data, "slug")?;
+        let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let skills_dir = PathBuf::from(workspace).join("skills");
+        let target_dir = skills_dir.join(&slug);
+
+        // Check if already installed
+        if target_dir.is_dir() && !force {
+            return Ok(Some(serde_json::json!({
+                "already_installed": true,
+                "slug": slug,
+            })));
+        }
 
         let config_path = skills_config_path(workspace);
         let config = load_registry_config(&config_path);
@@ -252,11 +282,10 @@ impl SkillsHandler {
         let reg = manager.get_registry(&registry)
             .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
 
-        let skills_dir = PathBuf::from(workspace).join("skills");
         let _ = std::fs::create_dir_all(&skills_dir);
-        let target_dir = skills_dir.join(&slug).to_string_lossy().to_string();
+        let target_str = target_dir.to_string_lossy().to_string();
 
-        let result = reg.download_and_install(&slug, "latest", &target_dir).await
+        let result = reg.download_and_install(&slug, "latest", &target_str).await
             .map_err(|e| format!("安装失败: {}", e))?;
 
         Ok(Some(serde_json::json!({
@@ -449,6 +478,14 @@ impl SkillsHandler {
             "deletable": false,
         }));
 
+        sources.push(serde_json::json!({
+            "type": "modelscope",
+            "name": "ModelScope",
+            "base_url": "modelscope.cn",
+            "enabled": cfg.modelscope.enabled,
+            "deletable": false,
+        }));
+
         Ok(Some(serde_json::json!({ "sources": sources })))
     }
 
@@ -569,6 +606,13 @@ impl SkillsHandler {
         // Check ClawHub
         if name == "ClawHub" || name == "clawhub" {
             cfg.clawhub.enabled = enabled;
+            save_config(workspace, &cfg)?;
+            return Ok(Some(serde_json::json!({ "toggled": true, "name": name, "enabled": enabled })));
+        }
+
+        // Check ModelScope
+        if name == "ModelScope" || name == "modelscope" {
+            cfg.modelscope.enabled = enabled;
             save_config(workspace, &cfg)?;
             return Ok(Some(serde_json::json!({ "toggled": true, "name": name, "enabled": enabled })));
         }

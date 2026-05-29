@@ -16,3 +16,4 @@ pub mod github_registry;
 pub mod github_tree;
 pub mod search_cache;
 pub mod mock_registry;
+pub mod modelscope_registry;

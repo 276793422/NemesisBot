@@ -15,6 +15,7 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::clawhub_registry::ClawHubRegistry;
 use crate::github_registry::{GitHubRegistry, GitHubSourceConfig};
+use crate::modelscope_registry::ModelScopeRegistry;
 use crate::search_cache::SearchCache;
 use crate::types::{
     BrowseResult, BrowseSort, RegistryConfig, RegistrySearchResult, SkillMeta, SkillSearchResult,
@@ -155,6 +156,12 @@ impl RegistryManager {
                 &config.clawhub.convex_site_url,
             );
             registries.push(Arc::new(clawhub));
+        }
+
+        // ModelScope support.
+        if config.modelscope.enabled {
+            let ms = ModelScopeRegistry::new();
+            registries.push(Arc::new(ms));
         }
 
         Self {
@@ -541,6 +548,44 @@ impl SkillRegistry for GitHubRegistry {
 /// Implement SkillRegistry for ClawHubRegistry.
 #[async_trait]
 impl SkillRegistry for ClawHubRegistry {
+    fn name(&self) -> &str {
+        self.name()
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
+        self.search(query, limit).await
+    }
+
+    async fn get_skill_meta(&self, slug: &str) -> Result<SkillMeta> {
+        self.get_skill_meta(slug).await
+    }
+
+    async fn download_and_install(
+        &self,
+        slug: &str,
+        version: &str,
+        target_dir: &str,
+    ) -> Result<crate::types::InstallResult> {
+        self.download_and_install(slug, version, target_dir).await
+    }
+
+    async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
+        self.get_skill_content(slug).await
+    }
+
+    async fn browse(
+        &self,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        self.browse(sort, limit, cursor).await
+    }
+}
+
+/// Implement SkillRegistry for ModelScopeRegistry.
+#[async_trait]
+impl SkillRegistry for ModelScopeRegistry {
     fn name(&self) -> &str {
         self.name()
     }

@@ -23,6 +23,7 @@ const searchQuery = ref('')
 const searchResults = ref<SearchResult[]>([])
 const searching = ref(false)
 const installingSlug = ref('')
+const alreadyInstalledSlugs = ref<Set<string>>(new Set())
 const shopDetail = ref<any>(null)
 const shopDetailLoading = ref(false)
 const shopCode = ref('')
@@ -50,6 +51,11 @@ const SHOP_CATEGORIES = [
   { id: 'finance', name: '金融' },
   { id: 'smart home iot', name: '智能家居' },
 ]
+const BUILTIN_SOURCES = [
+  { id: 'clawhub', name: 'ClawHub' },
+  { id: 'modelscope', name: 'ModelScope' },
+]
+const selectedSource = ref('clawhub')
 const showCategoryDialog = ref(false)
 const shopSort = ref('trending')
 const browseResults = ref<SearchResult[]>([])
@@ -96,6 +102,14 @@ async function showDetail(name: string) {
   }
 }
 
+async function openDir(name: string) {
+  try {
+    await request('skills', 'open_dir', { name })
+  } catch (e: any) {
+    toast.error('打开目录失败: ' + e)
+  }
+}
+
 async function uninstallSkill(name: string) {
   if (!confirm(`确定卸载技能 "${name}" 吗？`)) return
   try {
@@ -127,16 +141,30 @@ function isInstalled(slug: string | undefined): boolean {
   return skills.value.some(s => s.name === slug)
 }
 
-async function installSkill(registry: string, slug: string) {
+async function installSkill(registry: string, slug: string, force = false) {
   installingSlug.value = slug
   try {
-    await request('skills', 'install', { registry, slug })
-    toast.success(`已安装: ${slug}`)
-    await loadInstalled()
+    const data = await request('skills', 'install', { registry, slug, force })
+    if (data?.already_installed) {
+      alreadyInstalledSlugs.value.add(slug)
+      toast.info(`${slug} 已安装，点击"更新"可覆盖安装`)
+    } else {
+      toast.success(force ? `已更新: ${slug}` : `已安装: ${slug}`)
+      alreadyInstalledSlugs.value.delete(slug)
+      await loadInstalled()
+    }
   } catch (e: any) {
     toast.error('安装失败: ' + e)
   }
   installingSlug.value = ''
+}
+
+function handleInstallClick(registry: string, slug: string) {
+  if (alreadyInstalledSlugs.value.has(slug)) {
+    installSkill(registry, slug, true)
+  } else {
+    installSkill(registry, slug, false)
+  }
 }
 
 async function showShopDetailFn(registry: string, slug: string) {
@@ -184,7 +212,7 @@ async function browseSkills(sort?: string) {
   browseCursor.value = null
   browseDisplayCount.value = 20
 
-  const cacheKey = `browse:${shopSort.value}`
+  const cacheKey = `browse:${selectedSource.value}:${shopSort.value}`
   const cached = browseCache.get(cacheKey)
   if (cached && (Date.now() - cached.ts) < 60000) {
     browseResults.value = cached.data.items
@@ -194,7 +222,7 @@ async function browseSkills(sort?: string) {
   }
 
   try {
-    const data = await request('skills', 'browse', { registry: 'clawhub', sort: shopSort.value, limit: 100 })
+    const data = await request('skills', 'browse', { registry: selectedSource.value, sort: shopSort.value, limit: 100 })
     browseResults.value = data?.items || []
     browseCursor.value = data?.next_cursor || null
     browseCache.set(cacheKey, { data: { items: browseResults.value, next_cursor: browseCursor.value }, ts: Date.now() })
@@ -214,7 +242,7 @@ async function loadMore() {
   if (!browseCursor.value || browseLoading.value) return
   browseLoading.value = true
   try {
-    const data = await request('skills', 'browse', { registry: 'clawhub', sort: shopSort.value, limit: 100, cursor: browseCursor.value })
+    const data = await request('skills', 'browse', { registry: selectedSource.value, sort: shopSort.value, limit: 100, cursor: browseCursor.value })
     const items = data?.items || []
     browseResults.value = [...browseResults.value, ...items]
     browseCursor.value = data?.next_cursor || null
@@ -389,17 +417,16 @@ onMounted(loadInstalled)
         <div v-if="!loading && skills.length > 0" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-4);">
           <div v-for="s in skills" :key="s.name" class="skill-card">
             <div class="skill-card-header">
-              <div>
-                <div class="skill-name">{{ s.name }}</div>
-                <div v-if="s.description" style="font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px;">{{ s.description }}</div>
-              </div>
+              <div class="skill-name">{{ s.name }}</div>
               <span class="badge" :class="s.has_skill_md ? 'badge-success' : 'badge-neutral'">
                 {{ s.has_skill_md ? '有效' : '缺少定义' }}
               </span>
             </div>
-            <div class="skill-description" v-if="!s.description">暂无描述</div>
+            <div v-if="s.description" class="skill-description" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.description }}</div>
+            <div class="skill-description" v-else>暂无描述</div>
             <div style="display: flex; gap: var(--space-2); margin-top: var(--space-3);">
               <button class="btn btn-sm" @click="showDetail(s.name)">查看</button>
+              <button class="btn btn-sm" @click="openDir(s.name)">目录</button>
               <button class="btn btn-sm btn-danger" @click="uninstallSkill(s.name)">卸载</button>
             </div>
           </div>
@@ -420,6 +447,10 @@ onMounted(loadInstalled)
 
       <!-- Shop tab -->
       <div v-if="activeTab === 'shop'">
+        <!-- Source selector -->
+        <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-3);">
+          <span v-for="src in BUILTIN_SOURCES" :key="src.id" class="filter-pill" :class="{ active: selectedSource === src.id }" @click="selectedSource = src.id; browseSkills()">{{ src.name }}</span>
+        </div>
         <!-- Search bar -->
         <div style="display: flex; gap: var(--space-3); margin-bottom: var(--space-4);">
           <input class="form-input" v-model="searchQuery" placeholder="搜索技能..." @keyup.enter="searchSkills" style="max-width: 400px;">
@@ -471,10 +502,10 @@ onMounted(loadInstalled)
                 </div>
                 <div class="skill-description" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ r.description || '暂无描述' }}</div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3);">
-                  <span v-if="r.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
+                  <span v-if="r.version && r.version !== 'latest'" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
                   <span v-else></span>
-                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="installSkill(r.source!, r.slug!)">
-                    {{ r.installed ? '已安装' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="handleInstallClick(r.source!, r.slug!)">
+                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
                   </button>
                 </div>
               </div>
@@ -487,10 +518,10 @@ onMounted(loadInstalled)
                 </div>
                 <div class="skill-description" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ r.description || '暂无描述' }}</div>
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3);">
-                  <span v-if="r.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
+                  <span v-if="r.version && r.version !== 'latest'" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
                   <span v-else></span>
-                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="installSkill(r.source!, r.slug!)">
-                    {{ r.installed ? '已安装' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="handleInstallClick(r.source!, r.slug!)">
+                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
                   </button>
                 </div>
               </div>
@@ -534,7 +565,7 @@ onMounted(loadInstalled)
               <div class="modal-body">
                 <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; margin-bottom: var(--space-3);">
                   <span class="badge badge-info">{{ shopDetail.registry }}</span>
-                  <span v-if="shopDetail.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ shopDetail.version }}</span>
+                  <span v-if="shopDetail.version && shopDetail.version !== 'latest'" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ shopDetail.version }}</span>
                   <span v-if="shopDetail.author" style="font-size: var(--text-xs); color: var(--text-muted);">by {{ shopDetail.author }}</span>
                 </div>
                 <div v-if="shopDetail.downloads" style="margin-bottom: var(--space-3);">
@@ -544,8 +575,8 @@ onMounted(loadInstalled)
                   <p>{{ shopDetail.description }}</p>
                 </div>
                 <div style="display: flex; gap: var(--space-2);">
-                  <button class="btn btn-primary" style="flex: 1;" :disabled="installingSlug === shopDetail.slug || shopDetail.installed" @click="installSkill(shopDetail.registry, shopDetail.slug)">
-                    {{ shopDetail.installed ? '已安装' : installingSlug === shopDetail.slug ? '安装中...' : '安装' }}
+                  <button class="btn btn-primary" style="flex: 1;" :disabled="installingSlug === shopDetail.slug || shopDetail.installed" @click="handleInstallClick(shopDetail.registry, shopDetail.slug)">
+                    {{ shopDetail.installed ? '已安装' : alreadyInstalledSlugs.has(shopDetail.slug) ? '更新' : installingSlug === shopDetail.slug ? '安装中...' : '安装' }}
                   </button>
                   <button class="btn" @click="viewShopCode(shopDetail.registry, shopDetail.slug)" :disabled="shopCodeLoading">
                     {{ shopCodeLoading ? '加载中...' : showShopCode ? '隐藏源码' : '查看源码' }}

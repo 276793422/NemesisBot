@@ -29,5 +29,9 @@
     "base_url": "https://clawhub.ai",
     "convex_url": "https://wry-manatee-359.convex.cloud",
     "timeout": 30
+  },
+  "modelscope": {
+    "enabled": true,
+    "timeout": 30
   }
 }

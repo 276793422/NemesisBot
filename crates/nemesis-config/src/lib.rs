@@ -684,6 +684,8 @@ pub struct SkillsFullConfig {
     pub github_sources: Vec<GitHubSourceConfig>,
     #[serde(default)]
     pub clawhub: SkillsClawHubConfig,
+    #[serde(default)]
+    pub modelscope: SkillsModelScopeConfig,
 }
 
 impl Default for SkillsFullConfig {
@@ -695,6 +697,7 @@ impl Default for SkillsFullConfig {
             search_limit: 50,
             github_sources: vec![],
             clawhub: SkillsClawHubConfig::default(),
+            modelscope: SkillsModelScopeConfig::default(),
         }
     }
 }
@@ -753,7 +756,22 @@ pub struct SkillsClawHubConfig {
     pub timeout: i64,
 }
 
-/// Security configuration loaded from config.security.json.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsModelScopeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub timeout: i64,
+}
+
+impl Default for SkillsModelScopeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout: 30,
+        }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_security_action")]

@@ -531,6 +531,10 @@ fn test_skills_full_config_roundtrip() {
             base_url: "https://clawhub.com".to_string(),
             ..Default::default()
         },
+        modelscope: SkillsModelScopeConfig {
+            enabled: true,
+            timeout: 30,
+        },
     };
 
     let json = serde_json::to_string_pretty(&cfg).unwrap();

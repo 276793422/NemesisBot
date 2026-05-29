@@ -391,6 +391,10 @@ fn test_registry_config_roundtrip() {
         github_sources: vec![],
         max_concurrent_searches: 4,
         github_sources_legacy: vec![],
+        modelscope: ModelScopeConfig {
+            enabled: false,
+            timeout_secs: 0,
+        },
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: RegistryConfig = serde_json::from_str(&json).unwrap();

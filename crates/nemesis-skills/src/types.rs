@@ -233,6 +233,9 @@ pub struct RegistryConfig {
     /// ClawHub registry configuration.
     #[serde(default)]
     pub clawhub: ClawHubConfig,
+    /// ModelScope registry configuration.
+    #[serde(default)]
+    pub modelscope: ModelScopeConfig,
     /// Legacy single-source GitHub config.
     #[serde(default)]
     pub github: GitHubConfig,
@@ -277,6 +280,26 @@ fn default_cache_max_size() -> usize {
 
 fn default_cache_ttl() -> u64 {
     300
+}
+
+/// ModelScope registry configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelScopeConfig {
+    /// Whether the ModelScope registry is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Timeout in seconds (0 = default 30s).
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
+impl Default for ModelScopeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_secs: 0,
+        }
+    }
 }
 
 /// ClawHub registry configuration.
@@ -447,6 +470,7 @@ impl Default for RegistryConfig {
         Self {
             search_cache: SearchCacheConfig::default(),
             clawhub: ClawHubConfig::default(),
+            modelscope: ModelScopeConfig::default(),
             github: GitHubConfig::default(),
             github_sources: Vec::new(),
             max_concurrent_searches: 2,
