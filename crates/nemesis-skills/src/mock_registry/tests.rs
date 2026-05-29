@@ -113,6 +113,8 @@ fn test_get_skill_meta_found() {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: "test".to_string(),
+            author: String::new(),
+            downloads: 0,
         },
     );
 
@@ -150,6 +152,8 @@ fn test_download_and_install_malware_blocked() {
             is_malware_blocked: true,
             is_suspicious: true,
             registry_name: "test".to_string(),
+            author: String::new(),
+            downloads: 0,
         },
     );
 
@@ -253,6 +257,8 @@ fn test_download_and_install_not_malware_meta() {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: "test".to_string(),
+            author: String::new(),
+            downloads: 0,
         },
     );
 

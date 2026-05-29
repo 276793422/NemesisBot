@@ -67,6 +67,33 @@ const navGroups = [
   <aside class="sidebar" :class="{ collapsed: appStore.sidebarCollapsed, 'mobile-open': appStore.showMobileSidebar }">
     <div class="sidebar-header">
       <div class="sidebar-logo">
+        <svg class="sidebar-logo-icon" width="20" height="20" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <g transform="translate(8, 18)">
+            <line x1="120" y1="30" x2="120" y2="5" stroke="#2C3E50" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="120" cy="5" r="6" fill="#FF4D4D"/>
+            <circle cx="117" cy="3" r="2" fill="#FFF" opacity="0.6"/>
+            <rect x="68" y="30" width="104" height="80" rx="15" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="53" y="55" width="15" height="30" rx="5" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="172" y="55" width="15" height="30" rx="5" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <circle cx="95" cy="60" r="9" fill="#2C3E50"/>
+            <circle cx="145" cy="60" r="9" fill="#2C3E50"/>
+            <circle cx="92" cy="57" r="3" fill="#FFF"/>
+            <circle cx="142" cy="57" r="3" fill="#FFF"/>
+            <circle cx="82" cy="80" r="5" fill="#FF6B6B" opacity="0.8"/>
+            <circle cx="158" cy="80" r="5" fill="#FF6B6B" opacity="0.8"/>
+            <path d="M 105 85 Q 120 100 135 85" stroke="#2C3E50" stroke-width="4" fill="transparent" stroke-linecap="round"/>
+            <rect x="78" y="120" width="84" height="65" rx="12" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <circle cx="100" cy="145" r="5" fill="#FF8C42"/>
+            <circle cx="120" cy="145" r="5" fill="#2ECC71"/>
+            <circle cx="140" cy="145" r="5" fill="#FF6B6B"/>
+            <rect x="45" y="135" width="33" height="16" rx="8" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="162" y="135" width="33" height="16" rx="8" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="92" y="185" width="14" height="22" rx="4" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="78" y="200" width="35" height="15" rx="7" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="134" y="185" width="14" height="22" rx="4" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+            <rect x="127" y="200" width="35" height="15" rx="7" fill="#4A90E2" stroke="#2C3E50" stroke-width="4"/>
+          </g>
+        </svg>
         <h1>NemesisBot</h1>
       </div>
     </div>

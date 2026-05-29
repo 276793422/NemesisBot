@@ -447,9 +447,17 @@ fn load_and_run_plugin_window(
 
     // Try to call plugin_init if the DLL exports it (unified interface)
     let _init_result: i32 = unsafe {
-        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *const std::ffi::c_void) -> i32>>(b"plugin_init\0") {
+        if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *const nemesis_plugin::HostServices) -> i32>>(b"plugin_init\0") {
             let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();
-            let ret = plugin_init_fn(c_config_dir.as_ptr() as *const std::ffi::c_char, std::ptr::null());
+
+            // Build HostServices with decode_png support
+            let mut host = nemesis_plugin::build_host_services(&std::env::current_dir().unwrap_or_default());
+            host.decode_png = Some(host_decode_png);
+            // Leak the HostServices so it lives for the DLL's lifetime
+            let host_box = Box::new(host);
+            let host_ptr = Box::into_raw(host_box);
+
+            let ret = plugin_init_fn(c_config_dir.as_ptr() as *const std::ffi::c_char, host_ptr);
             eprintln!("[Child] plugin_init returned: {}", ret);
             ret
         } else {
@@ -562,6 +570,43 @@ fn load_and_run_plugin_window(
     }
 
     Ok(())
+}
+
+/// Host-side decode_png implementation using the `image` crate.
+/// Decodes PNG bytes into RGBA pixel data for plugin use (e.g. window icons).
+extern "C" fn host_decode_png(
+    png_data: *const u8,
+    png_len: usize,
+    out_rgba: *mut u8,
+    out_rgba_len: usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> i32 {
+    if png_data.is_null() || out_width.is_null() || out_height.is_null() {
+        return -1;
+    }
+    let data = unsafe { std::slice::from_raw_parts(png_data, png_len) };
+    let img = match image::load_from_memory_with_format(data, image::ImageFormat::Png) {
+        Ok(img) => img.into_rgba8(),
+        Err(_) => return -2,
+    };
+    let (w, h) = img.dimensions();
+    let needed = (w * h * 4) as usize;
+    unsafe {
+        *out_width = w;
+        *out_height = h;
+    }
+    // Query mode: caller passes null buffer to get dimensions only
+    if out_rgba.is_null() {
+        return -3;
+    }
+    if out_rgba_len < needed {
+        return -3;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(img.as_raw().as_ptr(), out_rgba, needed);
+    }
+    0
 }
 
 /// WebSocket client handle with shutdown signal.

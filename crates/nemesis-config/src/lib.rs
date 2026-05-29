@@ -678,6 +678,8 @@ pub struct SkillsFullConfig {
     pub search_cache: SkillsSearchCacheConfig,
     #[serde(default = "default_max_concurrent_searches")]
     pub max_concurrent_searches: i64,
+    #[serde(default = "default_search_limit")]
+    pub search_limit: i64,
     #[serde(default)]
     pub github_sources: Vec<GitHubSourceConfig>,
     #[serde(default)]
@@ -690,6 +692,7 @@ impl Default for SkillsFullConfig {
             enabled: true,
             search_cache: SkillsSearchCacheConfig::default(),
             max_concurrent_searches: 2,
+            search_limit: 50,
             github_sources: vec![],
             clawhub: SkillsClawHubConfig::default(),
         }
@@ -1719,6 +1722,7 @@ fn default_audit_retention() -> i64 { 90 }
 fn default_cache_max_size() -> i64 { 50 }
 fn default_cache_ttl_seconds() -> i64 { 300 }
 fn default_max_concurrent_searches() -> i64 { 2 }
+fn default_search_limit() -> i64 { 50 }
 
 // ============================================================================
 // Default value functions

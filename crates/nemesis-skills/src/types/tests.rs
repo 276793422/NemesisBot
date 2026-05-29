@@ -240,6 +240,8 @@ fn test_skill_meta_serialization() {
         is_malware_blocked: false,
         is_suspicious: true,
         registry_name: "clawhub".to_string(),
+        author: "testauthor".to_string(),
+        downloads: 42,
     };
     let json = serde_json::to_string(&meta).unwrap();
     let parsed: SkillMeta = serde_json::from_str(&json).unwrap();

@@ -16,7 +16,7 @@ use reqwest::Client;
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::github_tree::download_skill_tree_from_github;
-use crate::types::{validate_skill_identifier, InstallResult, SkillMeta, SkillSearchResult};
+use crate::types::{validate_skill_identifier, BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult};
 
 const DEFAULT_CLAWHUB_URL: &str = "https://clawhub.ai";
 const DEFAULT_CONVEX_URL: &str = "https://wry-manatee-359.convex.cloud";
@@ -143,6 +143,8 @@ impl ClawHubRegistry {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: "clawhub".to_string(),
+            author: detail.owner.handle,
+            downloads: detail.skill.stats.downloads as i64,
         })
     }
 
@@ -225,6 +227,126 @@ impl ClawHubRegistry {
             is_malware_blocked: false,
             is_suspicious: false,
             summary: detail.skill.summary,
+        })
+    }
+
+    /// Fetch the SKILL.md content for a skill without installing it.
+    ///
+    /// Strategy:
+    /// 1. Try ClawHub file API (primary).
+    /// 2. Fallback to Convex + GitHub raw.
+    pub async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
+        validate_skill_identifier(slug)
+            .map_err(|e| NemesisError::Validation(format!("invalid skill slug: {}", e)))?;
+
+        // Strategy 1: ClawHub file API.
+        let file_url = format!(
+            "{}/api/v1/skills/{}/file?path=SKILL.md",
+            self.base_url,
+            urlencoding::encode(slug)
+        );
+        if let Ok(resp) = self.client.get(&file_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(content) = resp.text().await {
+                    return Ok(crate::types::SkillContent {
+                        slug: slug.to_string(),
+                        filename: "SKILL.md".to_string(),
+                        content,
+                    });
+                }
+            }
+        }
+
+        debug!("ClawHub file API failed, falling back to GitHub raw for {}", slug);
+
+        // Strategy 2: Convex + GitHub raw fallback.
+        let value = self.call_convex("skills:getBySlug", &[("slug", slug)]).await?;
+        let detail: ConvexSkillDetail =
+            serde_json::from_value(value).map_err(|e| NemesisError::Serialization(e))?;
+
+        if detail.owner.handle.is_empty() {
+            return Err(NemesisError::NotFound(format!(
+                "owner handle not found for skill '{}'",
+                slug
+            )));
+        }
+
+        let url = format!(
+            "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/SKILL.md",
+            format!("{}/{}", detail.owner.handle, slug)
+        );
+
+        let resp = self.client.get(&url).send().await
+            .map_err(|e| NemesisError::Other(format!("request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(NemesisError::Other(format!("HTTP {}", resp.status())));
+        }
+
+        let content = resp.text().await
+            .map_err(|e| NemesisError::Other(format!("read failed: {}", e)))?;
+
+        Ok(crate::types::SkillContent {
+            slug: slug.to_string(),
+            filename: "SKILL.md".to_string(),
+            content,
+        })
+    }
+
+    /// Browse skills with sort and cursor-based pagination.
+    ///
+    /// Uses ClawHub REST API `/api/v1/skills` which supports sorting and cursors.
+    pub async fn browse(
+        &self,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        let limit = if limit == 0 { 20 } else { limit.min(100) };
+        let mut url = format!(
+            "{}/api/v1/skills?sort={}&limit={}",
+            self.base_url,
+            sort.as_str(),
+            limit,
+        );
+        if !cursor.is_empty() {
+            url.push_str(&format!("&cursor={}", urlencoding::encode(cursor)));
+        }
+
+        let resp = self.client.get(&url).send().await
+            .map_err(|e| NemesisError::Other(format!("browse request failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(NemesisError::Other(format!(
+                "browse failed with status {}: {}",
+                status,
+                body.chars().take(512).collect::<String>()
+            )));
+        }
+
+        let browse_resp: ClawhubBrowseResponse = resp.json().await
+            .map_err(|e| NemesisError::Other(format!("failed to parse browse response: {}", e)))?;
+
+        let items: Vec<SkillSearchResult> = browse_resp.items.into_iter().map(|item| {
+            SkillSearchResult {
+                score: 1.0,
+                slug: item.slug,
+                display_name: item.display_name,
+                summary: item.summary,
+                version: "latest".to_string(),
+                registry_name: "clawhub".to_string(),
+                source_repo: String::new(),
+                download_path: String::new(),
+                downloads: item.stats.downloads as i64,
+                truncated: false,
+            }
+        }).collect();
+
+        Ok(BrowseResult {
+            items,
+            next_cursor: browse_resp.next_cursor,
         })
     }
 
@@ -623,9 +745,31 @@ struct ConvexSkillListItem {
     stats: ConvexStats,
 }
 
-/// Stats sub-object.
+/// Browse response from ClawHub REST API.
 #[derive(Debug, Deserialize)]
+struct ClawhubBrowseResponse {
+    #[serde(default)]
+    items: Vec<ClawhubBrowseItem>,
+    #[serde(rename = "nextCursor", default)]
+    next_cursor: Option<String>,
+}
+
+/// Single item from ClawHub browse API.
+#[derive(Debug, Deserialize)]
+struct ClawhubBrowseItem {
+    slug: String,
+    #[serde(rename = "displayName", default)]
+    display_name: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    stats: ConvexStats,
+}
+
+/// Stats sub-object.
+#[derive(Debug, Default, Deserialize)]
 struct ConvexStats {
+    #[serde(default)]
     downloads: f64,
 }
 

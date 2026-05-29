@@ -127,6 +127,12 @@ pub struct SkillMeta {
     /// Registry name.
     #[serde(default)]
     pub registry_name: String,
+    /// Author handle (e.g. GitHub username). Empty when unavailable.
+    #[serde(default)]
+    pub author: String,
+    /// Download count. 0 when unavailable.
+    #[serde(default)]
+    pub downloads: i64,
 }
 
 /// Result from a DownloadAndInstall operation.
@@ -143,6 +149,59 @@ pub struct InstallResult {
     /// Summary of the skill.
     #[serde(default)]
     pub summary: String,
+}
+
+/// Skill content (SKILL.md text) fetched from a remote registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillContent {
+    /// Skill slug.
+    pub slug: String,
+    /// Filename (typically "SKILL.md").
+    pub filename: String,
+    /// File content as UTF-8 text.
+    pub content: String,
+}
+
+/// Sort mode for browsing skills.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BrowseSort {
+    Trending,
+    Downloads,
+    Stars,
+    Updated,
+    Rating,
+}
+
+impl BrowseSort {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Trending => "trending",
+            Self::Downloads => "downloads",
+            Self::Stars => "stars",
+            Self::Updated => "updated",
+            Self::Rating => "rating",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "downloads" => Self::Downloads,
+            "stars" => Self::Stars,
+            "updated" => Self::Updated,
+            "rating" => Self::Rating,
+            _ => Self::Trending,
+        }
+    }
+}
+
+/// Result from a browse operation with cursor-based pagination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowseResult {
+    /// Skills on the current page.
+    pub items: Vec<SkillSearchResult>,
+    /// Cursor to fetch the next page. None if no more results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// Origin metadata for an installed skill.

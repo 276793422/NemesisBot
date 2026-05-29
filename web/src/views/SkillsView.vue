@@ -7,7 +7,7 @@ const { request } = useWSAPI()
 const toast = useToast()
 
 interface Skill { name: string; has_skill_md?: boolean; description?: string }
-interface SearchResult { name?: string; slug?: string; description?: string; source?: string }
+interface SearchResult { name?: string; slug?: string; description?: string; source?: string; source_repo?: string; version?: string; score?: number; installed?: boolean }
 interface Source {
   type: string; name: string; repo?: string; base_url?: string;
   enabled: boolean; deletable?: boolean; branch?: string;
@@ -22,6 +22,42 @@ const detailName = ref('')
 const searchQuery = ref('')
 const searchResults = ref<SearchResult[]>([])
 const searching = ref(false)
+const installingSlug = ref('')
+const shopDetail = ref<any>(null)
+const shopDetailLoading = ref(false)
+const shopCode = ref('')
+const shopCodeFilename = ref('SKILL.md')
+const shopCodeLoading = ref(false)
+const showShopCode = ref(false)
+
+// Browse mode state
+const SHOP_CATEGORIES = [
+  { id: 'coding', name: '编程开发' },
+  { id: 'git github', name: 'Git & GitHub' },
+  { id: 'web frontend', name: 'Web & 前端' },
+  { id: 'devops cloud', name: 'DevOps & 云服务' },
+  { id: 'browser automation', name: '浏览器 & 自动化' },
+  { id: 'search research', name: '搜索 & 研究' },
+  { id: 'ai ml', name: 'AI & 机器学习' },
+  { id: 'data analytics', name: '数据分析' },
+  { id: 'productivity', name: '生产力工具' },
+  { id: 'communication', name: '通讯' },
+  { id: 'media streaming', name: '媒体 & 流媒体' },
+  { id: 'notes pkm', name: '笔记 & 知识管理' },
+  { id: 'security', name: '安全' },
+  { id: 'cli utilities', name: 'CLI 工具' },
+  { id: 'marketing sales', name: '营销' },
+  { id: 'finance', name: '金融' },
+  { id: 'smart home iot', name: '智能家居' },
+]
+const showCategoryDialog = ref(false)
+const shopSort = ref('trending')
+const browseResults = ref<SearchResult[]>([])
+const browseDisplayCount = ref(20)
+const browseCursor = ref<string | null>(null)
+const browseLoading = ref(false)
+const isBrowseMode = ref(true)
+const browseCache = new Map<string, { data: { items: any[]; next_cursor: string | null }; ts: number }>()
 
 // Config tab state
 const skillsConfig = ref<any>({})
@@ -74,6 +110,7 @@ async function uninstallSkill(name: string) {
 
 async function searchSkills() {
   if (!searchQuery.value) return
+  isBrowseMode.value = false
   searching.value = true
   try {
     const data = await request('skills', 'search', { query: searchQuery.value })
@@ -83,6 +120,123 @@ async function searchSkills() {
     toast.error('搜索失败: ' + e)
   }
   searching.value = false
+}
+
+function isInstalled(slug: string | undefined): boolean {
+  if (!slug) return false
+  return skills.value.some(s => s.name === slug)
+}
+
+async function installSkill(registry: string, slug: string) {
+  installingSlug.value = slug
+  try {
+    await request('skills', 'install', { registry, slug })
+    toast.success(`已安装: ${slug}`)
+    await loadInstalled()
+  } catch (e: any) {
+    toast.error('安装失败: ' + e)
+  }
+  installingSlug.value = ''
+}
+
+async function showShopDetailFn(registry: string, slug: string) {
+  shopDetailLoading.value = true
+  shopDetail.value = null
+  shopCode.value = ''
+  showShopCode.value = false
+  try {
+    const data = await request('skills', 'shop_detail', { registry, slug })
+    shopDetail.value = data
+  } catch (e: any) {
+    toast.error('获取详情失败: ' + e)
+  }
+  shopDetailLoading.value = false
+}
+
+async function viewShopCode(registry: string, slug: string) {
+  if (showShopCode.value) {
+    showShopCode.value = false
+    return
+  }
+  shopCodeLoading.value = true
+  try {
+    const data = await request('skills', 'shop_code', { registry, slug }, 60000)
+    shopCode.value = data?.code || ''
+    shopCodeFilename.value = data?.filename || 'SKILL.md'
+    showShopCode.value = true
+  } catch (e: any) {
+    toast.error('获取源码失败: ' + e)
+  }
+  shopCodeLoading.value = false
+}
+
+function closeShopDetail() {
+  shopDetail.value = null
+  shopCode.value = ''
+  shopCodeFilename.value = 'SKILL.md'
+  showShopCode.value = false
+}
+
+async function browseSkills(sort?: string) {
+  if (sort) shopSort.value = sort
+  browseLoading.value = true
+  browseResults.value = []
+  browseCursor.value = null
+  browseDisplayCount.value = 20
+
+  const cacheKey = `browse:${shopSort.value}`
+  const cached = browseCache.get(cacheKey)
+  if (cached && (Date.now() - cached.ts) < 60000) {
+    browseResults.value = cached.data.items
+    browseCursor.value = cached.data.next_cursor
+    browseLoading.value = false
+    return
+  }
+
+  try {
+    const data = await request('skills', 'browse', { registry: 'clawhub', sort: shopSort.value, limit: 100 })
+    browseResults.value = data?.items || []
+    browseCursor.value = data?.next_cursor || null
+    browseCache.set(cacheKey, { data: { items: browseResults.value, next_cursor: browseCursor.value }, ts: Date.now() })
+  } catch (e: any) {
+    toast.error('浏览失败: ' + e)
+  }
+  browseLoading.value = false
+}
+
+async function loadMore() {
+  // Client-side pagination: show 20 more from already-loaded results
+  if (browseDisplayCount.value < browseResults.value.length) {
+    browseDisplayCount.value += 20
+    return
+  }
+  // Server-side pagination: fetch more from API if cursor available
+  if (!browseCursor.value || browseLoading.value) return
+  browseLoading.value = true
+  try {
+    const data = await request('skills', 'browse', { registry: 'clawhub', sort: shopSort.value, limit: 100, cursor: browseCursor.value })
+    const items = data?.items || []
+    browseResults.value = [...browseResults.value, ...items]
+    browseCursor.value = data?.next_cursor || null
+    browseDisplayCount.value = browseResults.value.length
+  } catch (e: any) {
+    toast.error('加载更多失败: ' + e)
+  }
+  browseLoading.value = false
+}
+
+function searchCategory(cat: typeof SHOP_CATEGORIES[number]) {
+  searchQuery.value = cat.id
+  isBrowseMode.value = false
+  showCategoryDialog.value = false
+  searchSkills()
+}
+
+function clearSearch() {
+  searchQuery.value = ''
+  searchResults.value = []
+  isBrowseMode.value = true
+  browseSkills()
 }
 
 async function loadConfig() {
@@ -205,6 +359,8 @@ function switchTab(tab: string) {
   if (tab === 'config') {
     loadConfig()
     loadSources()
+  } else if (tab === 'shop' && isBrowseMode.value && browseResults.value.length === 0) {
+    browseSkills()
   }
 }
 
@@ -217,7 +373,7 @@ onMounted(loadInstalled)
     <div class="page-body">
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'installed' }" @click="activeTab = 'installed'">已安装</button>
-        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="activeTab = 'shop'">商店</button>
+        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="switchTab('shop')">商店</button>
         <button class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">配置</button>
       </div>
 
@@ -264,20 +420,144 @@ onMounted(loadInstalled)
 
       <!-- Shop tab -->
       <div v-if="activeTab === 'shop'">
+        <!-- Search bar -->
         <div style="display: flex; gap: var(--space-3); margin-bottom: var(--space-4);">
           <input class="form-input" v-model="searchQuery" placeholder="搜索技能..." @keyup.enter="searchSkills" style="max-width: 400px;">
           <button class="btn btn-primary" @click="searchSkills" :disabled="searching">搜索</button>
+          <button v-if="!isBrowseMode" class="btn" @click="clearSearch">返回浏览</button>
+          <button v-if="isBrowseMode" class="btn" @click="browseSkills()" :disabled="browseLoading">{{ browseLoading ? '刷新中...' : '刷新' }}</button>
         </div>
-        <div v-if="searching" style="text-align: center; padding: var(--space-4);">
+
+        <!-- Browse mode: sort pills + category button -->
+        <template v-if="isBrowseMode">
+          <div style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-3);">
+            <div class="filter-pills" style="margin-bottom: 0;">
+              <span class="filter-pill" :class="{ active: shopSort === 'trending' }" @click="browseSkills('trending')">热门</span>
+              <span class="filter-pill" :class="{ active: shopSort === 'downloads' }" @click="browseSkills('downloads')">下载量</span>
+              <span class="filter-pill" :class="{ active: shopSort === 'updated' }" @click="browseSkills('updated')">最近更新</span>
+            </div>
+            <button class="btn btn-sm" @click="showCategoryDialog = true">分类搜索</button>
+          </div>
+        </template>
+
+        <!-- Search mode: results count -->
+        <template v-if="!isBrowseMode">
+          <div v-if="!searching && searchResults.length > 0" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
+            <span style="font-size: var(--text-sm); color: var(--text-muted);">{{ searchResults.length }} 个结果</span>
+          </div>
+        </template>
+
+        <!-- Loading spinner -->
+        <div v-if="(isBrowseMode && browseLoading && browseResults.length === 0) || (!isBrowseMode && searching)" style="text-align: center; padding: var(--space-4);">
           <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
         </div>
-        <div v-if="!searching && searchResults.length === 0" class="empty-state">
-          <p>输入关键词搜索远程技能</p>
+
+        <!-- Empty state -->
+        <div v-if="isBrowseMode && !browseLoading && browseResults.length === 0" class="empty-state">
+          <p>暂无技能，请检查 ClawHub 源是否启用</p>
         </div>
-        <div v-if="!searching && searchResults.length > 0" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-4);">
-          <div v-for="(r, idx) in searchResults" :key="idx" class="skill-card">
-            <div class="skill-name">{{ r.name || r.slug }}</div>
-            <div class="skill-description">{{ r.description || '暂无描述' }}</div>
+        <div v-if="!isBrowseMode && !searching && searchResults.length === 0" class="empty-state">
+          <p>未找到匹配的技能</p>
+        </div>
+
+        <!-- Results grid (shared by browse and search) -->
+        <div v-if="(isBrowseMode && browseResults.length > 0) || (!isBrowseMode && searchResults.length > 0)">
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--space-4);">
+            <template v-if="isBrowseMode">
+              <div v-for="(r, idx) in browseResults.slice(0, browseDisplayCount)" :key="'b-'+idx" class="skill-card" style="cursor: pointer;" @click="showShopDetailFn(r.source!, r.slug!)">
+                <div class="skill-card-header">
+                  <div class="skill-name">{{ r.name || r.slug }}</div>
+                  <span class="badge badge-info" style="font-size: 0.65rem;">{{ r.source }}</span>
+                </div>
+                <div class="skill-description" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ r.description || '暂无描述' }}</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3);">
+                  <span v-if="r.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
+                  <span v-else></span>
+                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="installSkill(r.source!, r.slug!)">
+                    {{ r.installed ? '已安装' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                  </button>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div v-for="(r, idx) in searchResults" :key="'s-'+idx" class="skill-card" style="cursor: pointer;" @click="showShopDetailFn(r.source!, r.slug!)">
+                <div class="skill-card-header">
+                  <div class="skill-name">{{ r.name || r.slug }}</div>
+                  <span class="badge badge-info" style="font-size: 0.65rem;">{{ r.source }}</span>
+                </div>
+                <div class="skill-description" style="display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ r.description || '暂无描述' }}</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: var(--space-3);">
+                  <span v-if="r.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
+                  <span v-else></span>
+                  <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="installSkill(r.source!, r.slug!)">
+                    {{ r.installed ? '已安装' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Load More (browse mode only) -->
+          <div v-if="isBrowseMode && (browseDisplayCount < browseResults.length || browseCursor)" style="text-align: center; padding: var(--space-4);">
+            <button class="btn" @click="loadMore" :disabled="browseLoading">
+              {{ browseLoading ? '加载中...' : '加载更多' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Category dialog -->
+        <div v-if="showCategoryDialog" class="modal-backdrop" @click.self="showCategoryDialog = false">
+          <div class="modal" style="max-width: 420px;">
+            <div class="modal-header">
+              <h3>分类搜索</h3>
+              <button class="modal-close" @click="showCategoryDialog = false">&times;</button>
+            </div>
+            <div class="modal-body">
+              <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                <button v-for="cat in SHOP_CATEGORIES" :key="cat.id" class="filter-pill" style="font-size: 0.8rem; padding: 6px 14px;" @click="searchCategory(cat)">{{ cat.name }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Shop detail modal -->
+        <div v-if="shopDetail || shopDetailLoading" class="modal-backdrop" @click.self="closeShopDetail()">
+          <div class="modal" style="max-width: 600px;">
+            <div v-if="shopDetailLoading" style="text-align: center; padding: var(--space-8);">
+              <div class="spinner" style="margin: 0 auto;"></div>
+            </div>
+            <template v-if="shopDetail">
+              <div class="modal-header">
+                <h3>{{ shopDetail.name || shopDetail.slug }}</h3>
+                <button class="modal-close" @click="closeShopDetail()">&times;</button>
+              </div>
+              <div class="modal-body">
+                <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; margin-bottom: var(--space-3);">
+                  <span class="badge badge-info">{{ shopDetail.registry }}</span>
+                  <span v-if="shopDetail.version" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ shopDetail.version }}</span>
+                  <span v-if="shopDetail.author" style="font-size: var(--text-xs); color: var(--text-muted);">by {{ shopDetail.author }}</span>
+                </div>
+                <div v-if="shopDetail.downloads" style="margin-bottom: var(--space-3);">
+                  <span style="font-size: var(--text-sm); color: var(--text-muted);">{{ shopDetail.downloads.toLocaleString() }} downloads</span>
+                </div>
+                <div v-if="shopDetail.description" style="margin-bottom: var(--space-4);">
+                  <p>{{ shopDetail.description }}</p>
+                </div>
+                <div style="display: flex; gap: var(--space-2);">
+                  <button class="btn btn-primary" style="flex: 1;" :disabled="installingSlug === shopDetail.slug || shopDetail.installed" @click="installSkill(shopDetail.registry, shopDetail.slug)">
+                    {{ shopDetail.installed ? '已安装' : installingSlug === shopDetail.slug ? '安装中...' : '安装' }}
+                  </button>
+                  <button class="btn" @click="viewShopCode(shopDetail.registry, shopDetail.slug)" :disabled="shopCodeLoading">
+                    {{ shopCodeLoading ? '加载中...' : showShopCode ? '隐藏源码' : '查看源码' }}
+                  </button>
+                </div>
+                <div v-if="showShopCode && shopCode" style="margin-top: var(--space-3); max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface);">
+                  <div style="padding: 4px 12px; border-bottom: 1px solid var(--border); font-size: var(--text-xs); color: var(--text-muted);">{{ shopCodeFilename }}</div>
+                  <pre style="margin: 0; padding: var(--space-3); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; word-break: break-all;">{{ shopCode }}</pre>
+                </div>
+                <div style="font-size: var(--text-xs); color: var(--text-muted); text-align: center; margin-top: var(--space-2);">技能安装前会进行安全扫描</div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -426,6 +706,37 @@ onMounted(loadInstalled)
 </template>
 
 <style scoped>
+.filter-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+.filter-pill {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+.filter-pill:hover {
+  border-color: var(--primary);
+  color: var(--text);
+}
+.filter-pill.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.filter-pill-sm {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+}
+
 .source-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

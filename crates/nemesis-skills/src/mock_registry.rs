@@ -3,7 +3,7 @@
 //! Provides a controllable mock implementation of the SkillRegistry trait
 //! for use in unit tests.
 
-use crate::types::{InstallResult, SkillMeta, SkillSearchResult};
+use crate::types::{BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult};
 
 /// Mock registry for testing skill operations.
 pub struct MockRegistry {
@@ -73,6 +73,8 @@ impl MockRegistry {
                 is_malware_blocked: false,
                 is_suspicious: false,
                 registry_name: self.name.clone(),
+                author: String::new(),
+                downloads: 0,
             })
     }
 
@@ -100,6 +102,36 @@ impl MockRegistry {
             is_suspicious: false,
             summary: "Mock installation".to_string(),
         }
+    }
+
+    /// Browse mock skills with client-side pagination.
+    pub fn browse(
+        &self,
+        _sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> BrowseResult {
+        let offset = if let Some(rest) = cursor.strip_prefix("offset:") {
+            rest.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+
+        let all: Vec<SkillSearchResult> = self.search_results.clone();
+        let items: Vec<SkillSearchResult> = all
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+
+        let next_offset = offset + items.len();
+        let next_cursor = if items.len() == limit {
+            Some(format!("offset:{}", next_offset))
+        } else {
+            None
+        };
+
+        BrowseResult { items, next_cursor }
     }
 }
 

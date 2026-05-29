@@ -42,11 +42,11 @@ impl ModuleHandler for SkillsHandler {
             "search" => {
                 let data = data.ok_or("missing data")?;
                 let query = crate::handlers::get_str(&data, "query")?;
-                self.search(&query)
+                self.search(&query, workspace).await
             }
             "install" => {
                 let data = data.ok_or("missing data")?;
-                self.install(&data)
+                self.install(&data, workspace).await
             }
             "config.get" => self.config_get(workspace),
             "config.save" => {
@@ -77,6 +77,22 @@ impl ModuleHandler for SkillsHandler {
                 let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
                 self.source_toggle(workspace, &name, enabled)
             }
+            "shop_detail" => {
+                let data = data.ok_or("missing data")?;
+                let registry = crate::handlers::get_str(&data, "registry")?;
+                let slug = crate::handlers::get_str(&data, "slug")?;
+                self.shop_detail(&registry, &slug, workspace).await
+            }
+            "shop_code" => {
+                let data = data.ok_or("missing data")?;
+                let registry = crate::handlers::get_str(&data, "registry")?;
+                let slug = crate::handlers::get_str(&data, "slug")?;
+                self.shop_code(&registry, &slug, workspace).await
+            }
+            "browse" => {
+                let data = data.ok_or("missing data")?;
+                self.browse(&data, workspace).await
+            }
             _ => Err(format!("unknown command: skills.{}", cmd)),
         }
     }
@@ -89,6 +105,17 @@ fn skills_config_path(workspace: &str) -> PathBuf {
 fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, String> {
     let path = skills_config_path(workspace);
     nemesis_config::load_skills_config(&path).map_err(|e| format!("failed to load skills config: {}", e))
+}
+
+fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
+    if path.exists() {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            if let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data) {
+                return config;
+            }
+        }
+    }
+    nemesis_skills::types::RegistryConfig::default()
 }
 
 fn save_config(workspace: &str, cfg: &nemesis_config::SkillsFullConfig) -> Result<(), String> {
@@ -156,19 +183,186 @@ impl SkillsHandler {
         Ok(Some(serde_json::json!({ "uninstalled": true, "name": name })))
     }
 
-    fn search(&self, query: &str) -> Result<Option<serde_json::Value>, String> {
-        let _ = query;
+    async fn search(&self, query: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let config_path = skills_config_path(workspace);
+        let config = load_registry_config(&config_path);
+        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+
+        let registry_names = manager.registries();
+        if registry_names.is_empty() {
+            return Ok(Some(serde_json::json!({
+                "query": query,
+                "results": [],
+                "message": "暂无源，请在「配置」TAB 添加 GitHub 源"
+            })));
+        }
+
+        // Build set of locally installed skill slugs for accurate installed checks.
+        let skills_dir = PathBuf::from(workspace).join("skills");
+        let mut installed_slugs = std::collections::HashSet::new();
+        if skills_dir.exists() {
+            if let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
+                for entry in read_dir.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                            installed_slugs.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let limit = load_config(workspace)
+            .map(|c| c.search_limit.max(1) as usize)
+            .unwrap_or(50);
+
+        let grouped = manager.search_all(query, limit).await
+            .map_err(|e| format!("搜索失败: {}", e))?;
+
+        let mut results = Vec::new();
+        for group in &grouped {
+            for skill in &group.results {
+                results.push(serde_json::json!({
+                    "name": skill.display_name,
+                    "slug": skill.slug,
+                    "description": skill.summary,
+                    "source": skill.registry_name,
+                    "source_repo": skill.source_repo,
+                    "version": skill.version,
+                    "score": skill.score,
+                    "installed": installed_slugs.contains(&skill.slug),
+                }));
+            }
+        }
+
         Ok(Some(serde_json::json!({
             "query": query,
-            "results": [],
-            "message": "Skill search requires remote registry integration"
+            "results": results,
         })))
     }
 
-    fn install(&self, _data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    async fn install(&self, data: &serde_json::Value, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let registry = crate::handlers::get_str(data, "registry")?;
+        let slug = crate::handlers::get_str(data, "slug")?;
+
+        let config_path = skills_config_path(workspace);
+        let config = load_registry_config(&config_path);
+        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+
+        let reg = manager.get_registry(&registry)
+            .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
+
+        let skills_dir = PathBuf::from(workspace).join("skills");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        let target_dir = skills_dir.join(&slug).to_string_lossy().to_string();
+
+        let result = reg.download_and_install(&slug, "latest", &target_dir).await
+            .map_err(|e| format!("安装失败: {}", e))?;
+
         Ok(Some(serde_json::json!({
-            "installed": false,
-            "message": "Skill install requires remote registry integration"
+            "installed": true,
+            "slug": slug,
+            "version": result.version,
+            "is_malware_blocked": result.is_malware_blocked,
+            "is_suspicious": result.is_suspicious,
+            "summary": result.summary,
+        })))
+    }
+
+    async fn shop_detail(&self, registry: &str, slug: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let config_path = skills_config_path(workspace);
+        let config = load_registry_config(&config_path);
+        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+
+        let reg = manager.get_registry(registry)
+            .ok_or_else(|| format!("源 '{}' 不存在", registry))?;
+        let meta = reg.get_skill_meta(slug).await
+            .map_err(|e| format!("获取详情失败: {}", e))?;
+
+        let skills_dir = PathBuf::from(workspace).join("skills");
+        let installed = skills_dir.join(&meta.slug).is_dir();
+
+        Ok(Some(serde_json::json!({
+            "slug": meta.slug,
+            "name": meta.display_name,
+            "description": meta.summary,
+            "version": meta.latest_version,
+            "registry": meta.registry_name,
+            "author": meta.author,
+            "downloads": meta.downloads,
+            "is_malware_blocked": meta.is_malware_blocked,
+            "is_suspicious": meta.is_suspicious,
+            "installed": installed,
+        })))
+    }
+
+    async fn shop_code(&self, registry: &str, slug: &str, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let config_path = skills_config_path(workspace);
+        let config = load_registry_config(&config_path);
+        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+
+        let content = manager.get_skill_content(registry, slug).await
+            .map_err(|e| format!("获取源码失败: {}", e))?;
+
+        Ok(Some(serde_json::json!({
+            "slug": content.slug,
+            "filename": content.filename,
+            "code": content.content,
+        })))
+    }
+
+    async fn browse(&self, data: &serde_json::Value, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let registry = data.get("registry")
+            .and_then(|v| v.as_str())
+            .unwrap_or("clawhub");
+        let sort = data.get("sort")
+            .and_then(|v| v.as_str())
+            .unwrap_or("trending");
+        let limit = data.get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize;
+        let cursor = data.get("cursor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let config_path = skills_config_path(workspace);
+        let config = load_registry_config(&config_path);
+        let manager = nemesis_skills::registry::RegistryManager::from_config(config);
+
+        let sort = nemesis_skills::types::BrowseSort::from_str(sort);
+        let result = manager.browse(registry, &sort, limit, cursor).await
+            .map_err(|e| format!("浏览失败: {}", e))?;
+
+        // Build installed set.
+        let skills_dir = PathBuf::from(workspace).join("skills");
+        let mut installed_slugs = std::collections::HashSet::new();
+        if skills_dir.exists() {
+            if let Ok(read_dir) = std::fs::read_dir(&skills_dir) {
+                for entry in read_dir.flatten() {
+                    if entry.path().is_dir() {
+                        if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                            installed_slugs.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let items: Vec<_> = result.items.into_iter().map(|skill| {
+            serde_json::json!({
+                "name": skill.display_name,
+                "slug": skill.slug,
+                "description": skill.summary,
+                "source": skill.registry_name,
+                "version": skill.version,
+                "downloads": skill.downloads,
+                "installed": installed_slugs.contains(&skill.slug),
+            })
+        }).collect();
+
+        Ok(Some(serde_json::json!({
+            "items": items,
+            "next_cursor": result.next_cursor,
         })))
     }
 

@@ -120,9 +120,15 @@
 .sidebar-logo {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   overflow: hidden;
   white-space: nowrap;
+}
+
+.sidebar-logo-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
 }
 
 .sidebar-logo h1 {
@@ -135,8 +141,13 @@
   transition: opacity var(--duration-fast);
 }
 
+.sidebar.collapsed .sidebar-logo {
+  justify-content: center;
+}
+
 .sidebar.collapsed .sidebar-logo h1 {
   opacity: 0;
+  width: 0;
 }
 
 /* Sidebar Status */
@@ -659,6 +670,7 @@
   }
   .sidebar .sidebar-logo h1 {
     opacity: 0;
+    width: 0;
   }
   .sidebar .nav-label {
     display: none;

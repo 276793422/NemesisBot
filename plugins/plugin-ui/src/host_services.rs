@@ -34,6 +34,22 @@ pub struct HostServices {
 
     // ---- 内存管理 ----
     pub free_string: Option<extern "C" fn(ptr: *mut c_char)>,
+
+    // ---- 图像解码 ----
+    /// 解码 PNG 数据为 RGBA 像素。
+    /// png_data/png_len: 输入 PNG 字节
+    /// out_rgba: 输出缓冲区（调用者分配），写入 RGBA 数据
+    /// out_rgba_len: 输出缓冲区大小（字节）
+    /// out_width/out_height: 写入图像尺寸
+    /// 返回: 0=成功, 负数=错误（-1=参数无效, -2=解码失败, -3=缓冲区不足）
+    pub decode_png: Option<extern "C" fn(
+        png_data: *const u8,
+        png_len: usize,
+        out_rgba: *mut u8,
+        out_rgba_len: usize,
+        out_width: *mut u32,
+        out_height: *mut u32,
+    ) -> i32>,
 }
 
 /// Helper: call host log if available.

@@ -19,13 +19,15 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::github_tree::download_skill_tree_from_github;
 use crate::types::{
-    contains_ci, validate_skill_identifier, InstallResult, SkillMeta, SkillSearchResult,
+    contains_ci, validate_skill_identifier, BrowseResult, BrowseSort, InstallResult, SkillMeta, SkillSearchResult,
 };
 
 /// Default GitHub API timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Default max response size (1 MB).
 const DEFAULT_MAX_SIZE: u64 = 1024 * 1024;
+/// Browser-like User-Agent for GitHub API requests.
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 /// GitHub registry client.
 pub struct GitHubRegistry {
@@ -66,6 +68,7 @@ impl GitHubRegistry {
             max_size,
             client: Client::builder()
                 .timeout(timeout)
+                .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
             repo: "276793422/nemesisbot-skills".to_string(),
@@ -104,6 +107,7 @@ impl GitHubRegistry {
             max_size,
             client: Client::builder()
                 .timeout(timeout)
+                .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
             repo: source.repo.clone(),
@@ -169,6 +173,8 @@ impl GitHubRegistry {
                         is_malware_blocked: false,
                         is_suspicious: false,
                         registry_name: self.name().to_string(),
+                        author: skill.author.clone().unwrap_or_default(),
+                        downloads: 0,
                     });
                 }
             }
@@ -185,6 +191,8 @@ impl GitHubRegistry {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: self.name().to_string(),
+            author: String::new(),
+            downloads: 0,
         })
     }
 
@@ -207,6 +215,8 @@ impl GitHubRegistry {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: self.name().to_string(),
+            author: String::new(),
+            downloads: 0,
         });
 
         let install_version = if version.is_empty() {
@@ -257,6 +267,57 @@ impl GitHubRegistry {
             is_suspicious: false,
             summary: meta.summary,
         })
+    }
+
+    /// Fetch the SKILL.md content for a skill without installing it.
+    pub async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
+        let url = self.build_skill_url(slug);
+        let bytes = self.do_get(&url).await?;
+        let content = String::from_utf8(bytes)
+            .map_err(|e| NemesisError::Other(format!("invalid utf8: {}", e)))?;
+        Ok(crate::types::SkillContent {
+            slug: slug.to_string(),
+            filename: "SKILL.md".to_string(),
+            content,
+        })
+    }
+
+    /// Browse all skills with client-side pagination.
+    ///
+    /// GitHub has no server-side pagination for skill listing. We fetch all
+    /// skills and paginate on the client side using an offset-based cursor.
+    pub async fn browse(
+        &self,
+        _sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        let limit = if limit == 0 { 20 } else { limit };
+
+        // Fetch all skills (empty query = list all).
+        let all = self.search("", 1000).await?;
+
+        // Parse cursor as offset.
+        let offset = if let Some(rest) = cursor.strip_prefix("offset:") {
+            rest.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+
+        let items: Vec<SkillSearchResult> = all
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+
+        let next_offset = offset + items.len();
+        let next_cursor = if items.len() == limit {
+            Some(format!("offset:{}", next_offset))
+        } else {
+            None
+        };
+
+        Ok(BrowseResult { items, next_cursor })
     }
 
     // --- Internal methods ---
@@ -615,6 +676,7 @@ impl GitHubRegistry {
             max_size,
             client: Client::builder()
                 .timeout(timeout)
+                .user_agent(USER_AGENT)
                 .build()
                 .expect("failed to build HTTP client"),
             repo: "276793422/nemesisbot-skills".to_string(),

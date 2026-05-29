@@ -20,12 +20,43 @@ use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::window::WindowBuilder;
+use tao::window::{Icon, WindowBuilder};
 use wry::{WebContext, WebViewBuilder};
+
+// Embedded brand icon (256×256 PNG, rendered from SVG by icon-tool)
+const ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 
 // ---------------------------------------------------------------------------
 // Dashboard window
 // ---------------------------------------------------------------------------
+
+/// Decode the embedded icon PNG into a Tao Icon using host's decode_png.
+/// Returns None if host services are unavailable or decoding fails.
+fn create_window_icon() -> Option<Icon> {
+    let host_ptr = crate::HOST_PTR.load(std::sync::atomic::Ordering::SeqCst);
+    if host_ptr.is_null() {
+        return None;
+    }
+    let host = unsafe { &*host_ptr };
+    let decode_fn = host.decode_png?;
+
+    // First call: query required dimensions (out_rgba=null → returns -3 with w/h filled)
+    let mut w: u32 = 0;
+    let mut h: u32 = 0;
+    decode_fn(ICON_PNG.as_ptr(), ICON_PNG.len(), std::ptr::null_mut(), 0, &mut w, &mut h);
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let buf_len = (w * h * 4) as usize;
+    let mut rgba = vec![0u8; buf_len];
+    let rc = decode_fn(ICON_PNG.as_ptr(), ICON_PNG.len(), rgba.as_mut_ptr(), buf_len, &mut w, &mut h);
+    if rc != 0 {
+        return None;
+    }
+
+    Icon::from_rgba(rgba, w, h).ok()
+}
 
 /// Create a Dashboard window that loads a URL directly.
 ///
@@ -41,9 +72,14 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
     }
 
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
+    let icon = create_window_icon();
+    let mut builder = WindowBuilder::new()
         .with_title(&config.title)
-        .with_inner_size(LogicalSize::new(config.width, config.height))
+        .with_inner_size(LogicalSize::new(config.width, config.height));
+    if let Some(ico) = icon {
+        builder = builder.with_window_icon(Some(ico));
+    }
+    let window = builder
         .build(&event_loop)
         .map_err(|e| {
             eprintln!("[plugin-ui] failed to create window: {:?}", e);
@@ -102,10 +138,15 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
     }
 
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
+    let icon = create_window_icon();
+    let mut builder = WindowBuilder::new()
         .with_title(&config.title)
         .with_inner_size(LogicalSize::new(750.0, 700.0))
-        .with_resizable(true)
+        .with_resizable(true);
+    if let Some(ico) = icon {
+        builder = builder.with_window_icon(Some(ico));
+    }
+    let window = builder
         .build(&event_loop)
         .map_err(|e| {
             eprintln!("[plugin-ui] failed to create window: {:?}", e);

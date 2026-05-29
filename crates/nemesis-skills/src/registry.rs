@@ -17,7 +17,7 @@ use crate::clawhub_registry::ClawHubRegistry;
 use crate::github_registry::{GitHubRegistry, GitHubSourceConfig};
 use crate::search_cache::SearchCache;
 use crate::types::{
-    RegistryConfig, RegistrySearchResult, SkillMeta, SkillSearchResult,
+    BrowseResult, BrowseSort, RegistryConfig, RegistrySearchResult, SkillMeta, SkillSearchResult,
 };
 
 /// Default maximum concurrent registry searches.
@@ -39,6 +39,19 @@ pub trait SkillRegistry: Send + Sync {
         version: &str,
         target_dir: &str,
     ) -> Result<crate::types::InstallResult>;
+    /// Fetch the SKILL.md content for a skill without installing it.
+    async fn get_skill_content(&self, _slug: &str) -> Result<crate::types::SkillContent> {
+        Err(NemesisError::Other("get_skill_content not implemented".to_string()))
+    }
+    /// Browse skills with sort and cursor-based pagination.
+    async fn browse(
+        &self,
+        _sort: &BrowseSort,
+        _limit: usize,
+        _cursor: &str,
+    ) -> Result<BrowseResult> {
+        Err(NemesisError::Other("browse not implemented".to_string()))
+    }
 }
 
 /// A skill entry in a remote registry (for simple in-memory lookup).
@@ -361,6 +374,32 @@ impl RegistryManager {
         Ok(result.version)
     }
 
+    /// Fetch SKILL.md content for a skill from a specific registry.
+    pub async fn get_skill_content(
+        &self,
+        registry_name: &str,
+        slug: &str,
+    ) -> Result<crate::types::SkillContent> {
+        let registry = self.get_registry(registry_name).ok_or_else(|| {
+            NemesisError::NotFound(format!("registry '{}' not found", registry_name))
+        })?;
+        registry.get_skill_content(slug).await
+    }
+
+    /// Browse skills from a specific registry with sort and pagination.
+    pub async fn browse(
+        &self,
+        registry_name: &str,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        let registry = self.get_registry(registry_name).ok_or_else(|| {
+            NemesisError::NotFound(format!("registry '{}' not found", registry_name))
+        })?;
+        registry.browse(sort, limit, cursor).await
+    }
+
     /// Get the current list of registries.
     pub fn registries(&self) -> Vec<String> {
         self.registries
@@ -429,6 +468,8 @@ impl SkillRegistry for StubRegistryProvider {
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: "stub".to_string(),
+            author: String::new(),
+            downloads: 0,
         })
     }
 
@@ -443,6 +484,18 @@ impl SkillRegistry for StubRegistryProvider {
             is_malware_blocked: false,
             is_suspicious: false,
             summary: "Stub installation".to_string(),
+        })
+    }
+
+    async fn browse(
+        &self,
+        _sort: &BrowseSort,
+        _limit: usize,
+        _cursor: &str,
+    ) -> Result<BrowseResult> {
+        Ok(BrowseResult {
+            items: Vec::new(),
+            next_cursor: None,
         })
     }
 }
@@ -470,6 +523,19 @@ impl SkillRegistry for GitHubRegistry {
     ) -> Result<crate::types::InstallResult> {
         self.download_and_install(slug, version, target_dir).await
     }
+
+    async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
+        self.get_skill_content(slug).await
+    }
+
+    async fn browse(
+        &self,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        self.browse(sort, limit, cursor).await
+    }
 }
 
 /// Implement SkillRegistry for ClawHubRegistry.
@@ -494,6 +560,19 @@ impl SkillRegistry for ClawHubRegistry {
         target_dir: &str,
     ) -> Result<crate::types::InstallResult> {
         self.download_and_install(slug, version, target_dir).await
+    }
+
+    async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
+        self.get_skill_content(slug).await
+    }
+
+    async fn browse(
+        &self,
+        sort: &BrowseSort,
+        limit: usize,
+        cursor: &str,
+    ) -> Result<BrowseResult> {
+        self.browse(sort, limit, cursor).await
     }
 }
 

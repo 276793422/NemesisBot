@@ -55,6 +55,16 @@ pub struct HostServices {
     // ---- 内存管理 ----
     /// 释放 host 分配的字符串内存。
     pub free_string: Option<extern "C" fn(ptr: *mut c_char)>,
+
+    // ---- 图像解码 ----
+    pub decode_png: Option<extern "C" fn(
+        png_data: *const u8,
+        png_len: usize,
+        out_rgba: *mut u8,
+        out_rgba_len: usize,
+        out_width: *mut u32,
+        out_height: *mut u32,
+    ) -> i32>,
 }
 
 /// Helper: call host log if available.

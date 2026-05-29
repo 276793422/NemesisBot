@@ -1,0 +1,10 @@
+[package]
+name = "icon-tool"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+resvg = "0.44"
+image = "0.25"

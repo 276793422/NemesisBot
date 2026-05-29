@@ -517,6 +517,7 @@ fn test_skills_full_config_roundtrip() {
             ttl_seconds: 600,
         },
         max_concurrent_searches: 4,
+        search_limit: 50,
         github_sources: vec![GitHubSourceConfig {
             name: "anthropics/skills".to_string(),
             repo: "anthropics/skills".to_string(),

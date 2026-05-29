@@ -58,6 +58,7 @@ include_dir = "0.7"
 
 [build-dependencies]
 chrono = { workspace = true }
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

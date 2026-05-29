@@ -46,4 +46,11 @@ fn main() {
 
     // Re-run build script if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
+
+    // Embed icon on Windows
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("recourse/nemesisbot_multi.ico");
+        res.compile().expect("failed to embed icon");
+    }
 }
