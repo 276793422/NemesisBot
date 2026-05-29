@@ -271,7 +271,7 @@ async function loadData() {
       successRate: summaryData.totalRequests > 0
         ? (summaryData.successCount / summaryData.totalRequests) * 100
         : 0,
-      cacheHitRate: summaryData.cacheHitRate / 100,
+      cacheHitRate: summaryData.cacheHitRate,
     }
 
     trends.value = trendsData.map(p => ({

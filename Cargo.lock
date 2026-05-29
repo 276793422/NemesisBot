@@ -3655,6 +3655,7 @@ dependencies = [
  "nemesis-types",
  "nemesis-voice",
  "parking_lot",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

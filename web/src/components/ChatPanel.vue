@@ -479,34 +479,50 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Voice toolbar -->
+    <!-- Toolbar -->
     <div v-if="!toolbarCollapsed" class="voice-toolbar">
-      <div class="voice-toolbar-left">
-        <button
-          class="voice-btn"
-          :class="{ active: voiceDictation }"
-          :disabled="!sttReady"
-          :title="sttReady ? '听写：说话内容追加到输入框' : '请先在语音通道页启用 STT 引擎'"
-          @click="toggleDictation"
-        >&#127908; 听写</button>
-        <button
-          class="voice-btn"
-          :class="{ active: voiceDialogue }"
-          :disabled="!sttReady"
-          :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
-          @click="toggleDialogue"
-        >&#127909; 语音对话</button>
-      </div>
-      <div class="voice-toolbar-right">
-        <button
-          class="voice-btn"
-          :class="{ active: voicePlayback }"
-          :disabled="!ttsReady"
-          :title="ttsReady ? '语音播放：AI 回复自动朗读' : '请先在语音通道页启用 TTS 引擎'"
-          @click="togglePlayback"
-        >&#128266; 语音播放</button>
-        <button class="voice-btn voice-btn-collapse" @click="toggleToolbar" title="收起工具条">&#9650;</button>
-      </div>
+      <button
+        class="voice-btn"
+        :class="{ active: voiceDictation }"
+        :disabled="!sttReady"
+        :title="sttReady ? '听写：说话内容追加到输入框' : '请先在语音通道页启用 STT 引擎'"
+        @click="toggleDictation"
+      >
+        <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+          <path d="m15 5 4 4"/>
+          <rect x="3" y="13" width="7" height="8" rx="1"/>
+        </svg>
+        听写
+      </button>
+      <button
+        class="voice-btn"
+        :class="{ active: voiceDialogue }"
+        :disabled="!sttReady"
+        :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
+        @click="toggleDialogue"
+      >
+        <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" x2="12" y1="19" y2="22"/>
+        </svg>
+        语音对话
+      </button>
+      <button
+        class="voice-btn"
+        :class="{ active: voicePlayback }"
+        :disabled="!ttsReady"
+        :title="ttsReady ? '语音播放：AI 回复自动朗读' : '请先在语音通道页启用 TTS 引擎'"
+        @click="togglePlayback"
+      >
+        <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        </svg>
+        语音播放
+      </button>
     </div>
 
     <!-- Input -->
@@ -523,7 +539,17 @@ onUnmounted(() => {
       <button class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim() || chatStore.streaming">
         发送
       </button>
-      <button v-if="toolbarCollapsed" class="voice-btn voice-btn-expand" @click="toggleToolbar" title="展开语音工具条">&#127908;</button>
+      <button
+        class="toolbar-toggle"
+        :class="{ active: !toolbarCollapsed }"
+        @click="toggleToolbar"
+        :title="toolbarCollapsed ? '展开工具栏' : '收起工具栏'"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12,2 20.66,7 20.66,17 12,22 3.34,17 3.34,7"/>
+          <circle cx="12" cy="12" r="3.5"/>
+        </svg>
+      </button>
     </div>
   </div>
 </template>
@@ -532,51 +558,70 @@ onUnmounted(() => {
 .voice-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 4px 12px;
-  background: var(--bg-secondary, #f5f5f5);
-  border-top: 1px solid var(--border-color, #e0e0e0);
-  min-height: 32px;
-}
-.voice-toolbar-left,
-.voice-toolbar-right {
-  display: flex;
-  align-items: center;
   gap: 6px;
+  padding: 6px 12px;
+  background: var(--surface);
+  min-height: 36px;
 }
 .voice-btn {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 8px;
-  font-size: 12px;
-  border: 1px solid var(--border-color, #ccc);
-  border-radius: 4px;
-  background: var(--bg-primary, #fff);
-  color: var(--text-secondary, #666);
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s;
   white-space: nowrap;
+  line-height: 1;
+}
+.voice-btn-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 .voice-btn:hover:not(:disabled) {
-  border-color: var(--accent-color, #4a9eff);
-  color: var(--accent-color, #4a9eff);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .voice-btn.active {
-  background: var(--accent-color, #4a9eff);
+  background: var(--accent);
   color: #fff;
-  border-color: var(--accent-color, #4a9eff);
+  border-color: var(--accent);
 }
 .voice-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.voice-btn-collapse {
-  font-size: 10px;
-  padding: 2px 6px;
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
 }
-.voice-btn-expand {
-  font-size: 16px;
-  padding: 4px 8px;
+.toolbar-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+.toolbar-toggle:hover {
+  background: var(--accent-muted);
+}
+.toolbar-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 </style>

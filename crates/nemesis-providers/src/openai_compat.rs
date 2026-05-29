@@ -193,8 +193,14 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
                     .and_then(|d| d.get("cached_tokens"))
                     .and_then(|v| v.as_i64())
             });
+        // Normalize prompt_tokens to exclude cached tokens, matching Anthropic's
+        // semantics where prompt_tokens = non-cached input only.
+        // OpenAI: prompt_tokens already includes cached_tokens (subset)
+        // DeepSeek: prompt_tokens = cache_hit + cache_miss
+        let prompt_raw = u["prompt_tokens"].as_i64().unwrap_or(0);
+        let prompt_non_cached = prompt_raw - cached.unwrap_or(0);
         UsageInfo {
-            prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
+            prompt_tokens: prompt_non_cached,
             completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
             total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
             cached_tokens: cached,

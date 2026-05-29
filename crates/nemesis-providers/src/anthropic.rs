@@ -301,7 +301,9 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
-            cached_tokens: cache_read,
+            // cached_tokens is intentionally None here; Anthropic uses cache_read_tokens
+            // instead. The fallback chain in loop_executor.rs uses .or(cached_tokens).
+            cached_tokens: None,
             cache_creation_tokens: cache_creation,
             cache_read_tokens: cache_read,
         })
