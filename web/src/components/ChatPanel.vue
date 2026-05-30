@@ -94,12 +94,28 @@ function getAvatar(role: string): string {
 
 function formatTime(timestamp: string): string {
   const date = new Date(timestamp)
-  return date.toLocaleTimeString('zh-CN', {
+  const now = new Date()
+  const isToday = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  if (isToday) {
+    return date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
+  }
+  const y = date.getFullYear()
+  const M = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const time = date.toLocaleTimeString('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
   })
+  return `${y}-${M}-${d} ${time}`
 }
 
 function scrollToBottom() {
