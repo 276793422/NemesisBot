@@ -95,7 +95,7 @@ impl PathManager {
         if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG) {
             return PathBuf::from(env_path);
         }
-        self.home_dir.read().join("config.mcp.json")
+        self.workspace().join("config").join("config.mcp.json")
     }
 
     /// Set a custom MCP config path.
@@ -112,7 +112,7 @@ impl PathManager {
         if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG) {
             return PathBuf::from(env_path);
         }
-        self.home_dir.read().join("config.security.json")
+        self.workspace().join("config").join("config.security.json")
     }
 
     /// Set a custom security config path.
@@ -129,7 +129,7 @@ impl PathManager {
         if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG) {
             return PathBuf::from(env_path);
         }
-        self.home_dir.read().join("config.skills.json")
+        self.workspace().join("config").join("config.skills.json")
     }
 
     /// Set a custom skills config path.
@@ -139,7 +139,7 @@ impl PathManager {
 
     /// Get the auth storage path.
     pub fn auth_path(&self) -> PathBuf {
-        self.home_dir.read().join("auth.json")
+        self.workspace().join("config").join("auth.json")
     }
 
     /// Get the audit log directory.

@@ -70,7 +70,7 @@ fn test_path_manager_config_path_override() {
 fn test_path_manager_mcp_config_default() {
     let _g = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/config.mcp.json"));
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json"));
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_path_manager_mcp_config_override() {
 fn test_path_manager_security_config_default() {
     let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/config.security.json"));
+    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.security.json"));
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn test_path_manager_security_config_override() {
 fn test_path_manager_skills_config_default() {
     let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/config.skills.json"));
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.skills.json"));
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn test_path_manager_skills_config_override() {
 #[test]
 fn test_path_manager_auth_path() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/test_home/auth.json"));
+    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/test_home/workspace/config/auth.json"));
 }
 
 #[test]
@@ -541,21 +541,21 @@ fn test_path_manager_skills_config_path_with_env_v2() {
 fn test_path_manager_mcp_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home2/config.mcp.json"));
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.mcp.json"));
 }
 
 #[test]
 fn test_path_manager_security_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home2/config.security.json"));
+    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.security.json"));
 }
 
 #[test]
 fn test_path_manager_skills_config_path_default_v2() {
     let _g1 = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home2"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home2/config.skills.json"));
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home2/workspace/config/config.skills.json"));
 }
 
 // ============================================================
@@ -800,11 +800,11 @@ fn test_resolve_home_dir_auto_detect_with_dir() {
 fn test_path_manager_all_config_paths() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/all_paths"));
     assert_eq!(pm.config_path(), PathBuf::from("/tmp/all_paths/config.json"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/all_paths/config.mcp.json"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/all_paths/config.security.json"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/all_paths/config.skills.json"));
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.mcp.json"));
+    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.security.json"));
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/all_paths/workspace/config/config.skills.json"));
     assert_eq!(pm.workspace(), PathBuf::from("/tmp/all_paths/workspace"));
-    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/all_paths/auth.json"));
+    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/all_paths/workspace/config/auth.json"));
     assert_eq!(pm.audit_log_dir(), PathBuf::from("/tmp/all_paths/workspace/logs/security_logs"));
     assert_eq!(pm.temp_dir(), PathBuf::from("/tmp/all_paths/workspace/temp"));
 }
@@ -1138,21 +1138,21 @@ fn test_path_manager_config_path_env_override() {
 fn test_path_manager_mcp_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_MCP_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/config.mcp.json"));
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.mcp.json"));
 }
 
 #[test]
 fn test_path_manager_security_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/config.security.json"));
+    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.security.json"));
 }
 
 #[test]
 fn test_path_manager_skills_path_no_env_no_setter() {
     let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
-    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/config.skills.json"));
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/test_home/workspace/config/config.skills.json"));
 }
 
 #[test]
