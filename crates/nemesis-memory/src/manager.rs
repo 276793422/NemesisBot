@@ -718,17 +718,80 @@ impl MemoryManager {
         self.episodic.search(query, limit).await
     }
 
-    /// Delete all episodes for a session.
+    /// Delete all episodes for a session. Also removes corresponding
+    /// entries from the vector store.
     pub async fn delete_episode_session(
         &self,
         session_key: &str,
     ) -> Result<usize, String> {
-        self.episodic.delete_session(session_key).await
+        // Collect episode IDs before deleting the session.
+        let episodes = self.episodic.get_session(session_key).await?;
+        let ids: Vec<String> = episodes.iter().map(|e| e.id.clone()).collect();
+
+        let count = self.episodic.delete_session(session_key).await?;
+
+        // Remove from vector store.
+        if !ids.is_empty() {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard {
+                for id in &ids {
+                    vs.delete_entry(id);
+                }
+            }
+        }
+
+        Ok(count)
     }
 
-    /// Cleanup episodes older than the given number of days.
+    /// Cleanup episodes older than the given number of days. Also removes
+    /// corresponding entries from the vector store.
     pub async fn cleanup_episodic(&self, older_than_days: usize) -> Result<usize, String> {
-        self.episodic.cleanup(older_than_days).await
+        // Collect IDs that will be removed so we can also clean vector store.
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::days(older_than_days as i64);
+        let sessions = self.episodic.list_sessions().await?;
+        let mut ids_to_remove = Vec::new();
+        for session_key in &sessions {
+            let episodes = self.episodic.get_session(session_key).await?;
+            for ep in &episodes {
+                if ep.timestamp <= cutoff {
+                    ids_to_remove.push(ep.id.clone());
+                }
+            }
+        }
+
+        let count = self.episodic.cleanup(older_than_days).await?;
+
+        // Remove from vector store.
+        if !ids_to_remove.is_empty() {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard {
+                for id in &ids_to_remove {
+                    vs.delete_entry(id);
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Delete a single memory entry by ID across all stores (episodic + vector).
+    pub async fn delete_by_id(&self, id: &str) -> Result<bool, String> {
+        let mut found = false;
+        // Delete from episodic store
+        if self.episodic.delete_by_id(id).await? {
+            found = true;
+        }
+        // Delete from vector store
+        {
+            let vs_guard = self.vector_store.read();
+            if let Some(ref vs) = *vs_guard {
+                if vs.delete_entry(id) {
+                    found = true;
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Get episodic store stats (session_count, episode_count).
@@ -736,6 +799,11 @@ impl MemoryManager {
         let sessions = self.episodic.session_count().await?;
         let episodes = self.episodic.episode_count().await?;
         Ok((sessions, episodes))
+    }
+
+    /// List all episodic session keys.
+    pub async fn list_episodic_sessions(&self) -> Result<Vec<String>, String> {
+        self.episodic.list_sessions().await
     }
 
     // -- Graph operations --------------------------------------------------

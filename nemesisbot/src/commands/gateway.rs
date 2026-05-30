@@ -1170,7 +1170,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         forge_executor: forge_executor_and_instance.as_ref().map(|(exec, _)| exec.clone()),
         memory_executor: {
             if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
-                let memory_data_dir = home.join("memory");
+                let memory_data_dir = home.join("workspace").join("memory_vector");
                 let config_dir = home.join("workspace").join("config");
                 let mgr = std::sync::Arc::new(
                     nemesis_memory::manager::MemoryManager::with_config_dir(

@@ -75,6 +75,9 @@ pub trait EpisodicStore: Send + Sync {
     /// Delete all episodes for a session. Returns count of deleted episodes.
     async fn delete_session(&self, session_key: &str) -> Result<usize, String>;
 
+    /// Delete a single episode by ID across all sessions. Returns true if found.
+    async fn delete_by_id(&self, id: &str) -> Result<bool, String>;
+
     /// Remove episodes older than the given number of days. Returns count removed.
     async fn cleanup(&self, older_than_days: usize) -> Result<usize, String>;
 
@@ -180,6 +183,39 @@ impl EpisodicStore for FileEpisodicStore {
             .map_err(|e| format!("Failed to delete session file: {e}"))?;
 
         Ok(count)
+    }
+
+    async fn delete_by_id(&self, id: &str) -> Result<bool, String> {
+        let sessions = self.list_sessions().await?;
+        for session_key in &sessions {
+            let episodes = self.get_session(session_key).await?;
+            let mut remaining = Vec::new();
+            let mut found = false;
+            for ep in &episodes {
+                if ep.id == id {
+                    found = true;
+                } else {
+                    remaining.push(ep.clone());
+                }
+            }
+            if found {
+                if remaining.is_empty() {
+                    self.delete_session(session_key).await?;
+                } else {
+                    let path = self.session_file(session_key);
+                    let mut out = String::new();
+                    for ep in &remaining {
+                        out.push_str(&serde_json::to_string(ep).unwrap_or_default());
+                        out.push('\n');
+                    }
+                    fs::write(&path, out)
+                        .await
+                        .map_err(|e| format!("Failed to rewrite session file: {e}"))?;
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn get_recent(&self, session_key: &str, limit: usize) -> Result<Vec<Episode>, String> {

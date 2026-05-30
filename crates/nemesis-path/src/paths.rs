@@ -159,6 +159,11 @@ impl PathManager {
         self.home_dir.read().join("workspace").join("temp")
     }
 
+    /// Get the memory vector directory for enhanced memory storage.
+    pub fn memory_vector_dir(&self) -> PathBuf {
+        self.workspace().join("memory_vector")
+    }
+
     /// Get agent-specific workspace.
     pub fn agent_workspace(&self, agent_id: &str) -> PathBuf {
         if agent_id.is_empty() || agent_id == "main" || agent_id == "default" {

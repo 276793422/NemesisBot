@@ -249,12 +249,38 @@ impl VectorStore {
         self.docs.read().iter().find(|d| d.entry.id == id).map(|d| d.entry.clone())
     }
 
-    /// Delete an entry by ID.
+    /// Delete an entry by ID. Returns true if found.
+    /// Persists the deletion to disk by rewriting the JSONL file.
     pub fn delete_entry(&self, id: &str) -> bool {
         let mut docs = self.docs.write();
         let before = docs.len();
         docs.retain(|d| d.entry.id != id);
-        docs.len() < before
+        let found = docs.len() < before;
+        if found {
+            self.rewrite_persist_file(&docs);
+        }
+        found
+    }
+
+    /// Rewrite the entire JSONL persist file from the current docs.
+    fn rewrite_persist_file(&self, docs: &[IndexedDoc]) {
+        use std::io::Write;
+        let tmp_path = self.persist_path.with_extension("jsonl.tmp");
+        let file = std::fs::File::create(&tmp_path);
+        match file {
+            Ok(mut f) => {
+                for doc in docs {
+                    if let Ok(line) = serde_json::to_string(&doc.entry) {
+                        let _ = writeln!(f, "{}", line);
+                    }
+                }
+                drop(f);
+                let _ = std::fs::rename(&tmp_path, &self.persist_path);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+        }
     }
 
     /// List entries with optional type filter and pagination.

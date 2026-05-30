@@ -74,7 +74,7 @@ pub fn memory_tool_definitions() -> Vec<MemoryTool> {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "memory_type": {"type": "string", "description": "Type of memory to store: 'episodic' or 'graph'", "enum": ["episodic", "graph"]},
+                    "memory_type": {"type": "string", "description": "Type of memory to store: 'episodic' or 'graph'", "enum": ["episodic", "graph"], "default": "episodic"},
                     "content": {"type": "string", "description": "Content for episodic memory (ignored for graph type)"},
                     "role": {"type": "string", "description": "Role for episodic memory: 'user', 'assistant', 'system'", "default": "assistant"},
                     "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the memory entry"},
@@ -87,19 +87,20 @@ pub fn memory_tool_definitions() -> Vec<MemoryTool> {
                     "triple_object": {"type": "string", "description": "Object of a graph triple"},
                     "confidence": {"type": "number", "description": "Confidence score for the triple (0.0-1.0)"},
                 },
-                "required": ["memory_type"],
+                "required": [],
             }),
         },
         MemoryTool {
             name: "memory_forget".into(),
-            description: "Remove memories. Can delete episodic sessions, cleanup old memories, or remove knowledge graph entities.".into(),
+            description: "Remove memories. Can delete by ID, delete episodic sessions, cleanup old memories, or remove knowledge graph entities.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "Action to perform: 'delete_session', 'cleanup', 'delete_entity'", "enum": ["delete_session", "cleanup", "delete_entity"]},
+                    "action": {"type": "string", "description": "Action to perform: 'delete_session', 'cleanup', 'delete_entity', 'delete_by_id'", "enum": ["delete_session", "cleanup", "delete_entity", "delete_by_id"]},
                     "session_key": {"type": "string", "description": "Session key to delete (for delete_session action)"},
                     "older_than_days": {"type": "number", "description": "Remove memories older than N days (for cleanup action)", "minimum": 1},
                     "entity_name": {"type": "string", "description": "Entity name to delete (for delete_entity action)"},
+                    "id": {"type": "string", "description": "Memory entry ID to delete (for delete_by_id action). Use the ID from memory_search results."},
                 },
                 "required": ["action"],
             }),
@@ -186,8 +187,9 @@ impl MemoryToolExecutor {
                                 String::new()
                             };
                             output.push_str(&format!(
-                                "{}.{} {}\n",
+                                "{}. [ID: {}]{} {}\n",
                                 i + 1,
+                                se.entry.id,
                                 score_str,
                                 truncate_text(&se.entry.content, 200)
                             ));
@@ -220,8 +222,10 @@ impl MemoryToolExecutor {
                         ));
                         for (i, ep) in episodes.iter().enumerate() {
                             output.push_str(&format!(
-                                "{}. [{}] {}: {}\n",
+                                "{}. [ID: {}] [Session: {}] [{}] {}: {}\n",
                                 i + 1,
+                                ep.id,
+                                ep.session_key,
                                 ep.timestamp.format("%Y-%m-%d %H:%M"),
                                 ep.role,
                                 truncate_text(&ep.content, 200)
@@ -282,10 +286,7 @@ impl MemoryToolExecutor {
     // -- memory_store --------------------------------------------------------
 
     async fn execute_store(&self, args: &serde_json::Value) -> MemoryToolResult {
-        let memory_type = args["memory_type"].as_str().unwrap_or("").to_string();
-        if memory_type.is_empty() {
-            return MemoryToolResult::err("memory_type is required");
-        }
+        let memory_type = args["memory_type"].as_str().unwrap_or("episodic").to_string();
 
         match memory_type.as_str() {
             "episodic" => self.store_episodic(args).await,
@@ -494,8 +495,31 @@ impl MemoryToolExecutor {
                 }
             }
 
+            "delete_by_id" => {
+                let id = args["id"].as_str().unwrap_or("").to_string();
+                if id.is_empty() {
+                    return MemoryToolResult::err(
+                        "id is required for delete_by_id action. Use memory_search to find the ID first.",
+                    );
+                }
+
+                match self.manager.delete_by_id(&id).await {
+                    Ok(true) => MemoryToolResult::ok(format!(
+                        "Memory entry '{}' deleted successfully",
+                        id
+                    )),
+                    Ok(false) => MemoryToolResult::ok(format!(
+                        "No memory entry found with ID '{}'. It may have already been deleted.",
+                        id
+                    )),
+                    Err(e) => {
+                        MemoryToolResult::err(format!("failed to delete by ID: {}", e))
+                    }
+                }
+            }
+
             _ => MemoryToolResult::err(format!(
-                "unknown action: {} (use 'delete_session', 'cleanup', or 'delete_entity')",
+                "unknown action: {} (use 'delete_session', 'cleanup', 'delete_entity', or 'delete_by_id')",
                 action
             )),
         }
@@ -526,7 +550,17 @@ impl MemoryToolExecutor {
             Ok((session_count, episode_count)) => {
                 output.push_str("### Episodic Memory\n");
                 output.push_str(&format!("- Sessions: {}\n", session_count));
-                output.push_str(&format!("- Total episodes: {}\n\n", episode_count));
+                output.push_str(&format!("- Total episodes: {}\n", episode_count));
+                // List session keys
+                if let Ok(sessions) = self.manager.list_episodic_sessions().await {
+                    if !sessions.is_empty() {
+                        output.push_str("- Session keys:\n");
+                        for sk in &sessions {
+                            output.push_str(&format!("  - {}\n", sk));
+                        }
+                    }
+                }
+                output.push('\n');
             }
             Err(_) => {
                 output.push_str("### Episodic Memory\n- Not available\n\n");
