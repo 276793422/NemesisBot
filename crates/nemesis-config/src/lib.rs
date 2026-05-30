@@ -659,10 +659,29 @@ pub struct McpConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpServerConfig {
     #[serde(default)] pub name: String,
-    #[serde(default)] pub command: String,
+    #[serde(default)] pub transport_type: String,
+    #[serde(default)] pub url: String,
+    #[serde(default)] pub description: String,
+    #[serde(default)] pub headers: Vec<String>,
     #[serde(default)] pub args: Vec<String>,
     #[serde(default)] pub env: Vec<String>,
     #[serde(default)] pub timeout: i64,
+    #[serde(default)] pub provider_name: String,
+    #[serde(default)] pub provider_url: String,
+    #[serde(default)] pub tags: Vec<String>,
+    #[serde(default)] pub command: String,
+}
+
+impl McpServerConfig {
+    /// Normalize legacy fields: map old `command` to `url` and set default `transport_type`.
+    pub fn normalize(&mut self) {
+        if self.url.is_empty() && !self.command.is_empty() {
+            self.url = self.command.clone();
+        }
+        if self.transport_type.is_empty() {
+            self.transport_type = "stdio".to_string();
+        }
+    }
 }
 
 // ============================================================================

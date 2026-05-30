@@ -617,16 +617,22 @@ fn test_mcp_config_roundtrip() {
             McpServerConfig {
                 name: "server1".to_string(),
                 command: "node".to_string(),
+                url: "node".to_string(),
+                transport_type: "stdio".to_string(),
                 args: vec!["a.js".to_string(), "b.js".to_string()],
                 env: vec!["KEY=VALUE".to_string()],
                 timeout: 30,
+                ..Default::default()
             },
             McpServerConfig {
                 name: "server2".to_string(),
                 command: "python".to_string(),
+                url: "python".to_string(),
+                transport_type: "stdio".to_string(),
                 args: vec!["main.py".to_string()],
                 env: vec![],
                 timeout: 30,
+                ..Default::default()
             },
         ],
         timeout: 120,

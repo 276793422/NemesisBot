@@ -42,15 +42,12 @@ fn try_load_plugin(
     plugin_path: &str,
     config: &VectorConfig,
 ) -> Result<EmbeddingFunc, crate::vector::plugin_loader::PluginError> {
-    // 1. Load embedding config and ensure model files are available
+    // 1. Load embedding config and resolve model file paths (no download)
     let config_dir = config.config_dir.as_deref().unwrap_or(".");
-    let mut emb_config = embedding_config::load_embedding_config(Path::new(config_dir));
+    let emb_config = embedding_config::load_embedding_config(Path::new(config_dir));
 
-    let (model_dir, dim) = embedding_config::ensure_model_files(
-        &mut emb_config,
-        Path::new(config_dir),
-    )
-    .map_err(|_| crate::vector::plugin_loader::PluginError::InitFailed { code: -6 })?;
+    let (model_dir, dim) = embedding_config::resolve_model_files(&emb_config, Path::new(config_dir))
+        .map_err(|_| crate::vector::plugin_loader::PluginError::InitFailed { code: -6 })?;
 
     // 2. Load plugin DLL
     let mut plugin = NativePlugin::load(plugin_path)?;

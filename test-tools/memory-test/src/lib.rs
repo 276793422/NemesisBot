@@ -40,19 +40,11 @@ pub fn resolve_model_dir() -> Result<PathBuf> {
 }
 
 /// Copy embedding model files to workspace config dir so the plugin can find them.
-/// Copies: embedding.toml, model.onnx, tokenizer.json
+/// Copies: model.onnx, tokenizer.json
 pub fn copy_model_files_to_workspace(workspace: &TestWorkspace) -> Result<()> {
     let model_src = resolve_model_dir()?;
     let config_dir = workspace.home().join("workspace").join("config");
     std::fs::create_dir_all(&config_dir)?;
-
-    // Copy embedding.toml from project
-    let root = resolve_project_root()?;
-    let emb_toml_src = root.join("crates").join("nemesis-memory").join("config").join("embedding.toml");
-    if emb_toml_src.exists() {
-        std::fs::copy(&emb_toml_src, config_dir.join("embedding.toml"))
-            .context("copying embedding.toml")?;
-    }
 
     // Copy model.onnx and tokenizer.json
     std::fs::copy(model_src.join("model.onnx"), config_dir.join("model.onnx"))

@@ -92,7 +92,7 @@ pub fn resolve_plugin_dll() -> Option<String> {
     None
 }
 
-/// Resolve the config directory containing `embedding.toml` and model files.
+/// Resolve the config directory containing `config.enhanced_memory.json` and model files.
 /// Returns `None` if not found.
 pub fn resolve_config_dir() -> Option<String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
@@ -101,13 +101,13 @@ pub fn resolve_config_dir() -> Option<String> {
 
     // Preferred: test-data/memory-e2e/ (has model.onnx at root level)
     let alt = root.join("test-data").join("memory-e2e");
-    if alt.join("embedding.toml").exists() && alt.join("model.onnx").exists() {
+    if alt.join("config.enhanced_memory.json").exists() && alt.join("model.onnx").exists() {
         return Some(alt.to_string_lossy().to_string());
     }
 
     // Fallback: crates/nemesis-memory/config/
     let config_dir = manifest.join("config");
-    if config_dir.join("embedding.toml").exists() {
+    if config_dir.join("config.enhanced_memory.json").exists() {
         return Some(config_dir.to_string_lossy().to_string());
     }
 
@@ -126,18 +126,18 @@ fn init_shared() -> Result<SharedEmbedState, String> {
 
     let config_dir = match resolve_config_dir() {
         Some(c) => c,
-        None => return Err("Config dir with embedding.toml not found. Run: bash test-tools/plugin-onnx-test/scripts/setup-test.sh".into()),
+        None => return Err("Config dir with config.enhanced_memory.json not found. Run: bash test-tools/plugin-onnx-test/scripts/setup-test.sh".into()),
     };
 
-    // Load embedding config and ensure model files
-    let mut emb_config = crate::vector::embedding_config::load_embedding_config(
+    // Load embedding config and resolve model file paths
+    let emb_config = crate::vector::embedding_config::load_embedding_config(
         std::path::Path::new(&config_dir),
     );
-    let (model_dir, dim) = crate::vector::embedding_config::ensure_model_files(
-        &mut emb_config,
+    let (model_dir, dim) = crate::vector::embedding_config::resolve_model_files(
+        &emb_config,
         std::path::Path::new(&config_dir),
     )
-    .map_err(|e| format!("Failed to ensure model files: {}", e))?;
+    .map_err(|e| format!("Model files not found: {}", e))?;
 
     // Load plugin DLL
     let mut plugin = crate::vector::plugin_loader::NativePlugin::load(&plugin_path)

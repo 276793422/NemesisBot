@@ -1273,40 +1273,44 @@ async fn test_search_episodic_with_content() {
 // ============================================================
 
 #[test]
-fn test_load_enhanced_memory_config_missing_file() {
+fn test_load_embedding_config_missing_file() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.enhanced_memory.json");
-    let result = MemoryManager::load_enhanced_memory_config(&path);
-    assert!(result.is_none());
+    // load_embedding_config creates default if missing
+    let config = embedding_config::load_embedding_config(dir.path());
+    assert!(!config.enabled);
+    assert_eq!(config.active, "medium");
 }
 
 #[test]
-fn test_load_enhanced_memory_config_valid() {
+fn test_load_embedding_config_valid() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.enhanced_memory.json");
-    let content = r#"{"enabled": true}"#;
+    let content = r#"{"enabled": true, "active": "large", "models": {}}"#;
     std::fs::write(&path, content).unwrap();
-    let cfg = MemoryManager::load_enhanced_memory_config(&path).unwrap();
-    assert!(cfg.enabled);
+    let config = embedding_config::load_embedding_config(dir.path());
+    assert!(config.enabled);
+    assert_eq!(config.active, "large");
 }
 
 #[test]
-fn test_load_enhanced_memory_config_invalid_json() {
+fn test_load_embedding_config_invalid_json() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.enhanced_memory.json");
     std::fs::write(&path, "not json").unwrap();
-    let result = MemoryManager::load_enhanced_memory_config(&path);
-    assert!(result.is_none());
+    // Invalid JSON → falls back to default
+    let config = embedding_config::load_embedding_config(dir.path());
+    assert!(!config.enabled);
 }
 
 #[test]
-fn test_load_enhanced_memory_config_defaults() {
+fn test_load_embedding_config_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.enhanced_memory.json");
     let content = r#"{}"#;
     std::fs::write(&path, content).unwrap();
-    let cfg = MemoryManager::load_enhanced_memory_config(&path).unwrap();
-    assert!(!cfg.enabled);
+    let config = embedding_config::load_embedding_config(dir.path());
+    assert!(!config.enabled);
+    assert_eq!(config.active, "medium");
 }
 
 #[test]
@@ -1349,35 +1353,36 @@ fn test_with_config_dir_enabled_no_plugin() {
 }
 
 // ============================================================
-// Phase 1: UT — EnhancedMemoryConfig parsing (4 tests)
+// Phase 1: UT — EmbeddingConfig JSON parsing (4 tests)
 // ============================================================
 
 #[test]
-fn test_enhanced_config_enabled_true() {
-    let json = r#"{"enabled": true}"#;
-    let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+fn test_embedding_config_enabled_true() {
+    let json = r#"{"enabled": true, "active": "medium", "models": {}}"#;
+    let cfg: embedding_config::EmbeddingConfig = serde_json::from_str(json).unwrap();
     assert!(cfg.enabled);
 }
 
 #[test]
-fn test_enhanced_config_extra_fields_ignored() {
-    let json = r#"{"enabled": true, "unknown_field": "value", "another": 42}"#;
-    let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+fn test_embedding_config_extra_fields_ignored() {
+    let json = r#"{"enabled": true, "active": "medium", "unknown_field": "value", "another": 42, "models": {}}"#;
+    let cfg: embedding_config::EmbeddingConfig = serde_json::from_str(json).unwrap();
     assert!(cfg.enabled);
 }
 
 #[test]
-fn test_enhanced_config_empty_object() {
+fn test_embedding_config_empty_object() {
     let json = r#"{}"#;
-    let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+    let cfg: embedding_config::EmbeddingConfig = serde_json::from_str(json).unwrap();
     assert!(!cfg.enabled); // default
 }
 
 #[test]
-fn test_enhanced_config_disabled() {
-    let json = r#"{"enabled": false}"#;
-    let cfg: EnhancedMemoryConfig = serde_json::from_str(json).unwrap();
+fn test_embedding_config_disabled() {
+    let json = r#"{"enabled": false, "active": "small", "models": {}}"#;
+    let cfg: embedding_config::EmbeddingConfig = serde_json::from_str(json).unwrap();
     assert!(!cfg.enabled);
+    assert_eq!(cfg.active, "small");
 }
 
 // ============================================================

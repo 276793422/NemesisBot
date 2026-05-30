@@ -97,7 +97,7 @@ pub struct VectorConfig {
     #[serde(default)]
     pub plugin_path: Option<String>,
 
-    /// Config directory containing embedding.toml (not serialized).
+    /// Config directory containing config.enhanced_memory.json (not serialized).
     #[serde(skip)]
     pub config_dir: Option<String>,
 

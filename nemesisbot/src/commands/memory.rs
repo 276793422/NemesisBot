@@ -66,28 +66,17 @@ async fn cmd_enable(home: &Path) -> Result<()> {
     })?;
     println!("Plugin found: {}", plugin_path);
 
-    // --- Step 2: Ensure embedding config and model files ---
-    let config_dir_owned = config_dir.to_path_buf();
-    let dim = match tokio::task::spawn_blocking(move || ensure_model_files(&config_dir_owned)).await {
-        Ok(Ok(dim)) => {
-            println!("Model files ready (dim={})", dim);
-            dim
-        }
-        Ok(Err(e)) => {
-            bail!("Model file setup failed: {}. Cannot enable enhanced memory without ONNX model.", e);
-        }
-        Err(e) => {
-            bail!("Model file setup task failed: {}", e);
-        }
-    };
+    // --- Step 2: Verify model files are installed ---
+    let emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+    let (_, dim) = nemesis_memory::vector::embedding_config::resolve_model_files(&emb_cfg, config_dir)
+        .map_err(|e| anyhow::anyhow!("{}. 请先运行 nemesisbot memory install 下载模型", e))?;
+    println!("Model files ready (dim={})", dim);
 
-    // --- Step 3: Write config.enhanced_memory.json ---
-    let em_config = serde_json::json!({ "enabled": true });
-    let em_json = serde_json::to_string_pretty(&em_config)
-        .context("serializing enhanced memory config")?;
-    std::fs::write(&em_cfg_path, &em_json)
-        .with_context(|| format!("writing {}", em_cfg_path.display()))?;
-    println!("Enhanced memory config saved to {}", em_cfg_path.display());
+    // --- Step 3: Write config.enhanced_memory.json with enabled=true ---
+    let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+    emb_cfg.enabled = true;
+    nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+    println!("Enhanced memory config saved");
 
     // --- Step 4: Set config.json memory.enabled = true ---
     set_main_switch(&cfg_path, true)?;
@@ -119,13 +108,11 @@ fn cmd_disable(home: &Path) -> Result<()> {
 
     set_main_switch(&cfg_path, false)?;
 
-    // Also set sub-switch to false
-    if em_cfg_path.exists() {
-        let em_config = serde_json::json!({ "enabled": false });
-        if let Ok(em_json) = serde_json::to_string_pretty(&em_config) {
-            let _ = std::fs::write(&em_cfg_path, em_json);
-        }
-    }
+    // Also set sub-switch to false via unified config
+    let config_dir = em_cfg_path.parent().unwrap_or(home);
+    let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+    emb_cfg.enabled = false;
+    nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
 
     println!("Enhanced memory DISABLED");
     println!("  config.json → memory.enabled = false");
@@ -191,11 +178,11 @@ fn cmd_status(home: &Path) -> Result<()> {
 
     // 4. Check model files
     let config_dir = em_cfg_path.parent().unwrap_or(home);
-    let model_dir = config_dir.join("models");
-    let has_model = model_dir.exists() && has_onnx_files(&model_dir);
+    let emb_data_dir = nemesis_memory::vector::embedding_config::embedding_data_dir(config_dir);
+    let has_model = emb_data_dir.exists() && has_onnx_files(&emb_data_dir);
     println!(
         "  Model files:    {} [{}]",
-        model_dir.display(),
+        emb_data_dir.display(),
         common::status_icon(has_model)
     );
 
@@ -275,16 +262,6 @@ fn detect_plugin_path() -> Option<String> {
     } else {
         None
     }
-}
-
-/// Ensure embedding model files are available for the default tier.
-fn ensure_model_files(config_dir: &Path) -> Result<usize, String> {
-    use nemesis_memory::vector::embedding_config::{load_embedding_config, ensure_model_files, save_embedding_config};
-
-    let mut emb_cfg = load_embedding_config(config_dir);
-    let (_model_dir, dim) = ensure_model_files(&mut emb_cfg, config_dir)?;
-    save_embedding_config(&emb_cfg, config_dir);
-    Ok(dim as usize)
 }
 
 /// Check if any .onnx files exist under the given directory (recursively).

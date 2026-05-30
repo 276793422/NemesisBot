@@ -15,6 +15,7 @@ nemesis-security = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true }
+nemesis-memory = { workspace = true }
 nemesis-data = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

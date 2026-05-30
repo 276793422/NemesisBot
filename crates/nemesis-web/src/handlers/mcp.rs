@@ -82,12 +82,21 @@ impl McpHandler {
             .servers
             .iter()
             .map(|s| {
+                // Normalize for display
+                let url = if s.url.is_empty() { &s.command } else { &s.url };
+                let transport_type = if s.transport_type.is_empty() { "stdio" } else { &s.transport_type };
                 serde_json::json!({
                     "name": s.name,
-                    "command": s.command,
+                    "transport_type": transport_type,
+                    "url": url,
+                    "description": s.description,
+                    "headers": s.headers,
                     "args": s.args,
                     "env": s.env,
                     "timeout": s.timeout,
+                    "provider_name": s.provider_name,
+                    "provider_url": s.provider_url,
+                    "tags": s.tags,
                 })
             })
             .collect();
@@ -106,22 +115,23 @@ impl McpHandler {
             return Err(format!("MCP server '{}' already exists", name));
         }
 
-        let args: Vec<String> = data
-            .get("args")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        let env: Vec<String> = data
-            .get("env")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        config.servers.push(nemesis_config::McpServerConfig {
+        let mut server = nemesis_config::McpServerConfig {
             name: name.clone(),
-            command: crate::handlers::get_opt_str(data, "command").unwrap_or_default(),
-            args,
-            env,
-            timeout: 0,
-        });
+            transport_type: crate::handlers::get_opt_str(data, "transport_type").unwrap_or_else(|| "stdio".to_string()),
+            url: crate::handlers::get_opt_str(data, "url").unwrap_or_default(),
+            description: crate::handlers::get_opt_str(data, "description").unwrap_or_default(),
+            headers: data.get("headers").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            args: data.get("args").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            env: data.get("env").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            timeout: data.get("timeout").and_then(|v| v.as_i64()).unwrap_or(0),
+            provider_name: crate::handlers::get_opt_str(data, "provider_name").unwrap_or_default(),
+            provider_url: crate::handlers::get_opt_str(data, "provider_url").unwrap_or_default(),
+            tags: data.get("tags").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            command: String::new(),
+        };
+        // Legacy compat: if url empty but command provided, use command as url
+        server.normalize();
+        config.servers.push(server);
         save_mcp_config(workspace, &config)?;
         Ok(Some(serde_json::json!({ "added": true, "name": name })))
     }
@@ -140,21 +150,43 @@ impl McpHandler {
             .find(|s| s.name == name)
             .ok_or_else(|| format!("MCP server '{}' not found", name))?;
 
-        if let Some(cmd) = data.get("command").and_then(|v| v.as_str()) {
-            server.command = cmd.to_string();
+        if let Some(v) = data.get("transport_type").and_then(|v| v.as_str()) {
+            server.transport_type = v.to_string();
         }
-        if let Some(args) = data.get("args").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(args) {
+        if let Some(v) = data.get("url").and_then(|v| v.as_str()) {
+            server.url = v.to_string();
+        }
+        if let Some(v) = data.get("description").and_then(|v| v.as_str()) {
+            server.description = v.to_string();
+        }
+        if let Some(v) = data.get("headers").cloned() {
+            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+                server.headers = parsed;
+            }
+        }
+        if let Some(v) = data.get("args").cloned() {
+            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.args = parsed;
             }
         }
-        if let Some(env) = data.get("env").cloned() {
-            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(env) {
+        if let Some(v) = data.get("env").cloned() {
+            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
                 server.env = parsed;
             }
         }
-        if let Some(timeout) = data.get("timeout").and_then(|v| v.as_i64()) {
-            server.timeout = timeout;
+        if let Some(v) = data.get("timeout").and_then(|v| v.as_i64()) {
+            server.timeout = v;
+        }
+        if let Some(v) = data.get("provider_name").and_then(|v| v.as_str()) {
+            server.provider_name = v.to_string();
+        }
+        if let Some(v) = data.get("provider_url").and_then(|v| v.as_str()) {
+            server.provider_url = v.to_string();
+        }
+        if let Some(v) = data.get("tags").cloned() {
+            if let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
+                server.tags = parsed;
+            }
         }
 
         save_mcp_config(workspace, &config)?;

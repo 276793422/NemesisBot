@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 
 use crate::episodic::{EpisodicStore, Episode, FileEpisodicStore};
 use crate::graph::{GraphEntity, GraphQueryResult, GraphStore, GraphTriple, InMemoryGraphStore};
@@ -19,23 +18,7 @@ use crate::local_store::TfIdfLocalStore;
 use crate::store::{LocalStore, MemoryStore};
 use crate::types::{Entry, MemoryType, SearchResult, ScoredEntry, VectorConfig};
 use crate::vector::{VectorStore, StoreConfig};
-
-// ---------------------------------------------------------------------------
-// Enhanced memory configuration (internal to nemesis-memory)
-// ---------------------------------------------------------------------------
-
-/// Enhanced memory configuration loaded from `config.enhanced_memory.json`.
-///
-/// This type is internal to nemesis-memory — not exposed outside this crate.
-///
-/// The only field is `enabled`: when `true`, the system attempts to load the
-/// ONNX plugin and initialize semantic search.  When `false` (e.g. after a
-/// previous init failure), the system falls back to basic keyword-only memory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EnhancedMemoryConfig {
-    #[serde(default)]
-    enabled: bool,
-}
+use crate::vector::embedding_config;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -133,8 +116,9 @@ impl MemoryManager {
 
     /// Create a `MemoryManager` with config-based enhanced memory auto-detection.
     ///
-    /// Reads `config.enhanced_memory.json` from `config_dir` for the `enabled`
-    /// flag, then tries to auto-detect and load the ONNX plugin.
+    /// Reads `config.enhanced_memory.json` from `config_dir` for the unified
+    /// configuration (enabled flag + model definitions), then tries to
+    /// auto-detect and load the ONNX plugin.
     ///
     /// Flow:
     /// - No config file → basic memory (no vector store)
@@ -147,90 +131,69 @@ impl MemoryManager {
         let mut cfg = Config::new(data_dir);
         cfg.vector.config_dir = Some(config_dir.to_string_lossy().to_string());
 
-        // 1. Load config.enhanced_memory.json
-        let em_config_path = config_dir.join("config.enhanced_memory.json");
-        let em_config = Self::load_enhanced_memory_config(&em_config_path);
+        // 1. Load unified embedding config (contains enabled + models)
+        let emb_config = embedding_config::load_embedding_config(config_dir);
 
         // 2. Create MemoryManager (basic memory always available)
         let mgr = Self::new(&cfg);
 
         // 3. Attempt vector store init only when config says enabled
-        if let Some(ref em) = em_config {
-            if !em.enabled {
-                tracing::info!(
-                    "[Memory] Enhanced memory disabled (config.enhanced_memory.json: enabled = false)"
+        if !emb_config.enabled {
+            tracing::info!(
+                "[Memory] Enhanced memory disabled (config.enhanced_memory.json: enabled = false)"
+            );
+            return mgr;
+        }
+
+        // Auto-detect plugin — it is always at {exe_dir}/plugins/plugin_onnx.dll
+        let plugin_path = match Self::detect_plugin_path() {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    "[Memory] Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
+                     Disabling enhanced memory."
                 );
+                Self::disable_enhanced_memory_config(config_dir, &emb_config);
                 return mgr;
             }
+        };
 
-            // Auto-detect plugin — it is always at {exe_dir}/plugins/plugin_onnx.dll
-            let plugin_path = match Self::detect_plugin_path() {
-                Some(p) => p,
-                None => {
-                    tracing::warn!(
-                        "[Memory] Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
-                         Disabling enhanced memory."
-                    );
-                    Self::disable_enhanced_memory_config(&em_config_path);
-                    return mgr;
-                }
-            };
+        cfg.vector.plugin_path = Some(plugin_path.clone());
 
-            cfg.vector.plugin_path = Some(plugin_path.clone());
+        let storage_path = data_dir.join("vector").join("vector_store.jsonl");
+        let store_config = StoreConfig {
+            embedding_tier: "plugin".into(),
+            plugin_path: Some(plugin_path),
+            config_dir: cfg.vector.config_dir.clone(),
+            max_results: 10,
+            similarity_threshold: 0.7,
+            storage_path: storage_path.to_string_lossy().to_string(),
+        };
 
-            let storage_path = data_dir.join("vector").join("vector_store.jsonl");
-            let store_config = StoreConfig {
-                embedding_tier: "plugin".into(),
-                plugin_path: Some(plugin_path),
-                config_dir: cfg.vector.config_dir.clone(),
-                max_results: 10,
-                similarity_threshold: 0.7,
-                storage_path: storage_path.to_string_lossy().to_string(),
-            };
-
-            match mgr.init_vector_store(Some(store_config)) {
-                Ok(()) => tracing::info!("[Memory] Vector store initialized"),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "[Memory] Vector store init failed, disabling enhanced memory"
-                    );
-                    Self::disable_enhanced_memory_config(&em_config_path);
-                }
+        match mgr.init_vector_store(Some(store_config)) {
+            Ok(()) => tracing::info!("[Memory] Vector store initialized"),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "[Memory] Vector store init failed, disabling enhanced memory"
+                );
+                Self::disable_enhanced_memory_config(config_dir, &emb_config);
             }
         }
 
         mgr
     }
 
-    /// Load enhanced memory config from disk.
-    ///
-    /// Returns `None` if the file doesn't exist or can't be parsed.
-    fn load_enhanced_memory_config(path: &Path) -> Option<EnhancedMemoryConfig> {
-        if !path.exists() {
-            return None;
-        }
-        match std::fs::read_to_string(path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(cfg) => Some(cfg),
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "[Memory] Failed to parse config.enhanced_memory.json"
-                    );
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    error = %e,
-                    "[Memory] Cannot read config.enhanced_memory.json"
-                );
-                None
-            }
-        }
+    /// Write `enabled: false` to config.enhanced_memory.json so the next
+    /// restart skips the vector store init attempt entirely.
+    /// Preserves the rest of the config (models, active tier).
+    fn disable_enhanced_memory_config(
+        config_dir: &Path,
+        emb_config: &embedding_config::EmbeddingConfig,
+    ) {
+        let mut disabled = emb_config.clone();
+        disabled.enabled = false;
+        embedding_config::save_embedding_config(&disabled, config_dir);
     }
 
     /// Auto-detect plugin DLL path next to the current executable.
@@ -243,26 +206,6 @@ impl MemoryManager {
             Some(plugin_dll.to_string_lossy().to_string())
         } else {
             None
-        }
-    }
-
-    /// Write `enabled: false` to config.enhanced_memory.json so the next
-    /// restart skips the vector store init attempt entirely.
-    fn disable_enhanced_memory_config(path: &Path) {
-        let config = serde_json::json!({ "enabled": false });
-        match serde_json::to_string_pretty(&config) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(path, json) {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "[Memory] Failed to write disabled config"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "[Memory] Failed to serialize disabled config");
-            }
         }
     }
 

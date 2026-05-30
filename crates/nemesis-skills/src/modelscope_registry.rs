@@ -23,74 +23,85 @@ pub struct ModelScopeRegistry {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "PascalCase")]
 struct SearchRequest {
-    PageSize: i64,
-    PageNumber: i64,
-    Query: String,
-    Sort: String,
-    Criterion: Vec<serde_json::Value>,
+    page_size: i64,
+    page_number: i64,
+    query: String,
+    sort: String,
+    criterion: Vec<serde_json::Value>,
     #[serde(rename = "WithTopCollection")]
     with_top_collection: bool,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct ApiResponse {
-    Code: i64,
-    Data: ApiData,
-    Message: String,
+    code: i64,
+    data: ApiData,
+    message: String,
     #[allow(dead_code)]
-    Success: bool,
+    success: bool,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct ApiData {
     #[serde(default)]
-    SkillList: Vec<ModelScopeSkill>,
+    skill_list: Vec<ModelScopeSkill>,
     #[serde(default)]
-    TotalCount: i64,
+    total_count: i64,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct ModelScopeSkill {
     #[serde(default)]
-    Name: String,
+    name: String,
     #[serde(default)]
-    DisplayName: String,
+    display_name: String,
     #[serde(default)]
-    Description: String,
+    description: String,
     #[serde(default)]
-    DescriptionEn: String,
+    description_en: String,
     #[serde(default)]
-    SourceURL: String,
+    source_url: String,
     #[serde(default)]
-    SourceDeveloper: String,
+    source_developer: String,
     #[serde(default)]
-    DownloadCount: i64,
+    download_count: i64,
     #[serde(default)]
-    Visits: i64,
+    #[allow(dead_code)]
+    visits: i64,
     #[serde(default)]
-    SourceStar: i64,
+    #[allow(dead_code)]
+    source_star: i64,
     #[serde(default)]
-    SourceForks: i64,
+    #[allow(dead_code)]
+    source_forks: i64,
     #[serde(default)]
-    Tags: Vec<String>,
+    #[allow(dead_code)]
+    tags: Vec<String>,
     #[serde(default)]
-    License: String,
+    #[allow(dead_code)]
+    license: String,
     #[serde(default)]
-    L1: Option<ModelScopeCategory>,
+    #[allow(dead_code)]
+    l1: Option<ModelScopeCategory>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct ModelScopeCategory {
     #[serde(default)]
     #[allow(dead_code)]
-    CatalogID: String,
+    catalog_id: String,
     #[serde(default)]
     #[allow(dead_code)]
-    ChineseName: String,
+    chinese_name: String,
     #[serde(default)]
     #[allow(dead_code)]
-    Name: String,
+    name: String,
 }
 
 impl ModelScopeRegistry {
@@ -112,11 +123,11 @@ impl ModelScopeRegistry {
 
     async fn api_search(&self, query: &str, page: i64, page_size: i64, sort: &str) -> Result<ApiResponse> {
         let body = SearchRequest {
-            PageSize: page_size,
-            PageNumber: page,
-            Query: query.to_string(),
-            Sort: sort.to_string(),
-            Criterion: vec![],
+            page_size,
+            page_number: page,
+            query: query.to_string(),
+            sort: sort.to_string(),
+            criterion: vec![],
             with_top_collection: false,
         };
         let resp = self.client
@@ -130,28 +141,28 @@ impl ModelScopeRegistry {
         }
         let api: ApiResponse = resp.json().await
             .map_err(|e| NemesisError::Other(format!("ModelScope parse error: {}", e)))?;
-        if api.Code != 200 {
-            return Err(NemesisError::Other(format!("ModelScope API error: {}", api.Message)));
+        if api.code != 200 {
+            return Err(NemesisError::Other(format!("ModelScope API error: {}", api.message)));
         }
         Ok(api)
     }
 
     fn convert_skill(s: &ModelScopeSkill) -> SkillSearchResult {
-        let summary = if s.Description.is_empty() {
-            s.DescriptionEn.clone()
+        let summary = if s.description.is_empty() {
+            s.description_en.clone()
         } else {
-            s.Description.clone()
+            s.description.clone()
         };
         SkillSearchResult {
             score: 0.5,
-            slug: s.Name.clone(),
-            display_name: s.DisplayName.clone(),
+            slug: s.name.clone(),
+            display_name: s.display_name.clone(),
             summary,
             version: "latest".to_string(),
             registry_name: "modelscope".to_string(),
-            source_repo: s.SourceDeveloper.clone(),
+            source_repo: s.source_developer.clone(),
             download_path: String::new(),
-            downloads: s.DownloadCount,
+            downloads: s.download_count,
             truncated: false,
         }
     }
@@ -180,29 +191,29 @@ impl ModelScopeRegistry {
     pub async fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
         let page_size = limit.min(50) as i64;
         let api = self.api_search(query, 1, page_size, "Default").await?;
-        Ok(api.Data.SkillList.iter().map(Self::convert_skill).collect())
+        Ok(api.data.skill_list.iter().map(Self::convert_skill).collect())
     }
 
     pub async fn get_skill_meta(&self, slug: &str) -> Result<SkillMeta> {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.Data.SkillList.into_iter().next()
+        let skill = api.data.skill_list.into_iter().next()
             .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found on ModelScope", slug)))?;
-        let summary = if skill.Description.is_empty() {
-            skill.DescriptionEn.clone()
+        let summary = if skill.description.is_empty() {
+            skill.description_en.clone()
         } else {
-            skill.Description.clone()
+            skill.description.clone()
         };
         Ok(SkillMeta {
-            slug: skill.Name.clone(),
-            display_name: skill.DisplayName.clone(),
+            slug: skill.name.clone(),
+            display_name: skill.display_name.clone(),
             summary,
             latest_version: "latest".to_string(),
             is_malware_blocked: false,
             is_suspicious: false,
             registry_name: "modelscope".to_string(),
-            author: skill.SourceDeveloper.clone(),
-            downloads: skill.DownloadCount,
+            author: skill.source_developer.clone(),
+            downloads: skill.download_count,
         })
     }
 
@@ -215,11 +226,11 @@ impl ModelScopeRegistry {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let meta = self.get_skill_meta(slug).await?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.Data.SkillList.into_iter().next()
+        let skill = api.data.skill_list.into_iter().next()
             .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found", slug)))?;
 
-        let raw_url = Self::source_url_to_raw(&skill.SourceURL)
-            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.SourceURL)))?;
+        let raw_url = Self::source_url_to_raw(&skill.source_url)
+            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url)))?;
 
         debug!("ModelScope download from: {}", raw_url);
 
@@ -248,11 +259,11 @@ impl ModelScopeRegistry {
     pub async fn get_skill_content(&self, slug: &str) -> Result<SkillContent> {
         validate_skill_identifier(slug).map_err(|e| NemesisError::Validation(e))?;
         let api = self.api_search(slug, 1, 1, "Default").await?;
-        let skill = api.Data.SkillList.into_iter().next()
+        let skill = api.data.skill_list.into_iter().next()
             .ok_or_else(|| NemesisError::NotFound(format!("skill '{}' not found", slug)))?;
 
-        let raw_url = Self::source_url_to_raw(&skill.SourceURL)
-            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.SourceURL)))?;
+        let raw_url = Self::source_url_to_raw(&skill.source_url)
+            .ok_or_else(|| NemesisError::Other(format!("cannot parse SourceURL: {}", skill.source_url)))?;
 
         let resp = self.client.get(&raw_url).send().await
             .map_err(|e| NemesisError::Other(format!("request failed: {}", e)))?;
@@ -278,8 +289,8 @@ impl ModelScopeRegistry {
             _ => "Default",
         };
         let api = self.api_search("", page, page_size, sort_str).await?;
-        let items: Vec<SkillSearchResult> = api.Data.SkillList.iter().map(Self::convert_skill).collect();
-        let has_more = (page * page_size) < api.Data.TotalCount;
+        let items: Vec<SkillSearchResult> = api.data.skill_list.iter().map(Self::convert_skill).collect();
+        let has_more = (page * page_size) < api.data.total_count;
         Ok(BrowseResult {
             items,
             next_cursor: if has_more { Some((page + 1).to_string()) } else { None },

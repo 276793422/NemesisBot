@@ -20,7 +20,7 @@ pub struct StoreConfig {
     pub embedding_tier: String,
     /// Plugin path.
     pub plugin_path: Option<String>,
-    /// Config directory containing embedding.toml.
+    /// Config directory containing config.enhanced_memory.json.
     #[serde(skip)]
     pub config_dir: Option<String>,
     /// Maximum results per query.
