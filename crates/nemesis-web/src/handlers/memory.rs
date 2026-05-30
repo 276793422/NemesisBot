@@ -54,7 +54,7 @@ impl ModuleHandler for MemoryHandler {
             "config.get" => self.config_get(&config_dir, home),
             "config.set" => {
                 let data = data.ok_or("missing data")?;
-                self.config_set(&config_dir, home, &data)
+                self.config_set(&config_dir, home, &data, ctx)
             }
 
             // --- Enhanced memory: statistics & entries ---
@@ -388,13 +388,18 @@ impl MemoryHandler {
         })))
     }
 
-    fn config_set(&self, config_dir: &PathBuf, home: &str, data: &serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+    fn config_set(&self, config_dir: &PathBuf, home: &str, data: &serde_json::Value, ctx: &crate::ws_router::RequestContext) -> Result<Option<serde_json::Value>, String> {
         // Main switch
         if let Some(enabled) = data.get("main_enabled").and_then(|v| v.as_bool()) {
             set_main_switch(home, enabled)?;
+            if !enabled {
+                if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+                    mgr.set_vector_enabled(false);
+                }
+            }
         }
 
-        // Sub switch (write via unified config)
+        // Sub switch (write via unified config + runtime control)
         if let Some(enabled) = data.get("sub_enabled").and_then(|v| v.as_bool()) {
             if enabled {
                 // Check model files before enabling
@@ -416,6 +421,20 @@ impl MemoryHandler {
             let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
             emb_cfg.enabled = enabled;
             nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+            // Runtime control
+            if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+                if enabled {
+                    if let Err(e) = mgr.init_vector_store_from_config(config_dir) {
+                        // Init failed → rollback config
+                        let mut emb_cfg = nemesis_memory::vector::embedding_config::load_embedding_config(config_dir);
+                        emb_cfg.enabled = false;
+                        nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
+                        return Err(format!("向量存储初始化失败: {}", e));
+                    }
+                } else {
+                    mgr.set_vector_enabled(false);
+                }
+            }
         }
 
         // Active tier

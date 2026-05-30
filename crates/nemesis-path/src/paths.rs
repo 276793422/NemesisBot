@@ -147,6 +147,13 @@ impl PathManager {
         self.home_dir.read().join("workspace").join("logs").join("security_logs")
     }
 
+    /// Get the sessions log directory.
+    /// Chat history JSONL files are stored here, separate from session files
+    /// used for LLM context recovery.
+    pub fn sessions_log_dir(&self) -> PathBuf {
+        self.workspace().join("logs").join("session_logs")
+    }
+
     /// Get the temp directory.
     pub fn temp_dir(&self) -> PathBuf {
         self.home_dir.read().join("workspace").join("temp")

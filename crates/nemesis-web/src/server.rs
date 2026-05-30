@@ -120,6 +120,8 @@ pub struct WebServer {
     agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
     /// Data store for usage statistics queries.
     data_store: Option<Arc<nemesis_data::DataStore>>,
+    /// Memory manager for runtime vector store control.
+    memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
 }
 
 impl WebServer {
@@ -144,6 +146,7 @@ impl WebServer {
             streaming_provider: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
         }
     }
 
@@ -179,6 +182,11 @@ impl WebServer {
         self.data_store = Some(store);
     }
 
+    /// Set the memory manager for runtime vector store control.
+    pub fn set_memory_manager(&mut self, mgr: Arc<nemesis_memory::manager::MemoryManager>) {
+        self.memory_manager = Some(mgr);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -205,6 +213,7 @@ impl WebServer {
             },
             agent_service: self.agent_service.clone(),
             data_store: self.data_store.clone(),
+            memory_manager: self.memory_manager.clone(),
         };
 
         let state = Arc::new(state);

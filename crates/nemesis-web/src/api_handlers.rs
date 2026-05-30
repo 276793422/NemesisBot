@@ -69,6 +69,8 @@ pub struct AppState {
     pub agent_service: Option<Arc<dyn AgentLoopService>>,
     /// Data store for usage statistics queries.
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
+    /// Memory manager for runtime vector store control.
+    pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
 }
 
 impl AppState {

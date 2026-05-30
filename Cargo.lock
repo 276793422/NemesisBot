@@ -3074,6 +3074,7 @@ dependencies = [
  "nemesis-mcp",
  "nemesis-memory",
  "nemesis-observer",
+ "nemesis-path",
  "nemesis-routing",
  "nemesis-security",
  "nemesis-skills",

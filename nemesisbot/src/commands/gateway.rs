@@ -1162,6 +1162,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     let mcp_enabled = cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false);
 
+    let mut memory_manager_for_web: Option<std::sync::Arc<nemesis_memory::manager::MemoryManager>> = None;
+
     let shared_config = nemesis_agent::SharedToolConfig {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         cron_service: Some(cron_service.clone()),
@@ -1176,6 +1178,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     )
                 );
                 info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
+                memory_manager_for_web = Some(mgr.clone());
                 Some(std::sync::Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
             } else {
                 info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
@@ -2003,6 +2006,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     if let Some(ref ds) = data_store {
         web_server.set_data_store(ds.clone());
         info!("[Gateway] DataStore injected into web server");
+    }
+
+    // Inject MemoryManager into web server for runtime vector store control
+    if let Some(mgr) = memory_manager_for_web {
+        web_server.set_memory_manager(mgr);
+        info!("[Gateway] MemoryManager injected into web server");
     }
 
     // Step 11: Create HealthServer

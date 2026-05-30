@@ -1448,39 +1448,10 @@ impl AgentLoop {
             .unwrap_or_else(|| "main".to_string());
         let session_key = build_agent_main_session_key(&agent_id);
 
-        // Read history from session store.
-        let all_msgs: Vec<serde_json::Value> = self
-            .session_store
-            .as_ref()
-            .map(|s| {
-                s.get_history(&session_key)
-                    .into_iter()
-                    .filter(|m| m.role == "user" || m.role == "assistant")
-                    .map(|m| {
-                        serde_json::json!({
-                            "role": m.role,
-                            "content": m.content,
-                            "timestamp": m.timestamp,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let total_count = all_msgs.len();
-        let end = req
-            .before_index
-            .map(|bi| bi.min(total_count))
-            .unwrap_or(total_count);
-        let start = end.saturating_sub(limit);
-        let has_more = start > 0;
-        let oldest_index = start;
-
-        let page: Vec<serde_json::Value> = if start < end {
-            all_msgs[start..end].to_vec()
-        } else {
-            Vec::new()
-        };
+        // Read history from chat log (separate from session store).
+        let (page, total_count, has_more, oldest_index) = crate::chat_log::read_chat_log(
+            &session_key, limit, req.before_index,
+        );
 
         self.publish_history_response(
             &msg.chat_id,
@@ -2017,6 +1988,14 @@ impl AgentLoop {
         // Session file only stores user + final assistant (conversation log).
         // Instance history (in-memory) keeps all messages for LLM context.
         // These are intentionally separate, matching Go's architecture.
+
+        // Extract final response once (shared by session store, chat log, and observer).
+        let final_response = events.iter().rev()
+            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) }
+                          else if let AgentEvent::Error(msg) = e { Some(msg.clone()) }
+                          else { None })
+            .unwrap_or_default();
+
         if let Some(ref store) = self.session_store {
             // Ensure session exists in store.
             store.get_or_create(session_key);
@@ -2025,11 +2004,6 @@ impl AgentLoop {
             store.add_message(session_key, "user", user_message);
 
             // Add final assistant response.
-            let final_response = events.iter().rev()
-                .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) }
-                              else if let AgentEvent::Error(msg) = e { Some(msg.clone()) }
-                              else { None })
-                .unwrap_or_default();
             store.add_message(session_key, "assistant", &final_response);
 
             // Save summary if available.
@@ -2043,12 +2017,13 @@ impl AgentLoop {
             }
         }
 
+        // Append to chat log (independent of session store).
+        crate::chat_log::append_chat_log(session_key, "user", user_message);
+        crate::chat_log::append_chat_log(session_key, "assistant", &final_response);
+
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
         let rounds = events.iter().filter(|e| matches!(e, AgentEvent::ToolCall(_))).count() as u32 + 1;
-        let final_response = events.iter().rev()
-            .find_map(|e| if let AgentEvent::Done(msg) = e { Some(msg.clone()) } else if let AgentEvent::Error(msg) = e { Some(msg.clone()) } else { None })
-            .unwrap_or_default();
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id: trace_id.clone(),
             session_key: session_key.to_string(),

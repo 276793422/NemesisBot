@@ -274,7 +274,13 @@ function saveConfigDebounced() {
         similarity_threshold: similarityThreshold.value,
         max_results: maxResults.value,
       })
-    } catch { /* silent */ }
+      // Show restart hint when enabling enhanced memory
+      if (subEnabled.value) {
+        toast.warn('配置已保存，需要重启 Bot 后强化记忆功能才能生效')
+      }
+    } catch (e: any) {
+      toast.error('保存失败: ' + (e?.message || e))
+    }
   }, 500)
 }
 

@@ -62,6 +62,10 @@ pub struct MemoryManager {
     graph: Arc<dyn GraphStore>,
     /// Optional vector store for semantic search.
     vector_store: RwLock<Option<Arc<VectorStore>>>,
+    /// Whether vector search is active (may differ from vector_store being Some).
+    /// When false, search/store skip the vector store even if it is initialized.
+    /// This allows disabling at runtime without dropping the ONNX plugin.
+    vector_enabled: RwLock<bool>,
     /// Whether the memory system is active.
     enabled: RwLock<bool>,
     /// Root data directory (used for vector store paths).
@@ -85,6 +89,7 @@ impl MemoryManager {
             episodic: Arc::new(FileEpisodicStore::new(episodic_dir)),
             graph: Arc::new(graph),
             vector_store: RwLock::new(None),
+            vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
         }
@@ -109,6 +114,7 @@ impl MemoryManager {
             episodic: Arc::new(FileEpisodicStore::new(episodic_dir)),
             graph: Arc::new(graph),
             vector_store: RwLock::new(None),
+            vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
         })
@@ -171,7 +177,10 @@ impl MemoryManager {
         };
 
         match mgr.init_vector_store(Some(store_config)) {
-            Ok(()) => tracing::info!("[Memory] Vector store initialized"),
+            Ok(()) => {
+                *mgr.vector_enabled.write() = true;
+                tracing::info!("[Memory] Vector store initialized");
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -199,7 +208,7 @@ impl MemoryManager {
     /// Auto-detect plugin DLL path next to the current executable.
     ///
     /// Checks `{exe_dir}/plugins/plugin_onnx.dll`.
-    fn detect_plugin_path() -> Option<String> {
+    pub fn detect_plugin_path() -> Option<String> {
         let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
         let plugin_dll = exe_dir.join("plugins").join("plugin_onnx.dll");
         if plugin_dll.exists() {
@@ -207,6 +216,48 @@ impl MemoryManager {
         } else {
             None
         }
+    }
+
+    /// Enable or disable vector search at runtime without dropping the store.
+    ///
+    /// When disabled, `search()` and `store_entry_to_vector()` skip the vector
+    /// store entirely. The ONNX plugin stays alive in memory for instant re-enable.
+    pub fn set_vector_enabled(&self, enabled: bool) {
+        *self.vector_enabled.write() = enabled;
+        tracing::info!("[Memory] Vector search {}", if enabled { "enabled" } else { "disabled" });
+    }
+
+    /// Initialize the vector store at runtime (e.g. from a Dashboard toggle).
+    ///
+    /// If the vector store is already initialized, just enables it.
+    /// Otherwise creates a new one from the current config.
+    /// Returns `Err` if the plugin DLL or model files are missing.
+    pub fn init_vector_store_from_config(&self, config_dir: &Path) -> Result<(), String> {
+        // Already initialized → just enable
+        if self.vector_store.read().is_some() {
+            *self.vector_enabled.write() = true;
+            tracing::info!("[Memory] Vector store already initialized, enabled");
+            return Ok(());
+        }
+
+        // Detect plugin
+        let plugin_path = Self::detect_plugin_path()
+            .ok_or("plugin_onnx.dll not found")?;
+
+        let storage_path = self.data_dir.join("vector").join("vector_store.jsonl");
+        let store_config = StoreConfig {
+            embedding_tier: "plugin".into(),
+            plugin_path: Some(plugin_path),
+            config_dir: Some(config_dir.to_string_lossy().to_string()),
+            max_results: 10,
+            similarity_threshold: 0.7,
+            storage_path: storage_path.to_string_lossy().to_string(),
+        };
+
+        self.init_vector_store(Some(store_config))?;
+        *self.vector_enabled.write() = true;
+        tracing::info!("[Memory] Vector store created and enabled at runtime");
+        Ok(())
     }
 
     /// Build a `MemoryManager` with custom store implementations (for testing).
@@ -220,6 +271,7 @@ impl MemoryManager {
             episodic,
             graph,
             vector_store: RwLock::new(None),
+            vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: PathBuf::new(),
         }
@@ -356,6 +408,9 @@ impl MemoryManager {
     /// Helper: store an entry in the vector store if it is initialized.
     /// Also persists to disk so data survives restarts.
     fn store_entry_to_vector(&self, entry: &Entry, id: &str) {
+        if !*self.vector_enabled.read() {
+            return;
+        }
         let vs_guard = self.vector_store.read();
         if let Some(ref vs) = *vs_guard {
             let ve = crate::vector::VectorEntry {
@@ -395,7 +450,7 @@ impl MemoryManager {
         }
 
         // Try vector store first for semantic search (adapter pattern)
-        {
+        if *self.vector_enabled.read() {
             let vs_guard = self.vector_store.read();
             if let Some(ref vs) = *vs_guard {
                 let type_filter: Vec<String> = memory_type
