@@ -47,6 +47,7 @@ rand = { workspace = true }
 # WebSocket support for Discord and Slack channels
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
+http = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

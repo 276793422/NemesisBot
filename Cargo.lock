@@ -3132,6 +3132,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "http",
  "nemesis-types",
  "parking_lot",
  "rand 0.8.6",

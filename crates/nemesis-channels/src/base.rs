@@ -122,6 +122,19 @@ impl fmt::Debug for BaseChannel {
     }
 }
 
+impl Clone for BaseChannel {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            enabled: parking_lot::RwLock::new(*self.enabled.read()),
+            running: parking_lot::RwLock::new(*self.running.read()),
+            stats: Arc::clone(&self.stats),
+            allow_list: self.allow_list.clone(),
+            sync_targets: parking_lot::RwLock::new(self.sync_targets.read().clone()),
+        }
+    }
+}
+
 /// Splits a compound sender ID (e.g. `"123456|username"`) into its ID and username parts.
 ///
 /// Returns `(id_part, user_part)`. If there is no `|` separator, `user_part` is empty.
@@ -272,18 +285,20 @@ impl BaseChannel {
     /// For the `"web"` target, uses `"web:broadcast"` as the chat ID.
     /// Each send has a 3-second timeout to avoid blocking.
     pub async fn sync_to_targets(&self, content: &str) {
-        let targets = self.sync_targets.read();
-        if targets.is_empty() {
-            return;
-        }
-
-        // Clone the entries to avoid holding the lock across await points.
-        let entries: Vec<(String, Arc<dyn Channel>)> = targets
-            .iter()
-            .filter(|(target_name, _)| *target_name != &self.name)
-            .map(|(k, v)| (k.clone(), Arc::clone(v)))
-            .collect();
-        drop(targets);
+        // Collect targets into a Vec within a block scope so the RwLockReadGuard
+        // is dropped before any .await. parking_lot::RwLockReadGuard is !Send,
+        // which would make the future !Send if held across an await point.
+        let entries: Vec<(String, Arc<dyn Channel>)> = {
+            let targets = self.sync_targets.read();
+            if targets.is_empty() {
+                return;
+            }
+            targets
+                .iter()
+                .filter(|(target_name, _)| *target_name != &self.name)
+                .map(|(k, v)| (k.clone(), Arc::clone(v)))
+                .collect()
+        };
 
         debug!(
             channel = %self.name,

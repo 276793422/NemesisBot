@@ -608,10 +608,18 @@ fn parse_host_port(addr: &str) -> (String, u16) {
 fn count_enabled_channels(cfg: &nemesis_config::Config) -> usize {
     let mut count = 0;
     if cfg.channels.web.enabled { count += 1; }
+    if cfg.channels.websocket.enabled { count += 1; }
     if cfg.channels.telegram.enabled { count += 1; }
     if cfg.channels.discord.enabled { count += 1; }
     if cfg.channels.feishu.enabled { count += 1; }
     if cfg.channels.slack.enabled { count += 1; }
+    if cfg.channels.external.enabled { count += 1; }
+    if cfg.channels.whatsapp.enabled { count += 1; }
+    if cfg.channels.dingtalk.enabled { count += 1; }
+    if cfg.channels.qq.enabled { count += 1; }
+    if cfg.channels.line.enabled { count += 1; }
+    if cfg.channels.onebot.enabled { count += 1; }
+    if cfg.channels.maixcam.enabled { count += 1; }
     count
 }
 
@@ -1674,6 +1682,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Build list of enabled channels from config.
         let mut enabled_channels = Vec::new();
         if cfg.channels.web.enabled { enabled_channels.push("web".to_string()); }
+        if cfg.channels.websocket.enabled { enabled_channels.push("websocket".to_string()); }
         if cfg.channels.telegram.enabled { enabled_channels.push("telegram".to_string()); }
         if cfg.channels.discord.enabled { enabled_channels.push("discord".to_string()); }
         if cfg.channels.feishu.enabled { enabled_channels.push("feishu".to_string()); }
@@ -1734,8 +1743,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             } else {
                 None
             },
-            websocket_heartbeat_secs: if cfg.channels.web.heartbeat_interval > 0 {
-                Some(cfg.channels.web.heartbeat_interval as u64)
+            websocket: if cfg.channels.websocket.enabled {
+                Some(nemesis_channels::websocket::WebSocketChannelConfig {
+                    host: cfg.channels.websocket.host.clone(),
+                    port: cfg.channels.websocket.port as u16,
+                    path: cfg.channels.websocket.path.clone(),
+                    auth_token: cfg.channels.websocket.auth_token.clone(),
+                    allow_from: cfg.channels.websocket.allow_from.clone(),
+                    sync_to: cfg.channels.websocket.sync_to.clone(),
+                })
             } else {
                 None
             },
@@ -1749,6 +1765,35 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let bus_inbound_sender = bus.inbound_sender();
         if let Err(e) = channel_manager.init_channels(&init_config, bus_inbound_sender).await {
             warn!("[Gateway] ChannelManager init_channels note: {} (non-fatal)", e);
+        }
+
+        // Setup sync targets — reads each channel's sync_to config and calls add_sync_target().
+        // Mirrors Go's manager.go: m.setupSyncTargets() called after initChannels().
+        {
+            let mut sync_map = std::collections::HashMap::new();
+            // Collect sync_to from all channel configs that are enabled
+            macro_rules! add_sync {
+                ($cfg:expr, $name:expr) => {
+                    if $cfg.enabled && !$cfg.sync_to.is_empty() {
+                        sync_map.insert($name.to_string(), $cfg.sync_to.clone());
+                    }
+                };
+            }
+            add_sync!(cfg.channels.websocket, "websocket");
+            add_sync!(cfg.channels.external, "external");
+            add_sync!(cfg.channels.web, "web");
+            add_sync!(cfg.channels.telegram, "telegram");
+            add_sync!(cfg.channels.discord, "discord");
+            add_sync!(cfg.channels.feishu, "feishu");
+            add_sync!(cfg.channels.dingtalk, "dingtalk");
+            add_sync!(cfg.channels.slack, "slack");
+            add_sync!(cfg.channels.whatsapp, "whatsapp");
+            add_sync!(cfg.channels.qq, "qq");
+            add_sync!(cfg.channels.line, "line");
+            add_sync!(cfg.channels.maixcam, "maixcam");
+            add_sync!(cfg.channels.onebot, "onebot");
+            let sync_config = nemesis_channels::manager::ChannelSyncConfig { targets: sync_map };
+            channel_manager.setup_sync_targets(&sync_config).await;
         }
 
         // Bridge: bus outbound broadcast → ChannelManager mpsc.

@@ -359,9 +359,9 @@ impl ChannelManager {
 
     /// Configure sync targets from a `ChannelSyncConfig`.
     ///
-    /// Reads the config and populates `sync_targets` for each source channel
-    /// that has configured target channels. Self-sync (source == target) and
-    /// references to non-existent channels are logged as warnings and skipped.
+    /// Reads the config, validates source/target channels, and calls
+    /// `source_channel.add_sync_target(target_name, target_channel)` on each
+    /// valid pair to establish the sync relationship at the channel level.
     /// Mirrors Go's `setupSyncTargets()`.
     pub async fn setup_sync_targets(&self, config: &ChannelSyncConfig) {
         info!("[ChannelManager] setting up sync targets");
@@ -371,10 +371,13 @@ impl ChannelManager {
 
         for (source_name, target_names) in &config.targets {
             // Skip if the source channel is not registered
-            if !channels.contains_key(source_name) {
-                warn!(source = %source_name, "[ChannelManager] sync source channel not registered, skipping");
-                continue;
-            }
+            let source_ch = match channels.get(source_name) {
+                Some(ch) => Arc::clone(ch),
+                None => {
+                    warn!(source = %source_name, "[ChannelManager] sync source channel not registered, skipping");
+                    continue;
+                }
+            };
 
             let mut valid_targets = Vec::new();
             for target_name in target_names {
@@ -384,9 +387,18 @@ impl ChannelManager {
                     continue;
                 }
 
-                // Check target exists
-                if !channels.contains_key(target_name) {
-                    warn!(source = %source_name, target = %target_name, "[ChannelManager] sync target not found, skipping");
+                // Check target exists and get reference
+                let target_ch = match channels.get(target_name) {
+                    Some(ch) => Arc::clone(ch),
+                    None => {
+                        warn!(source = %source_name, target = %target_name, "[ChannelManager] sync target not found, skipping");
+                        continue;
+                    }
+                };
+
+                // Establish sync relationship on the source channel (matches Go's AddSyncTarget)
+                if let Err(e) = source_ch.add_sync_target(target_name, target_ch) {
+                    warn!(source = %source_name, target = %target_name, error = %e, "[ChannelManager] failed to add sync target");
                     continue;
                 }
 
@@ -531,8 +543,8 @@ pub struct ChannelInitConfig {
     pub maixcam: Option<crate::maixcam::MaixCamConfig>,
     /// Web channel configuration.
     pub web: Option<crate::web::WebChannelConfig>,
-    /// WebSocket channel configuration (heartbeat interval in seconds).
-    pub websocket_heartbeat_secs: Option<u64>,
+    /// WebSocket channel configuration.
+    pub websocket: Option<crate::websocket::WebSocketChannelConfig>,
 }
 
 impl ChannelManager {
@@ -850,10 +862,11 @@ impl ChannelManager {
 
         // WebSocket
         {
-            if let Some(heartbeat_secs) = config.websocket_heartbeat_secs {
+            if let Some(ref cfg) = config.websocket {
                 info!("[ChannelManager] attempting to initialize WebSocket channel");
-                let ch = crate::websocket::WebSocketChannel::with_heartbeat(
-                    std::time::Duration::from_secs(heartbeat_secs),
+                let ch = crate::websocket::WebSocketChannel::new(
+                    cfg.clone(),
+                    bus_sender.clone(),
                 );
                 self.register_or_replace(Arc::new(ch)).await;
                 info!("[ChannelManager] WebSocket channel enabled successfully");

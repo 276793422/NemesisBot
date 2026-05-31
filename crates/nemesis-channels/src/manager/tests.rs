@@ -1148,7 +1148,11 @@ async fn test_init_channels_with_websocket() {
     let (tx, _) = broadcast::channel::<InboundMessage>(256);
 
     let mut config = ChannelInitConfig::default();
-    config.websocket_heartbeat_secs = Some(30);
+    config.websocket = Some(crate::websocket::WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        ..Default::default()
+    });
 
     mgr.init_channels(&config, tx).await.unwrap();
     assert!(mgr.get("websocket").await.is_some());
@@ -1172,7 +1176,11 @@ async fn test_init_channels_web_and_websocket() {
 
     let mut config = ChannelInitConfig::default();
     config.web = Some(crate::web::WebChannelConfig::default());
-    config.websocket_heartbeat_secs = Some(60);
+    config.websocket = Some(crate::websocket::WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        ..Default::default()
+    });
 
     mgr.init_channels(&config, tx).await.unwrap();
     assert!(mgr.get("web").await.is_some());
