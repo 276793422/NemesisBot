@@ -1,10 +1,13 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Switch to project root (parent of scripts/)
+cd /d "%~dp0\.."
+
 REM ============================================
 REM NemesisBot Rust Android Cross-Compile Script
 REM ============================================
-REM Usage: build-android.bat [options]
+REM Usage: scripts/build-android.bat [options]
 REM   No arguments    - Build release for arm64-v8a
 REM   --clean         - Clean before building
 REM   --skip-plugin   - Skip plugin .so build
@@ -19,7 +22,7 @@ REM   - cargo-ndk installed: cargo install cargo-ndk
 REM   - Rust Android target: rustup target add aarch64-linux-android
 REM
 REM Output layout:
-REM   bin_android\
+REM   bin\bin_android\
 REM     arm64-v8a\
 REM       nemesisbot
 REM       plugins\
@@ -75,7 +78,7 @@ exit /b 1
 echo Usage: build-android.bat [options]
 echo.
 echo Options:
-echo   --clean         Clean target_android before building
+echo   --clean         Clean target\target_android before building
 echo   --skip-plugin   Skip plugin .so build
 echo   --target arch   Target architecture (default: arm64-v8a)
 echo                   Supported: arm64-v8a, armeabi-v7a, x86_64, x86
@@ -124,8 +127,8 @@ echo  Git Commit:  %GIT_COMMIT%
 echo  Rustc:       %RUSTC_VERSION%
 echo  Target:      %TARGET_ARCH% ^(%RUST_TARGET%^)
 echo  API Level:   %API_LEVEL%
-echo  Target Dir:  target_android
-echo  Output Dir:  bin_android\%TARGET_ARCH%
+echo  Target Dir:  target\target_android
+echo  Output Dir:  bin\bin_android\%TARGET_ARCH%
 echo ============================================
 echo.
 
@@ -166,16 +169,16 @@ echo.
 REM ============================================
 REM Set environment for Android build
 REM ============================================
-set CARGO_TARGET_DIR=target_android
+set CARGO_TARGET_DIR=target\target_android
 set CARGO_NDK_PLATFORM=%API_LEVEL%
 
 REM ============================================
 REM Step 1: Clean (optional)
 REM ============================================
 if "%CLEAN%"=="1" (
-    echo [Step 1/4] Cleaning target_android...
-    if exist "target_android" (
-        rmdir /s /q "target_android" 2>nul
+    echo [Step 1/4] Cleaning target\target_android...
+    if exist "target\target_android" (
+        rmdir /s /q "target\target_android" 2>nul
         echo   OK Cleaned
     ) else (
         echo   OK Nothing to clean
@@ -252,11 +255,11 @@ echo   OK Build completed
 echo.
 
 REM ============================================
-REM Step 4: Copy to bin_android\
+REM Step 4: Copy to bin\bin_android\
 REM ============================================
-echo [Step 4/4] Copying to bin_android\%TARGET_ARCH%\...
+echo [Step 4/4] Copying to bin\bin_android\%TARGET_ARCH%\...
 
-set BIN_DIR=bin_android\%TARGET_ARCH%
+set BIN_DIR=bin\bin_android\%TARGET_ARCH%
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
 if not exist "%BIN_DIR%\plugins" mkdir "%BIN_DIR%\plugins"
 if not exist "%BIN_DIR%\tests" mkdir "%BIN_DIR%\tests"
@@ -264,7 +267,7 @@ if not exist "%BIN_DIR%\tests" mkdir "%BIN_DIR%\tests"
 set COPIED=0
 
 REM Copy main binary
-set RELEASE_DIR=target_android\%RUST_TARGET%\release
+set RELEASE_DIR=target\target_android\%RUST_TARGET%\release
 if exist "%RELEASE_DIR%\nemesisbot" (
     copy /y "%RELEASE_DIR%\nemesisbot" "%BIN_DIR%\" >nul 2>&1
     set /a COPIED+=1

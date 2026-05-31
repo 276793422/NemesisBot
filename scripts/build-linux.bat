@@ -1,0 +1,1 @@
+cmd /c wsl bash -lic "./scripts/build-linux.sh"

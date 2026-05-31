@@ -17,6 +17,10 @@
 
 set -euo pipefail
 
+# Switch to project root (parent of scripts/)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # ============================================
 # Colors
 # ============================================
@@ -362,7 +366,7 @@ if [ "$VERIFY_OK" = true ]; then
     echo -e " ${GREEN}All dependencies satisfied!${NC}"
     echo ""
     echo " You can now build NemesisBot:"
-    echo "   ./build.sh"
+    echo "   scripts/build-linux.sh"
 else
     echo -e " ${RED}Some dependencies are missing:${NC}"
     for issue in "${VERIFY_ISSUES[@]}"; do

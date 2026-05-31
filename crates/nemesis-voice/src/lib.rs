@@ -60,5 +60,6 @@ pub use vad::{SpeechSegment, VadEngine};
 #[cfg(target_os = "windows")]
 pub use voice_detect::{RmsVoiceDetector, SileroVoiceDetector, VoiceDetector, create_detector};
 
-// --- Progress (cross-platform) ---
+// --- Progress (Windows only) ---
+#[cfg(target_os = "windows")]
 pub use model::set_progress;

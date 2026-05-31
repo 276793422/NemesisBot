@@ -5,15 +5,22 @@
 //!           tts, stt_start, stt_stop, speakers, devices,
 //!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
+#[cfg(target_os = "windows")]
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
+#[cfg(target_os = "windows")]
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
 use std::sync::Arc;
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
+#[cfg(target_os = "windows")]
 use tokio::sync::Mutex;
+#[cfg(target_os = "windows")]
 use tokio_util::sync::CancellationToken;
 
 // Kokoro multi-lang v1.1 speaker list (Chinese speakers)
+#[cfg(target_os = "windows")]
 const KOKORO_SPEAKERS: &[(&str, &str, u32)] = &[
     ("zf_xiaobei", "女声", 45),
     ("zf_xiaoni", "女声", 41),
@@ -25,12 +32,17 @@ const KOKORO_SPEAKERS: &[(&str, &str, u32)] = &[
     ("zm_yunjian", "男声", 40),
 ];
 
+#[cfg(target_os = "windows")]
 const VOICE_CONFIG_FILENAME: &str = "config.voice.json";
+#[cfg(target_os = "windows")]
 const CHAT_CONFIG_FILENAME: &str = "config.chat.json";
+#[cfg(target_os = "windows")]
 const DEFAULT_VOICE_CONFIG: &str = include_str!("../../../../nemesisbot/config/config.voice.default.json");
+#[cfg(target_os = "windows")]
 const DEFAULT_CHAT_CONFIG: &str = include_str!("../../../../nemesisbot/config/config.chat.default.json");
 
 // Global setup cancellation token
+#[cfg(target_os = "windows")]
 fn setup_cancel() -> &'static std::sync::Mutex<Option<CancellationToken>> {
     static INSTANCE: OnceLock<std::sync::Mutex<Option<CancellationToken>>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
@@ -38,11 +50,13 @@ fn setup_cancel() -> &'static std::sync::Mutex<Option<CancellationToken>> {
 
 // Per-model install lock — prevents concurrent downloads of the same model.
 // Simple HashSet: insert on start, remove on finish. No nesting, no deadlock.
+#[cfg(target_os = "windows")]
 fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static INSTANCE: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
+#[cfg(target_os = "windows")]
 fn model_label(model: &str) -> &str {
     match model {
         "stt" => "STT",
@@ -55,33 +69,41 @@ fn model_label(model: &str) -> &str {
 }
 
 // Global STT session (only one active dictation at a time)
+#[cfg(target_os = "windows")]
 fn stt_state() -> &'static Arc<Mutex<Option<SttSession>>> {
     static INSTANCE: OnceLock<Arc<Mutex<Option<SttSession>>>> = OnceLock::new();
-    INSTANCE.get_or_init(|| Arc::new(Mutex::new(Option::None)))
+    INSTANCE.get_or_init(|| Arc::new(Mutex::new(Option::None))
+)
 }
 
+#[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
 struct SttSession {
     cancel: CancellationToken,
     dialogue_output: Option<Arc<DialogueSttOutput>>,
 }
 
 // Global dialogue state for reset command
+#[cfg(target_os = "windows")]
 fn dialogue_state() -> &'static Arc<Mutex<Option<Arc<DialogueSttOutput>>>> {
     static INSTANCE: OnceLock<Arc<Mutex<Option<Arc<DialogueSttOutput>>>>> = OnceLock::new();
     INSTANCE.get_or_init(|| Arc::new(Mutex::new(None)))
 }
 
 // Global TTS playback manager
+#[cfg(target_os = "windows")]
 fn tts_playback_state() -> &'static Arc<Mutex<Option<TtsPlaybackManager>>> {
     static INSTANCE: OnceLock<Arc<Mutex<Option<TtsPlaybackManager>>>> = OnceLock::new();
     INSTANCE.get_or_init(|| Arc::new(Mutex::new(None)))
 }
 
+#[cfg(target_os = "windows")]
 struct TtsPlaybackManager {
     tx: std::sync::mpsc::Sender<TtsPlaybackItem>,
     cancel: CancellationToken,
 }
 
+#[cfg(target_os = "windows")]
 struct TtsPlaybackItem {
     text: String,
     speaker_id: u32,
@@ -117,21 +139,25 @@ fn speaker_manager_state() -> &'static std::sync::Mutex<Option<nemesis_voice::Sp
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+#[cfg(target_os = "windows")]
 fn speaker_enabled_state() -> &'static std::sync::Mutex<bool> {
     static INSTANCE: OnceLock<std::sync::Mutex<bool>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(false))
 }
 
+#[cfg(target_os = "windows")]
 fn speaker_threshold_state() -> &'static std::sync::Mutex<f32> {
     static INSTANCE: OnceLock<std::sync::Mutex<f32>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(0.65))
 }
 
+#[cfg(target_os = "windows")]
 fn speaker_register_state() -> &'static std::sync::Mutex<Option<SpeakerRegistration>> {
     static INSTANCE: OnceLock<std::sync::Mutex<Option<SpeakerRegistration>>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+#[cfg(target_os = "windows")]
 struct SpeakerRegistration {
     name: String,
     samples: std::sync::Mutex<Vec<f32>>,
@@ -140,17 +166,21 @@ struct SpeakerRegistration {
     cancel: CancellationToken,
 }
 
+#[cfg(target_os = "windows")]
 struct SpeakerTestSession {
     cancel: CancellationToken,
     auto_loaded_stt: bool,
 }
 
+#[cfg(target_os = "windows")]
 fn speaker_test_state() -> &'static tokio::sync::Mutex<Option<SpeakerTestSession>> {
     static INSTANCE: OnceLock<tokio::sync::Mutex<Option<SpeakerTestSession>>> = OnceLock::new();
     INSTANCE.get_or_init(|| tokio::sync::Mutex::new(None))
 }
 
+#[cfg(target_os = "windows")]
 const VOICEPRINT_CONFIG_FILENAME: &str = "config.voice.print.json";
+#[cfg(target_os = "windows")]
 const DEFAULT_SPEAKER_THRESHOLD: f32 = 0.65;
 
 // ---------------------------------------------------------------------------
@@ -502,6 +532,7 @@ fn write_voiceprint_config(config_dir: &std::path::Path, data: &serde_json::Valu
 
 /// Push speaker verification rejected notification to frontend.
 /// Used by ChatPanel to display "⚠ 声纹验证未通过" warning.
+#[cfg(target_os = "windows")]
 #[allow(dead_code)]
 fn push_speaker_rejected(session_id: &str, session_mgr: Arc<crate::session::SessionManager>) {
     let msg = crate::protocol::ProtocolMessage::push(
@@ -2622,6 +2653,7 @@ fn check_model_subdir_any(parent: &std::path::Path) -> bool {
     false
 }
 
+#[cfg(target_os = "windows")]
 fn has_onnx_file(dir: &std::path::Path) -> bool {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {

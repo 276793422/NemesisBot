@@ -1,6 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Switch to project root (parent of scripts/)
+cd /d "%~dp0\.."
+
 REM ============================================
 REM NemesisBot Android Environment Setup Script
 REM ============================================
@@ -8,9 +11,9 @@ REM Detects and installs all dependencies required
 REM to cross-compile NemesisBot for Android on Windows.
 REM
 REM Usage:
-REM   setup-android.bat           # Detect + install
-REM   setup-android.bat --dry-run # Detect only, no install
-REM   setup-android.bat --help    # Show help
+REM   scripts\setup-android.bat           # Detect + install
+REM   scripts\setup-android.bat --dry-run # Detect only, no install
+REM   scripts\setup-android.bat --help    # Show help
 REM
 REM Dependencies checked/installed:
 REM   - Android Studio (optional, IDE)
@@ -37,7 +40,7 @@ echo Use --help for usage information
 exit /b 1
 
 :show_help
-echo Usage: setup-android.bat [options]
+echo Usage: scripts\setup-android.bat [options]
 echo.
 echo Options:
 echo   --dry-run  Detect missing dependencies without installing
@@ -438,7 +441,7 @@ if !ISSUES!==0 (
     echo  All dependencies satisfied!
     echo.
     echo  You can now build for Android:
-    echo    build-android.bat
+    echo    scripts\build-android.bat
 ) else (
     echo  !ISSUES! issue^(s^) found. See details above.
     echo.

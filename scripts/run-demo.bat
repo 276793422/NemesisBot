@@ -1,6 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
 
+REM Switch to project root (parent of scripts/)
+cd /d "%~dp0\.."
+
 REM ============================================
 REM NemesisBot Demo Runner
 REM ============================================
@@ -17,25 +20,25 @@ REM Step 1: Clean old outputs
 REM ============================================
 echo [Step 1/3] Cleaning old outputs...
 
-if exist "bin\nemesisbot.exe" (
-    del /f /q "bin\nemesisbot.exe" 2>nul
-    echo   OK Deleted bin\nemesisbot.exe
+if exist "bin\bin_windows\nemesisbot.exe" (
+    del /f /q "bin\bin_windows\nemesisbot.exe" 2>nul
+    echo   OK Deleted bin\bin_windows\nemesisbot.exe
 ) else (
-    echo   SKIP bin\nemesisbot.exe not found
+    echo   SKIP bin\bin_windows\nemesisbot.exe not found
 )
 
-if exist "bin\plugins" (
-    rmdir /s /q "bin\plugins" 2>nul
-    echo   OK Deleted bin\plugins\
+if exist "bin\bin_windows\plugins" (
+    rmdir /s /q "bin\bin_windows\plugins" 2>nul
+    echo   OK Deleted bin\bin_windows\plugins\
 ) else (
-    echo   SKIP bin\plugins\ not found
+    echo   SKIP bin\bin_windows\plugins\ not found
 )
 
-if exist "bin\tests" (
-    rmdir /s /q "bin\tests" 2>nul
-    echo   OK Deleted bin\tests\
+if exist "bin\bin_windows\tests" (
+    rmdir /s /q "bin\bin_windows\tests" 2>nul
+    echo   OK Deleted bin\bin_windows\tests\
 ) else (
-    echo   SKIP bin\tests\ not found
+    echo   SKIP bin\bin_windows\tests\ not found
 )
 
 if exist "crates\nemesis-web\static" (
@@ -49,12 +52,12 @@ echo   OK Clean finished
 echo.
 
 REM ============================================
-REM Step 2: Build (call build.bat)
+REM Step 2: Build (call build-windows.bat)
 REM ============================================
 echo [Step 2/3] Building...
 echo.
 
-call build.bat
+call scripts\build-windows.bat
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed!
@@ -70,4 +73,4 @@ REM ============================================
 echo [Step 3/3] Starting gateway...
 echo.
 
-bin\nemesisbot.exe gateway
+bin\bin_windows\nemesisbot.exe gateway

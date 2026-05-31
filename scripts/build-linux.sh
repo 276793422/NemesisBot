@@ -2,14 +2,14 @@
 # ============================================
 # NemesisBot Rust Build Script (Linux / WSL)
 # ============================================
-# Usage: ./build.sh [options]
-#   No arguments  — Build release, copy to bin_linux/
+# Usage: scripts/build-linux.sh [options]
+#   No arguments  — Build release, copy to bin/bin_linux/
 #   --clean       — Clean before building
 #   --skip-plugin — Skip plugin .so build
 #   --help        — Show help
 #
 # Output layout:
-#   bin_linux/
+#   bin/bin_linux/
 #   ├── nemesisbot
 #   ├── plugins/
 #   │   ├── plugin_ui.so
@@ -21,12 +21,14 @@
 
 set -euo pipefail
 
+# Switch to project root (parent of scripts/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/.."
 
 # Use separate target/output dirs to avoid conflicts with Windows build
-export CARGO_TARGET_DIR="${SCRIPT_DIR}/target_linux"
-BIN_DIR="bin_linux"
+ROOT_DIR="$(pwd)"
+export CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux"
+BIN_DIR="bin/bin_linux"
 
 # ============================================
 # Parse Arguments
@@ -39,10 +41,10 @@ for arg in "$@"; do
         --clean)       CLEAN=true ;;
         --skip-plugin) SKIP_PLUGIN=true ;;
         --help|-h)
-            echo "Usage: $0 [--clean] [--skip-plugin] [--help]"
+            echo "Usage: scripts/build-linux.sh [--clean] [--skip-plugin] [--help]"
             echo ""
             echo "Options:"
-            echo "  --clean        Clean target_linux before building"
+            echo "  --clean        Clean target/target_linux before building"
             echo "  --skip-plugin  Skip plugin .so build"
             echo "  --help         Show this help"
             exit 0
@@ -76,7 +78,7 @@ echo "============================================"
 echo " Version:     $VERSION"
 echo " Git Commit:  $GIT_COMMIT"
 echo " Rustc:       $RUSTC_VERSION"
-echo " Target Dir:  $CARGO_TARGET_DIR"
+echo " Target Dir:  target/target_linux"
 echo " Output Dir:  $BIN_DIR/"
 echo "============================================"
 echo ""
@@ -85,7 +87,7 @@ echo ""
 # Step 1: Clean (optional)
 # ============================================
 if [ "$CLEAN" = true ]; then
-    echo "[Step 1/5] Cleaning target_linux..."
+    echo "[Step 1/5] Cleaning target/target_linux..."
     cargo clean --target-dir "$CARGO_TARGET_DIR" 2>/dev/null || true
     echo "  OK Cleaned"
     echo ""
@@ -169,7 +171,7 @@ else
     if [ -f "$PLUGIN_UI_DIR/Cargo.toml" ]; then
         echo "  Building plugin-ui..."
         DLL_START=$SECONDS
-        if (cd "$PLUGIN_UI_DIR" && CARGO_TARGET_DIR="${SCRIPT_DIR}/target_linux/plugins/plugin-ui" cargo build --release 2>&1); then
+        if (cd "$PLUGIN_UI_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-ui" cargo build --release 2>&1); then
             DLL_DURATION=$(( SECONDS - DLL_START ))
             echo "  OK Plugin-ui built in ${DLL_DURATION}s"
         else
@@ -184,7 +186,7 @@ else
     if [ -f "$PLUGIN_ONNX_DIR/Cargo.toml" ]; then
         echo "  Building plugin-onnx..."
         ONNX_START=$SECONDS
-        if (cd "$PLUGIN_ONNX_DIR" && CARGO_TARGET_DIR="${SCRIPT_DIR}/target_linux/plugins/plugin-onnx" cargo build --release 2>&1); then
+        if (cd "$PLUGIN_ONNX_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-onnx" cargo build --release 2>&1); then
             ONNX_DURATION=$(( SECONDS - ONNX_START ))
             echo "  OK Plugin-onnx built in ${ONNX_DURATION}s"
         else
@@ -197,7 +199,7 @@ else
 fi
 
 # ============================================
-# Step 5: Copy to bin_linux/
+# Step 5: Copy to bin/bin_linux/
 # ============================================
 echo "[Step 5/5] Copying to ${BIN_DIR}/..."
 
@@ -214,12 +216,12 @@ if [ -f "$RELEASE_DIR/nemesisbot" ]; then
     COPIED+=("nemesisbot (${SIZE_MB} MB)")
 fi
 
-# Copy plugin .so to bin_linux/plugins/
+# Copy plugin .so to bin/bin_linux/plugins/
 mkdir -p "$BIN_DIR/plugins"
 
 DLL_FOUND=false
-for so_path in "target_linux/plugins/plugin-ui/release/libplugin_ui.so" \
-               "target_linux/plugins/plugin-ui/release/libplugin_ui.so"; do
+for so_path in "target/target_linux/plugins/plugin-ui/release/libplugin_ui.so" \
+               "target/target_linux/plugins/plugin-ui/release/libplugin_ui.so"; do
     if [ -f "$so_path" ]; then
         cp "$so_path" "$BIN_DIR/plugins/"
         SIZE=$(wc -c < "$so_path")
@@ -234,8 +236,8 @@ if [ "$DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
 fi
 
 ONNX_DLL_FOUND=false
-for so_path in "target_linux/plugins/plugin-onnx/release/libplugin_onnx.so" \
-               "target_linux/plugins/plugin-onnx/release/libplugin_onnx.so"; do
+for so_path in "target/target_linux/plugins/plugin-onnx/release/libplugin_onnx.so" \
+               "target/target_linux/plugins/plugin-onnx/release/libplugin_onnx.so"; do
     if [ -f "$so_path" ]; then
         cp "$so_path" "$BIN_DIR/plugins/"
         SIZE=$(wc -c < "$so_path")
@@ -249,7 +251,7 @@ if [ "$ONNX_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_onnx.so not found in build output"
 fi
 
-# Copy test-tools binaries to bin_linux/tests/
+# Copy test-tools binaries to bin/bin_linux/tests/
 mkdir -p "$BIN_DIR/tests"
 for exe in cluster-test integration-test mcp-server; do
     if [ -f "$RELEASE_DIR/$exe" ]; then

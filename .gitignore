@@ -1,6 +1,4 @@
 /target
-/target_linux
-/target_android
 # Ralph
 plan.md
 prd.json
@@ -10,8 +8,6 @@ archive/
 /docs
 /test
 /bin
-/bin_linux
-/bin_android
 /plugins/*/target
 /web/node_modules/
 /crates/nemesis-web/static

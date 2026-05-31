@@ -451,8 +451,10 @@ fn load_and_run_plugin_window(
             let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();
 
             // Build HostServices with decode_png support
+            #[allow(unused_mut)]
             let mut host = nemesis_plugin::build_host_services(&std::env::current_dir().unwrap_or_default());
-            host.decode_png = Some(host_decode_png);
+            #[cfg(not(target_os = "android"))]
+            { host.decode_png = Some(host_decode_png); }
             // Leak the HostServices so it lives for the DLL's lifetime
             let host_box = Box::new(host);
             let host_ptr = Box::into_raw(host_box);
@@ -574,6 +576,7 @@ fn load_and_run_plugin_window(
 
 /// Host-side decode_png implementation using the `image` crate.
 /// Decodes PNG bytes into RGBA pixel data for plugin use (e.g. window icons).
+#[cfg(not(target_os = "android"))]
 extern "C" fn host_decode_png(
     png_data: *const u8,
     png_len: usize,
