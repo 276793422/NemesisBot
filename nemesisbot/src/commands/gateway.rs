@@ -232,6 +232,74 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
     }
 }
 
+/// Sync LLM provider adapter for Forge's LearningEngine.
+///
+/// LearningEngine uses a synchronous `LLMProvider` trait, while the gateway
+/// provider is async. This adapter bridges the gap using `block_in_place`,
+/// matching the same pattern used by `pipeline.rs::evaluate_quality_sync`.
+struct ForgeLearningProvider {
+    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    model: String,
+}
+
+impl ForgeLearningProvider {
+    fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
+        Self { provider, model }
+    }
+}
+
+impl nemesis_forge::learning_engine::LLMProvider for ForgeLearningProvider {
+    fn chat(&self, system: &str, user: &str, max_tokens: u32) -> Result<String, String> {
+        let messages = vec![
+            nemesis_providers::types::Message {
+                role: "system".to_string(),
+                content: system.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+            },
+            nemesis_providers::types::Message {
+                role: "user".to_string(),
+                content: user.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+            },
+        ];
+
+        let options = nemesis_providers::types::ChatOptions {
+            temperature: Some(0.7),
+            max_tokens: Some(max_tokens as i64),
+            top_p: None,
+            stop: None,
+            extra: std::collections::HashMap::new(),
+        };
+
+        let future = self.provider.chat(&messages, &[], &self.model, &options);
+
+        let response = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("failed to create runtime: {}", e))?;
+                rt.block_on(future)
+            }
+        }.map_err(|e| format!("{:?}", e))?;
+
+        if response.content.is_empty() {
+            Err("LLM returned no content".to_string())
+        } else {
+            Ok(response.content)
+        }
+    }
+}
+
 /// Bridge adapter connecting Cluster to Forge's ClusterForgeBridge trait.
 ///
 /// Enables Forge to share reflections with and receive reflections from
@@ -1114,20 +1182,34 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             forge_workspace,
         );
 
-        // M2: Connect LLM provider to Forge via ForgeProviderBridge adapter.
-        // Mirrors Go's bot_service.go:427: forgeInstance.SetProvider(s.provider).
-        {
-            let bridge_provider = ForgeProviderBridge::new(provider_for_forge.clone(), model_name.clone());
-            forge.set_provider(Arc::new(bridge_provider));
-            info!("[Gateway] Forge provider connected via ForgeProviderBridge");
-        }
+        // Initialize Reflector (statistical analysis + report writing).
+        forge.init_reflector(
+            nemesis_forge::reflector::Reflector::with_reflections_dir(
+                forge_dir.join("reflections"),
+            ),
+        );
+        info!("[Gateway] Forge reflector initialized");
 
-        // M3: Use NoOpBridge by default; real cluster bridge will be set later
-        // in Step 9a if cluster is enabled.
-        forge.set_bridge(Arc::new(nemesis_forge::bridge::NoOpBridge::new("local".to_string())));
+        // Initialize Pipeline (3-stage validation).
+        // Create two instances: one owned by Forge, one Arc-shared with LearningEngine.
+        let forge_pipeline_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
+            nemesis_forge::types::RegistryConfig::default(),
+        ));
+        forge.init_pipeline(
+            nemesis_forge::pipeline::Pipeline::new(
+                forge_config.clone(),
+                forge_pipeline_registry.clone(),
+            ),
+        );
+        let pipeline_arc = std::sync::Arc::new(
+            nemesis_forge::pipeline::Pipeline::new(
+                forge_config.clone(),
+                forge_pipeline_registry,
+            ),
+        );
+        info!("[Gateway] Forge pipeline initialized");
 
-        // L1: Initialize trace collection (TraceCollector + TraceStore).
-        // Mirrors Go's bot_service.go:490-499.
+        // Initialize trace collection (TraceCollector + TraceStore).
         {
             let trace_collector = nemesis_forge::trace::TraceCollector::new();
             let trace_store = nemesis_forge::trace_store::TraceStore::new(
@@ -1137,29 +1219,64 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Forge trace collection initialized");
         }
 
-        // L2: Initialize learning engine (Phase 6 closed-loop).
-        // Mirrors Go's bot_service.go:502-511.
+        // Initialize learning engine (Phase 6 closed-loop).
+        // Create two DeploymentMonitor instances: one owned by Forge, one Arc-shared with LearningEngine.
+        let forge_monitor_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
+            nemesis_forge::types::RegistryConfig::default(),
+        ));
+        let monitor_arc = std::sync::Arc::new(
+            nemesis_forge::monitor::DeploymentMonitor::new(
+                forge_config.clone(),
+                forge_monitor_registry.clone(),
+            ),
+        );
         {
-            let registry = Arc::new(nemesis_forge::registry::Registry::new(
+            let registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
                 nemesis_forge::types::RegistryConfig::default(),
             ));
             let cycle_store = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
-            let learning_engine = nemesis_forge::learning_engine::LearningEngine::new(
+            let learning_engine = nemesis_forge::learning_engine::LearningEngine::with_forge_dir(
                 forge_config.clone(),
-                registry.clone(),
+                forge_dir.clone(),
+                registry,
                 cycle_store,
             );
-            let monitor = nemesis_forge::monitor::DeploymentMonitor::new(
-                forge_config,
-                registry,
-            );
             let cycle_store_for_init = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
-            forge.init_learning(learning_engine, monitor, cycle_store_for_init);
+            let forge_monitor = nemesis_forge::monitor::DeploymentMonitor::new(
+                forge_config.clone(),
+                forge_monitor_registry,
+            );
+            forge.init_learning(learning_engine, forge_monitor, cycle_store_for_init);
             info!("[Gateway] Forge learning engine initialized (Phase 6)");
         }
 
-        let forge = Arc::new(forge);
-        let executor = Arc::new(
+        // Set bridge → init syncer.
+        forge.set_bridge(std::sync::Arc::new(nemesis_forge::bridge::NoOpBridge::new("local".to_string())));
+        forge.init_syncer();
+        info!("[Gateway] Forge syncer initialized");
+
+        // Set LLM provider (propagates to Reflector + Pipeline).
+        {
+            let bridge_provider = ForgeProviderBridge::new(provider_for_forge.clone(), model_name.clone());
+            forge.set_provider(std::sync::Arc::new(bridge_provider));
+            info!("[Gateway] Forge provider connected via ForgeProviderBridge");
+        }
+
+        let forge = std::sync::Arc::new(forge);
+
+        // Inject dependencies into LearningEngine (provider, pipeline, monitor, skill_creator).
+        if let Some(le) = forge.learning_engine() {
+            le.set_provider(std::sync::Arc::new(ForgeLearningProvider::new(
+                provider_for_forge.clone(),
+                model_name.clone(),
+            )));
+            le.set_pipeline(pipeline_arc);
+            le.set_monitor(monitor_arc);
+            le.set_skill_creator(forge.clone());
+            info!("[Gateway] Forge learning engine dependencies injected");
+        }
+
+        let executor = std::sync::Arc::new(
             nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
         );
         info!("[Gateway] Forge executor created (8 tools will be registered)");
@@ -1176,6 +1293,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         cron_service: Some(cron_service.clone()),
         forge_executor: forge_executor_and_instance.as_ref().map(|(exec, _)| exec.clone()),
+        forge: forge_executor_and_instance.as_ref().map(|(_, forge)| forge.clone()),
         memory_executor: {
             if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
                 let memory_data_dir = home.join("workspace").join("memory_vector");
@@ -1285,7 +1403,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // M4: Start Forge background services (Collector/Reflector/Syncer).
     // Mirrors Go's bot_service.go:582-585: forgeSvc.Start().
     if let Some((_, ref forge)) = forge_executor_and_instance {
-        forge.start().await;
+        std::sync::Arc::clone(forge).start().await;
         info!("[Gateway] Forge background services started");
     }
 
@@ -1961,6 +2079,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     if let Some(ref ds) = data_store {
         agent_loop.set_data_store(ds.clone());
         info!("[Gateway] DataStore injected into agent loop");
+    }
+
+    // Inject Forge instance into agent loop for experience collection
+    if let Some((_, ref forge)) = forge_executor_and_instance {
+        agent_loop.set_forge(forge.clone());
+        info!("[Gateway] Forge instance injected into agent loop");
     }
 
     // Wrap agent_loop in Arc for shared access (heartbeat handler, etc.)

@@ -42,7 +42,7 @@ pub enum ArtifactStatus {
 }
 
 /// Collected experience from tool usage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Experience {
     pub id: String,
     pub tool_name: String,

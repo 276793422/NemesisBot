@@ -110,9 +110,9 @@ impl Forge {
     ///
     /// Spawns three background tokio tasks:
     /// - **collector_loop**: periodically flushes the collector buffer.
-    /// - **reflector_loop**: periodically runs the reflector.
+    /// - **reflector_loop**: periodically runs reflection + learning.
     /// - **cleanup_loop**: periodically removes old data.
-    pub async fn start(&self) {
+    pub async fn start(self: Arc<Self>) {
         {
             let mut running = self.running.lock();
             if *running {
@@ -122,15 +122,15 @@ impl Forge {
             *running = true;
         }
 
-        // Set the shared background running flag.
         *self.bg_running.lock() = true;
 
         let flush_interval = self.config.collection.flush_interval_secs;
         let reflect_interval = self.config.reflection.interval_secs;
         let cleanup_interval = self.config.storage.cleanup_interval_secs;
 
-        // collector_loop: sleeps in short increments and checks the running flag.
+        // collector_loop
         {
+            let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
 
             let handle = tokio::spawn(async move {
@@ -144,7 +144,9 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= flush_interval {
                         elapsed = 0;
-                        tracing::debug!("[Forge] collector_loop: periodic flush");
+                        if let Err(e) = forge.collector.flush().await {
+                            tracing::warn!(error = %e, "[Forge] collector flush failed");
+                        }
                     }
                 }
             });
@@ -153,6 +155,7 @@ impl Forge {
 
         // reflector_loop
         {
+            let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
 
             let handle = tokio::spawn(async move {
@@ -166,7 +169,7 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= reflect_interval {
                         elapsed = 0;
-                        tracing::debug!("[Forge] reflector_loop: periodic reflection tick");
+                        forge.run_reflection_cycle().await;
                     }
                 }
             });
@@ -175,6 +178,7 @@ impl Forge {
 
         // cleanup_loop
         {
+            let forge = Arc::clone(&self);
             let flag = self.bg_running.clone();
 
             let handle = tokio::spawn(async move {
@@ -188,9 +192,7 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= cleanup_interval {
                         elapsed = 0;
-                        tracing::debug!(
-                            "[Forge] cleanup_loop: periodic cleanup tick"
-                        );
+                        forge.run_cleanup_cycle().await;
                     }
                 }
             });
@@ -198,6 +200,79 @@ impl Forge {
         }
 
         tracing::info!("[Forge] Started with background tasks");
+    }
+
+    /// Run a single reflection cycle: read experiences → reflect → learn → write report → share.
+    async fn run_reflection_cycle(&self) {
+        let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
+        let experiences = match store.read_all().await {
+            Ok(exps) if !exps.is_empty() => exps,
+            _ => return,
+        };
+
+        tracing::info!(count = experiences.len(), "[Forge] Running reflection cycle");
+
+        // Step 1: Reflect (statistical analysis)
+        let report = if let Some(ref reflector) = self.reflector {
+            reflector.reflect(&experiences, None, "today", "all")
+        } else {
+            return;
+        };
+
+        // Step 2: Learning cycle (pattern detection + skill generation)
+        if let Some(ref learning_engine) = self.learning_engine {
+            if self.config.learning.enabled {
+                let cycle = learning_engine.run_cycle(&experiences).await;
+                tracing::info!(cycle_id = %cycle.id, patterns = cycle.patterns_found, actions = cycle.actions_taken, "[Forge] learning cycle completed");
+            }
+        }
+
+        // Step 3: Write report
+        if let Some(ref reflector) = self.reflector {
+            if let Ok(path) = reflector.write_report(&report) {
+                tracing::info!(path = %path.display(), "[Forge] reflection report written");
+
+                // Step 4: Cluster share
+                if let Some(ref syncer) = self.syncer {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let json = serde_json::json!({
+                            "content": content,
+                            "filename": path.file_name().map(|n| n.to_string_lossy().to_string()),
+                        });
+                        if let Err(e) = syncer.share_reflection(json).await {
+                            tracing::warn!(error = %e, "[Forge] cluster share failed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run a single cleanup cycle for old data.
+    async fn run_cleanup_cycle(&self) {
+        let max_age = self.config.storage.max_experience_age_days as i64;
+
+        let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
+        if let Ok(removed) = store.cleanup(max_age).await {
+            if removed > 0 {
+                tracing::info!(removed, "[Forge] cleaned up old experiences");
+            }
+        }
+
+        if let Some(ref reflector) = self.reflector {
+            let removed = reflector.cleanup_reports(max_age as u64);
+            if removed > 0 {
+                tracing::info!(removed, "[Forge] cleaned up old reports");
+            }
+        }
+
+        if let Some(ref cycle_store) = self.cycle_store {
+            if let Ok(removed) = cycle_store.cleanup(max_age).await {
+                if removed > 0 {
+                    tracing::info!(removed, "[Forge] cleaned up old learning cycles");
+                }
+            }
+        }
     }
 
     /// Stop the forge subsystems.

@@ -3231,6 +3231,8 @@ pub struct SharedToolConfig {
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    /// Forge instance for experience collection in AgentLoop.
+    pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
     /// Memory tool executor for memory_search, memory_store, etc.
     pub memory_executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
     /// Snapshot of registered MCP tool names and descriptions for McpListTool.
@@ -3248,6 +3250,7 @@ impl Default for SharedToolConfig {
             workspace: None,
             cron_service: None,
             forge_executor: None,
+            forge: None,
             memory_executor: None,
             mcp_tool_snapshot: None,
         }
@@ -3449,6 +3452,7 @@ pub fn register_extended_tools(
         workspace: None,
         cron_service: None,
         forge_executor: None,
+        forge: None,
         memory_executor: None,
         mcp_tool_snapshot: None,
     };

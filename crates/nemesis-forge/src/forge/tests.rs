@@ -17,7 +17,8 @@ async fn test_forge_lifecycle() {
     let forge = Forge::new(config, dir.path().to_path_buf());
 
     assert!(!forge.is_running());
-    forge.start().await;
+    let forge = Arc::new(forge);
+    Arc::clone(&forge).start().await;
     assert!(forge.is_running());
     forge.stop().await;
     assert!(!forge.is_running());
@@ -390,11 +391,12 @@ async fn test_forge_double_start_warning() {
     let config = ForgeConfig::default();
     let forge = Forge::new(config, dir.path().to_path_buf());
 
-    forge.start().await;
+    let forge = Arc::new(forge);
+    Arc::clone(&forge).start().await;
     assert!(forge.is_running());
 
     // Second start should be idempotent (returns early)
-    forge.start().await;
+    Arc::clone(&forge).start().await;
     assert!(forge.is_running());
 
     forge.stop().await;
@@ -451,4 +453,563 @@ fn test_forge_set_provider_with_pipeline() {
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     forge.init_pipeline(Pipeline::new(ForgeConfig::default(), registry));
     forge.set_provider(Arc::new(MockLLMCaller));
+}
+
+// =========================================================================
+// Integration test helpers
+// =========================================================================
+
+/// Mock LLM caller that returns a programmable response (async, for Reflector).
+struct ProgrammableMockLLM {
+    response: String,
+}
+
+impl ProgrammableMockLLM {
+    fn new(response: &str) -> Self {
+        Self { response: response.to_string() }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for ProgrammableMockLLM {
+    async fn chat(&self, _system_prompt: &str, _user_prompt: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+        Ok(self.response.clone())
+    }
+}
+
+/// Mock LLM caller that always returns an error.
+struct ErrorMockLLM;
+
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for ErrorMockLLM {
+    async fn chat(&self, _system_prompt: &str, _user_prompt: &str, _max_tokens: Option<i64>) -> Result<String, String> {
+        Err("LLM unavailable".to_string())
+    }
+}
+
+/// Mock sync LLM provider (for LearningEngine).
+struct MockSyncProvider {
+    response: String,
+}
+
+impl MockSyncProvider {
+    fn new(response: &str) -> Self {
+        Self { response: response.to_string() }
+    }
+}
+
+impl crate::learning_engine::LLMProvider for MockSyncProvider {
+    fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+        Ok(self.response.clone())
+    }
+}
+
+/// Mock sync LLM provider that always returns an error.
+struct ErrorSyncProvider;
+
+impl crate::learning_engine::LLMProvider for ErrorSyncProvider {
+    fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+        Err("LLM provider unavailable".to_string())
+    }
+}
+
+/// Build a test CollectedExperience.
+fn make_collected_experience(tool: &str, success: bool, dur: u64) -> crate::types::CollectedExperience {
+    crate::types::CollectedExperience {
+        dedup_hash: format!("test-{}-{}", tool, success),
+        experience: nemesis_types::forge::Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.to_string(),
+            input_summary: "test input".into(),
+            output_summary: if success { "ok" } else { "error" }.into(),
+            success,
+            duration_ms: dur,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            session_key: "test:session".into(),
+        },
+    }
+}
+
+/// Write experiences directly to the ExperienceStore for a forge directory.
+async fn write_test_experiences(forge_dir: &std::path::Path, count: usize) {
+    let store = crate::experience_store::ExperienceStore::from_forge_dir(forge_dir);
+    for i in 0..count {
+        let exp = make_collected_experience(
+            if i % 2 == 0 { "file_read" } else { "shell_exec" },
+            true,
+            100 + i as u64 * 50,
+        );
+        store.append(&exp).await.unwrap();
+    }
+}
+
+/// Create a fully initialized Forge with Reflector + LearningEngine for integration tests.
+fn create_integration_forge(dir: &std::path::Path) -> Arc<Forge> {
+    let mut config = ForgeConfig::default();
+    config.learning.enabled = true;
+    let mut forge = Forge::new(config.clone(), dir.to_path_buf());
+
+    // Reflector with a reflections dir for disk writes
+    let reflections_dir = dir.join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+
+    // LearningEngine — use the same base dir as Forge's cycle_store
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_dir = dir.join("forge");
+    let engine = crate::learning_engine::LearningEngine::new(
+        config.clone(),
+        registry.clone(),
+        crate::cycle_store::CycleStore::new(&cycle_dir),
+    );
+    let monitor = crate::monitor::DeploymentMonitor::new(config.clone(), registry);
+    let cs = crate::cycle_store::CycleStore::new(&cycle_dir);
+    forge.init_learning(engine, monitor, cs);
+
+    Arc::new(forge)
+}
+
+// =========================================================================
+// Layer 1A: Reflection cycle integration tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_reflection_cycle_writes_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    // Pre-write 5 experiences
+    write_test_experiences(&forge.forge_dir(), 5).await;
+
+    // Run the reflection cycle
+    forge.run_reflection_cycle().await;
+
+    // Check report was written
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    if reflections_dir.exists() {
+        let reports: Vec<_> = std::fs::read_dir(&reflections_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path().extension().map(|ext| ext == "md").unwrap_or(false)
+            })
+            .collect();
+        assert!(!reports.is_empty(), "expected at least one report file");
+    }
+
+    // Check learning cycle was recorded
+    if let Some(ref cycle_store) = forge.cycle_store() {
+        let cycles = cycle_store.read_all().await.unwrap();
+        assert!(!cycles.is_empty(), "expected at least one learning cycle");
+        assert_eq!(cycles[0].status, nemesis_types::forge::CycleStatus::Completed);
+    }
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_empty_experiences() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    // No experiences written
+    forge.run_reflection_cycle().await;
+
+    // Should return early — no reports
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    if reflections_dir.exists() {
+        let count = std::fs::read_dir(&reflections_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+            .count();
+        assert_eq!(count, 0, "expected no reports with empty experiences");
+    }
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_without_reflector() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let forge = Forge::new(config, dir.path().to_path_buf());
+    let forge = Arc::new(forge);
+
+    // Write experiences but no reflector initialized
+    write_test_experiences(&forge.forge_dir(), 3).await;
+
+    // Should return early without panic
+    forge.run_reflection_cycle().await;
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_without_learning_engine() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+
+    // Only init reflector, no learning engine
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+
+    let forge = Arc::new(forge);
+    write_test_experiences(&forge.forge_dir(), 5).await;
+
+    forge.run_reflection_cycle().await;
+
+    // Report should still be written (reflector works)
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    let count = std::fs::read_dir(&reflections_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .count();
+    assert!(count > 0, "expected report without learning engine");
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_without_syncer() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    // No syncer initialized (create_integration_forge doesn't init syncer)
+    write_test_experiences(&forge.forge_dir(), 5).await;
+
+    // Should not panic
+    forge.run_reflection_cycle().await;
+}
+
+// =========================================================================
+// Layer 1B: Cleanup cycle tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_cleanup_cycle_removes_old_experiences() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    let store = crate::experience_store::ExperienceStore::from_forge_dir(&forge.forge_dir());
+
+    // Write a recent experience (goes to today's file)
+    let recent_exp = make_collected_experience("new_tool", true, 50);
+    store.append(&recent_exp).await.unwrap();
+
+    // Manually create an old file (before cleanup cutoff)
+    let base_dir = forge.forge_dir().join("experiences");
+    let old_month_dir = base_dir.join("202001");
+    std::fs::create_dir_all(&old_month_dir).unwrap();
+    let old_file = old_month_dir.join("20200101.jsonl");
+    let old_exp = crate::types::CollectedExperience {
+        dedup_hash: "old-exp".to_string(),
+        experience: nemesis_types::forge::Experience {
+            id: "exp-old".to_string(),
+            tool_name: "old_tool".to_string(),
+            input_summary: "old".into(),
+            output_summary: "old".into(),
+            success: true,
+            duration_ms: 100,
+            timestamp: "2020-01-01T00:00:00Z".to_string(),
+            session_key: "test".into(),
+        },
+    };
+    let json = serde_json::to_string(&old_exp).unwrap();
+    std::fs::write(&old_file, json).unwrap();
+
+    assert!(old_file.exists());
+
+    forge.run_cleanup_cycle().await;
+
+    // Old file should be removed
+    assert!(!old_file.exists(), "old experience file should be removed");
+
+    // Recent should still be readable
+    let after = store.read_all().await.unwrap();
+    assert!(after.iter().any(|e| e.experience.tool_name == "new_tool"),
+        "recent experience should survive");
+}
+
+#[tokio::test]
+async fn test_cleanup_cycle_removes_old_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+
+    // Create an old report
+    let old_report = reflections_dir.join("2020-01-01_report.md");
+    std::fs::write(&old_report, "old report").unwrap();
+    let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(365 * 86400);
+    let _ = filetime::set_file_mtime(&old_report, filetime::FileTime::from_system_time(old_time));
+
+    // Create a recent report
+    let recent_report = reflections_dir.join("2099-12-31_report.md");
+    std::fs::write(&recent_report, "recent report").unwrap();
+
+    forge.run_cleanup_cycle().await;
+
+    assert!(!old_report.exists(), "old report should be removed");
+    assert!(recent_report.exists(), "recent report should be kept");
+}
+
+#[tokio::test]
+async fn test_cleanup_cycle_empty_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    // No data at all — should not panic
+    forge.run_cleanup_cycle().await;
+}
+
+// =========================================================================
+// Layer 2A: Pattern detection tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_pattern_tool_chain_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // 6 experiences with the same tool (≥5 triggers tool_chain, default min_pattern_frequency=5)
+    let experiences: Vec<_> = (0..6)
+        .map(|_| make_collected_experience("file_read", true, 100))
+        .collect();
+
+    let patterns = engine.extract_patterns(&experiences);
+    assert!(!patterns.is_empty(), "expected at least one pattern");
+    assert!(patterns.iter().any(|p| p.pattern_type == "tool_chain"),
+        "expected tool_chain pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn test_pattern_error_recovery_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // Same tool: 5 failures + 5 successes (frequency = error_count, must be ≥5)
+    let mut experiences = vec![];
+    for _ in 0..5 { experiences.push(make_collected_experience("web_fetch", false, 500)); }
+    for _ in 0..5 { experiences.push(make_collected_experience("web_fetch", true, 200)); }
+
+    let patterns = engine.extract_patterns(&experiences);
+    assert!(patterns.iter().any(|p| p.pattern_type == "error_recovery"),
+        "expected error_recovery pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn test_pattern_efficiency_issue_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // Most tools fast, one tool very slow — need enough fast tools to keep overall avg low
+    let mut experiences = vec![];
+    for _ in 0..10 { experiences.push(make_collected_experience("file_read", true, 100)); }
+    for _ in 0..5 { experiences.push(make_collected_experience("shell_exec", true, 50000)); }
+
+    let patterns = engine.extract_patterns(&experiences);
+    assert!(patterns.iter().any(|p| p.pattern_type == "efficiency_issue"),
+        "expected efficiency_issue pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn test_pattern_success_template_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // 6 experiences all successful with the same tool (≥5 for min_pattern_frequency)
+    let experiences: Vec<_> = (0..6)
+        .map(|_| make_collected_experience("file_read", true, 100))
+        .collect();
+
+    let patterns = engine.extract_patterns(&experiences);
+    assert!(patterns.iter().any(|p| p.pattern_type == "success_template"),
+        "expected success_template pattern, got: {:?}", patterns.iter().map(|p| &p.pattern_type).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn test_no_patterns_insufficient_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // Only 1 experience — below min_pattern_frequency of 3
+    let experiences = vec![make_collected_experience("file_read", true, 100)];
+
+    let patterns = engine.extract_patterns(&experiences);
+    assert!(patterns.is_empty(), "expected no patterns with insufficient data");
+}
+
+#[tokio::test]
+async fn test_run_cycle_full_with_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let mut engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // No LLM provider — execute_create_skill will skip but pattern detection still works
+    let experiences: Vec<_> = (0..6)
+        .map(|_| make_collected_experience("file_read", true, 100))
+        .collect();
+
+    let cycle = engine.run_cycle(&experiences).await;
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+    assert!(cycle.patterns_found > 0, "expected patterns detected");
+}
+
+// =========================================================================
+// Layer 2B: Pipeline validation tests
+// =========================================================================
+
+#[test]
+fn test_pipeline_validation_passes_with_mock() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let pipeline = Pipeline::new(ForgeConfig::default(), registry);
+    pipeline.set_provider(Arc::new(ProgrammableMockLLM::new(
+        r#"{"score": 0.9, "feedback": "Good quality"}"#
+    )));
+
+    let content = "---\nname: test-skill\n---\n# Test Skill\nThis is a well-structured skill.";
+    let validation = pipeline.validate(
+        nemesis_types::forge::ArtifactKind::Skill,
+        "test-skill",
+        content,
+    );
+    // Pipeline should complete without error
+    let status = pipeline.determine_status(&validation);
+    assert_ne!(status, nemesis_types::forge::ArtifactStatus::Negative,
+        "valid content should not be Negative");
+}
+
+#[test]
+fn test_pipeline_validation_with_llm_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let pipeline = Pipeline::new(ForgeConfig::default(), registry);
+    pipeline.set_provider(Arc::new(ErrorMockLLM));
+
+    let content = "---\nname: test-skill\n---\n# Test Skill";
+    let validation = pipeline.validate(
+        nemesis_types::forge::ArtifactKind::Skill,
+        "test-skill",
+        content,
+    );
+    // Should degrade to static validation, not panic
+    let status = pipeline.determine_status(&validation);
+    // With LLM failure, falls back to basic validation
+    assert_ne!(status, nemesis_types::forge::ArtifactStatus::Archived);
+}
+
+// =========================================================================
+// Layer 3A: LLM failure tests
+// =========================================================================
+
+#[test]
+fn test_reflector_with_llm_failure() {
+    let reflector = Reflector::new();
+    // Reflector::new() creates a basic reflector without LLM
+    // reflect() should still produce statistical analysis
+    let experiences = vec![
+        make_collected_experience("file_read", true, 100),
+        make_collected_experience("shell_exec", false, 200),
+    ];
+    let report = reflector.reflect(&experiences, None, "today", "all");
+    // Should have stats even without LLM
+    assert!(!report.date.is_empty());
+    assert!(report.stats.total_records > 0);
+    assert!(report.llm_insights.is_none(), "no LLM insights expected without LLM provider");
+}
+
+#[tokio::test]
+async fn test_learning_engine_with_llm_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
+    let mut engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+
+    // Set error provider
+    engine.set_provider(Arc::new(ErrorSyncProvider));
+
+    let experiences: Vec<_> = (0..6)
+        .map(|_| make_collected_experience("file_read", true, 100))
+        .collect();
+
+    // Should not panic
+    let cycle = engine.run_cycle(&experiences).await;
+    assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
+    assert!(cycle.patterns_found > 0, "patterns should still be detected");
+    // actions_taken may be 0 because LLM failed for skill generation
+}
+
+#[tokio::test]
+async fn test_reflection_cycle_with_llm_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+
+    // Set error LLM on all subsystems
+    forge.set_provider(Arc::new(ErrorMockLLM));
+
+    write_test_experiences(&forge.forge_dir(), 5).await;
+
+    // Should not panic despite LLM failures
+    forge.run_reflection_cycle().await;
+}
+
+// =========================================================================
+// Layer 3B: Missing subsystem tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_reflection_cycle_learning_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.learning.enabled = false;
+    let mut forge = Forge::new(config, dir.path().to_path_buf());
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir));
+
+    // LearningEngine exists but disabled
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = crate::cycle_store::CycleStore::new(&dir.path().join("forge"));
+    let engine = crate::learning_engine::LearningEngine::new(
+        ForgeConfig::default(),
+        registry,
+        cycle_store,
+    );
+    let monitor = crate::monitor::DeploymentMonitor::new(
+        ForgeConfig::default(),
+        Arc::new(Registry::new(RegistryConfig::default())),
+    );
+    let cs = crate::cycle_store::CycleStore::new(&dir.path().join("forge").join("cycles"));
+    forge.init_learning(engine, monitor, cs);
+
+    let forge = Arc::new(forge);
+    write_test_experiences(&forge.forge_dir(), 5).await;
+
+    forge.run_reflection_cycle().await;
+
+    // Report should still be written (reflector works)
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    let count = std::fs::read_dir(&reflections_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .count();
+    assert!(count > 0, "report should be written even with learning disabled");
 }

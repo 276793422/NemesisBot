@@ -358,6 +358,8 @@ pub struct AgentLoop {
     mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<(String, String)>>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
+    /// Forge instance for experience collection during tool execution.
+    forge: Option<Arc<nemesis_forge::forge::Forge>>,
 }
 
 impl AgentLoop {
@@ -389,6 +391,7 @@ impl AgentLoop {
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
+            forge: None,
         }
     }
 
@@ -451,6 +454,7 @@ impl AgentLoop {
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
+            forge: None,
         }
     }
 
@@ -679,6 +683,11 @@ impl AgentLoop {
     /// Set the data store for recording LLM usage statistics.
     pub fn set_data_store(&mut self, store: Arc<nemesis_data::DataStore>) {
         self.data_store = Some(store);
+    }
+
+    /// Set the Forge instance for experience collection.
+    pub fn set_forge(&mut self, forge: Arc<nemesis_forge::forge::Forge>) {
+        self.forge = Some(forge);
     }
 
     /// Get the observer manager, if set.
@@ -2484,8 +2493,9 @@ impl AgentLoop {
             }
         }
 
+        let tool_start = std::time::Instant::now();
         let tool_opt = self.tools.read().get(&tool_call.name).cloned();
-        match tool_opt {
+        let result = match tool_opt {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {
                     debug!("[AgentLoop] Tool {} returned: {} bytes", tool_call.name, result.len());
@@ -2500,7 +2510,26 @@ impl AgentLoop {
                 warn!("[AgentLoop] Unknown tool: {}", tool_call.name);
                 format!("Error: Unknown tool '{}'", tool_call.name)
             }
+        };
+
+        // Record experience for Forge self-learning (non-blocking).
+        if let Some(ref forge) = self.forge {
+            let exp = nemesis_types::forge::Experience {
+                id: uuid::Uuid::new_v4().to_string(),
+                tool_name: tool_call.name.clone(),
+                input_summary: tool_call.arguments.chars().take(100).collect(),
+                output_summary: result.chars().take(100).collect(),
+                success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
+                duration_ms: tool_start.elapsed().as_millis() as u64,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_key: format!("{}:{}", context.channel, context.chat_id),
+            };
+            let args = serde_json::from_str(&tool_call.arguments)
+                .unwrap_or(serde_json::Value::Null);
+            let _ = forge.collector().record_with_args(exp, &args).await;
         }
+
+        result
     }
 
     /// Build the LLM message list from the instance conversation history.
