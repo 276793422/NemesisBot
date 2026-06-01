@@ -14,6 +14,8 @@ if /i "%~1"=="win" (
     call scripts\build-android.bat
 ) else if /i "%~1"=="run" (
     call scripts\run-demo.bat
+) else if /i "%~1"=="onlyrun" (
+    call bin\bin_windows\nemesisbot.exe gateway
 ) else if /i "%~1"=="cls" (
     rmdir /s /q "target" 2>nul
     rmdir /s /q "bin" 2>nul

@@ -1175,7 +1175,7 @@ fn test_register_tool_shared() {
 fn test_provider_access() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     // provider() should not panic
-    let _ = agent_loop.provider();
+    let _ = agent_loop.provider_arc();
 }
 
 #[test]

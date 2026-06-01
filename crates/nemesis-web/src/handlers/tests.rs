@@ -35,6 +35,7 @@ use super::*;
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -66,6 +67,7 @@ use super::*;
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),

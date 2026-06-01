@@ -58,6 +58,12 @@ impl ModuleHandler for ForgeHandler {
                 self.registry_update(workspace, &data)
             }
 
+            // Learning
+            "learning.toggle" => {
+                let data = data.ok_or("missing data")?;
+                self.learning_toggle(home, workspace, &data, ctx)
+            }
+
             // Artifacts (legacy, kept for compat)
             "artifacts" => self.artifacts(workspace),
 
@@ -93,6 +99,17 @@ impl ForgeHandler {
 
         // Check actual runtime state from Forge instance.
         let is_running = ctx.state.forge.as_ref().map(|f| f.is_running()).unwrap_or(false);
+        let started_at = ctx.state.forge.as_ref().and_then(|f| f.started_at());
+
+        // Load forge config for intervals
+        let forge_config_path = PathBuf::from(workspace)
+            .join("config")
+            .join("config.forge.json");
+        let forge_config = if forge_config_path.exists() {
+            nemesis_forge::config::load_forge_config(&forge_config_path)
+        } else {
+            nemesis_forge::config::ForgeConfig::default()
+        };
 
         let fd = forge_dir(workspace);
         let forge_dir_exists = fd.exists();
@@ -120,6 +137,10 @@ impl ForgeHandler {
         Ok(Some(serde_json::json!({
             "enabled": enabled,
             "running": is_running,
+            "started_at": started_at,
+            "reflection_interval_secs": forge_config.reflection.interval_secs,
+            "cleanup_interval_secs": forge_config.storage.cleanup_interval_secs,
+            "learning_enabled": ctx.state.forge.as_ref().map(|f| f.is_learning_enabled()).unwrap_or(false),
             "forge_dir_exists": forge_dir_exists,
             "experience_count": experience_count,
             "reflection_count": reflection_count,
@@ -510,6 +531,34 @@ impl ForgeHandler {
         forge.enabled = enabled;
         save_config_to_disk(home, &mut config)?;
 
+        // Sync enabled to config.forge.json as well.
+        let workspace = require_workspace(ctx)?;
+        let forge_config_path = PathBuf::from(workspace)
+            .join("config")
+            .join("config.forge.json");
+        if let Some(parent) = forge_config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if forge_config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&forge_config_path) {
+                if let Ok(mut fc) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(obj) = fc.as_object_mut() {
+                        obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+                        if let Ok(updated) = serde_json::to_string_pretty(&fc) {
+                            let _ = std::fs::write(&forge_config_path, updated);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Auto-create from defaults with the current enabled value.
+            let mut default_config = nemesis_forge::config::ForgeConfig::default();
+            default_config.enabled = enabled;
+            if let Ok(json) = serde_json::to_string_pretty(&default_config) {
+                let _ = std::fs::write(&forge_config_path, json);
+            }
+        }
+
         // Runtime start/stop: toggle Forge background tasks without restart.
         if enabled && !was_enabled {
             if let Some(ref forge) = ctx.state.forge {
@@ -537,6 +586,62 @@ impl ForgeHandler {
         }
 
         Ok(Some(serde_json::json!({ "saved": true, "enabled": enabled })))
+    }
+
+    fn learning_toggle(
+        &self,
+        _home: &str,
+        workspace: &str,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let enabled = data
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .ok_or("missing 'enabled' field")?;
+
+        // Ensure config.forge.json exists — auto-create from defaults if missing.
+        let forge_config_path = PathBuf::from(workspace)
+            .join("config")
+            .join("config.forge.json");
+        if !forge_config_path.exists() {
+            if let Some(parent) = forge_config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let default_config = nemesis_forge::config::ForgeConfig::default();
+            let json = serde_json::to_string_pretty(&default_config)
+                .map_err(|e| format!("failed to serialize default forge config: {}", e))?;
+            std::fs::write(&forge_config_path, json)
+                .map_err(|e| format!("failed to write config.forge.json: {}", e))?;
+        }
+
+        // Update the file on disk.
+        let content = std::fs::read_to_string(&forge_config_path)
+            .map_err(|e| format!("failed to read config.forge.json: {}", e))?;
+        let mut forge_config: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("failed to parse config.forge.json: {}", e))?;
+        if let Some(obj) = forge_config.as_object_mut() {
+            if let Some(learning) = obj.get_mut("learning") {
+                if let Some(learning_obj) = learning.as_object_mut() {
+                    learning_obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+                }
+            } else {
+                obj.insert("learning".to_string(), serde_json::json!({ "enabled": enabled }));
+            }
+        }
+        let updated = serde_json::to_string_pretty(&forge_config)
+            .map_err(|e| format!("failed to serialize forge config: {}", e))?;
+        std::fs::write(&forge_config_path, updated)
+            .map_err(|e| format!("failed to write config.forge.json: {}", e))?;
+
+        // Update runtime flag on Forge instance.
+        if let Some(ref forge) = ctx.state.forge {
+            forge.set_learning_enabled(enabled);
+        }
+
+        tracing::info!(enabled, "[Forge] Learning toggle via dashboard");
+
+        Ok(Some(serde_json::json!({ "saved": true, "learning_enabled": enabled })))
     }
 }
 

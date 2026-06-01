@@ -22,6 +22,7 @@ const showAdd = ref(false)
 // Backend add expects: name, model, key, base_url?, proxy?
 const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '' })
 const testing = ref<string | null>(null)
+const switching = ref<string | null>(null)
 
 async function loadModels() {
   try {
@@ -67,13 +68,16 @@ async function deleteModel(name: string) {
 }
 
 async function setDefault(name: string) {
+  const prev = switching.value
+  switching.value = name
   try {
     await request('models', 'set_default', { name })
-    toast.success('已设为默认')
+    toast.success(`${name} 已设为默认模型，立即生效`)
     await loadModels()
   } catch (e: any) {
     toast.error('设置失败: ' + e)
   }
+  switching.value = null
 }
 
 async function testModel(name: string) {
@@ -147,13 +151,18 @@ onMounted(loadModels)
         <p>点击上方"添加模型"按钮配置第一个 AI 模型</p>
       </div>
 
-      <!-- Model list — backend returns: model_name, model, api_base, api_key, proxy, is_default -->
+      <!-- Model list -->
       <div v-if="!loading && models.length > 0" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--space-4);">
-        <div v-for="m in models" :key="m.model_name" class="card">
+        <div
+          v-for="m in models"
+          :key="m.model_name"
+          class="card model-card"
+          :class="{ 'model-card--default': m.is_default, 'model-card--switching': switching === m.model_name }"
+        >
           <div class="card-header">
             <h3>{{ m.model_name }}</h3>
             <div style="display: flex; gap: var(--space-2); align-items: center;">
-              <span v-if="m.is_default" class="badge badge-success">默认</span>
+              <span v-if="m.is_default" class="badge badge-success">&#10003; 默认</span>
               <span v-if="m.model" class="badge badge-info">{{ m.model }}</span>
             </div>
           </div>
@@ -172,11 +181,46 @@ onMounted(loadModels)
               <span v-if="testing === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
               {{ testing === m.model_name ? '测试中...' : '测试' }}
             </button>
-            <button v-if="!m.is_default" class="btn btn-sm" @click="setDefault(m.model_name)">设为默认</button>
-            <button class="btn btn-sm btn-danger" @click="deleteModel(m.model_name)">删除</button>
+            <button
+              v-if="!m.is_default"
+              class="btn btn-sm btn-primary"
+              @click="setDefault(m.model_name)"
+              :disabled="switching !== null"
+            >
+              <span v-if="switching === m.model_name" class="spinner" style="width:14px;height:14px;"></span>
+              {{ switching === m.model_name ? '切换中...' : '设为默认' }}
+            </button>
+            <span v-else class="model-active-label">当前使用中</span>
+            <button class="btn btn-sm btn-danger" @click="deleteModel(m.model_name)" :disabled="switching !== null">删除</button>
           </div>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.model-card {
+  transition: border-color 0.25s, box-shadow 0.25s, background-color 0.25s;
+}
+
+.model-card--default {
+  border-color: var(--color-success, #22c55e);
+  box-shadow: 0 0 0 1px var(--color-success, #22c55e), 0 2px 8px rgba(34, 197, 94, 0.15);
+}
+
+:root[data-theme='dark'] .model-card--default {
+  box-shadow: 0 0 0 1px var(--color-success, #22c55e), 0 2px 12px rgba(34, 197, 94, 0.25);
+}
+
+.model-card--switching {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.model-active-label {
+  font-size: var(--text-sm, 13px);
+  color: var(--color-success, #22c55e);
+  font-weight: 500;
+}
+</style>

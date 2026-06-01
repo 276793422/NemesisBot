@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -14,6 +14,15 @@ const loading = ref(true)
 const enabled = ref(false)
 const running = ref(false)
 const stats = ref<any>(null)
+const startedAt = ref<string | null>(null)
+const reflectionIntervalSecs = ref(21600)
+const cleanupIntervalSecs = ref(86400)
+const learningEnabled = ref(false)
+
+// --- Countdown timers ---
+const reflectionCountdown = ref(0)
+const cleanupCountdown = ref(0)
+let countdownTimer: ReturnType<typeof setInterval> | null = null
 
 // --- Experiences state ---
 const expStats = ref<any>(null)
@@ -121,6 +130,11 @@ async function loadStatus() {
     const data = await request('forge', 'status')
     enabled.value = data?.enabled || false
     running.value = data?.running || false
+    startedAt.value = data?.started_at || null
+    reflectionIntervalSecs.value = data?.reflection_interval_secs || 21600
+    cleanupIntervalSecs.value = data?.cleanup_interval_secs || 86400
+    learningEnabled.value = data?.learning_enabled || false
+    updateCountdowns()
   } catch { /* ignore */ }
 }
 
@@ -191,6 +205,16 @@ async function toggleForge() {
   }
 }
 
+async function toggleLearning() {
+  try {
+    await request('forge', 'learning.toggle', { enabled: !learningEnabled.value })
+    await loadStatus()
+    toast.success(learningEnabled.value ? '闭环学习已启用' : '闭环学习已禁用')
+  } catch (e: any) {
+    toast.error('操作失败: ' + e)
+  }
+}
+
 async function triggerReflect() {
   try {
     const data = await request('forge', 'reflect')
@@ -251,7 +275,45 @@ const successRate = computed(() => {
   return ((expStats.value.success || 0) / total * 100).toFixed(1)
 })
 
-onMounted(loadAll)
+// --- Countdown logic ---
+function updateCountdowns() {
+  if (!running.value || !startedAt.value) {
+    reflectionCountdown.value = 0
+    cleanupCountdown.value = 0
+    return
+  }
+  const startedMs = new Date(startedAt.value).getTime()
+  const nowMs = Date.now()
+  const elapsedSec = Math.max(0, Math.floor((nowMs - startedMs) / 1000))
+
+  const reflectRemain = reflectionIntervalSecs.value - (elapsedSec % reflectionIntervalSecs.value)
+  const cleanupRemain = cleanupIntervalSecs.value - (elapsedSec % cleanupIntervalSecs.value)
+
+  reflectionCountdown.value = Math.max(0, reflectRemain)
+  cleanupCountdown.value = Math.max(0, cleanupRemain)
+}
+
+function formatCountdown(secs: number): string {
+  if (secs <= 0) return '--'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = secs % 60
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+onMounted(() => {
+  loadAll()
+  countdownTimer = setInterval(updateCountdowns, 1000)
+})
+
+onUnmounted(() => {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+})
 </script>
 
 <template>
@@ -496,6 +558,29 @@ onMounted(loadAll)
 
       <!-- ==================== Reflections ==================== -->
       <div v-if="activeTab === 'reflections'">
+        <!-- Countdown timers -->
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-header"><h3>定时任务状态</h3></div>
+          <div class="card-body">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">下次反思</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums;" :style="{ color: running ? 'var(--success)' : 'var(--text-muted)' }">
+                  {{ running ? formatCountdown(reflectionCountdown) : '未运行' }}
+                </span>
+                <span style="color: var(--text-muted); font-size: var(--text-xs); margin-top: var(--space-1);">间隔 {{ formatDuration(reflectionIntervalSecs * 1000) }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; align-items: center; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md);">
+                <span style="color: var(--text-secondary); font-size: var(--text-sm); margin-bottom: var(--space-1);">下次清理</span>
+                <span style="font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums;" :style="{ color: running ? 'var(--success)' : 'var(--text-muted)' }">
+                  {{ running ? formatCountdown(cleanupCountdown) : '未运行' }}
+                </span>
+                <span style="color: var(--text-muted); font-size: var(--text-xs); margin-top: var(--space-1);">间隔 {{ formatDuration(cleanupIntervalSecs * 1000) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Latest report -->
         <div v-if="showLatestReport && latestReport?.content" class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header">
@@ -705,9 +790,16 @@ onMounted(loadAll)
                 <div>
                   <h4 style="font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-2);">学习</h4>
                   <div style="display: flex; flex-direction: column; gap: var(--space-2);">
-                    <div style="display: flex; justify-content: space-between;">
-                      <span style="color: var(--text-secondary);">学习开关</span>
-                      <span class="badge" :class="configData.learning_enabled ? 'badge-success' : 'badge-neutral'">{{ configData.learning_enabled ? '启用' : '禁用' }}</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="color: var(--text-secondary); position: relative; cursor: help;" title="启用后，Forge 会在反思时自动从经验中提取模式并尝试生成技能。关闭时，经验和反思照常运行，只是不会自动生成技能。">
+                        闭环学习
+                        <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
+                      </span>
+                      <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
+                        <input type="checkbox" :checked="learningEnabled" @change="toggleLearning()" style="opacity: 0; width: 0; height: 0;">
+                        <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: learningEnabled ? 'var(--success)' : 'var(--text-muted)' }"></span>
+                        <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: learningEnabled ? 'translateX(18px)' : 'translateX(2px)' }"></span>
+                      </label>
                     </div>
                     <div style="display: flex; justify-content: space-between;">
                       <span style="color: var(--text-secondary);">最小模式频率</span>
@@ -731,6 +823,6 @@ onMounted(loadAll)
 
 <style scoped>
 .forge-status-card--active {
-  background-color: var(--success-bg);
+  background-color: #1a3a2a;
 }
 </style>

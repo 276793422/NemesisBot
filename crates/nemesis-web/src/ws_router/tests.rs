@@ -60,6 +60,7 @@ fn make_test_state() -> Arc<AppState> {
         data_store: None,
         memory_manager: None,
         forge: None,
+        agent_loop: None,
     })
 }
 

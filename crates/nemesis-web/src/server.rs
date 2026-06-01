@@ -124,6 +124,8 @@ pub struct WebServer {
     memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
     /// Forge self-learning instance for runtime start/stop control.
     forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    /// Agent loop for runtime model/provider switching.
+    agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
 }
 
 impl WebServer {
@@ -150,6 +152,7 @@ impl WebServer {
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         }
     }
 
@@ -195,6 +198,11 @@ impl WebServer {
         self.forge = Some(forge);
     }
 
+    /// Set the agent loop for runtime model/provider switching.
+    pub fn set_agent_loop(&mut self, agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>) {
+        self.agent_loop = Some(agent_loop);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -223,6 +231,7 @@ impl WebServer {
             data_store: self.data_store.clone(),
             memory_manager: self.memory_manager.clone(),
             forge: self.forge.clone(),
+            agent_loop: self.agent_loop.clone(),
         };
 
         let state = Arc::new(state);

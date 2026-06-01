@@ -367,6 +367,7 @@ use super::*;
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -578,6 +579,7 @@ use super::*;
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -687,6 +689,7 @@ use super::*;
             data_store: None,
             memory_manager: None,
             forge: None,
+            agent_loop: None,
         })
     }
 

@@ -73,6 +73,8 @@ pub struct AppState {
     pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
     /// Forge self-learning instance for runtime start/stop control.
     pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    /// Agent loop for runtime model/provider switching.
+    pub agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
 }
 
 impl AppState {

@@ -1,0 +1,53 @@
+{
+  "enabled": false,
+  "collection": {
+    "enabled": true,
+    "buffer_size": 256,
+    "flush_interval_secs": 30,
+    "max_experiences_per_day": 500,
+    "sanitize_fields": ["api_key", "token", "password", "secret", "credential", "key"],
+    "max_experiences": 10000,
+    "interval_secs": 300
+  },
+  "storage": {
+    "max_experience_age_days": 90,
+    "max_report_age_days": 30,
+    "cleanup_interval_secs": 86400
+  },
+  "reflection": {
+    "interval_secs": 21600,
+    "min_experiences": 10,
+    "use_llm": true,
+    "llm_budget_tokens": 4000,
+    "max_report_age_days": 30
+  },
+  "artifacts": {
+    "auto_skill": false,
+    "max_skills": 50,
+    "max_scripts": 100,
+    "default_status": "draft"
+  },
+  "validation": {
+    "auto_validate": true,
+    "min_quality_score": 60,
+    "llm_max_tokens": 2000,
+    "timeout_secs": 60
+  },
+  "trace": {
+    "enabled": true,
+    "max_trace_age_days": 30,
+    "min_traces_for_analysis": 5
+  },
+  "learning": {
+    "enabled": false,
+    "min_pattern_frequency": 5,
+    "high_conf_threshold": 0.8,
+    "max_auto_creates": 3,
+    "max_refine_rounds": 3,
+    "min_outcome_samples": 5,
+    "monitor_window_days": 7,
+    "degrade_threshold": -0.2,
+    "degradation_cooldown_days": 7,
+    "llm_budget_tokens": 2000
+  }
+}

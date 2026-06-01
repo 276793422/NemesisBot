@@ -293,9 +293,13 @@ impl SentInRoundTracker {
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
-    /// Wrapped in `Arc` so it can be cheaply cloned for spawned tasks
-    /// (e.g. cluster continuation, async summarization).
-    provider: Arc<dyn LlmProvider>,
+    /// Wrapped in `RwLock<Arc<...>>` for runtime provider swapping (model switch).
+    /// Spawned tasks clone the Arc (cheap), so in-flight requests finish with the
+    /// old provider while new requests use the updated one.
+    provider: parking_lot::RwLock<Arc<dyn LlmProvider>>,
+    /// Active model name, kept in sync with the provider above.
+    /// Separated from `config.model` so runtime swaps don't need `&mut self`.
+    active_model: parking_lot::RwLock<String>,
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
@@ -368,7 +372,8 @@ impl AgentLoop {
         let model = config.model.clone();
         info!("[AgentLoop] Created in standalone mode, model={}", model);
         Self {
-            provider: Arc::from(provider),
+            provider: parking_lot::RwLock::new(Arc::from(provider)),
+            active_model: parking_lot::RwLock::new(config.model.clone()),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: None,
@@ -431,7 +436,8 @@ impl AgentLoop {
         );
 
         Self {
-            provider: Arc::from(provider),
+            provider: parking_lot::RwLock::new(Arc::from(provider)),
+            active_model: parking_lot::RwLock::new(config.model.clone()),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: Some(outbound_tx),
@@ -690,6 +696,14 @@ impl AgentLoop {
         self.forge = Some(forge);
     }
 
+    /// Swap the LLM provider and model at runtime. Takes effect immediately
+    /// for the next LLM call. In-flight requests continue with the old provider.
+    pub fn set_provider_and_model(&self, provider: Arc<dyn LlmProvider>, model: String) {
+        *self.provider.write() = provider;
+        *self.active_model.write() = model;
+        tracing::info!("[AgentLoop] Provider swapped at runtime");
+    }
+
     /// Get the observer manager, if set.
     /// Mirrors Go's `GetObserverManager()`.
     pub fn get_observer_manager(&self) -> Option<&Arc<nemesis_observer::Manager>> {
@@ -701,9 +715,9 @@ impl AgentLoop {
         self.registry.as_ref()
     }
 
-    /// Get a reference to the provider.
-    pub fn provider(&self) -> &dyn LlmProvider {
-        self.provider.as_ref()
+    /// Get a clone of the provider Arc.
+    pub fn provider_arc(&self) -> Arc<dyn LlmProvider> {
+        self.provider.read().clone()
     }
 
     /// Get a mutable reference to the agent config.
@@ -739,8 +753,8 @@ impl AgentLoop {
 
                         // Clone the data needed by the spawned task.
                         // Mirrors Go's `go al.handleClusterContinuation(ctx, taskID)`.
-                        let provider = self.provider.clone();       // Arc clone (cheap)
-                        let model = self.config.model.clone();
+                        let provider = self.provider.read().clone();       // Arc clone (cheap)
+                        let model = self.active_model.read().clone();
                         let tools = self.tools.read().clone();             // HashMap of Arc clones (cheap)
                         let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
                         let continuation_manager = self.continuation_manager.clone(); // Option<Arc> clone
@@ -859,8 +873,8 @@ impl AgentLoop {
                         let task_id = response;
                         info!("[AgentLoop] Handling cluster continuation for task {}", task_id);
 
-                        let provider = self.provider.clone();
-                        let model = self.config.model.clone();
+                        let provider = self.provider.read().clone();
+                        let model = self.active_model.read().clone();
                         let tools = self.tools.read().clone();
                         let outbound_tx = self.outbound_tx.clone();
                         let continuation_manager = self.continuation_manager.clone();
@@ -1046,6 +1060,9 @@ impl AgentLoop {
             let task_error = original_msg.metadata.get("error")
                 .map(|s| s.as_str());
 
+            // Clone provider and model before .await (RwLock guards are not Send).
+            let cont_provider = self.provider.read().clone();
+            let cont_model = self.active_model.read().clone();
             if let Some(ref tx) = self.outbound_tx {
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -1053,8 +1070,8 @@ impl AgentLoop {
                     task_response,
                     task_failed,
                     task_error,
-                    self.provider.as_ref(),
-                    &self.config.model,
+                    cont_provider.as_ref(),
+                    &cont_model,
                     &self.tools,
                     tx,
                     self.observer_manager.clone(),
@@ -1167,7 +1184,7 @@ impl AgentLoop {
 
         // Heartbeat uses a fresh temporary instance, no history.
         let config = AgentConfig {
-            model: self.config.model.clone(),
+            model: self.active_model.read().clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
@@ -1640,8 +1657,8 @@ impl AgentLoop {
         }
 
         // Clone all data needed by the spawned task.
-        let provider = self.provider.clone();         // Arc clone
-        let model = self.config.model.clone();
+        let provider = self.provider.read().clone();         // Arc clone
+        let model = self.active_model.read().clone();
         let outbound_tx = self.outbound_tx.clone();   // Option<Sender> clone
         let session_store = self.session_store.clone(); // Option<Arc<SessionStore>> clone
         let summarizing_flag = self.summarizing.clone(); // Arc clone for clearing after completion
@@ -1873,7 +1890,9 @@ impl AgentLoop {
             reasoning_content: None,
         }];
 
-        let response = block_on_llm_chat(&*self.provider, &self.config.model, llm_messages);
+        let p = self.provider.read().clone();
+        let m = self.active_model.read().clone();
+        let response = block_on_llm_chat(&*p, &m, llm_messages);
 
         match response {
             Some(Ok(resp)) if !resp.content.is_empty() => resp.content,
@@ -1905,7 +1924,9 @@ impl AgentLoop {
             reasoning_content: None,
         }];
 
-        let response = block_on_llm_chat(&*self.provider, &self.config.model, messages);
+        let p = self.provider.read().clone();
+        let m = self.active_model.read().clone();
+        let response = block_on_llm_chat(&*p, &m, messages);
 
         match response {
             Some(Ok(resp)) => resp.content,
@@ -1924,7 +1945,7 @@ impl AgentLoop {
     /// Get or create an AgentInstance for the given session key.
     fn get_or_create_instance(&self, session_key: &str) -> AgentInstance {
         let config = AgentConfig {
-            model: self.config.model.clone(),
+            model: self.active_model.read().clone(),
             system_prompt: self.config.system_prompt.clone(),
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
@@ -2157,7 +2178,7 @@ impl AgentLoop {
             self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmRequest {
                 trace_id: trace_id.to_string(),
                 round: turns_used + 1,
-                model: self.config.model.clone(),
+                model: self.active_model.read().clone(),
                 messages_count: messages.len(),
                 tools_count: tool_defs.len(),
                 messages: msg_values,
@@ -2170,7 +2191,10 @@ impl AgentLoop {
             // Call LLM.
             instance.set_state(crate::types::AgentState::Thinking);
             let round_start = std::time::Instant::now();
-            let mut response = match self.provider.chat(&self.config.model, messages, Some(chat_opts.clone()), tool_defs).await {
+            // Clone provider Arc and model string so RwLock guards are dropped before .await.
+            let active_provider = self.provider.read().clone();
+            let active_model = self.active_model.read().clone();
+            let mut response = match active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs).await {
                 Ok(resp) => resp,
                 Err(err) => {
                     let err_lower = err.to_lowercase();
@@ -2226,7 +2250,7 @@ impl AgentLoop {
                                 })
                                 .collect();
 
-                            match self.provider.chat(&self.config.model, compressed_messages, Some(chat_opts.clone()), retry_tool_defs).await {
+                            match active_provider.chat(&active_model, compressed_messages, Some(chat_opts.clone()), retry_tool_defs).await {
                                 Ok(resp) => {
                                     got_response = Some(resp);
                                     break;
@@ -2319,7 +2343,7 @@ impl AgentLoop {
                     let log = nemesis_data::RequestLog {
                         id: 0,
                         trace_id: trace_id.to_string(),
-                        model: self.config.model.clone(),
+                        model: self.active_model.read().clone(),
                         provider_type: String::new(),
                         input_tokens: usage.prompt_tokens,
                         output_tokens: usage.completion_tokens,
@@ -2603,7 +2627,7 @@ impl AgentLoop {
                     return Some("Usage: /show [model|channel|agents]".to_string());
                 }
                 match parts[1] {
-                    "model" => Some(format!("Current model: {}", self.config.model)),
+                    "model" => Some(format!("Current model: {}", self.active_model.read())),
                     "channel" => Some(format!("Current channel: {}", current_channel)),
                     "agents" => {
                         let agent_ids = self
@@ -2636,7 +2660,7 @@ impl AgentLoop {
                     }
                     "model" | "models" => Some(format!(
                         "Current model: {} (configured in config.json)",
-                        self.config.model
+                        self.active_model.read()
                     )),
                     "channels" => {
                         let channels = self.channel_manager_channels.lock();
@@ -2673,7 +2697,7 @@ impl AgentLoop {
 
                 match target {
                     "model" => {
-                        let old_model = self.config.model.clone();
+                        let old_model = self.active_model.read().clone();
                         Some(format!(
                             "Model switch requested: {} -> {} (restart required for persistent change)",
                             old_model, value
@@ -2712,7 +2736,7 @@ impl AgentLoop {
                 "count": agent_ids.len(),
                 "ids": agent_ids,
             },
-            "model": self.config.model,
+            "model": self.active_model.read().to_string(),
             "max_turns": self.config.max_turns,
             "system_prompt_configured": self.config.system_prompt.is_some(),
         })

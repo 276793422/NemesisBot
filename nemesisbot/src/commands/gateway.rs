@@ -1177,7 +1177,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let forge_for_web: Option<std::sync::Arc<nemesis_forge::forge::Forge>>;
     let forge_executor_for_tools: Option<std::sync::Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>;
     {
-        let forge_config = nemesis_forge::config::ForgeConfig::default();
+        // Load forge config from file, fall back to defaults if missing.
+        let forge_config_path = home.join("workspace").join("config").join("config.forge.json");
+        let forge_config = if forge_config_path.exists() {
+            nemesis_forge::config::load_forge_config(&forge_config_path)
+        } else {
+            nemesis_forge::config::ForgeConfig::default()
+        };
         let forge_workspace = home.join("workspace");
         let forge_dir = forge_workspace.join("forge");
         let mut forge = nemesis_forge::forge::Forge::new(
@@ -2202,6 +2208,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         web_server.set_forge(forge);
         info!("[Gateway] Forge instance injected into web server");
     }
+
+    // Inject AgentLoop into web server for runtime model switching
+    web_server.set_agent_loop(agent_loop.clone());
+    info!("[Gateway] AgentLoop injected into web server for model switching");
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;

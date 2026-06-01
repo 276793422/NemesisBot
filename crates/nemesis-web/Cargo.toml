@@ -17,6 +17,7 @@ nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true }
 nemesis-memory = { workspace = true }
 nemesis-data = { workspace = true }
+nemesis-agent = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

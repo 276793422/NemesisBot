@@ -147,6 +147,11 @@ pub fn chat_config_path(home: &Path) -> PathBuf {
     home.join("workspace").join("config").join("config.chat.json")
 }
 
+/// Get the Forge self-learning config file path.
+pub fn forge_config_path(home: &Path) -> PathBuf {
+    home.join("workspace").join("config").join("config.forge.json")
+}
+
 /// Get the CORS config file path.
 pub fn cors_config_path(home: &Path) -> PathBuf {
     home.join("config").join("cors.json")

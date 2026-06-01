@@ -50,6 +50,10 @@ pub struct Forge {
     bg_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// Shared running flag that background loops observe.
     bg_running: Arc<Mutex<bool>>,
+    /// Timestamp when Forge was last started (RFC3339).
+    started_at: Mutex<Option<String>>,
+    /// Runtime toggle for learning (mirrors config.learning.enabled, mutable at runtime).
+    learning_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl Forge {
@@ -82,6 +86,8 @@ impl Forge {
         let sanitizer = Sanitizer::new();
         let exporter = Exporter::new(crate::exporter::ExportConfig::new(&workspace));
 
+        let learning_enabled = config.learning.enabled;
+
         Self {
             config,
             workspace,
@@ -103,6 +109,8 @@ impl Forge {
             bridge: Mutex::new(None),
             bg_tasks: Mutex::new(Vec::new()),
             bg_running: Arc::new(Mutex::new(false)),
+            started_at: Mutex::new(None),
+            learning_enabled: std::sync::atomic::AtomicBool::new(learning_enabled),
         }
     }
 
@@ -123,6 +131,7 @@ impl Forge {
         }
 
         *self.bg_running.lock() = true;
+        *self.started_at.lock() = Some(chrono::Utc::now().to_rfc3339());
 
         let flush_interval = self.config.collection.flush_interval_secs;
         let reflect_interval = self.config.reflection.interval_secs;
@@ -221,7 +230,7 @@ impl Forge {
 
         // Step 2: Learning cycle (pattern detection + skill generation)
         if let Some(ref learning_engine) = self.learning_engine {
-            if self.config.learning.enabled {
+            if self.is_learning_enabled() {
                 let cycle = learning_engine.run_cycle(&experiences).await;
                 tracing::info!(cycle_id = %cycle.id, patterns = cycle.patterns_found, actions = cycle.actions_taken, "[Forge] learning cycle completed");
             }
@@ -282,6 +291,7 @@ impl Forge {
     pub async fn stop(&self) {
         *self.running.lock() = false;
         *self.bg_running.lock() = false; // Signal background loops to exit
+        *self.started_at.lock() = None;
 
         // Perform a final collector flush to persist any buffered data.
         if let Err(e) = self.collector.flush().await {
@@ -333,6 +343,23 @@ impl Forge {
     /// Get a reference to the configuration.
     pub fn config(&self) -> &ForgeConfig {
         &self.config
+    }
+
+    /// Get the timestamp when Forge was last started (RFC3339).
+    pub fn started_at(&self) -> Option<String> {
+        self.started_at.lock().clone()
+    }
+
+    /// Set the learning enabled flag at runtime.
+    /// Takes effect on the next reflection cycle — no restart needed.
+    pub fn set_learning_enabled(&self, enabled: bool) {
+        self.learning_enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!(enabled, "[Forge] Learning flag updated at runtime");
+    }
+
+    /// Check whether learning is currently enabled.
+    pub fn is_learning_enabled(&self) -> bool {
+        self.learning_enabled.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Get a reference to the collector.
