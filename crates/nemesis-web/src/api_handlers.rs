@@ -71,6 +71,8 @@ pub struct AppState {
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Memory manager for runtime vector store control.
     pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
+    /// Forge self-learning instance for runtime start/stop control.
+    pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
 }
 
 impl AppState {

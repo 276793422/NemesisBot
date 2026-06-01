@@ -1171,9 +1171,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Cron service handler wired (publishes to bus)");
     }
 
-    // Create Forge executor if forge.enabled = true (mirrors Go's bot_service.go initComponents)
+    // Create Forge executor (always create instance for runtime toggle support).
     // M2 + M3 + L1 + L2 + M4 all wired here.
-    let forge_executor_and_instance = if cfg.forge.as_ref().map(|f| f.enabled).unwrap_or(false) {
+    let forge_enabled = cfg.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
+    let forge_for_web: Option<std::sync::Arc<nemesis_forge::forge::Forge>>;
+    let forge_executor_for_tools: Option<std::sync::Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>;
+    {
         let forge_config = nemesis_forge::config::ForgeConfig::default();
         let forge_workspace = home.join("workspace");
         let forge_dir = forge_workspace.join("forge");
@@ -1280,10 +1283,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
         );
         info!("[Gateway] Forge executor created (8 tools will be registered)");
-        Some((executor, forge))
-    } else {
-        None
-    };
+
+        // Inject Forge into AgentLoop for experience collection.
+        agent_loop.set_forge(forge.clone());
+
+        // Start background tasks only if enabled in config.
+        if forge_enabled {
+            let forge_for_start = forge.clone();
+            tokio::spawn(async move {
+                forge_for_start.start().await;
+            });
+            info!("[Gateway] Forge started (background tasks running)");
+        } else {
+            info!("[Gateway] Forge created but not started (enabled=false in config)");
+        }
+
+        // Store for web server injection.
+        forge_for_web = Some(forge);
+        forge_executor_for_tools = Some(executor);
+    }
 
     let mcp_enabled = cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false);
 
@@ -1292,8 +1310,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let shared_config = nemesis_agent::SharedToolConfig {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         cron_service: Some(cron_service.clone()),
-        forge_executor: forge_executor_and_instance.as_ref().map(|(exec, _)| exec.clone()),
-        forge: forge_executor_and_instance.as_ref().map(|(_, forge)| forge.clone()),
+        forge_executor: forge_executor_for_tools.clone(),
+        forge: forge_for_web.clone(),
         memory_executor: {
             if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
                 let memory_data_dir = home.join("workspace").join("memory_vector");
@@ -1402,9 +1420,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // M4: Start Forge background services (Collector/Reflector/Syncer).
     // Mirrors Go's bot_service.go:582-585: forgeSvc.Start().
-    if let Some((_, ref forge)) = forge_executor_and_instance {
-        std::sync::Arc::clone(forge).start().await;
-        info!("[Gateway] Forge background services started");
+    // Note: Forge start is now handled at creation time above (only if enabled).
+    if forge_enabled {
+        info!("[Gateway] Forge background services already started");
     }
 
     // Step 9a: Set up cluster if enabled.
@@ -1714,7 +1732,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // --- Wire Forge-Cluster bridge ---
         // Replace the NoOpBridge with a real ClusterForgeBridgeAdapter so that
         // Forge can share reflections with cluster peers.
-        if let Some((_, ref forge_arc)) = forge_executor_and_instance {
+        if let Some(ref forge_arc) = forge_for_web {
             let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
             forge_arc.set_bridge(Arc::new(cluster_bridge));
             info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
@@ -2081,11 +2099,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] DataStore injected into agent loop");
     }
 
-    // Inject Forge instance into agent loop for experience collection
-    if let Some((_, ref forge)) = forge_executor_and_instance {
-        agent_loop.set_forge(forge.clone());
-        info!("[Gateway] Forge instance injected into agent loop");
-    }
+    // Note: Forge injection into agent_loop is now handled at creation time above.
 
     // Wrap agent_loop in Arc for shared access (heartbeat handler, etc.)
     let agent_loop = Arc::new(agent_loop);
@@ -2181,6 +2195,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     if let Some(mgr) = memory_manager_for_web {
         web_server.set_memory_manager(mgr);
         info!("[Gateway] MemoryManager injected into web server");
+    }
+
+    // Inject Forge into web server for runtime start/stop control
+    if let Some(forge) = forge_for_web {
+        web_server.set_forge(forge);
+        info!("[Gateway] Forge instance injected into web server");
     }
 
     // Step 11: Create HealthServer

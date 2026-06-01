@@ -365,6 +365,8 @@ use super::*;
             ws_router: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
+            forge: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -574,6 +576,8 @@ use super::*;
             ws_router: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
+            forge: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -681,6 +685,8 @@ use super::*;
             ws_router: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
+            forge: None,
         })
     }
 

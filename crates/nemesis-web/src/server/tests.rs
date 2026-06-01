@@ -541,6 +541,8 @@ async fn test_handle_health_endpoint() {
         ws_router: None,
         agent_service: None,
         data_store: None,
+        memory_manager: None,
+        forge: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -569,6 +571,8 @@ async fn test_handle_health_not_running() {
         ws_router: None,
         agent_service: None,
         data_store: None,
+        memory_manager: None,
+        forge: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -1058,6 +1062,8 @@ async fn test_handle_health_with_model_state() {
         ws_router: None,
         agent_service: None,
         data_store: None,
+        memory_manager: None,
+        forge: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

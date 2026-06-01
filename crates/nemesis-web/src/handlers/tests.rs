@@ -33,6 +33,8 @@ use super::*;
             ws_router: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
+            forge: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -62,6 +64,8 @@ use super::*;
             ws_router: None,
             agent_service: None,
             data_store: None,
+            memory_manager: None,
+            forge: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -802,7 +806,8 @@ use super::*;
 
         let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
         assert!(!result["enabled"].as_bool().unwrap());
-        assert_eq!(result["artifacts_count"], 0);
+        assert_eq!(result["experience_count"], 0);
+        assert_eq!(result["artifact_count"], 0);
     }
 
     #[tokio::test]
@@ -2980,7 +2985,9 @@ address = "192.168.1.11:5000"
 
         let result = handler.handle_cmd("status", None, &ctx).await.unwrap().unwrap();
         assert!(result["enabled"].as_bool().unwrap());
-        assert_eq!(result["artifacts_count"], 2); // skills/ dir + config.json
+        assert_eq!(result["experience_count"], 0);
+        assert_eq!(result["artifact_count"], 0);
+        assert!(result["forge_dir_exists"].as_bool().unwrap());
 
         let result = handler.handle_cmd("artifacts", None, &ctx).await.unwrap().unwrap();
         let artifacts = result["artifacts"].as_array().unwrap();
