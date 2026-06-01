@@ -1313,6 +1313,46 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     let mut memory_manager_for_web: Option<std::sync::Arc<nemesis_memory::manager::MemoryManager>> = None;
 
+    let skills_loader_arc: Option<std::sync::Arc<nemesis_skills::loader::SkillsLoader>> = {
+        let workspace_str = home.join("workspace").to_string_lossy().to_string();
+        let global_skills_str = home.join("workspace").join("skills").to_string_lossy().to_string();
+        let loader = nemesis_skills::loader::SkillsLoader::new(
+            &workspace_str,
+            &global_skills_str,
+            "",
+        );
+        info!("[Gateway] Skills loader created (workspace={}, global_skills={})", workspace_str, global_skills_str);
+        Some(std::sync::Arc::new(loader))
+    };
+
+    let skills_registry_arc: Option<std::sync::Arc<nemesis_skills::registry::RegistryManager>> = {
+        let skills_config_path = home.join("workspace").join("config").join("config.skills.json");
+        if skills_config_path.exists() {
+            match std::fs::read_to_string(&skills_config_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&content) {
+                        Ok(reg_config) => {
+                            let rm = nemesis_skills::registry::RegistryManager::from_config(reg_config);
+                            info!("[Gateway] Skills registry loaded from {}", skills_config_path.display());
+                            Some(std::sync::Arc::new(rm))
+                        }
+                        Err(e) => {
+                            warn!("[Gateway] Failed to parse skills config: {} — skills search/install disabled", e);
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("[Gateway] Failed to read skills config: {} — skills search/install disabled", e);
+                    None
+                }
+            }
+        } else {
+            info!("[Gateway] No skills config found at {} — skills search/install disabled", skills_config_path.display());
+            None
+        }
+    };
+
     let shared_config = nemesis_agent::SharedToolConfig {
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
         cron_service: Some(cron_service.clone()),
@@ -1335,47 +1375,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 None
             }
         },
-        // Skills loader: scans workspace/global/builtin skill directories.
-        // Mirrors Go's context.go: globalSkillsDir = filepath.Join(getGlobalConfigDir(), "workspace", "skills").
-        skills_loader: {
-            let workspace_str = home.join("workspace").to_string_lossy().to_string();
-            let global_skills_str = home.join("workspace").join("skills").to_string_lossy().to_string();
-            let loader = nemesis_skills::loader::SkillsLoader::new(
-                &workspace_str,
-                &global_skills_str,
-                "", // builtin: reserved, currently empty
-            );
-            info!("[Gateway] Skills loader created (workspace={}, global_skills={})", workspace_str, global_skills_str);
-            Some(std::sync::Arc::new(loader))
-        },
-        // Skills registry: loads from config.skills.json for remote find/install.
-        skills_registry: {
-            let skills_config_path = home.join("workspace").join("config").join("config.skills.json");
-            if skills_config_path.exists() {
-                match std::fs::read_to_string(&skills_config_path) {
-                    Ok(content) => {
-                        match serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&content) {
-                            Ok(reg_config) => {
-                                let rm = nemesis_skills::registry::RegistryManager::from_config(reg_config);
-                                info!("[Gateway] Skills registry loaded from {}", skills_config_path.display());
-                                Some(std::sync::Arc::new(rm))
-                            }
-                            Err(e) => {
-                                warn!("[Gateway] Failed to parse skills config: {} — skills search/install disabled", e);
-                                None
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[Gateway] Failed to read skills config: {} — skills search/install disabled", e);
-                        None
-                    }
-                }
-            } else {
-                info!("[Gateway] No skills config found at {} — skills search/install disabled", skills_config_path.display());
-                None
-            }
-        },
+        skills_loader: skills_loader_arc.clone(),
+        skills_registry: skills_registry_arc.clone(),
         // Web search tool: maps cfg.tools.web → WebSearchConfig.
         // Mirrors Go's loop_tools.go: tools.NewWebSearchTool(cfg.Tools.Web).
         web_search: {
@@ -1820,6 +1821,55 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // C1: Create ChannelManager and wire it.
     // Mirrors Go's bot_service.go:333-344: create ChannelManager, register channels,
     // start dispatch loop, call agentLoop.SetChannelManager().
+
+    // Create WebServer early so we can inject SessionManager into WebChannel.
+    let web_host = {
+        let h = &cfg.channels.web.host;
+        if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.clone() }
+    };
+    let web_port = cfg.channels.web.port;
+    let cors_origins = {
+        let cors_path = common::cors_config_path(&home);
+        if cors_path.exists() {
+            match nemesis_web::cors::CORSManager::new(&cors_path) {
+                Ok(mgr) => {
+                    let mgr_cfg = mgr.config();
+                    if mgr_cfg.development_mode {
+                        info!("[Gateway] CORS: development_mode enabled, allowing all origins");
+                        vec![]
+                    } else {
+                        let origins = mgr.list_origins();
+                        info!("[Gateway] CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
+                        origins
+                    }
+                }
+                Err(e) => {
+                    warn!("[Gateway] Failed to load CORS config: {}, using permissive defaults", e);
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        }
+    };
+    let static_files = crate::embedded::resolve_static_files();
+    let web_config = nemesis_web::server::WebServerConfig {
+        listen_addr: format!("{}:{}", web_host, web_port),
+        auth_token: cfg.channels.web.auth_token.clone(),
+        cors_origins,
+        ws_path: "/ws".to_string(),
+        workspace: Some(home.join("workspace").to_string_lossy().to_string()),
+        home: Some(home.to_string_lossy().to_string()),
+        version: crate::common::VERSION_INFO.version.to_string(),
+        static_dir: None,
+        static_files: Some(static_files),
+        index_file: "index.html".to_string(),
+    };
+    let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    let web_server_ops = std::sync::Arc::new(crate::adapters::WebServerOpsAdapter::new(
+        web_server.session_manager().clone(),
+    ));
+
     {
         // Build list of enabled channels from config.
         let mut enabled_channels = Vec::new();
@@ -1855,6 +1905,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             } else {
                 None
             },
+            web_server_ops: Some(web_server_ops),
             external: if cfg.channels.external.enabled {
                 Some(nemesis_channels::external::ExternalConfig {
                     input_exe: cfg.channels.external.input_exe.clone(),
@@ -2117,53 +2168,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         bus.clone(),
     ));
 
-    // Step 10: Create WebServer
-    let web_host = {
-        let h = &cfg.channels.web.host;
-        if h == "0.0.0.0" || h.is_empty() { "127.0.0.1".to_string() } else { h.clone() }
-    };
-    let web_port = cfg.channels.web.port;
-
-    // Load CORS origins from cors.json (mirrors Go's CORSManager loading).
-    let cors_origins = {
-        let cors_path = common::cors_config_path(&home);
-        if cors_path.exists() {
-            match nemesis_web::cors::CORSManager::new(&cors_path) {
-                Ok(mgr) => {
-                    let cfg = mgr.config();
-                    if cfg.development_mode {
-                        info!("[Gateway] CORS: development_mode enabled, allowing all origins");
-                        vec![]
-                    } else {
-                        let origins = mgr.list_origins();
-                        info!("[Gateway] CORS: loaded {} allowed origins from {}", origins.len(), cors_path.display());
-                        origins
-                    }
-                }
-                Err(e) => {
-                    warn!("[Gateway] Failed to load CORS config: {}, using permissive defaults", e);
-                    vec![]
-                }
-            }
-        } else {
-            vec![]
-        }
-    };
-
-    let static_files = crate::embedded::resolve_static_files();
-    let web_config = nemesis_web::server::WebServerConfig {
-        listen_addr: format!("{}:{}", web_host, web_port),
-        auth_token: cfg.channels.web.auth_token.clone(),
-        cors_origins,
-        ws_path: "/ws".to_string(),
-        workspace: Some(home.join("workspace").to_string_lossy().to_string()),
-        home: Some(home.to_string_lossy().to_string()),
-        version: crate::common::VERSION_INFO.version.to_string(),
-        static_dir: None,
-        static_files: Some(static_files),
-        index_file: "index.html".to_string(),
-    };
-    let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    // Step 10: Wire up WebServer (created early for WebChannel injection)
     web_server.set_message_bus(bus.clone());
     web_server.set_model_info(&model_name, &resolution.api_base, !resolution.api_key.is_empty());
 
@@ -2212,6 +2217,23 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject AgentLoop into web server for runtime model switching
     web_server.set_agent_loop(agent_loop.clone());
     info!("[Gateway] AgentLoop injected into web server for model switching");
+
+    // Inject additional components for agent reload support
+    if let Some(ref plugin) = security_plugin {
+        web_server.set_security_plugin(plugin.clone());
+    }
+    web_server.set_cron_service(cron_service.clone());
+    if let Some(ref executor) = forge_executor_for_tools {
+        web_server.set_forge_executor(executor.clone());
+    }
+    if let Some(ref loader) = skills_loader_arc {
+        web_server.set_skills_loader(loader.clone());
+    }
+    if let Some(ref registry) = skills_registry_arc {
+        web_server.set_skills_registry(registry.clone());
+    }
+
+    info!("[Gateway] Additional components injected for agent reload");
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;

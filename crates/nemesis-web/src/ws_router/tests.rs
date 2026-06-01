@@ -61,6 +61,11 @@ fn make_test_state() -> Arc<AppState> {
         memory_manager: None,
         forge: None,
         agent_loop: None,
+        security_plugin: None,
+        cron_service: None,
+        skills_loader: None,
+        skills_registry: None,
+        forge_executor: None,
     })
 }
 

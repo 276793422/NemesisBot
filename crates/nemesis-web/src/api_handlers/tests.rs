@@ -368,6 +368,11 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: None,
+            security_plugin: None,
+            cron_service: None,
+            skills_loader: None,
+            skills_registry: None,
+            forge_executor: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -580,6 +585,11 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: None,
+            security_plugin: None,
+            cron_service: None,
+            skills_loader: None,
+            skills_registry: None,
+            forge_executor: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -690,6 +700,11 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: None,
+            security_plugin: None,
+            cron_service: None,
+            skills_loader: None,
+            skills_registry: None,
+            forge_executor: None,
         })
     }
 

@@ -9,13 +9,13 @@ use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
 use nemesis_agent::types::ToolCallInfo as AgentToolCallInfo;
 
 /// Wraps a `nemesis_providers::LLMProvider` so it satisfies the agent's `LlmProvider` trait.
-struct ProviderAdapter {
+pub(crate) struct ProviderAdapter {
     inner: Arc<dyn nemesis_providers::router::LLMProvider>,
     default_model: String,
 }
 
 impl ProviderAdapter {
-    fn new(inner: Arc<dyn nemesis_providers::router::LLMProvider>, default_model: String) -> Self {
+    pub(crate) fn new(inner: Arc<dyn nemesis_providers::router::LLMProvider>, default_model: String) -> Self {
         Self { inner, default_model }
     }
 }

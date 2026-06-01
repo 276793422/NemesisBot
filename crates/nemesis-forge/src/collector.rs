@@ -41,7 +41,11 @@ impl Collector {
         let persistence_path = if config.persistence_path.is_empty() {
             None
         } else {
-            Some(PathBuf::from(&config.persistence_path))
+            let path = PathBuf::from(&config.persistence_path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            Some(path)
         };
         tracing::debug!(
             persistence = persistence_path.as_ref().map(|p| p.display().to_string()),

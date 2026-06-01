@@ -71,7 +71,8 @@ async function startAgent() {
     const data = await request('agent', 'start')
     if (data?.started) {
       agentRunning.value = true
-      toast.success('Agent 已启动')
+      toast.success('Agent 已启动，配置已重新加载')
+      loadAgentStatus()
     }
   } catch (e: any) {
     toast.error('启动失败: ' + e)
@@ -86,7 +87,7 @@ async function stopAgent() {
     const data = await request('agent', 'stop')
     if (data?.stopped) {
       agentRunning.value = false
-      toast.success('Agent 已暂停')
+      toast.success('Agent 已停止，组件已卸载')
     }
   } catch (e: any) {
     toast.error('停止失败: ' + e)

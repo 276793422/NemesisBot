@@ -312,3 +312,64 @@ impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
 
 #[cfg(test)]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// WebServerOps adapter
+// ---------------------------------------------------------------------------
+
+use nemesis_channels::web::WebServerOps;
+
+/// Adapter that bridges `nemesis_web::SessionManager` to the `WebServerOps` trait
+/// used by `WebChannel` for outbound message delivery.
+pub struct WebServerOpsAdapter {
+    session_manager: Arc<nemesis_web::session::SessionManager>,
+    rt: tokio::runtime::Handle,
+}
+
+impl WebServerOpsAdapter {
+    pub fn new(session_manager: Arc<nemesis_web::session::SessionManager>) -> Self {
+        Self {
+            session_manager,
+            rt: tokio::runtime::Handle::current(),
+        }
+    }
+}
+
+impl WebServerOps for WebServerOpsAdapter {
+    fn send_to_session(&self, session_id: &str, role: &str, content: &str) -> std::result::Result<(), String> {
+        self.rt.block_on(nemesis_web::server::send_to_session(
+            &self.session_manager, session_id, role, content,
+        ))
+    }
+
+    fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String> {
+        self.rt.block_on(nemesis_web::server::send_history_to_session(
+            &self.session_manager, session_id, content,
+        ))
+    }
+
+    fn broadcast(&self, content: &str) -> std::result::Result<(), String> {
+        let msg = nemesis_web::protocol::ProtocolMessage::new(
+            "message", "chat", "receive",
+            Some(serde_json::json!({
+                "role": "assistant",
+                "content": content,
+            })),
+        );
+        let data = serde_json::to_vec(&msg).map_err(|e| format!("marshal: {}", e))?;
+        for sid in self.active_session_ids() {
+            self.rt.block_on(self.session_manager.broadcast(&sid, &data))?;
+        }
+        Ok(())
+    }
+
+    fn active_session_ids(&self) -> Vec<String> {
+        self.session_manager.all_sessions().into_iter().map(|s| s.id).collect()
+    }
+
+    fn start_server(&self) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    fn stop_server(&self) {}
+}

@@ -491,7 +491,7 @@ impl ChannelManager {
 ///
 /// Channel-specific configs use `Option` so that only the enabled channels
 /// need to have their fields populated.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ChannelInitConfig {
     /// Telegram channel configuration.
     #[cfg(feature = "telegram")]
@@ -543,8 +543,19 @@ pub struct ChannelInitConfig {
     pub maixcam: Option<crate::maixcam::MaixCamConfig>,
     /// Web channel configuration.
     pub web: Option<crate::web::WebChannelConfig>,
+    /// WebServerOps for injecting into the WebChannel (outbound delivery).
+    pub web_server_ops: Option<std::sync::Arc<dyn crate::web::WebServerOps>>,
     /// WebSocket channel configuration.
     pub websocket: Option<crate::websocket::WebSocketChannelConfig>,
+}
+
+impl std::fmt::Debug for ChannelInitConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelInitConfig")
+            .field("web", &self.web)
+            .field("web_server_ops", &self.web_server_ops.as_ref().map(|_| "Some(...)"))
+            .finish()
+    }
 }
 
 impl ChannelManager {
@@ -855,6 +866,9 @@ impl ChannelManager {
             if let Some(ref cfg) = config.web {
                 info!("[ChannelManager] attempting to initialize Web channel");
                 let ch = crate::web::WebChannel::new(cfg.clone());
+                if let Some(ref ops) = config.web_server_ops {
+                    ch.set_server(ops.clone());
+                }
                 self.register_or_replace(Arc::new(ch)).await;
                 info!("[ChannelManager] Web channel enabled successfully");
             }
