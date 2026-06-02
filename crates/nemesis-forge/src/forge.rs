@@ -322,7 +322,7 @@ impl Forge {
     }
 
     /// Cascade-set the LLM provider to all subsystems that need it:
-    /// reflector, pipeline (via LLMCaller), and learning engine.
+    /// reflector, pipeline, and learning engine (all via LLMCaller).
     pub fn set_provider(&self, provider: Arc<dyn crate::reflector_llm::LLMCaller>) {
         tracing::info!("[Forge] Setting LLM provider on subsystems");
         // Reflector gets the LLM caller for semantic analysis (Stage 2 LLM).
@@ -333,8 +333,10 @@ impl Forge {
         if let Some(ref pipeline) = self.pipeline {
             pipeline.set_provider(provider.clone());
         }
-        // LearningEngine uses its own LLMProvider trait (sync), set separately
-        // via LearningEngine::set_provider.
+        // Learning engine gets the LLM caller for skill draft generation.
+        if let Some(ref le) = self.learning_engine {
+            le.set_provider(provider.clone());
+        }
         drop(provider);
     }
 

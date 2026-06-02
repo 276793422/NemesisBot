@@ -1035,8 +1035,14 @@ fn test_set_provider() {
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
     struct MockProvider;
-    impl LLMProvider for MockProvider {
-        fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for MockProvider {
+        async fn chat(
+            &self,
+            _system: &str,
+            _user: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
             Ok("mock response".into())
         }
     }
@@ -1276,7 +1282,7 @@ async fn test_execute_create_skill_action_no_provider() {
     assert!(result.error_msg.unwrap().contains("No LLM provider"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_execute_create_skill_action_llm_fails() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
@@ -1284,8 +1290,14 @@ async fn test_execute_create_skill_action_llm_fails() {
     let engine = LearningEngine::new(ForgeConfig::default(), registry, cycle_store);
 
     struct FailingProvider;
-    impl LLMProvider for FailingProvider {
-        fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for FailingProvider {
+        async fn chat(
+            &self,
+            _system: &str,
+            _user: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
             Err("LLM unavailable".into())
         }
     }
@@ -1327,7 +1339,7 @@ async fn test_execute_create_skill_action_already_exists() {
     assert_eq!(result.status, "skipped");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_execute_create_skill_action_no_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
@@ -1335,8 +1347,14 @@ async fn test_execute_create_skill_action_no_pipeline() {
     let engine = LearningEngine::new(ForgeConfig::default(), registry.clone(), cycle_store);
 
     struct MockProvider;
-    impl LLMProvider for MockProvider {
-        fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for MockProvider {
+        async fn chat(
+            &self,
+            _system: &str,
+            _user: &str,
+            _max_tokens: Option<i64>,
+        ) -> Result<String, String> {
             Ok("---\nname: test\n---\n\n## Overview\nA test skill with enough content".into())
         }
     }

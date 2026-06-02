@@ -28,16 +28,6 @@ use crate::pipeline::{ArtifactValidation, Pipeline};
 use crate::registry::Registry;
 use crate::types::CollectedExperience;
 
-/// LLM provider trait for skill draft generation.
-///
-/// The learning engine uses this trait to call LLM for generating and
-/// refining skill drafts. The concrete implementation is injected via
-/// `set_provider()`.
-pub trait LLMProvider: Send + Sync {
-    /// Call the LLM with system/user messages and return the response content.
-    fn chat(&self, system: &str, user: &str, max_tokens: u32) -> Result<String, String>;
-}
-
 /// Skill creation delegate. Mirrors Go's `le.forge.CreateSkill()`.
 /// The Forge struct implements this trait and injects it via `set_skill_creator()`.
 pub trait SkillCreator: Send + Sync {
@@ -169,7 +159,7 @@ pub struct LearningEngine {
     cycle_store: CycleStore,
     pipeline: Mutex<Option<Arc<Pipeline>>>,
     monitor: Mutex<Option<Arc<DeploymentMonitor>>>,
-    provider: Mutex<Option<Arc<dyn LLMProvider>>>,
+    provider: Mutex<Option<Arc<dyn crate::reflector_llm::LLMCaller>>>,
     skill_creator: Mutex<Option<Arc<dyn SkillCreator>>>,
     latest_cycle: Mutex<Option<LearningCycle>>,
 }
@@ -216,9 +206,30 @@ impl LearningEngine {
     }
 
     /// Set the LLM provider for skill draft generation.
-    pub fn set_provider(&self, provider: Arc<dyn LLMProvider>) {
+    pub fn set_provider(&self, provider: Arc<dyn crate::reflector_llm::LLMCaller>) {
         tracing::info!("[Forge/LearningEngine] LLM provider set for skill generation");
         *self.provider.lock() = Some(provider);
+    }
+
+    /// Call an async LLMCaller from sync context.
+    /// Mirrors the block_in_place pattern in pipeline.rs:evaluate_quality_sync.
+    fn call_llm_sync(
+        caller: &dyn crate::reflector_llm::LLMCaller,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, String> {
+        let future = caller.chat(system, user, Some(max_tokens as i64));
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("failed to create runtime: {}", e))?;
+                rt.block_on(future)
+            }
+        }
     }
 
     /// Set the pipeline for validation.
@@ -770,7 +781,7 @@ impl LearningEngine {
     /// Generate a skill draft using LLM (mirrors Go's generateSkillDraft).
     fn generate_skill_draft(
         &self,
-        provider: &dyn LLMProvider,
+        provider: &dyn crate::reflector_llm::LLMCaller,
         action: &LearningAction,
     ) -> Result<String, String> {
         let draft_name = action.draft_name.as_deref().unwrap_or("unknown-skill");
@@ -791,7 +802,8 @@ impl LearningEngine {
         );
 
         let budget = 500u32; // default LLM budget
-        provider.chat(
+        Self::call_llm_sync(
+            provider,
             "You are a Skill definition generator. Generate valid SKILL.md content with YAML frontmatter.",
             &prompt,
             budget,
@@ -801,7 +813,7 @@ impl LearningEngine {
     /// Refine a skill draft using LLM based on validation diagnosis (mirrors Go's refineSkillDraft).
     fn refine_skill_draft(
         &self,
-        provider: &dyn LLMProvider,
+        provider: &dyn crate::reflector_llm::LLMCaller,
         action: &LearningAction,
         previous_content: &str,
         diagnosis: &str,
@@ -821,7 +833,8 @@ impl LearningEngine {
         );
 
         let budget = 500u32;
-        provider.chat(
+        Self::call_llm_sync(
+            provider,
             "You are a Skill definition generator. Fix the failing Skill and return a complete corrected SKILL.md.",
             &prompt,
             budget,
@@ -1195,7 +1208,7 @@ impl LearningEngine {
     /// Mirrors Go's `generateSkillDraft`.
     pub fn generate_skill_draft_action(
         &self,
-        provider: &dyn LLMProvider,
+        provider: &dyn crate::reflector_llm::LLMCaller,
         action: &LearningAction,
     ) -> Result<String, String> {
         self.generate_skill_draft(provider, action)
@@ -1206,7 +1219,7 @@ impl LearningEngine {
     /// Mirrors Go's `refineSkillDraft`.
     pub fn refine_skill_draft_action(
         &self,
-        provider: &dyn LLMProvider,
+        provider: &dyn crate::reflector_llm::LLMCaller,
         action: &LearningAction,
         previous_content: &str,
         diagnosis: &str,

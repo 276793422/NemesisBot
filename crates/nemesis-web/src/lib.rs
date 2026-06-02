@@ -14,6 +14,7 @@
 //! - `session` — Session management with DashMap
 //! - `websocket_handler` — WebSocket connection handling, send queue, message dispatch
 
+pub mod llm_bridge;
 pub mod server;
 pub mod api_handlers;
 pub mod api_usage;
@@ -28,6 +29,8 @@ pub mod websocket_handler;
 pub mod ws_router;
 
 pub use events::EventHub;
+pub use llm_bridge::ForgeProviderBridge;
+pub use llm_bridge::ProviderAdapter;
 pub use protocol::ProtocolMessage;
 pub use session::SessionManager;
 pub use server::WebServer;

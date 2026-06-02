@@ -487,7 +487,7 @@ impl crate::reflector_llm::LLMCaller for ErrorMockLLM {
     }
 }
 
-/// Mock sync LLM provider (for LearningEngine).
+/// Mock LLM caller (for LearningEngine).
 struct MockSyncProvider {
     response: String,
 }
@@ -498,17 +498,19 @@ impl MockSyncProvider {
     }
 }
 
-impl crate::learning_engine::LLMProvider for MockSyncProvider {
-    fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for MockSyncProvider {
+    async fn chat(&self, _system: &str, _user: &str, _max_tokens: Option<i64>) -> Result<String, String> {
         Ok(self.response.clone())
     }
 }
 
-/// Mock sync LLM provider that always returns an error.
+/// Mock LLM caller that always returns an error.
 struct ErrorSyncProvider;
 
-impl crate::learning_engine::LLMProvider for ErrorSyncProvider {
-    fn chat(&self, _system: &str, _user: &str, _max_tokens: u32) -> Result<String, String> {
+#[async_trait::async_trait]
+impl crate::reflector_llm::LLMCaller for ErrorSyncProvider {
+    async fn chat(&self, _system: &str, _user: &str, _max_tokens: Option<i64>) -> Result<String, String> {
         Err("LLM provider unavailable".to_string())
     }
 }
@@ -933,7 +935,7 @@ fn test_reflector_with_llm_failure() {
     assert!(report.llm_insights.is_none(), "no LLM insights expected without LLM provider");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_learning_engine_with_llm_failure() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
