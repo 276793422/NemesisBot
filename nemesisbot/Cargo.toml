@@ -53,6 +53,7 @@ which = "6"
 reqwest = { workspace = true }
 getrandom = "0.2"
 async-trait = { workspace = true }
+parking_lot = { workspace = true }
 rustyline = "15"
 include_dir = "0.7"
 

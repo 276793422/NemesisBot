@@ -167,139 +167,6 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
     }
 }
 
-/// Bridge adapter connecting the gateway's LLM provider to Forge's LLMCaller trait.
-///
-/// Wraps `nemesis_providers::router::LLMProvider` (the provider used by the gateway)
-/// and adapts it to Forge's `LLMCaller::chat(system, user, max_tokens)` interface.
-struct ForgeProviderBridge {
-    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
-    model: String,
-}
-
-impl ForgeProviderBridge {
-    fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
-        Self { provider, model }
-    }
-}
-
-#[async_trait::async_trait]
-impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
-    async fn chat(
-        &self,
-        system_prompt: &str,
-        user_prompt: &str,
-        max_tokens: Option<i64>,
-    ) -> Result<String, String> {
-        let messages = vec![
-            nemesis_providers::types::Message {
-                role: "system".to_string(),
-                content: system_prompt.to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-                timestamp: None,
-                reasoning_content: None,
-                extra: std::collections::HashMap::new(),
-            },
-            nemesis_providers::types::Message {
-                role: "user".to_string(),
-                content: user_prompt.to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-                timestamp: None,
-                reasoning_content: None,
-                extra: std::collections::HashMap::new(),
-            },
-        ];
-
-        let options = nemesis_providers::types::ChatOptions {
-            temperature: Some(0.7),
-            max_tokens: max_tokens,
-            top_p: None,
-            stop: None,
-            extra: std::collections::HashMap::new(),
-        };
-
-        let response = self.provider
-            .chat(&messages, &[], &self.model, &options)
-            .await
-            .map_err(|e| format!("{:?}", e))?;
-
-        if response.content.is_empty() && response.tool_calls.is_empty() {
-            Err("LLM returned no content".to_string())
-        } else {
-            Ok(response.content)
-        }
-    }
-}
-
-/// Sync LLM provider adapter for Forge's LearningEngine.
-///
-/// LearningEngine uses a synchronous `LLMProvider` trait, while the gateway
-/// provider is async. This adapter bridges the gap using `block_in_place`,
-/// matching the same pattern used by `pipeline.rs::evaluate_quality_sync`.
-struct ForgeLearningProvider {
-    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
-    model: String,
-}
-
-impl ForgeLearningProvider {
-    fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
-        Self { provider, model }
-    }
-}
-
-impl nemesis_forge::learning_engine::LLMProvider for ForgeLearningProvider {
-    fn chat(&self, system: &str, user: &str, max_tokens: u32) -> Result<String, String> {
-        let messages = vec![
-            nemesis_providers::types::Message {
-                role: "system".to_string(),
-                content: system.to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-                timestamp: None,
-                reasoning_content: None,
-                extra: std::collections::HashMap::new(),
-            },
-            nemesis_providers::types::Message {
-                role: "user".to_string(),
-                content: user.to_string(),
-                tool_calls: vec![],
-                tool_call_id: None,
-                timestamp: None,
-                reasoning_content: None,
-                extra: std::collections::HashMap::new(),
-            },
-        ];
-
-        let options = nemesis_providers::types::ChatOptions {
-            temperature: Some(0.7),
-            max_tokens: Some(max_tokens as i64),
-            top_p: None,
-            stop: None,
-            extra: std::collections::HashMap::new(),
-        };
-
-        let future = self.provider.chat(&messages, &[], &self.model, &options);
-
-        let response = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new()
-                    .map_err(|e| format!("failed to create runtime: {}", e))?;
-                rt.block_on(future)
-            }
-        }.map_err(|e| format!("{:?}", e))?;
-
-        if response.content.is_empty() {
-            Err("LLM returned no content".to_string())
-        } else {
-            Ok(response.content)
-        }
-    }
-}
-
 /// Bridge adapter connecting Cluster to Forge's ClusterForgeBridge trait.
 ///
 /// Enables Forge to share reflections with and receive reflections from
@@ -710,131 +577,6 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Provider adapter (shared with agent.rs)
-// ---------------------------------------------------------------------------
-
-use async_trait::async_trait;
-use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
-use nemesis_agent::types::{AgentConfig, ToolCallInfo as AgentToolCallInfo};
-
-/// Adapter wrapping a `nemesis_providers::router::LLMProvider` to implement
-/// the `nemesis_agent::LlmProvider` trait expected by `AgentLoop`.
-struct ProviderAdapter {
-    inner: Arc<dyn nemesis_providers::router::LLMProvider>,
-    default_model: String,
-}
-
-impl ProviderAdapter {
-    fn new(inner: Arc<dyn nemesis_providers::router::LLMProvider>, default_model: String) -> Self {
-        Self { inner, default_model }
-    }
-}
-
-#[async_trait]
-impl LlmProvider for ProviderAdapter {
-    async fn chat(
-        &self,
-        model: &str,
-        messages: Vec<LlmMessage>,
-        options: Option<nemesis_agent::types::ChatOptions>,
-        tools: Vec<nemesis_agent::types::ToolDefinition>,
-    ) -> Result<LlmResponse, String> {
-        let model_to_use = if model.is_empty() { &self.default_model } else { model };
-
-        let provider_messages: Vec<nemesis_providers::types::Message> = messages
-            .into_iter()
-            .map(|m| nemesis_providers::types::Message {
-                role: m.role,
-                content: m.content,
-                tool_calls: m.tool_calls.unwrap_or_default().into_iter().map(|tc| {
-                    nemesis_providers::types::ToolCall {
-                        id: tc.id,
-                        call_type: Some("function".to_string()),
-                        function: Some(nemesis_providers::types::FunctionCall {
-                            name: tc.name,
-                            arguments: tc.arguments,
-                        }),
-                        name: None,
-                        arguments: None,
-                    }
-                }).collect(),
-                tool_call_id: m.tool_call_id,
-                timestamp: None,
-                reasoning_content: m.reasoning_content,
-                extra: std::collections::HashMap::new(),
-            })
-            .collect();
-
-        let provider_options = match options {
-            Some(opts) => nemesis_providers::types::ChatOptions {
-                temperature: opts.temperature.map(|t| t as f64),
-                max_tokens: opts.max_tokens.map(|t| t as i64),
-                top_p: opts.top_p.map(|p| p as f64),
-                stop: opts.stop,
-                extra: std::collections::HashMap::new(),
-            },
-            None => nemesis_providers::types::ChatOptions {
-                temperature: Some(0.7),
-                max_tokens: Some(8192),
-                top_p: None,
-                stop: None,
-                extra: std::collections::HashMap::new(),
-            },
-        };
-
-        // Convert agent tool definitions to provider tool definitions.
-        let provider_tools: Vec<nemesis_providers::types::ToolDefinition> = tools
-            .into_iter()
-            .map(|t| nemesis_providers::types::ToolDefinition {
-                tool_type: t.tool_type,
-                function: nemesis_providers::types::ToolFunctionDefinition {
-                    name: t.function.name,
-                    description: t.function.description,
-                    parameters: t.function.parameters,
-                },
-            })
-            .collect();
-
-        match self.inner.chat(&provider_messages, &provider_tools, model_to_use, &provider_options).await {
-            Ok(resp) => {
-                let tool_calls: Vec<AgentToolCallInfo> = resp.tool_calls
-                    .into_iter()
-                    .filter_map(|tc| {
-                        let func = tc.function?;
-                        Some(AgentToolCallInfo {
-                            id: tc.id,
-                            name: func.name,
-                            arguments: func.arguments,
-                        })
-                    })
-                    .collect();
-                let finished = tool_calls.is_empty() || resp.finish_reason == "stop";
-                Ok(LlmResponse {
-                    content: resp.content,
-                    tool_calls,
-                    finished,
-                    reasoning_content: resp.reasoning_content,
-                    usage: resp.usage.map(|u| nemesis_agent::loop_executor::ObserverUsageInfo {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: u.total_tokens,
-                        cached_tokens: u.cached_tokens,
-                        cache_creation_tokens: u.cache_creation_tokens,
-                        cache_read_tokens: u.cache_read_tokens,
-                    }),
-                    raw_request_body: resp.raw_request_body,
-                    raw_response_body: resp.raw_response_body,
-                })
-            }
-            Err(e) => {
-                warn!("[Gateway] LLM provider error: {}", e);
-                Err(format!("{}", e))
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Cluster adapter types
 // ---------------------------------------------------------------------------
 
@@ -1051,9 +793,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
-    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
+    // Validate provider config by attempting creation (actual provider is built by the factory).
+    nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    info!("[Gateway] Provider created for {}", llm_ref);
+    info!("[Gateway] Provider config validated for {}", llm_ref);
 
     let model_name = resolution.model_name.clone();
 
@@ -1078,56 +821,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     });
 
-    // Clone provider for Forge before moving into ProviderAdapter.
-    let provider_for_forge = provider.clone();
+    // The AgentLoop is now created by the factory function (agent_factory.rs).
+    // provider, system prompt, AgentConfig, AgentLoop::new_bus, session store,
+    // state manager, SharedToolConfig, tool registration, MCP, cluster_rpc,
+    // continuation manager — all handled inside build_agent_loop().
+    // agent_outbound_tx will be stored in SharedResources later.
 
-    // Build system prompt from workspace files (IDENTITY.md, SOUL.md, etc.)
-    // Mirrors Go's bot_service.go: buildSystemPrompt().
-    let workspace_dir = home.join("workspace");
-    let mut context_builder = nemesis_agent::context::ContextBuilder::new(&workspace_dir);
-
-    // Load skills from workspace/skills/ directory.
-    let skills_dir = workspace_dir.join("skills");
-    context_builder.load_skills(&skills_dir);
-
-    let system_prompt = context_builder.build_system_prompt(false);
-    info!("[Gateway] System prompt built ({} chars) from workspace files", system_prompt.len());
-
-    let adapter = ProviderAdapter::new(provider, model_name.clone());
-    let agent_config = AgentConfig {
-        model: model_name.clone(),
-        system_prompt: if system_prompt.is_empty() { None } else { Some(system_prompt) },
-        max_turns: cfg.agents.defaults.max_tool_iterations.max(1) as u32,
-        tools: Vec::new(),
-    };
-
-    let mut agent_loop = AgentLoop::new_bus(
-        Box::new(adapter),
-        agent_config,
-        agent_outbound_tx,
-        nemesis_agent::r#loop::ConcurrentMode::Reject,
-        8,
-    );
-
-    // Replace the default in-memory SessionStore with a disk-persisted one.
-    // This ensures conversation history survives restarts.
-    {
-        let sess_dir = common::sessions_dir(&home);
-        let store = std::sync::Arc::new(
-            nemesis_agent::session::SessionStore::new_with_storage(&sess_dir),
-        );
-        agent_loop.set_session_store(store);
-        info!("[Gateway] Session store initialized with disk persistence: {}", sess_dir.display());
-    }
-
-    // Create and inject WorkspaceStateManager for crash recovery.
-    // Mirrors Go's bot_service.go:376 `state.NewManager(s.workspace)`.
-    {
-        let workspace_dir = home.join("workspace");
-        let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
-        agent_loop.set_state_manager(state_mgr);
-        info!("[Gateway] State manager initialized: {}", workspace_dir.display());
-    }
+    // agent_outbound_tx is moved into SharedResources below.
+    // For now, keep it as a local variable.
+    // State manager injection into agent_loop is now handled by the factory function.
 
     // Register all tools (mirrors Go's bot_service.go initComponents):
     //   default tools + web + cluster + spawn + memory + skills + hardware + exec + cron
@@ -1210,12 +912,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 forge_pipeline_registry.clone(),
             ),
         );
-        let pipeline_arc = std::sync::Arc::new(
-            nemesis_forge::pipeline::Pipeline::new(
-                forge_config.clone(),
-                forge_pipeline_registry,
-            ),
-        );
         info!("[Gateway] Forge pipeline initialized");
 
         // Initialize trace collection (TraceCollector + TraceStore).
@@ -1229,16 +925,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
 
         // Initialize learning engine (Phase 6 closed-loop).
-        // Create two DeploymentMonitor instances: one owned by Forge, one Arc-shared with LearningEngine.
         let forge_monitor_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
             nemesis_forge::types::RegistryConfig::default(),
         ));
-        let monitor_arc = std::sync::Arc::new(
-            nemesis_forge::monitor::DeploymentMonitor::new(
-                forge_config.clone(),
-                forge_monitor_registry.clone(),
-            ),
-        );
         {
             let registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
                 nemesis_forge::types::RegistryConfig::default(),
@@ -1264,34 +953,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         forge.init_syncer();
         info!("[Gateway] Forge syncer initialized");
 
-        // Set LLM provider (propagates to Reflector + Pipeline).
-        {
-            let bridge_provider = ForgeProviderBridge::new(provider_for_forge.clone(), model_name.clone());
-            forge.set_provider(std::sync::Arc::new(bridge_provider));
-            info!("[Gateway] Forge provider connected via ForgeProviderBridge");
-        }
+        // Set LLM provider — now handled by the factory function (agent_factory.rs).
 
         let forge = std::sync::Arc::new(forge);
 
-        // Inject dependencies into LearningEngine (provider, pipeline, monitor, skill_creator).
-        if let Some(le) = forge.learning_engine() {
-            le.set_provider(std::sync::Arc::new(ForgeLearningProvider::new(
-                provider_for_forge.clone(),
-                model_name.clone(),
-            )));
-            le.set_pipeline(pipeline_arc);
-            le.set_monitor(monitor_arc);
-            le.set_skill_creator(forge.clone());
-            info!("[Gateway] Forge learning engine dependencies injected");
-        }
+        // LearningEngine dependency injection is now handled by the factory function.
 
         let executor = std::sync::Arc::new(
             nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
         );
         info!("[Gateway] Forge executor created (8 tools will be registered)");
 
-        // Inject Forge into AgentLoop for experience collection.
-        agent_loop.set_forge(forge.clone());
+        // Forge injection into agent_loop is now handled by the factory function.
 
         // Start background tasks only if enabled in config.
         if forge_enabled {
@@ -1353,84 +1026,44 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     };
 
-    let shared_config = nemesis_agent::SharedToolConfig {
-        workspace: Some(home.join("workspace").to_string_lossy().to_string()),
-        cron_service: Some(cron_service.clone()),
-        forge_executor: forge_executor_for_tools.clone(),
-        forge: forge_for_web.clone(),
-        memory_executor: {
-            if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
-                let memory_data_dir = home.join("workspace").join("memory_vector");
-                let config_dir = home.join("workspace").join("config");
-                let mgr = std::sync::Arc::new(
-                    nemesis_memory::manager::MemoryManager::with_config_dir(
-                        &memory_data_dir, &config_dir,
-                    )
-                );
-                info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
-                memory_manager_for_web = Some(mgr.clone());
-                Some(std::sync::Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
-            } else {
-                info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
-                None
-            }
-        },
-        skills_loader: skills_loader_arc.clone(),
-        skills_registry: skills_registry_arc.clone(),
-        // Web search tool: maps cfg.tools.web → WebSearchConfig.
-        // Mirrors Go's loop_tools.go: tools.NewWebSearchTool(cfg.Tools.Web).
-        web_search: {
-            let web = &cfg.tools.web;
-            let any_enabled = web.brave.enabled
-                || web.duckduckgo.enabled
-                || web.perplexity.enabled;
-            if any_enabled {
-                let config = nemesis_agent::loop_tools::WebSearchConfig {
-                    brave_api_key: if web.brave.api_key.is_empty() { None } else { Some(web.brave.api_key.clone()) },
-                    brave_max_results: web.brave.max_results.max(1) as usize,
-                    brave_enabled: web.brave.enabled,
-                    duckduckgo_max_results: web.duckduckgo.max_results.max(1) as usize,
-                    duckduckgo_enabled: web.duckduckgo.enabled,
-                    perplexity_api_key: if web.perplexity.api_key.is_empty() { None } else { Some(web.perplexity.api_key.clone()) },
-                    perplexity_max_results: web.perplexity.max_results.max(1) as usize,
-                    perplexity_enabled: web.perplexity.enabled,
-                };
-                info!("[Gateway] Web search enabled (brave={}, duckduckgo={}, perplexity={})",
-                      web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled);
-                Some(config)
-            } else {
-                info!("[Gateway] Web search disabled (no provider enabled in config.json: tools.web)");
-                None
-            }
-        },
-        mcp_tool_snapshot: Some(agent_loop.mcp_tool_snapshot()),
-        ..Default::default()
-    };
-
-    // Register standard tools (sync).
-    let all_tools = nemesis_agent::register_shared_tools(&shared_config);
-    for (name, tool) in all_tools {
-        agent_loop.register_tool(name, tool);
+    // Create MemoryManager (still needed for web server injection).
+    // Memory tool executor creation is now handled by the factory function.
+    if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
+        let memory_data_dir = home.join("workspace").join("memory_vector");
+        let config_dir = home.join("workspace").join("config");
+        let mgr = std::sync::Arc::new(
+            nemesis_memory::manager::MemoryManager::with_config_dir(
+                &memory_data_dir, &config_dir,
+            )
+        );
+        info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
+        memory_manager_for_web = Some(mgr);
+    } else {
+        info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
     }
 
-    // Enable MCP dynamic reload via McpManager.
-    // config.json's mcp.enabled is the master switch (gate).
-    // McpManager reads config.mcp.json for the actual server list.
-    let mcp_config_path = common::mcp_config_path(&home);
+    // Web search config: compute for reference, but tool registration is handled by factory.
+    {
+        let web = &cfg.tools.web;
+        let any_enabled = web.brave.enabled
+            || web.duckduckgo.enabled
+            || web.perplexity.enabled;
+        if any_enabled {
+            info!("[Gateway] Web search enabled (brave={}, duckduckgo={}, perplexity={})",
+                  web.brave.enabled, web.duckduckgo.enabled, web.perplexity.enabled);
+        } else {
+            info!("[Gateway] Web search disabled (no provider enabled in config.json: tools.web)");
+        }
+    }
+
+    // SharedToolConfig construction, tool registration, and MCP reload are now handled
+    // by the factory function (agent_factory.rs build_agent_loop()).
+
     if !mcp_enabled {
         info!("[Gateway] MCP disabled in config.json (mcp.enabled = false), skipping");
-    } else {
-        agent_loop.enable_mcp_reload(mcp_config_path);
     }
-    info!("[Gateway] Agent loop created with shared tools (default + memory + skills + hardware + exec + cron{})",
+    info!("[Gateway] Agent loop tools configured (default + memory + skills + hardware + exec + cron{})",
           if mcp_enabled { " + MCP" } else { "" });
-
-    // M4: Start Forge background services (Collector/Reflector/Syncer).
-    // Mirrors Go's bot_service.go:582-585: forgeSvc.Start().
-    // Note: Forge start is now handled at creation time above (only if enabled).
-    if forge_enabled {
-        info!("[Gateway] Forge background services already started");
-    }
 
     // Step 9a: Set up cluster if enabled.
     // Mirrors Go's bot_service.go initComponents → startCluster.
@@ -1438,6 +1071,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // creates a Cluster instance, starts UDP discovery + RPC server,
     // and registers the cluster_rpc tool.
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
+
+    // Cluster RPC resources — filled inside the cluster block below, consumed by SharedResources.
+    let mut cluster_rpc_call_fn: Option<
+        Arc<
+            dyn Fn(&str, &str, serde_json::Value)
+                -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                            Output = Result<serde_json::Value, String>,
+                        > + Send,
+                    >,
+                > + Send
+                + Sync,
+        >,
+    > = None;
+    let mut cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig> = None;
     if cluster_app_cfg.enabled {
         let cluster_cfg_path = common::cluster_config_path(&home);
         let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
@@ -1770,17 +1419,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // RPC server was already created and set above before start().
         // RPC client was already created by Cluster::start().
 
-        // Create the cluster_rpc tool with an RPC call function
-        let cluster_rpc_config = nemesis_agent::ClusterRpcConfig {
+        // Create cluster_rpc config + RPC call function for SharedResources.
+        // The factory function will create the ClusterRpcTool and register it.
+        let rpc_cfg = nemesis_agent::ClusterRpcConfig {
             local_node_id: node_id.clone(),
             timeout_secs: 3600,
             local_rpc_port: cluster_app_cfg.rpc_port,
         };
-        let mut cluster_rpc_tool = nemesis_agent::ClusterRpcTool::new(cluster_rpc_config);
 
         // Wire the RPC call function to use cluster.call_with_context_async
         let cluster_for_rpc = cluster.clone();
-        let rpc_call_fn = std::sync::Arc::new(
+        let call_fn = std::sync::Arc::new(
             move |target: &str, action: &str, payload: serde_json::Value| {
                 let c = cluster_for_rpc.clone();
                 let t = target.to_string();
@@ -1795,22 +1444,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
             },
         );
-        cluster_rpc_tool.set_rpc_call_fn(rpc_call_fn);
 
-        agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
-        info!("[Gateway] cluster_rpc tool registered (node: {}, peers loaded from peers.toml)", node_name);
+        // Store for SharedResources (factory function will register the tool).
+        cluster_rpc_call_fn = Some(call_fn);
+        cluster_rpc_config = Some(rpc_cfg);
 
-        // --- Inject ContinuationManager into AgentLoop ---
-        // When a cluster_rpc tool returns an ACK (async), the AgentLoop saves
-        // a continuation snapshot. When the callback arrives, the bus loop
-        // detects the cluster_continuation message and resumes the LLM session.
-        {
-            let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
-                &home.join("workspace"),
-            ));
-            agent_loop.set_continuation_manager(cont_mgr);
-            info!("[Gateway] ContinuationManager injected into AgentLoop (with disk persistence)");
-        }
+        // cluster_rpc tool registration is now handled by the factory function.
+        // The rpc_call_fn is stored here for SharedResources consumption.
+        info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
+
+        // ContinuationManager injection into agent_loop is now handled by the factory function.
 
         // Keep cluster alive until gateway shuts down
         std::mem::forget(cluster);
@@ -1870,23 +1513,23 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         web_server.session_manager().clone(),
     ));
 
-    {
-        // Build list of enabled channels from config.
-        let mut enabled_channels = Vec::new();
-        if cfg.channels.web.enabled { enabled_channels.push("web".to_string()); }
-        if cfg.channels.websocket.enabled { enabled_channels.push("websocket".to_string()); }
-        if cfg.channels.telegram.enabled { enabled_channels.push("telegram".to_string()); }
-        if cfg.channels.discord.enabled { enabled_channels.push("discord".to_string()); }
-        if cfg.channels.feishu.enabled { enabled_channels.push("feishu".to_string()); }
-        if cfg.channels.slack.enabled { enabled_channels.push("slack".to_string()); }
-        if cfg.channels.whatsapp.enabled { enabled_channels.push("whatsapp".to_string()); }
-        if cfg.channels.dingtalk.enabled { enabled_channels.push("dingtalk".to_string()); }
-        if cfg.channels.qq.enabled { enabled_channels.push("qq".to_string()); }
-        if cfg.channels.line.enabled { enabled_channels.push("line".to_string()); }
-        if cfg.channels.onebot.enabled { enabled_channels.push("onebot".to_string()); }
-        if cfg.channels.maixcam.enabled { enabled_channels.push("maixcam".to_string()); }
-        if cfg.channels.external.enabled { enabled_channels.push("external".to_string()); }
+    // Build list of enabled channels from config (needed by SharedResources + ChannelManager).
+    let mut enabled_channels = Vec::new();
+    if cfg.channels.web.enabled { enabled_channels.push("web".to_string()); }
+    if cfg.channels.websocket.enabled { enabled_channels.push("websocket".to_string()); }
+    if cfg.channels.telegram.enabled { enabled_channels.push("telegram".to_string()); }
+    if cfg.channels.discord.enabled { enabled_channels.push("discord".to_string()); }
+    if cfg.channels.feishu.enabled { enabled_channels.push("feishu".to_string()); }
+    if cfg.channels.slack.enabled { enabled_channels.push("slack".to_string()); }
+    if cfg.channels.whatsapp.enabled { enabled_channels.push("whatsapp".to_string()); }
+    if cfg.channels.dingtalk.enabled { enabled_channels.push("dingtalk".to_string()); }
+    if cfg.channels.qq.enabled { enabled_channels.push("qq".to_string()); }
+    if cfg.channels.line.enabled { enabled_channels.push("line".to_string()); }
+    if cfg.channels.onebot.enabled { enabled_channels.push("onebot".to_string()); }
+    if cfg.channels.maixcam.enabled { enabled_channels.push("maixcam".to_string()); }
+    if cfg.channels.external.enabled { enabled_channels.push("external".to_string()); }
 
+    {
         let channel_manager = Arc::new(nemesis_channels::manager::ChannelManager::with_allowed_channels(
             enabled_channels.clone(),
         ));
@@ -2027,9 +1670,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Keep the ChannelManager alive.
         std::mem::forget(channel_manager);
         info!("[Gateway] ChannelManager created with {} enabled channel(s)", enabled_channels.len());
-
-        // Set enabled channel list on agent loop.
-        agent_loop.set_channel_manager(enabled_channels);
+        // Channel manager injection into agent_loop is now handled by the factory function.
     }
 
     // Step 9b: Create and inject SecurityPlugin if enabled
@@ -2054,9 +1695,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Security audit log initialized: {}", audit_dir);
         }
 
-        let auditor = plugin.auditor();
-        agent_loop.set_security_plugin(plugin.clone());
-        info!("[Gateway] Security plugin enabled and injected into agent loop");
+        // Security plugin injection into agent_loop is now handled by the factory function.
+        info!("[Gateway] Security plugin enabled (injection handled by factory)");
 
         // Step 9c: Initialize scanner chain from config.scanner.json
         // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
@@ -2072,7 +1712,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Scanner config file not found: {}, scanner chain not initialized", scanner_config_path.display());
         }
 
-        drop(auditor);
         Some(plugin)
     } else {
         info!("[Gateway] Security plugin disabled by configuration");
@@ -2081,7 +1720,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 9d: Setup Observer Manager for conversation lifecycle events.
     // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
-    {
+    let observer_manager: Option<Arc<nemesis_observer::Manager>> = {
         let observer_mgr = Arc::new(nemesis_observer::Manager::new());
 
         // Register RequestLogger as Observer (if logging.llm.enabled)
@@ -2121,7 +1760,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             }
         }
 
-        // Inject observer manager into AgentLoop (only if any observers registered)
+        // Check if any observers were registered.
         let mgr_check = observer_mgr.clone();
         let has_observers = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -2129,10 +1768,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             })
         });
         if has_observers {
-            agent_loop.set_observer_manager(observer_mgr);
-            info!("[Gateway] Observer manager injected into agent loop");
+            info!("[Gateway] Observer manager initialized (injection handled by factory)");
+            Some(observer_mgr)
+        } else {
+            None
         }
-    }
+    };
 
     // Step 9b: Create DataStore for usage statistics
     let data_store = {
@@ -2150,22 +1791,49 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     };
 
-    // Inject DataStore into agent loop for usage recording
-    if let Some(ref ds) = data_store {
-        agent_loop.set_data_store(ds.clone());
-        info!("[Gateway] DataStore injected into agent loop");
-    }
+    // Note: DataStore injection into agent_loop is now handled by the factory function.
 
     // Note: Forge injection into agent_loop is now handled at creation time above.
 
-    // Wrap agent_loop in Arc for shared access (heartbeat handler, etc.)
-    let agent_loop = Arc::new(agent_loop);
+    // Build SharedResources and use the factory to create the AgentLoop.
+    let shared_resources = crate::agent_factory::SharedResources {
+        home: home.clone(),
+        bus: bus.clone(),
+        agent_outbound_tx,
+        forge: forge_for_web.clone(),
+        forge_executor: forge_executor_for_tools.clone(),
+        cron_service: cron_service.clone(),
+        security_plugin: security_plugin.clone(),
+        observer_manager: observer_manager.clone(),
+        data_store: data_store.clone(),
+        skills_loader: skills_loader_arc.clone(),
+        skills_registry: skills_registry_arc.clone(),
+        memory_manager: memory_manager_for_web.clone(),
+        enabled_channels: enabled_channels.clone(),
+        cluster_rpc_call_fn,
+        cluster_rpc_config,
+        mcp_config_path: common::mcp_config_path(&home),
+        mcp_enabled,
+    };
+
+    let shared_resources = Arc::new(shared_resources);
+    let agent_loop = crate::agent_factory::build_agent_loop(&shared_resources)
+        .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
+    let initial_tool_count = agent_loop.tool_count();
+    info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
+
+    // Create shared reference for WebServer model switching
+    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
 
     // Create AgentLoopServiceAdapter for tray start/stop control.
+    // Passes the initial AgentLoop directly — no double construction.
     // The adapter manages the inbound bridge + agent spawn internally.
     let agent_adapter = Arc::new(adapters::AgentLoopServiceAdapter::new(
-        agent_loop.clone(),
+        agent_loop,
+        shared_resources.clone(),
         bus.clone(),
+        agent_loop_ref.clone(),
     ));
 
     // Step 10: Wire up WebServer (created early for WebChannel injection)
@@ -2214,26 +1882,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Forge instance injected into web server");
     }
 
-    // Inject AgentLoop into web server for runtime model switching
-    web_server.set_agent_loop(agent_loop.clone());
-    info!("[Gateway] AgentLoop injected into web server for model switching");
+    // Inject AgentLoop ref into web server for runtime model switching
+    web_server.set_agent_loop(agent_loop_ref.clone());
+    info!("[Gateway] AgentLoop ref injected into web server for model switching");
 
-    // Inject additional components for agent reload support
-    if let Some(ref plugin) = security_plugin {
-        web_server.set_security_plugin(plugin.clone());
-    }
-    web_server.set_cron_service(cron_service.clone());
-    if let Some(ref executor) = forge_executor_for_tools {
-        web_server.set_forge_executor(executor.clone());
-    }
-    if let Some(ref loader) = skills_loader_arc {
-        web_server.set_skills_loader(loader.clone());
-    }
-    if let Some(ref registry) = skills_registry_arc {
-        web_server.set_skills_registry(registry.clone());
-    }
-
-    info!("[Gateway] Additional components injected for agent reload");
+    info!("[Gateway] Web server components injected");
 
     // Step 11: Create HealthServer
     let health_port = cfg.gateway.port;
@@ -2289,7 +1942,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         //   3. Call ProcessHeartbeat(prompt, channel, chatID)
         //   4. Always return SilentResult (agent sends messages via tools, not via handler)
         let bootstrap_path = common::workspace_path(&home).join("BOOTSTRAP.md");
-        let agent_loop_for_hb = agent_loop.clone();
+        let adapter_for_hb = agent_adapter.clone();
         heartbeat_service.set_handler(Box::new(move |prompt: String, mut channel: String, mut chat_id: String| {
             // Check BOOTSTRAP.md — if exists, skip heartbeat entirely.
             if bootstrap_path.exists() {
@@ -2303,19 +1956,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 });
             }
 
-            // If the agent loop is not running (stopped via tray), skip the
-            // heartbeat LLM call. Heartbeat is part of the agent's proactive
-            // behavior — it should not consume API quota when the agent is idle.
-            if !agent_loop_for_hb.is_running() {
-                tracing::debug!("[Gateway] Agent not running, skipping heartbeat");
-                return Some(nemesis_heartbeat::service::HeartbeatResult {
-                    is_error: false,
-                    is_async: false,
-                    silent: true,
-                    for_user: String::new(),
-                    for_llm: "HEARTBEAT_OK".to_string(),
-                });
-            }
+            // Get the current AgentLoop via adapter (may be None if stopped).
+            let agent_loop_for_hb = match adapter_for_hb.current() {
+                Some(al) => al,
+                None => {
+                    tracing::debug!("[Gateway] Agent not running, skipping heartbeat");
+                    return Some(nemesis_heartbeat::service::HeartbeatResult {
+                        is_error: false,
+                        is_async: false,
+                        silent: true,
+                        for_user: String::new(),
+                        for_llm: "HEARTBEAT_OK".to_string(),
+                    });
+                }
+            };
 
             // Use cli:direct as fallback (matching Go).
             if channel.is_empty() || chat_id.is_empty() {
@@ -2430,7 +2084,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 15: Print agent startup info
-    print_agent_startup_info(&home, agent_loop.tool_count());
+    print_agent_startup_info(&home, initial_tool_count);
 
     // L3: Bridge logger → SSE EventHub for real-time log streaming to Dashboard.
     // Mirrors Go's bot_service.go:674-688: logger.SetLogHook() → eventHub.

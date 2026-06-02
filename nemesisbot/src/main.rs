@@ -6,6 +6,7 @@ mod commands;
 mod common;
 mod embedded;
 mod adapters;
+mod agent_factory;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;

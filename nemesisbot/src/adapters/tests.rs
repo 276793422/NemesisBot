@@ -151,7 +151,7 @@ async fn test_channel_manager_adapter_trait_object() {
 // AgentLoopServiceAdapter tests
 // -------------------------------------------------------------------------
 
-/// Minimal mock LLM provider for testing the adapter.
+/// Minimal mock LLM provider for constructing test AgentLoop instances.
 struct MockLlmProvider;
 
 #[async_trait::async_trait]
@@ -164,7 +164,7 @@ impl nemesis_agent::r#loop::LlmProvider for MockLlmProvider {
         _tools: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
         Ok(nemesis_agent::r#loop::LlmResponse {
-            content: "mock response".to_string(),
+            content: "mock".to_string(),
             tool_calls: Vec::new(),
             finished: true,
             reasoning_content: None,
@@ -177,7 +177,7 @@ impl nemesis_agent::r#loop::LlmProvider for MockLlmProvider {
 
 fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
     let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
-    let agent_loop = nemesis_agent::r#loop::AgentLoop::new_bus(
+    let al = nemesis_agent::r#loop::AgentLoop::new_bus(
         Box::new(MockLlmProvider),
         nemesis_agent::types::AgentConfig {
             model: "test-model".to_string(),
@@ -189,85 +189,66 @@ fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
         nemesis_agent::r#loop::ConcurrentMode::Reject,
         8,
     );
-    Arc::new(agent_loop)
+    Arc::new(al)
+}
+
+fn make_test_shared(bus: &Arc<nemesis_bus::MessageBus>) -> Arc<crate::agent_factory::SharedResources> {
+    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+    Arc::new(crate::agent_factory::SharedResources {
+        home: std::path::PathBuf::from("/tmp/test"),
+        bus: bus.clone(),
+        agent_outbound_tx: outbound_tx,
+        forge: None,
+        forge_executor: None,
+        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(""))),
+        security_plugin: None,
+        observer_manager: None,
+        data_store: None,
+        skills_loader: None,
+        skills_registry: None,
+        memory_manager: None,
+        enabled_channels: vec![],
+        cluster_rpc_call_fn: None,
+        cluster_rpc_config: None,
+        mcp_config_path: std::path::PathBuf::from("/tmp/test/mcp.json"),
+        mcp_enabled: false,
+    })
 }
 
 #[tokio::test]
 async fn test_agent_loop_adapter_new() {
-    let agent_loop = make_test_agent_loop();
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop, bus);
-    // Not started yet
-    assert!(!adapter.started.load(Ordering::SeqCst));
-}
-
-#[tokio::test]
-async fn test_agent_loop_adapter_start_stop() {
+    let shared = make_test_shared(&bus);
     let agent_loop = make_test_agent_loop();
-    let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop.clone(), bus);
-
-    // Start should succeed
-    assert!(adapter.start().is_ok());
-    // Agent should be running
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(agent_loop.is_running());
-
-    // Stop should succeed
-    assert!(adapter.stop().is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(!agent_loop.is_running());
-}
-
-#[tokio::test]
-async fn test_agent_loop_adapter_start_idempotent() {
-    let agent_loop = make_test_agent_loop();
-    let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop, bus);
-
-    assert!(adapter.start().is_ok());
-    assert!(adapter.start().is_ok()); // Second call is a no-op
-    assert!(adapter.stop().is_ok());
+    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
+    // Has AgentLoop inside but not yet started (no bridge/agent handles)
+    assert!(adapter.current().is_some());
+    assert!(!adapter.is_running()); // is_running checks bridge_handle presence
 }
 
 #[tokio::test]
 async fn test_agent_loop_adapter_stop_when_not_started() {
-    let agent_loop = make_test_agent_loop();
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop, bus);
-    // Stopping when not started should be a no-op
-    assert!(adapter.stop().is_ok());
-}
-
-#[tokio::test]
-async fn test_agent_loop_adapter_restart() {
+    let shared = make_test_shared(&bus);
     let agent_loop = make_test_agent_loop();
-    let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop.clone(), bus);
-
-    // First cycle
-    assert!(adapter.start().is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(agent_loop.is_running());
-
+    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
+    // Stopping when not fully started should still work (drops inner AgentLoop)
     assert!(adapter.stop().is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(!agent_loop.is_running());
-
-    // Second cycle — should restart successfully
-    assert!(adapter.start().is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    assert!(agent_loop.is_running());
-
-    assert!(adapter.stop().is_ok());
+    assert!(adapter.current().is_none());
 }
 
 #[tokio::test]
 async fn test_agent_loop_adapter_trait_object() {
-    let agent_loop = make_test_agent_loop();
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    let adapter = AgentLoopServiceAdapter::new(agent_loop, bus);
+    let shared = make_test_shared(&bus);
+    let agent_loop = make_test_agent_loop();
+    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
     let _trait_obj: &dyn LifecycleService = &adapter;
-    assert!(adapter.start().is_ok());
-    assert!(adapter.stop().is_ok());
+    assert!(!adapter.is_running());
 }

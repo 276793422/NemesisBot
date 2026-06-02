@@ -300,10 +300,6 @@ pub struct AgentLoop {
     /// Active model name, kept in sync with the provider above.
     /// Separated from `config.model` so runtime swaps don't need `&mut self`.
     active_model: parking_lot::RwLock<String>,
-    /// Active system prompt, separated from `config` for runtime reload.
-    active_system_prompt: parking_lot::RwLock<Option<String>>,
-    /// Active max turns, separated from `config` for runtime reload.
-    active_max_turns: parking_lot::RwLock<u32>,
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
@@ -378,10 +374,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            active_system_prompt: parking_lot::RwLock::new(config.system_prompt.clone()),
-            active_max_turns: parking_lot::RwLock::new(config.max_turns),
-            tools: parking_lot::RwLock::new(HashMap::new()),
-            config,
+            tools: parking_lot::RwLock::new(HashMap::new()),            config,
             outbound_tx: None,
             registry: None,
             state_manager: None,
@@ -444,10 +437,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            active_system_prompt: parking_lot::RwLock::new(config.system_prompt.clone()),
-            active_max_turns: parking_lot::RwLock::new(config.max_turns),
-            tools: parking_lot::RwLock::new(HashMap::new()),
-            config,
+            tools: parking_lot::RwLock::new(HashMap::new()),            config,
             outbound_tx: Some(outbound_tx),
             registry: Some(registry),
             state_manager: None,
@@ -710,43 +700,6 @@ impl AgentLoop {
         *self.provider.write() = provider;
         *self.active_model.write() = model;
         tracing::info!("[AgentLoop] Provider swapped at runtime");
-    }
-
-    /// Swap system prompt at runtime.
-    pub fn reload_system_prompt(&self, prompt: Option<String>) {
-        *self.active_system_prompt.write() = prompt;
-    }
-
-    /// Swap max turns at runtime.
-    pub fn reload_max_turns(&self, turns: u32) {
-        *self.active_max_turns.write() = turns;
-    }
-
-    /// Replace shared tools in the registry, preserving manually registered tools
-    /// (e.g. cluster_rpc, mcp tools registered directly via register_tool).
-    pub fn reload_tools(&self, tools: HashMap<String, Box<dyn Tool>>) {
-        let mut guard = self.tools.write();
-        // Collect manually registered tools that are not in the new shared set.
-        let preserved: Vec<(String, Arc<dyn Tool>)> = guard.iter()
-            .filter(|(k, _)| !tools.contains_key(k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        guard.clear();
-        for (k, v) in tools {
-            guard.insert(k, Arc::from(v));
-        }
-        for (k, v) in preserved {
-            guard.insert(k, v);
-        }
-        tracing::info!(count = guard.len(), "[AgentLoop] Tools reloaded");
-    }
-
-    /// Unload all reloadable components (called on stop).
-    pub fn unload_components(&self) {
-        self.tools.write().clear();
-        self.mcp_tool_snapshot.write().clear();
-        self.summarizing.lock().clear();
-        tracing::info!("[AgentLoop] Components unloaded");
     }
 
     /// Get the observer manager, if set.
@@ -1230,8 +1183,8 @@ impl AgentLoop {
         // Heartbeat uses a fresh temporary instance, no history.
         let config = AgentConfig {
             model: self.active_model.read().clone(),
-            system_prompt: self.active_system_prompt.read().clone(),
-            max_turns: *self.active_max_turns.read(),
+            system_prompt: self.config.system_prompt.clone(),
+            max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
         };
         let instance = AgentInstance::new(config);
@@ -1991,8 +1944,8 @@ impl AgentLoop {
     fn get_or_create_instance(&self, session_key: &str) -> AgentInstance {
         let config = AgentConfig {
             model: self.active_model.read().clone(),
-            system_prompt: self.active_system_prompt.read().clone(),
-            max_turns: *self.active_max_turns.read(),
+            system_prompt: self.config.system_prompt.clone(),
+            max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
         };
         let instance = AgentInstance::new(config);
@@ -2174,10 +2127,10 @@ impl AgentLoop {
             // Auto-reload MCP tools if config file changed.
             self.check_mcp_reload();
 
-            if turns_used >= *self.active_max_turns.read() {
+            if turns_used >= self.config.max_turns {
                 warn!(
                     "[AgentLoop] Agent loop reached max turns ({})",
-                    *self.active_max_turns.read()
+                    self.config.max_turns
                 );
                 events.push(AgentEvent::Error(
                     "Max iterations reached".to_string(),
@@ -2782,8 +2735,8 @@ impl AgentLoop {
                 "ids": agent_ids,
             },
             "model": self.active_model.read().to_string(),
-            "max_turns": *self.active_max_turns.read(),
-            "system_prompt_configured": self.active_system_prompt.read().is_some(),
+            "max_turns": self.config.max_turns,
+            "system_prompt_configured": self.config.system_prompt.is_some(),
         })
     }
 

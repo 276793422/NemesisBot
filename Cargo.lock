@@ -3732,6 +3732,7 @@ dependencies = [
  "nemesis-voice",
  "nemesis-web",
  "nemesis-workflow",
+ "parking_lot",
  "reqwest",
  "rustyline",
  "serde",

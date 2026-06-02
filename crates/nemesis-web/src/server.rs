@@ -125,17 +125,8 @@ pub struct WebServer {
     /// Forge self-learning instance for runtime start/stop control.
     forge: Option<Arc<nemesis_forge::forge::Forge>>,
     /// Agent loop for runtime model/provider switching.
-    agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
-    /// Security plugin for configuration reloading.
-    security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
-    /// Cron service for SharedToolConfig rebuild.
-    cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
-    /// Skills loader for SharedToolConfig rebuild.
-    skills_loader: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
-    /// Skills registry for SharedToolConfig rebuild.
-    skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
-    /// Forge tool executor for SharedToolConfig rebuild.
-    forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
+    agent_loop: Option<Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>>,
 }
 
 impl WebServer {
@@ -163,11 +154,6 @@ impl WebServer {
             memory_manager: None,
             forge: None,
             agent_loop: None,
-            security_plugin: None,
-            cron_service: None,
-            skills_loader: None,
-            skills_registry: None,
-            forge_executor: None,
         }
     }
 
@@ -213,29 +199,9 @@ impl WebServer {
         self.forge = Some(forge);
     }
 
-    /// Set the agent loop for runtime model/provider switching.
-    pub fn set_agent_loop(&mut self, agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>) {
+    /// Set the agent loop ref for runtime model/provider switching.
+    pub fn set_agent_loop(&mut self, agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>) {
         self.agent_loop = Some(agent_loop);
-    }
-
-    pub fn set_security_plugin(&mut self, plugin: Arc<nemesis_security::pipeline::SecurityPlugin>) {
-        self.security_plugin = Some(plugin);
-    }
-
-    pub fn set_cron_service(&mut self, service: Arc<std::sync::Mutex<nemesis_cron::service::CronService>>) {
-        self.cron_service = Some(service);
-    }
-
-    pub fn set_skills_loader(&mut self, loader: Arc<nemesis_skills::loader::SkillsLoader>) {
-        self.skills_loader = Some(loader);
-    }
-
-    pub fn set_skills_registry(&mut self, registry: Arc<nemesis_skills::registry::RegistryManager>) {
-        self.skills_registry = Some(registry);
-    }
-
-    pub fn set_forge_executor(&mut self, executor: Arc<nemesis_forge::forge_tools::ForgeToolExecutor>) {
-        self.forge_executor = Some(executor);
     }
 
     /// Build the Axum router with all routes.
@@ -266,12 +232,7 @@ impl WebServer {
             data_store: self.data_store.clone(),
             memory_manager: self.memory_manager.clone(),
             forge: self.forge.clone(),
-            agent_loop: self.agent_loop.clone(),
-            security_plugin: self.security_plugin.clone(),
-            cron_service: self.cron_service.clone(),
-            skills_loader: self.skills_loader.clone(),
-            skills_registry: self.skills_registry.clone(),
-            forge_executor: self.forge_executor.clone(),
+            agent_loop: self.agent_loop.clone().unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
         };
 
         let state = Arc::new(state);

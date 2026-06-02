@@ -165,55 +165,100 @@ impl ChannelManagerTrait for ChannelManagerAdapter {
 // AgentLoop adapter
 // ---------------------------------------------------------------------------
 
+/// All mutable state protected by a single Mutex.
+/// This ensures start()/stop() are inherently atomic — no intermediate
+/// state is ever visible to concurrent callers.
+struct AgentLoopState {
+    /// Current AgentLoop instance. `Some` = running, `None` = stopped.
+    agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
+    /// Handle to the inbound bridge task (bus broadcast → mpsc).
+    bridge_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the agent loop task.
+    agent_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Adapter wrapping `nemesis_agent::AgentLoop` to implement the
 /// `nemesis_services::AgentLoopService` trait.
 ///
-/// On `start()`: subscribes to the message bus inbound broadcast, creates
-/// an mpsc bridge, and spawns the agent loop's `run_bus_arc()`.
-/// On `stop()`: aborts the inbound bridge (dropping the mpsc sender) so
-/// `run_bus_arc` receives `None` from its `recv()` and exits cleanly.
+/// On `start()`: calls `build_agent_loop()` to create a fresh AgentLoop from
+/// disk config, subscribes to the message bus inbound broadcast, creates an
+/// mpsc bridge, and spawns the agent loop's `run_bus_arc()`.
+/// On `stop()`: aborts the inbound bridge, drops the old AgentLoop entirely.
 /// The outbound bridge (agent → bus) is persistent and created separately
 /// in gateway.rs; it survives stop/start cycles.
+///
+/// **Thread safety**: All mutable state lives in `Mutex<AgentLoopState>`.
+/// `start()` and `stop()` hold this lock for the entire operation, making
+/// them inherently serial. No intermediate state is possible.
 pub struct AgentLoopServiceAdapter {
-    inner: Arc<nemesis_agent::r#loop::AgentLoop>,
+    /// Single Mutex protecting all mutable state.
+    state: std::sync::Mutex<AgentLoopState>,
+    /// Shared resources for factory function.
+    shared: Arc<crate::agent_factory::SharedResources>,
+    /// Shared reference with AppState — updated on each start/stop.
+    agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     bus: Arc<nemesis_bus::MessageBus>,
     /// Tokio runtime handle captured at construction time.
     /// Needed because tray callbacks run on the winit thread (no tokio context),
     /// but `start()` needs to spawn async tasks on the tokio runtime.
     rt: tokio::runtime::Handle,
-    started: AtomicBool,
-    /// Handle to the inbound bridge task (bus broadcast → mpsc).
-    /// Aborting it drops the mpsc sender, causing the agent loop's
-    /// `recv()` to return `None` so it exits promptly.
-    bridge_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Handle to the agent loop task.
-    agent_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AgentLoopServiceAdapter {
+    /// Create a new adapter with an initial AgentLoop (from first factory call in gateway.rs).
+    /// The adapter starts in "stopped" state — `start()` must be called to begin processing.
     pub fn new(
-        inner: Arc<nemesis_agent::r#loop::AgentLoop>,
+        initial_agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+        shared: Arc<crate::agent_factory::SharedResources>,
         bus: Arc<nemesis_bus::MessageBus>,
+        agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     ) -> Self {
         Self {
-            inner,
+            state: std::sync::Mutex::new(AgentLoopState {
+                agent_loop: Some(initial_agent_loop),
+                bridge_handle: None,
+                agent_handle: None,
+            }),
+            shared,
+            agent_loop_ref,
             bus,
             rt: tokio::runtime::Handle::current(),
-            started: AtomicBool::new(false),
-            bridge_handle: std::sync::Mutex::new(None),
-            agent_handle: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Get the current AgentLoop (if running). Used by heartbeat and external callers.
+    pub fn current(&self) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+        self.state.lock().unwrap().agent_loop.clone()
     }
 }
 
 impl LifecycleService for AgentLoopServiceAdapter {
     fn start(&self) -> Result<(), String> {
-        if self.started.swap(true, Ordering::SeqCst) {
+        let mut state = self.state.lock().unwrap();
+
+        if state.agent_loop.is_some() && state.bridge_handle.is_some() {
             tracing::info!("[AgentAdapter] start: already started, skipping");
-            return Ok(()); // Already started
+            return Ok(());
         }
 
-        tracing::info!("[AgentAdapter] start: initializing...");
+        // If we have a pre-built AgentLoop (from new()) but no tasks yet, use it.
+        // Otherwise (after a stop), build a fresh one from disk.
+        let agent_loop = if let Some(al) = state.agent_loop.take() {
+            tracing::info!("[AgentAdapter] start: using pre-built AgentLoop");
+            al
+        } else {
+            tracing::info!("[AgentAdapter] start: building fresh AgentLoop via factory...");
+            match crate::agent_factory::build_agent_loop(&self.shared) {
+                Ok(al) => al,
+                Err(e) => {
+                    // No need to roll back any flag — state is unchanged
+                    return Err(format!("Failed to build agent loop: {}", e));
+                }
+            }
+        };
+
+        // Update shared reference for WebServer/AppState.
+        *self.agent_loop_ref.write() = Some(agent_loop.clone());
 
         // Create a new mpsc channel for inbound messages
         let (agent_inbound_tx, agent_inbound_rx) =
@@ -254,35 +299,40 @@ impl LifecycleService for AgentLoopServiceAdapter {
         });
 
         // Spawn the agent loop
-        let agent_loop = self.inner.clone();
+        let agent_loop_clone = agent_loop.clone();
         let agent_task = self.rt.spawn(async move {
-            agent_loop.run_bus_arc(agent_inbound_rx).await;
+            agent_loop_clone.run_bus_arc(agent_inbound_rx).await;
         });
 
-        // Store handles so stop() can abort them
-        *self.bridge_handle.lock().unwrap() = Some(bridge);
-        *self.agent_handle.lock().unwrap() = Some(agent_task);
+        // Store everything in state (still holding the lock).
+        state.agent_loop = Some(agent_loop);
+        state.bridge_handle = Some(bridge);
+        state.agent_handle = Some(agent_task);
 
         tracing::info!("[AgentAdapter] start: agent loop started, listening on bus");
         Ok(())
     }
 
     fn stop(&self) -> Result<(), String> {
-        if !self.started.swap(false, Ordering::SeqCst) {
+        let mut state = self.state.lock().unwrap();
+
+        if state.agent_loop.is_none() {
             tracing::info!("[AgentAdapter] stop: already stopped, skipping");
-            return Ok(()); // Already stopped
+            return Ok(());
         }
 
         tracing::info!("[AgentAdapter] stop: shutting down agent...");
 
-        // Set running=false so the agent loop won't process more messages
-        // after the current recv() returns.
-        self.inner.stop();
+        // Set running=false and clear session busy states.
+        if let Some(ref al) = state.agent_loop {
+            al.stop();
+            al.clear_session_busy();
+        }
 
         // Abort the inbound bridge. This drops `agent_inbound_tx` (the mpsc
         // sender), which causes `run_bus_arc`'s `inbound_rx.recv()` to return
         // `None`, breaking the loop promptly — even when idle.
-        if let Some(handle) = self.bridge_handle.lock().unwrap().take() {
+        if let Some(handle) = state.bridge_handle.take() {
             handle.abort();
         }
 
@@ -290,23 +340,22 @@ impl LifecycleService for AgentLoopServiceAdapter {
         // processing a message, the response for that message is lost.
         // This is expected — the user explicitly stopped the agent, so
         // incomplete replies are acceptable.
-        if let Some(handle) = self.agent_handle.lock().unwrap().take() {
+        if let Some(handle) = state.agent_handle.take() {
             handle.abort();
         }
 
-        // Clear session busy states. If the agent was aborted mid-processing,
-        // sessions remain locked as "busy" and would reject all future
-        // messages after restart. Clearing unlocks them.
-        self.inner.clear_session_busy();
+        // Drop the old AgentLoop entirely.
+        state.agent_loop.take();
+        *self.agent_loop_ref.write() = None;
 
-        tracing::info!("[AgentAdapter] stop: agent loop stopped");
+        tracing::info!("[AgentAdapter] stop: agent loop stopped and destroyed");
         Ok(())
     }
 }
 
 impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
     fn is_running(&self) -> bool {
-        self.inner.is_running()
+        self.state.lock().unwrap().bridge_handle.is_some()
     }
 }
 

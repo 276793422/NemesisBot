@@ -74,17 +74,8 @@ pub struct AppState {
     /// Forge self-learning instance for runtime start/stop control.
     pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
     /// Agent loop for runtime model/provider switching.
-    pub agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
-    /// Security plugin for configuration reloading.
-    pub security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
-    /// Cron service for SharedToolConfig rebuild.
-    pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
-    /// Skills loader for SharedToolConfig rebuild.
-    pub skills_loader: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
-    /// Skills registry for SharedToolConfig rebuild.
-    pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
-    /// Forge tool executor for SharedToolConfig rebuild.
-    pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
+    pub agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
 }
 
 impl AppState {

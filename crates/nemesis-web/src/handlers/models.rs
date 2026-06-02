@@ -2,6 +2,7 @@
 
 use crate::handlers::{mask_sensitive, require_home};
 use crate::ws_router::{ModuleHandler, RequestContext};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -116,6 +117,145 @@ impl LlmProvider for ProviderAdapter {
                 })
             }
             Err(e) => Err(format!("{}", e)),
+        }
+    }
+}
+
+/// Async LLM provider adapter for Forge's Reflector + Pipeline.
+///
+/// Duplicated from `agent_factory.rs` because nemesis-web cannot import nemesisbot.
+pub(crate) struct ForgeProviderBridge {
+    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    model: String,
+}
+
+impl ForgeProviderBridge {
+    pub(crate) fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
+        Self { provider, model }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
+    async fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        max_tokens: Option<i64>,
+    ) -> std::result::Result<String, String> {
+        let messages = vec![
+            nemesis_providers::types::Message {
+                role: "system".to_string(),
+                content: system_prompt.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+            },
+            nemesis_providers::types::Message {
+                role: "user".to_string(),
+                content: user_prompt.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+            },
+        ];
+
+        let options = nemesis_providers::types::ChatOptions {
+            temperature: Some(0.7),
+            max_tokens,
+            top_p: None,
+            stop: None,
+            extra: HashMap::new(),
+        };
+
+        let response = self
+            .provider
+            .chat(&messages, &[], &self.model, &options)
+            .await
+            .map_err(|e| format!("{:?}", e))?;
+
+        if response.content.is_empty() && response.tool_calls.is_empty() {
+            Err("LLM returned no content".to_string())
+        } else {
+            Ok(response.content)
+        }
+    }
+}
+
+/// Sync LLM provider adapter for Forge's LearningEngine.
+///
+/// Duplicated from `agent_factory.rs` because nemesis-web cannot import nemesisbot.
+pub(crate) struct ForgeLearningProvider {
+    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    model: String,
+}
+
+impl ForgeLearningProvider {
+    pub(crate) fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
+        Self { provider, model }
+    }
+}
+
+impl nemesis_forge::learning_engine::LLMProvider for ForgeLearningProvider {
+    fn chat(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> std::result::Result<String, String> {
+        let messages = vec![
+            nemesis_providers::types::Message {
+                role: "system".to_string(),
+                content: system.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+            },
+            nemesis_providers::types::Message {
+                role: "user".to_string(),
+                content: user.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+            },
+        ];
+
+        let options = nemesis_providers::types::ChatOptions {
+            temperature: Some(0.7),
+            max_tokens: Some(max_tokens as i64),
+            top_p: None,
+            stop: None,
+            extra: HashMap::new(),
+        };
+
+        let future = self
+            .provider
+            .chat(&messages, &[], &self.model, &options);
+
+        let response = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("failed to create runtime: {}", e))?;
+                rt.block_on(future)
+            }
+        }
+        .map_err(|e| format!("{:?}", e))?;
+
+        if response.content.is_empty() {
+            Err("LLM returned no content".to_string())
+        } else {
+            Ok(response.content)
         }
     }
 }
@@ -253,7 +393,7 @@ impl ModelsHandler {
         save_config(home, &mut config)?;
 
         // Swap the runtime provider so the change takes effect immediately.
-        if let Some(ref agent_loop) = ctx.state.agent_loop {
+        if let Some(ref agent_loop) = ctx.state.agent_loop.read().as_ref() {
             let api_base = if model_cfg.api_base.is_empty() {
                 nemesis_config::get_default_api_base(
                     &nemesis_config::infer_provider_from_model(&model_cfg.model)
@@ -273,9 +413,21 @@ impl ModelsHandler {
             };
             match nemesis_providers::factory::create_provider(&factory_cfg) {
                 Ok(provider) => {
-                    let adapter = Arc::new(ProviderAdapter::new(provider, model_cfg.model.clone()));
+                    let adapter = Arc::new(ProviderAdapter::new(provider.clone(), model_cfg.model.clone()));
                     agent_loop.set_provider_and_model(adapter, model_cfg.model.clone());
                     tracing::info!(model = %model_cfg.model, "[Models] Runtime provider swapped");
+
+                    // Sync Forge's LLM provider — old model may have been deleted.
+                    if let Some(ref forge) = ctx.state.forge {
+                        let bridge = ForgeProviderBridge::new(provider.clone(), model_cfg.model.clone());
+                        forge.set_provider(Arc::new(bridge));
+                        tracing::info!(model = %model_cfg.model, "[Models] Forge provider updated");
+
+                        if let Some(le) = forge.learning_engine() {
+                            le.set_provider(Arc::new(ForgeLearningProvider::new(provider, model_cfg.model.clone())));
+                            tracing::info!(model = %model_cfg.model, "[Models] Forge learning engine provider updated");
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "[Models] Failed to create provider for runtime swap, config saved anyway");
