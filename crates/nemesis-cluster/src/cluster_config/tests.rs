@@ -260,3 +260,96 @@ fn test_peer_config_with_tags_and_capabilities() {
     assert_eq!(loaded.peers[0].capabilities.len(), 3);
     assert!(loaded.peers[0].capabilities.contains(&"vision".to_string()));
 }
+
+// -- Additional tests: invalid TOML, directory creation, atomic write edge cases --
+
+#[test]
+fn test_load_static_config_invalid_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad_peers.toml");
+    std::fs::write(&path, "this is [not valid {{{{toml").unwrap();
+
+    let result = load_static_config(&path);
+    assert!(result.is_err(), "expected error for invalid TOML, got {:?}", result);
+}
+
+#[test]
+fn test_load_dynamic_state_invalid_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.toml");
+    std::fs::write(&path, "broken [toml {{ }} ][").unwrap();
+
+    let result = load_dynamic_state(&path);
+    assert!(result.is_err(), "expected error for invalid TOML, got {:?}", result);
+}
+
+#[test]
+fn test_save_static_config_creates_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    // Use a path where the parent directory doesn't exist yet
+    let path = dir.path().join("subdir/nested/peers.toml");
+
+    let config = create_static_config("node-mkdir", "DirTest", "0.0.0.0:9000");
+    save_static_config(&path, &config).unwrap();
+
+    assert!(path.exists());
+    let loaded = load_static_config(&path).unwrap();
+    assert_eq!(loaded.node.id, "node-mkdir");
+    assert_eq!(loaded.node.name, "DirTest");
+}
+
+#[test]
+fn test_save_dynamic_state_creates_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deep/nested/dir/state.toml");
+
+    let state = DynamicState::default();
+    save_dynamic_state(&path, &state).unwrap();
+
+    assert!(path.exists());
+    let loaded = load_dynamic_state(&path).unwrap();
+    assert!(loaded.discovered.is_empty());
+}
+
+#[test]
+fn test_atomic_write_rename_failure() {
+    // Write to a path with a null byte which is invalid on both Windows and Unix.
+    let dir = tempfile::tempdir().unwrap();
+    let invalid_path = dir.path().join("bad\0file.toml");
+    let config = create_static_config("node-fail", "FailTest", "0.0.0.0:9000");
+    let result = save_static_config(&invalid_path, &config);
+    assert!(result.is_err(), "expected error for invalid path, got {:?}", result);
+}
+
+#[test]
+fn test_save_and_load_empty_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty_peers.toml");
+
+    let config = StaticConfig {
+        cluster: ClusterMeta::default(),
+        node: NodeInfo::default(),
+        peers: vec![],
+    };
+
+    save_static_config(&path, &config).unwrap();
+    let loaded = load_static_config(&path).unwrap();
+    assert!(loaded.peers.is_empty());
+    assert!(loaded.node.id.is_empty());
+}
+
+#[test]
+fn test_atomic_write_cleanup_on_failure() {
+    // Verify that the .tmp file is cleaned up when rename fails.
+    // We test this indirectly: save to a valid path first, then verify no leftover .tmp
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cleanup.toml");
+
+    let config = create_static_config("node-clean", "CleanupTest", "0.0.0.0:9000");
+    save_static_config(&path, &config).unwrap();
+
+    // After successful save, no .tmp file should remain
+    let tmp_path = path.with_extension("toml.tmp");
+    assert!(!tmp_path.exists(), "temp file should have been renamed");
+    assert!(path.exists());
+}

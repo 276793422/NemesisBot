@@ -2687,3 +2687,685 @@ fn test_fail_task_nonexistent_v2() {
     let cluster = Cluster::new(make_config());
     assert!(!cluster.fail_task("nonexistent", "error"));
 }
+
+// ============================================================
+// Additional coverage tests for remaining uncovered paths
+// ============================================================
+
+// -- 1. sync_to_disk with NodeStatus::Connecting ----------------------------
+
+#[test]
+fn test_sync_to_disk_with_connecting_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // Register a node with Connecting status to hit the "unknown" branch
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "connecting-node".into(),
+            name: "connecting-peer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.99:9000".into(),
+            category: "dev".into(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        },
+        status: NodeStatus::Connecting,
+        capabilities: vec!["llm".into()],
+        addresses: vec![],
+    });
+
+    let result = cluster.sync_to_disk();
+    assert!(result.is_ok());
+
+    // Verify the state file was written
+    let state_path = dir.path().join("cluster").join("state.toml");
+    assert!(state_path.exists());
+
+    // Read back and verify the status is "unknown"
+    let content = std::fs::read_to_string(&state_path).unwrap();
+    assert!(
+        content.contains("unknown"),
+        "Connecting status should map to 'unknown' in state file, got: {}",
+        content
+    );
+    cluster.stop();
+}
+
+// -- 2. sync_to_disk write failure -----------------------------------------
+
+#[test]
+fn test_sync_to_disk_write_failure() {
+    // Use a workspace path that cannot be written to
+    // On Windows, trying to write inside a non-existent deeply nested path
+    // where parent doesn't exist and can't be created should fail
+    let dir = tempfile::tempdir().unwrap();
+    let _cluster = Cluster::new(make_config());
+    // Override the dynamic_state_path to point to an impossible location
+    // by using with_workspace but then corrupting the path
+    let impossible_path = dir.path().join("cluster");
+    // Create a file where the directory should be to force mkdir to fail
+    std::fs::write(&impossible_path, "blocker").unwrap();
+
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // The state.toml would go inside cluster/ which is now a file, not a dir
+    let result = cluster.sync_to_disk();
+    // Should fail because the parent "cluster" path is a file, not a directory
+    assert!(result.is_err(), "Expected sync_to_disk to fail with blocked path");
+    cluster.stop();
+}
+
+// -- 3. string_value helper function - all branches -------------------------
+
+#[test]
+fn test_string_value_all_branches() {
+    // String
+    let v = serde_json::Value::String("hello".into());
+    assert_eq!(string_value(Some(&v)), "hello");
+
+    // Null
+    assert_eq!(string_value(Some(&serde_json::Value::Null)), "");
+
+    // None
+    assert_eq!(string_value(None), "");
+
+    // Number
+    let v = serde_json::json!(42);
+    assert_eq!(string_value(Some(&v)), "42");
+
+    // Boolean
+    let v = serde_json::json!(true);
+    assert_eq!(string_value(Some(&v)), "true");
+
+    // Array fallback
+    let v = serde_json::json!([1, 2, 3]);
+    assert_eq!(string_value(Some(&v)), "");
+
+    // Object fallback
+    let v = serde_json::json!({"k": "v"});
+    assert_eq!(string_value(Some(&v)), "");
+
+    // Float number
+    let v = serde_json::json!(3.14);
+    assert_eq!(string_value(Some(&v)), "3.14");
+
+    // Boolean false
+    let v = serde_json::json!(false);
+    assert_eq!(string_value(Some(&v)), "false");
+}
+
+// -- 4. poll_stale_pending_tasks with malformed created_at ------------------
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_malformed_created_at() {
+    let tm = Arc::new(TaskManager::new());
+    // Create a task with invalid RFC3339 timestamp - should be skipped (continue)
+    let task = Task {
+        id: "bad-date".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: "not-a-date".to_string(),
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    poll_stale_pending_tasks(&tm, &None, None).await;
+    // Task should still be pending (skipped due to malformed date)
+    let t = tm.get_task("bad-date").unwrap();
+    assert_eq!(t.status, TaskStatus::Pending);
+}
+
+// -- 5. poll_stale_pending_tasks with unknown status response ---------------
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_unknown_status_response() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let task = Task {
+        id: "weird-status".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    // Returns a status that doesn't match "running", "done", or "not_found"
+    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
+        Some(Arc::new(|_peer, _action, _payload| {
+            let resp = serde_json::json!({"status": "weird_unknown_status", "task_id": "weird-status"});
+            Ok(serde_json::to_vec(&resp).unwrap())
+        }));
+
+    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    let t = tm.get_task("weird-status").unwrap();
+    // Unknown status -> continue -> task stays pending
+    assert_eq!(t.status, TaskStatus::Pending);
+}
+
+// -- 6. poll_stale_pending_tasks with invalid JSON response -----------------
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_invalid_json_response() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let task = Task {
+        id: "invalid-json".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    // Returns invalid JSON bytes
+    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
+        Some(Arc::new(|_peer, _action, _payload| {
+            Ok(b"this is not valid json {{{".to_vec())
+        }));
+
+    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    let t = tm.get_task("invalid-json").unwrap();
+    // Invalid JSON -> continue -> task stays pending
+    assert_eq!(t.status, TaskStatus::Pending);
+}
+
+// -- 7. poll_stale_pending_tasks with done/error result_status ---------------
+
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_done_with_error_status() {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let task = Task {
+        id: "done-err".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    // call_fn returns "done" with result_status "error"
+    let call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>> =
+        Some(Arc::new(|_peer, action, _payload| {
+            if action == "query_task_result" {
+                let resp = serde_json::json!({
+                    "status": "done",
+                    "task_id": "done-err",
+                    "result_status": "error",
+                    "response": "",
+                    "error": "something went wrong on remote"
+                });
+                Ok(serde_json::to_vec(&resp).unwrap())
+            } else {
+                // confirm_task_delivery
+                Ok(Vec::new())
+            }
+        }));
+
+    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    let t = tm.get_task("done-err").unwrap();
+    // result_status "error" -> complete_callback with "error" -> should be completed (callback handled)
+    assert_eq!(t.status, TaskStatus::Failed);
+}
+
+// -- 8. confirm_delivery with call_fn fallback -------------------------------
+
+#[test]
+fn test_confirm_delivery_with_call_fn_fallback() {
+    let call_invoked = Arc::new(Mutex::new(false));
+    let call_invoked_clone = call_invoked.clone();
+
+    let cluster = Cluster::new(make_config());
+    // Set call_with_context_fn but DO NOT start (so no RPC client)
+    cluster.set_call_with_context_fn(Box::new(move |peer_id, action, _payload| {
+        if action == "confirm_task_delivery" {
+            *call_invoked_clone.lock() = true;
+            assert_eq!(peer_id, "peer-1");
+        }
+        Ok(Vec::new())
+    }));
+
+    cluster.confirm_delivery("peer-1", "task-1");
+    assert!(*call_invoked.lock(), "call_with_context_fn should have been invoked");
+}
+
+// -- 9. confirm_delivery with neither client nor fn --------------------------
+// NOTE: confirm_delivery() has a potential deadlock when call_with_context_fn
+// is None: it locks the mutex, then falls back to call_with_context() which
+// also tries to lock the same mutex. Instead we test the free function
+// confirm_delivery_with directly, which is the async path used by the
+// recovery loop.
+
+#[tokio::test]
+async fn test_confirm_delivery_neither_client_nor_fn() {
+    // No client and no call_fn -> should just return without panic
+    confirm_delivery_with(&None, None, "peer-1", "task-1").await;
+}
+
+// -- 10. submit_peer_chat without task_id in payload -------------------------
+
+#[test]
+fn test_submit_peer_chat_without_task_id_generates_uuid() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // Payload has no "task_id" field - should auto-generate
+    let result = cluster.submit_peer_chat(
+        "remote-1",
+        "peer_chat",
+        serde_json::json!({"content": "hello from test"}),
+        "web",
+        "chat-99",
+    );
+    assert!(result.is_ok());
+    let task_id = result.unwrap();
+    // The task_id returned is from task_manager.create_task_with_peer, not from payload
+    assert!(!task_id.is_empty());
+    // The task should exist
+    let task = cluster.get_task(&task_id).unwrap();
+    assert_eq!(task.action, "peer_chat");
+    assert_eq!(task.peer_id, "remote-1");
+    cluster.stop();
+}
+
+// -- 11. with_workspace loads node_id from existing config -------------------
+
+#[test]
+fn test_with_workspace_loads_node_id_from_existing_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+
+    // Write a peers.toml with a specific node ID
+    let peers_toml = r#"
+[node]
+id = "existing-node-42"
+name = "ExistingNode"
+address = "10.0.0.1:21949"
+role = "worker"
+category = "general"
+"#;
+    std::fs::write(cluster_dir.join("peers.toml"), peers_toml).unwrap();
+
+    // Create cluster with empty node_id in config - should load from file
+    let config = ClusterConfig {
+        node_id: String::new(),
+        bind_address: "0.0.0.0:9000".into(),
+        peers: vec![],
+    };
+    let cluster = Cluster::with_workspace(config, dir.path().to_path_buf());
+    assert_eq!(cluster.node_id(), "existing-node-42");
+}
+
+// -- 12. call_with_context with RPC client but peer not found ----------------
+
+#[test]
+fn test_call_with_context_rpc_client_peer_not_found() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    // RPC client is initialized by start(), but the peer is not in the registry
+    let result = cluster.call_with_context("nonexistent-peer-xyz", "ping", serde_json::json!({}));
+    assert!(result.is_err(), "Should fail for nonexistent peer");
+    cluster.stop();
+}
+
+// -- 13. register_basic_handlers with RPC server ----------------------------
+
+#[test]
+fn test_register_basic_handlers_with_rpc_server_success() {
+    let cluster = make_cluster_with_rpc_server();
+    let result = cluster.register_basic_handlers();
+    assert!(result.is_ok());
+
+    // Verify specific handlers work correctly
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+
+    // Test ping handler
+    let ping_result = rpc_server.handle_request_sync("ping", serde_json::json!({}));
+    assert!(ping_result.is_ok());
+    let resp = ping_result.unwrap();
+    assert_eq!(resp["status"], "pong");
+    assert_eq!(resp["node_id"], "local-node-001");
+
+    // Test get_info handler
+    let info_result = rpc_server.handle_request_sync("get_info", serde_json::json!({}));
+    assert!(info_result.is_ok());
+    let resp = info_result.unwrap();
+    assert_eq!(resp["node_id"], "local-node-001");
+    assert_eq!(resp["status"], "online");
+
+    // Test list_actions handler
+    let actions_result = rpc_server.handle_request_sync("list_actions", serde_json::json!({}));
+    assert!(actions_result.is_ok());
+    let resp = actions_result.unwrap();
+    assert!(resp["actions"].is_array());
+
+    // Test get_capabilities handler
+    let caps_result = rpc_server.handle_request_sync("get_capabilities", serde_json::json!({}));
+    assert!(caps_result.is_ok());
+    let resp = caps_result.unwrap();
+    assert!(resp["capabilities"].is_array());
+}
+
+// -- 14. register_forge_handlers success path --------------------------------
+
+#[test]
+fn test_register_forge_handlers_success() {
+    let cluster = make_cluster_with_rpc_server();
+
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
+    let result = cluster.register_forge_handlers(provider);
+    assert!(result.is_ok());
+
+    // Verify forge_share works
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let share_result = rpc_server.handle_request_sync("forge_share", serde_json::json!({
+        "source_node": "node-remote-1",
+        "report": {"insights": ["test insight"], "score": 0.9},
+    }));
+    assert!(share_result.is_ok());
+    let resp = share_result.unwrap();
+    assert_eq!(resp["status"], "ok");
+
+    // Verify forge_get_reflections works
+    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({}));
+    assert!(list_result.is_ok());
+    let resp = list_result.unwrap();
+    assert!(resp.get("reflections").is_some());
+}
+
+// -- 15. register_forge_handlers forge_share with error ----------------------
+
+#[test]
+fn test_register_forge_handlers_forge_share_error() {
+    let cluster = make_cluster_with_rpc_server();
+
+    struct ErrorProvider;
+    impl crate::handlers::ForgeDataProvider for ErrorProvider {
+        fn receive_reflection(&self, _payload: &serde_json::Value) -> Result<(), String> {
+            Err("simulated storage failure".into())
+        }
+        fn get_reflections_list_payload(&self) -> serde_json::Value {
+            serde_json::json!({"reflections": [], "count": 0})
+        }
+        fn read_reflection_content(&self, _filename: &str) -> Result<String, String> {
+            Err("not found".into())
+        }
+        fn sanitize_content(&self, content: &str) -> String { content.to_string() }
+        fn clone_boxed(&self) -> Box<dyn crate::handlers::ForgeDataProvider> {
+            Box::new(ErrorProvider)
+        }
+    }
+
+    let result = cluster.register_forge_handlers(Box::new(ErrorProvider));
+    assert!(result.is_ok());
+
+    // forge_share should return error status when receive_reflection fails
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let share_result = rpc_server.handle_request_sync("forge_share", serde_json::json!({
+        "source_node": "node-1",
+        "report": {"data": "test"},
+    }));
+    assert!(share_result.is_ok());
+    let resp = share_result.unwrap();
+    assert_eq!(resp["status"], "error");
+    assert!(resp["error"].as_str().unwrap().contains("simulated storage failure"));
+}
+
+// -- 16. register_forge_handlers forge_get_reflections with filename ---------
+
+#[test]
+fn test_register_forge_handlers_get_reflections_with_filename() {
+    let cluster = make_cluster_with_rpc_server();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create a reflection file
+    let reflections_dir = dir.path().join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    let test_content = r#"{"insights": ["test insight 1", "test insight 2"]}"#;
+    std::fs::write(reflections_dir.join("test-reflection.json"), test_content).unwrap();
+
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
+    let result = cluster.register_forge_handlers(provider);
+    assert!(result.is_ok());
+
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({
+        "filename": "test-reflection.json",
+    }));
+    assert!(list_result.is_ok());
+    let resp = list_result.unwrap();
+    // Should include the content of the specific reflection
+    assert!(resp.get("content").is_some());
+    assert_eq!(resp["filename"], "test-reflection.json");
+}
+
+// -- 17. register_forge_handlers forge_get_reflections read error -----------
+
+#[test]
+fn test_register_forge_handlers_get_reflections_read_error() {
+    let cluster = make_cluster_with_rpc_server();
+    let dir = tempfile::tempdir().unwrap();
+
+    let provider = Box::new(crate::handlers::FileForgeProvider::new(dir.path()));
+    let result = cluster.register_forge_handlers(provider);
+    assert!(result.is_ok());
+
+    // Request a non-existent file
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+    let list_result = rpc_server.handle_request_sync("forge_get_reflections", serde_json::json!({
+        "filename": "nonexistent-file.json",
+    }));
+    assert!(list_result.is_ok());
+    let resp = list_result.unwrap();
+    assert_eq!(resp["status"], "error");
+    assert!(resp["error"].as_str().unwrap().contains("Failed to read reflection"));
+}
+
+// -- 18. register_peer_chat_handlers with RPC channel ------------------------
+
+#[test]
+fn test_register_peer_chat_handlers_with_rpc_channel() {
+    use crate::rpc::RpcChannel;
+    #[derive(Debug)]
+    struct MockRpcChannelForPeerChat;
+    impl RpcChannel for MockRpcChannelForPeerChat {
+        fn input(
+            &self,
+            _session_key: &str,
+            _content: &str,
+            _correlation_id: &str,
+        ) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
+            Err("mock input".into())
+        }
+    }
+
+    let cluster = make_cluster_with_rpc_server();
+
+    // Set RPC channel - this triggers register_peer_chat_handlers
+    cluster.set_rpc_channel(Arc::new(MockRpcChannelForPeerChat));
+
+    // Verify all peer chat handlers are registered
+    let rpc_server = cluster.rpc_server.as_ref().unwrap();
+
+    let peer_chat_result = rpc_server.handle_request_sync("peer_chat", serde_json::json!({
+        "content": "hello",
+        "task_id": "t1",
+    }));
+    assert!(peer_chat_result.is_ok());
+    assert_eq!(peer_chat_result.unwrap()["status"], "accepted");
+
+    let callback_result = rpc_server.handle_request_sync("peer_chat_callback", serde_json::json!({
+        "task_id": "nonexistent",
+        "status": "success",
+    }));
+    assert!(callback_result.is_ok());
+
+    let hello_result = rpc_server.handle_request_sync("hello", serde_json::json!({}));
+    assert!(hello_result.is_ok());
+    assert_eq!(hello_result.unwrap()["status"], "online");
+
+    let query_result = rpc_server.handle_request_sync("query_task_result", serde_json::json!({
+        "task_id": "nonexistent",
+    }));
+    assert!(query_result.is_ok());
+
+    let confirm_result = rpc_server.handle_request_sync("confirm_task_delivery", serde_json::json!({
+        "task_id": "nonexistent",
+    }));
+    assert!(confirm_result.is_ok());
+}
+
+// -- 19. ClusterPeerResolver fallback scan by name ---------------------------
+
+#[test]
+fn test_cluster_peer_resolver_fallback_scan_by_name() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // Register a node with specific id and name
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-123".into(),
+            name: "MyNode".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "192.168.1.50:21949".into(),
+            category: "dev".into(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec!["llm".into()],
+        addresses: vec!["192.168.1.50".into()],
+    });
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    };
+
+    // Resolve by name (fallback scan)
+    let result = resolver.get_peer_info("MyNode");
+    assert!(result.is_some(), "Should find peer by name via fallback scan");
+    let (addresses, port, is_online) = result.unwrap();
+    assert!(addresses.contains(&"192.168.1.50".to_string()));
+    assert_eq!(port, 21949);
+    assert!(is_online);
+
+    // Also verify direct lookup by id still works
+    let result2 = resolver.get_peer_info("node-123");
+    assert!(result2.is_some());
+    cluster.stop();
+}
+
+// -- 20. ClusterPeerResolver offline peer ------------------------------------
+
+#[test]
+fn test_cluster_peer_resolver_offline_peer_is_online_false() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "offline-peer-20".into(),
+            name: "OfflinePeer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.1:21949".into(),
+            category: "test".into(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        addresses: vec!["10.0.0.1".into()],
+    });
+
+    let resolver = ClusterPeerResolver {
+        registry: cluster.registry.clone(),
+        node_id: cluster.node_id.clone(),
+    };
+
+    let (_, _, is_online) = resolver.get_peer_info("offline-peer-20").unwrap();
+    assert!(!is_online, "Offline peer should have is_online=false");
+    cluster.stop();
+}
+
+// -- 21. generate_node_id uniqueness ----------------------------------------
+
+#[test]
+fn test_generate_node_id_uniqueness_multiple() {
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..50 {
+        let id = generate_node_id();
+        assert!(id.starts_with("bot-"), "ID should start with 'bot-': {}", id);
+        assert!(ids.insert(id), "Generated duplicate node ID");
+    }
+    assert_eq!(ids.len(), 50);
+}
+
+// -- 22. parse_host_port with no colon --------------------------------------
+
+#[test]
+fn test_parse_host_port_no_colon_returns_default_port() {
+    let (host, port) = parse_host_port("noport");
+    assert_eq!(host, "noport");
+    assert_eq!(port, DEFAULT_RPC_PORT);
+}
+
+// -- 23. set_node_name -------------------------------------------------------
+
+#[test]
+fn test_set_node_name() {
+    let mut cluster = Cluster::new(make_config());
+    assert!(cluster.node_name().contains("local-no")); // default is "Bot local-n..."
+
+    cluster.set_node_name("CustomNode");
+    assert_eq!(cluster.node_name(), "CustomNode");
+
+    // Set again to different name
+    cluster.set_node_name("AnotherName");
+    assert_eq!(cluster.node_name(), "AnotherName");
+}
+
+// -- 24. rpc_client_arc before and after start --------------------------------
+
+#[test]
+fn test_rpc_client_arc_before_and_after_start() {
+    let cluster = Cluster::new(make_config());
+    // Before start, no RPC client
+    assert!(
+        cluster.rpc_client_arc().is_none(),
+        "rpc_client_arc should return None before start()"
+    );
+
+    cluster.start();
+    // After start, RPC client is initialized
+    let client = cluster.rpc_client_arc();
+    assert!(
+        client.is_some(),
+        "rpc_client_arc should return Some after start()"
+    );
+    cluster.stop();
+}

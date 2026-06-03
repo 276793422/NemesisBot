@@ -175,3 +175,91 @@ fn test_options_forwarded() {
     let result = handler.handle(payload);
     assert!(result.success);
 }
+
+// -- Additional tests: handle with non-array messages, validate missing fields --
+
+#[test]
+fn test_handle_messages_not_array() {
+    let handler = LlmProxyHandler::new("node-a".into());
+    let payload = serde_json::json!({
+        "messages": "not an array"
+    });
+
+    let result = handler.handle(payload);
+    assert!(!result.success);
+    let err = result.error.unwrap();
+    assert!(
+        err.contains("messages must be a non-empty array"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_handle_messages_is_number() {
+    let handler = LlmProxyHandler::new("node-a".into());
+    let payload = serde_json::json!({
+        "messages": 42
+    });
+
+    let result = handler.handle(payload);
+    assert!(!result.success);
+    let err = result.error.unwrap();
+    assert!(
+        err.contains("messages must be a non-empty array"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_validate_messages_missing_field() {
+    let handler = LlmProxyHandler::new("node-a".into());
+
+    // Missing "role"
+    let payload_no_role = serde_json::json!({
+        "messages": [{"content": "hello"}]
+    });
+    let err = handler.validate(&payload_no_role).unwrap_err();
+    assert!(err.contains("missing 'role'"), "unexpected: {}", err);
+
+    // Missing "content"
+    let payload_no_content = serde_json::json!({
+        "messages": [{"role": "user"}]
+    });
+    let err = handler.validate(&payload_no_content).unwrap_err();
+    assert!(err.contains("missing 'content'"), "unexpected: {}", err);
+
+    // Missing both "role" and "content" - should fail on role first
+    let payload_no_both = serde_json::json!({
+        "messages": [{"something": "else"}]
+    });
+    let err = handler.validate(&payload_no_both).unwrap_err();
+    assert!(err.contains("missing 'role'"), "unexpected: {}", err);
+}
+
+#[test]
+fn test_validate_messages_second_message_missing_role() {
+    let handler = LlmProxyHandler::new("node-a".into());
+    let payload = serde_json::json!({
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"content": "no role here"}
+        ]
+    });
+    let err = handler.validate(&payload).unwrap_err();
+    assert!(err.contains("message 1 missing 'role'"), "unexpected: {}", err);
+}
+
+#[test]
+fn test_validate_messages_second_message_missing_content() {
+    let handler = LlmProxyHandler::new("node-a".into());
+    let payload = serde_json::json!({
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant"}
+        ]
+    });
+    let err = handler.validate(&payload).unwrap_err();
+    assert!(err.contains("message 1 missing 'content'"), "unexpected: {}", err);
+}

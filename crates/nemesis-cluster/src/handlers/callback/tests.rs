@@ -131,3 +131,137 @@ fn test_with_completer_constructor() {
     let result = handler.handle(&payload);
     assert!(result.accepted);
 }
+
+// -- Additional tests: handle_failure without error message, completer interactions --
+
+#[test]
+fn test_handle_failure_without_error_message() {
+    use std::sync::{Arc, Mutex};
+
+    struct MockCompleter {
+        calls: Arc<Mutex<Vec<(String, String, bool, Option<String>)>>>,
+    }
+    impl TaskCompleter for MockCompleter {
+        fn complete_task(&self, task_id: &str, response: &str, success: bool, error: Option<&str>) {
+            self.calls.lock().unwrap().push((
+                task_id.to_string(),
+                response.to_string(),
+                success,
+                error.map(|s| s.to_string()),
+            ));
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let handler = CallbackHandler::with_completer(
+        "node-c".into(),
+        Box::new(MockCompleter { calls: calls.clone() }),
+    );
+
+    // Failure with error: None triggers the unwrap_or("unknown error") path
+    let payload = CallbackPayload {
+        task_id: "task-noerr".into(),
+        response: String::new(),
+        success: false,
+        error: None,
+    };
+
+    let result = handler.handle(&payload);
+    assert!(result.accepted);
+    // The CallbackResult.error is cloned from payload.error which is None
+    assert!(result.error.is_none());
+
+    // Verify completer was called with "unknown error"
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "task-noerr");
+    assert_eq!(calls[0].1, "");
+    assert!(!calls[0].2);
+    assert_eq!(calls[0].3, Some("unknown error".to_string()));
+}
+
+#[test]
+fn test_handle_success_with_completer() {
+    use std::sync::{Arc, Mutex};
+
+    struct MockCompleter {
+        calls: Arc<Mutex<Vec<(String, String, bool, Option<String>)>>>,
+    }
+    impl TaskCompleter for MockCompleter {
+        fn complete_task(&self, task_id: &str, response: &str, success: bool, error: Option<&str>) {
+            self.calls.lock().unwrap().push((
+                task_id.to_string(),
+                response.to_string(),
+                success,
+                error.map(|s| s.to_string()),
+            ));
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let handler = CallbackHandler::with_completer(
+        "node-d".into(),
+        Box::new(MockCompleter { calls: calls.clone() }),
+    );
+
+    let payload = CallbackPayload {
+        task_id: "task-ok".into(),
+        response: "The answer is 42".into(),
+        success: true,
+        error: None,
+    };
+
+    let result = handler.handle(&payload);
+    assert!(result.accepted);
+    assert!(result.error.is_none());
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "task-ok");
+    assert_eq!(calls[0].1, "The answer is 42");
+    assert!(calls[0].2);
+    assert!(calls[0].3.is_none());
+}
+
+#[test]
+fn test_handle_failure_with_completer() {
+    use std::sync::{Arc, Mutex};
+
+    struct MockCompleter {
+        calls: Arc<Mutex<Vec<(String, String, bool, Option<String>)>>>,
+    }
+    impl TaskCompleter for MockCompleter {
+        fn complete_task(&self, task_id: &str, response: &str, success: bool, error: Option<&str>) {
+            self.calls.lock().unwrap().push((
+                task_id.to_string(),
+                response.to_string(),
+                success,
+                error.map(|s| s.to_string()),
+            ));
+        }
+    }
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let handler = CallbackHandler::with_completer(
+        "node-e".into(),
+        Box::new(MockCompleter { calls: calls.clone() }),
+    );
+
+    let payload = CallbackPayload {
+        task_id: "task-fail".into(),
+        response: String::new(),
+        success: false,
+        error: Some("OOM".into()),
+    };
+
+    let result = handler.handle(&payload);
+    assert!(result.accepted);
+    assert_eq!(result.error.as_deref(), Some("OOM"));
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, "task-fail");
+    assert_eq!(calls[0].1, "");
+    assert!(!calls[0].2);
+    assert_eq!(calls[0].3, Some("OOM".to_string()));
+}

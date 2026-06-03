@@ -576,3 +576,137 @@ fn test_list_peers_includes_offline() {
     assert_eq!(online.len(), 1);
     assert_eq!(online[0].base.id, "b");
 }
+
+// -- Additional tests: invalid timestamp handling --
+
+#[test]
+fn test_check_timeouts_invalid_timestamp() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+
+    // Insert a peer with an invalid RFC3339 timestamp and Online status
+    insert_peer_with_timestamp(
+        &registry,
+        "bad-ts",
+        NodeStatus::Online,
+        "not-a-valid-timestamp",
+        vec!["llm"],
+    );
+
+    // Should not panic; the invalid timestamp is silently skipped
+    let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
+    assert!(expired.is_empty(), "invalid timestamp should be skipped, not expired");
+
+    // Node should still be Online (unchanged)
+    let node = registry.get("bad-ts").unwrap();
+    assert_eq!(node.status, NodeStatus::Online);
+}
+
+#[test]
+fn test_evict_stale_invalid_timestamp() {
+    let config = HealthConfig {
+        eviction_timeout_secs: 300,
+        ..HealthConfig::default()
+    };
+    let registry = PeerRegistry::new(config);
+
+    // Insert an offline peer with an invalid timestamp
+    insert_peer_with_timestamp(
+        &registry,
+        "bad-evict",
+        NodeStatus::Offline,
+        "garbage-timestamp-!!!",
+        vec!["llm"],
+    );
+
+    // Should not panic; the invalid timestamp is silently skipped
+    let evicted = registry.evict_stale();
+    assert!(evicted.is_empty(), "invalid timestamp should be skipped, not evicted");
+
+    // Node should still be in the registry
+    assert!(registry.get("bad-evict").is_some());
+}
+
+#[test]
+fn test_check_timeouts_mixed_valid_and_invalid_timestamps() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+
+    // Valid old timestamp - should be expired
+    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+    insert_peer_with_timestamp(&registry, "old-valid", NodeStatus::Online, &old_ts, vec!["llm"]);
+
+    // Invalid timestamp - should be skipped
+    insert_peer_with_timestamp(
+        &registry,
+        "invalid",
+        NodeStatus::Online,
+        "bad-ts",
+        vec!["llm"],
+    );
+
+    // Valid recent timestamp - should not be expired
+    let recent_ts = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+    insert_peer_with_timestamp(&registry, "recent", NodeStatus::Online, &recent_ts, vec!["llm"]);
+
+    let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0], "old-valid");
+
+    // Verify the invalid-timestamp node is still Online
+    let invalid_node = registry.get("invalid").unwrap();
+    assert_eq!(invalid_node.status, NodeStatus::Online);
+}
+
+#[test]
+fn test_evict_stale_mixed_valid_and_invalid_timestamps() {
+    let config = HealthConfig {
+        eviction_timeout_secs: 300,
+        ..HealthConfig::default()
+    };
+    let registry = PeerRegistry::new(config);
+
+    // Offline with valid old timestamp - should be evicted
+    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    insert_peer_with_timestamp(&registry, "old-offline", NodeStatus::Offline, &old_ts, vec!["llm"]);
+
+    // Offline with invalid timestamp - should be skipped
+    insert_peer_with_timestamp(
+        &registry,
+        "invalid-offline",
+        NodeStatus::Offline,
+        "not-a-date",
+        vec!["llm"],
+    );
+
+    let evicted = registry.evict_stale();
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(evicted[0], "old-offline");
+
+    // Invalid-timestamp offline peer should still exist
+    assert!(registry.get("invalid-offline").is_some());
+}
+
+#[test]
+fn test_check_health_invalid_timestamp() {
+    let config = HealthConfig {
+        stale_timeout_secs: 90,
+        ..HealthConfig::default()
+    };
+    let registry = PeerRegistry::new(config);
+
+    // Online peer with invalid timestamp
+    insert_peer_with_timestamp(
+        &registry,
+        "invalid-health",
+        NodeStatus::Online,
+        "not-rfc3339",
+        vec!["llm"],
+    );
+
+    // Should not panic, invalid timestamp is skipped
+    let stale = registry.check_health();
+    assert!(stale.is_empty());
+
+    // Node stays Online
+    let node = registry.get("invalid-health").unwrap();
+    assert_eq!(node.status, NodeStatus::Online);
+}

@@ -167,3 +167,85 @@ fn test_rpc_request_targeted() {
     let back: RPCRequest = serde_json::from_str(&json).unwrap();
     assert_eq!(back.target.unwrap(), "node-b");
 }
+
+// -- Additional tests: decode_request direct, decode_response fallback, WireMessage error --
+
+#[test]
+fn test_decode_request_direct() {
+    let req = RPCRequest {
+        id: "req-direct".into(),
+        action: ActionType::Known(KnownAction::Ping),
+        payload: serde_json::json!({"ping": "pong"}),
+        source: "node-a".into(),
+        target: Some("node-b".into()),
+    };
+
+    // Serialize to bytes, then decode directly
+    let bytes = serde_json::to_vec(&req).unwrap();
+    let decoded = Frame::decode_request(&bytes).unwrap();
+
+    assert_eq!(decoded.id, "req-direct");
+    assert_eq!(decoded.action, ActionType::Known(KnownAction::Ping));
+    assert_eq!(decoded.source, "node-a");
+    assert_eq!(decoded.target.unwrap(), "node-b");
+    assert_eq!(decoded.payload["ping"], "pong");
+}
+
+#[test]
+fn test_decode_response_fallback_both_fail() {
+    // Completely invalid bytes should fail both WireMessage and direct parsing
+    let invalid_bytes = b"this is not valid json at all".to_vec();
+    let result = Frame::decode_response(&invalid_bytes);
+    assert!(result.is_err(), "expected error for invalid bytes, got {:?}", result);
+}
+
+#[test]
+fn test_decode_response_wire_message_error_response() {
+    // Create a WireMessage with msg_type "error" and an error string
+    let wire = crate::transport::conn::WireMessage {
+        version: "1.0".into(),
+        id: "err-1".into(),
+        msg_type: "error".into(),
+        from: "node-b".into(),
+        to: "node-a".into(),
+        action: "peer_chat".into(),
+        payload: serde_json::Value::Null,
+        timestamp: chrono::Utc::now().timestamp(),
+        error: "remote node crashed".into(),
+    };
+    let bytes = serde_json::to_vec(&wire).unwrap();
+
+    let decoded = Frame::decode_response(&bytes).unwrap();
+    assert_eq!(decoded.id, "err-1");
+    assert!(decoded.result.is_some());
+    assert_eq!(decoded.error.as_deref(), Some("remote node crashed"));
+}
+
+#[test]
+fn test_decode_response_wire_message_success() {
+    // Create a WireMessage with no error (empty string)
+    let wire = crate::transport::conn::WireMessage {
+        version: "1.0".into(),
+        id: "wire-ok".into(),
+        msg_type: "response".into(),
+        from: "node-b".into(),
+        to: "node-a".into(),
+        action: "ping".into(),
+        payload: serde_json::json!({"status": "healthy"}),
+        timestamp: chrono::Utc::now().timestamp(),
+        error: String::new(),
+    };
+    let bytes = serde_json::to_vec(&wire).unwrap();
+
+    let decoded = Frame::decode_response(&bytes).unwrap();
+    assert_eq!(decoded.id, "wire-ok");
+    assert_eq!(decoded.result.unwrap()["status"], "healthy");
+    assert!(decoded.error.is_none());
+}
+
+#[test]
+fn test_decode_request_invalid_json() {
+    let invalid_bytes = b"not json".to_vec();
+    let result = Frame::decode_request(&invalid_bytes);
+    assert!(result.is_err());
+}

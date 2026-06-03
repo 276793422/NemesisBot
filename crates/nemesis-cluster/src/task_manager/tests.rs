@@ -740,3 +740,198 @@ fn test_multiple_tasks_lifecycle() {
     assert_eq!(tm.list_pending_tasks().len(), 2);
     assert_eq!(completed_ids.lock().len(), 3);
 }
+
+// ============================================================
+// Coverage improvement: cleanup edge cases, callback replacement, idempotent start
+// ============================================================
+
+#[test]
+fn test_cleanup_completed_removes_old_completed_tasks() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+
+    // Create a task already in Completed state with completed_at 3 hours ago
+    let old_completed_at = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+    let old_task = Task {
+        id: "old-completed-v2".to_string(),
+        status: TaskStatus::Completed,
+        action: "action".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!("done")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Utc::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        completed_at: Some(old_completed_at),
+    };
+    store.create(old_task).unwrap();
+
+    // Also create a failed task 3 hours ago
+    let old_failed_at = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+    let old_failed_task = Task {
+        id: "old-failed-v2".to_string(),
+        status: TaskStatus::Failed,
+        action: "action".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!({"error": "timeout"})),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Utc::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        completed_at: Some(old_failed_at),
+    };
+    store.create(old_failed_task).unwrap();
+
+    // Verify both exist before cleanup
+    assert!(store.get("old-completed-v2").is_ok());
+    assert!(store.get("old-failed-v2").is_ok());
+
+    cleanup_completed(&store, &None);
+
+    // Both should be deleted (older than 2 hours)
+    assert!(store.get("old-completed-v2").is_err());
+    assert!(store.get("old-failed-v2").is_err());
+}
+
+#[test]
+fn test_cleanup_completed_keeps_recent_completed_tasks() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+
+    // Create a task that was completed 5 minutes ago (within 2-hour window)
+    let recent_completed_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let recent_task = Task {
+        id: "recent-completed".to_string(),
+        status: TaskStatus::Completed,
+        action: "action".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: Some(serde_json::json!("result")),
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
+        completed_at: Some(recent_completed_at),
+    };
+    store.create(recent_task).unwrap();
+
+    cleanup_completed(&store, &None);
+
+    // Should still exist (completed only 5 min ago)
+    let t = store.get("recent-completed").unwrap();
+    assert_eq!(t.status, TaskStatus::Completed);
+}
+
+#[test]
+fn test_cleanup_pending_timeout_fires_callback_v2() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let callback_fired = Arc::new(Mutex::new(None::<String>));
+    let callback_fired_clone = callback_fired.clone();
+
+    let on_complete: Option<Arc<OnCompleteCallback>> = Some(Arc::new(Box::new(move |t: &Task| {
+        *callback_fired_clone.lock() = Some(t.id.clone());
+    })));
+
+    // Create a pending task with created_at 25 hours ago (exceeds 24-hour threshold)
+    let old_created = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+    let old_pending_task = Task {
+        id: "timed-out-task".to_string(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({"msg": "hello"}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_created,
+        completed_at: None,
+    };
+    store.create(old_pending_task).unwrap();
+
+    // Create a recent pending task (should NOT be timed out)
+    let recent_pending = Task {
+        id: "recent-pending-v2".to_string(),
+        status: TaskStatus::Pending,
+        action: "action".to_string(),
+        peer_id: String::new(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        completed_at: None,
+    };
+    store.create(recent_pending).unwrap();
+
+    cleanup_completed(&store, &on_complete);
+
+    // Old pending task should now be Failed
+    let timed_out = store.get("timed-out-task").unwrap();
+    assert_eq!(timed_out.status, TaskStatus::Failed);
+    assert!(timed_out.completed_at.is_some());
+    let binding = timed_out.result.unwrap();
+    let error = binding.get("error").unwrap().as_str().unwrap();
+    assert!(error.contains("timed out"));
+
+    // Callback should have been invoked for the timed-out task
+    let fired_id = callback_fired.lock().take();
+    assert_eq!(fired_id, Some("timed-out-task".to_string()));
+
+    // Recent pending should still be pending
+    let recent = store.get("recent-pending-v2").unwrap();
+    assert_eq!(recent.status, TaskStatus::Pending);
+}
+
+#[tokio::test]
+async fn test_start_idempotent_v2() {
+    // Test that calling start() twice is a no-op when a runtime is present
+    let mut tm = TaskManager::with_store_and_interval(
+        Arc::new(InMemoryTaskStore::new()),
+        std::time::Duration::from_secs(600), // long interval so cleanup doesn't fire during test
+    );
+    tm.start();
+    assert!(tm.stop_tx.is_some());
+
+    // Second start should be a no-op (stop_tx still Some, not replaced)
+    tm.start();
+    assert!(tm.stop_tx.is_some(), "stop_tx should still be Some after second start()");
+
+    // Stop should work correctly (only one background task was spawned)
+    tm.stop();
+    assert!(tm.stop_tx.is_none());
+}
+
+#[test]
+fn test_set_callback_replaces_existing_v2() {
+    let call_count1 = Arc::new(AtomicUsize::new(0));
+    let call_count1_clone = call_count1.clone();
+    let call_count2 = Arc::new(AtomicUsize::new(0));
+    let call_count2_clone = call_count2.clone();
+
+    let tm = TaskManager::new();
+
+    // Set first callback
+    tm.set_callback(Box::new(move |_t: &Task| {
+        call_count1_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Complete task 1 - callback1 fires
+    let task1 = tm.create_task("action-a", serde_json::json!({}), "rpc", "ch");
+    tm.complete_task(&task1.id, serde_json::json!("done-a"));
+    assert_eq!(call_count1.load(Ordering::SeqCst), 1);
+    assert_eq!(call_count2.load(Ordering::SeqCst), 0);
+
+    // Replace with second callback
+    tm.set_callback(Box::new(move |_t: &Task| {
+        call_count2_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Complete task 2 - only callback2 fires
+    let task2 = tm.create_task("action-b", serde_json::json!({}), "rpc", "ch");
+    tm.complete_task(&task2.id, serde_json::json!("done-b"));
+    assert_eq!(call_count1.load(Ordering::SeqCst), 1, "callback1 should NOT fire again");
+    assert_eq!(call_count2.load(Ordering::SeqCst), 1, "callback2 should fire once");
+
+    // Fail task 3 - only callback2 fires
+    let task3 = tm.create_task("action-c", serde_json::json!({}), "rpc", "ch");
+    tm.fail_task(&task3.id, "some error");
+    assert_eq!(call_count1.load(Ordering::SeqCst), 1);
+    assert_eq!(call_count2.load(Ordering::SeqCst), 2, "callback2 should fire on fail too");
+}

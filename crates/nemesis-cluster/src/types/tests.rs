@@ -291,3 +291,33 @@ fn test_cluster_config_serialization_roundtrip() {
     assert_eq!(back.node_id, "node-abc");
     assert_eq!(back.peers.len(), 2);
 }
+
+// -- Additional tests: get_uptime future timestamp, Connecting serialization --
+
+#[test]
+fn test_get_uptime_future_timestamp() {
+    // Set last_seen to 1 hour in the future
+    let future_ts = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let node = make_test_node("future-node", NodeStatus::Online, vec![], &future_ts);
+    let uptime = node.get_uptime();
+    // Future timestamps should return Duration::ZERO (negative duration case)
+    assert_eq!(uptime, std::time::Duration::ZERO);
+}
+
+#[test]
+fn test_node_status_connecting_serialization_roundtrip() {
+    let status = NodeStatus::Connecting;
+    let json = serde_json::to_string(&status).unwrap();
+    assert!(json.contains("Connecting"), "expected Connecting in JSON, got: {}", json);
+    let back: NodeStatus = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, NodeStatus::Connecting);
+}
+
+#[test]
+fn test_node_status_connecting_string_representation() {
+    let node = make_test_node("n-conn", NodeStatus::Connecting, vec![], "");
+    assert_eq!(node.get_status_string(), "connecting");
+    // Display should show "connecting"
+    let display = format!("{}", node);
+    assert!(display.contains("connecting"), "expected 'connecting' in display: {}", display);
+}
