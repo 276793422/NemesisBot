@@ -334,9 +334,9 @@ pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
             args.get("url").or_else(|| args.get("source"))
                 .and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
-        "cluster_rpc" => {
-            args.get("peer_id").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
+        // cluster_rpc's peer_id is resolved by the internal cluster peer registry,
+        // not through DNS. SSRF protection does not apply to internal cluster routing.
+        "cluster_rpc" => String::new(),
         _ => String::new(),
     }
 }

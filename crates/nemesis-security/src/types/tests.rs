@@ -603,6 +603,7 @@ fn test_extract_target_cron() {
 
 #[test]
 fn test_extract_url_cluster_rpc() {
+    // cluster_rpc peer_id is NOT a URL — SSRF check should be skipped entirely
     let args = serde_json::json!({"peer_id": "bot-3", "action": "chat"});
-    assert_eq!(extract_url("cluster_rpc", &args), "bot-3");
+    assert_eq!(extract_url("cluster_rpc", &args), "");
 }
