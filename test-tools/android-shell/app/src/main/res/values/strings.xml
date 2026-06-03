@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NemesisBot</string>
+    <string name="notification_channel">NemesisBot Service</string>
+    <string name="notification_title">NemesisBot 运行中</string>
+    <string name="notification_text">Bot 正在后台运行</string>
+</resources>

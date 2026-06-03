@@ -244,7 +244,7 @@ fn test_two_node_ping() -> Result<String, String> {
     let (server, port) = start_server("");
     let addr = format!("127.0.0.1:{}", port);
 
-    let req = WireMessage::new_request("node-B", "node-A", "Ping", json!({}));
+    let req = WireMessage::new_request("node-B", "node-A", "ping", json!({}));
     let resp = tcp_send_recv(&addr, &req)?;
 
     if resp.msg_type != "response" {
@@ -673,7 +673,7 @@ fn test_role_capabilities() -> Result<String, String> {
     let addr = format!("127.0.0.1:{}", port);
 
     // Query capabilities
-    let req = WireMessage::new_request("node-B", "node-A", "GetCapabilities", json!({}));
+    let req = WireMessage::new_request("node-B", "node-A", "get_capabilities", json!({}));
     let resp = tcp_send_recv(&addr, &req)?;
     let caps = resp.payload.get("capabilities").cloned().unwrap_or(json!([]));
     if caps.as_array().map_or(true, |a| a.is_empty()) {
@@ -681,7 +681,7 @@ fn test_role_capabilities() -> Result<String, String> {
     }
 
     // Query info
-    let req2 = WireMessage::new_request("node-B", "node-A", "GetInfo", json!({}));
+    let req2 = WireMessage::new_request("node-B", "node-A", "get_info", json!({}));
     let resp2 = tcp_send_recv(&addr, &req2)?;
     let status = resp2
         .payload
@@ -898,7 +898,7 @@ fn test_message_validation() -> Result<String, String> {
 
     // Sub-test 2: Valid ping with null payload
     {
-        let ping_msg = WireMessage::new_request("test-node", "node-A", "Ping", json!(null));
+        let ping_msg = WireMessage::new_request("test-node", "node-A", "ping", json!(null));
         let resp = tcp_send_recv(&addr, &ping_msg)?;
 
         if resp.msg_type == "error" {

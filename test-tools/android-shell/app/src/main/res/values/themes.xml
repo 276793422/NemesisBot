@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.NemesisBot" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#E94560</item>
+        <item name="colorPrimaryDark">#0F3460</item>
+        <item name="colorAccent">#E94560</item>
+        <item name="android:windowBackground">#1A1A2E</item>
+        <item name="android:statusBarColor">#0F3460</item>
+        <item name="android:navigationBarColor">#0F3460</item>
+    </style>
+</resources>
