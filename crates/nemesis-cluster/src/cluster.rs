@@ -606,13 +606,16 @@ impl Cluster {
                 // Try to run within an existing tokio runtime
                 match tokio::runtime::Handle::try_current() {
                     Ok(handle) => {
-                        // We're inside a tokio runtime - use block_on
-                        // (This is safe because we're calling from non-async code)
-                        match handle.block_on(client.call_with_timeout(
-                            peer_id,
-                            request,
-                            client.timeout(),
-                        )) {
+                        // We may be inside a tokio worker thread (e.g. ClusterRpcTool::execute).
+                        // Use block_in_place to avoid "Cannot start a runtime from within a runtime" panic.
+                        let result = tokio::task::block_in_place(|| {
+                            handle.block_on(client.call_with_timeout(
+                                peer_id,
+                                request,
+                                client.timeout(),
+                            ))
+                        });
+                        match result {
                             Ok(response) => {
                                 if let Some(ref err) = response.error {
                                     tracing::error!(

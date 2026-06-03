@@ -386,15 +386,25 @@ impl WebServerOpsAdapter {
 
 impl WebServerOps for WebServerOpsAdapter {
     fn send_to_session(&self, session_id: &str, role: &str, content: &str) -> std::result::Result<(), String> {
-        self.rt.block_on(nemesis_web::server::send_to_session(
-            &self.session_manager, session_id, role, content,
-        ))
+        let sm = self.session_manager.clone();
+        let sid = session_id.to_string();
+        let content = content.to_string();
+        tokio::task::block_in_place(|| {
+            self.rt.block_on(nemesis_web::server::send_to_session(
+                &sm, &sid, role, &content,
+            ))
+        })
     }
 
     fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String> {
-        self.rt.block_on(nemesis_web::server::send_history_to_session(
-            &self.session_manager, session_id, content,
-        ))
+        let sm = self.session_manager.clone();
+        let sid = session_id.to_string();
+        let content = content.to_string();
+        tokio::task::block_in_place(|| {
+            self.rt.block_on(nemesis_web::server::send_history_to_session(
+                &sm, &sid, &content,
+            ))
+        })
     }
 
     fn broadcast(&self, content: &str) -> std::result::Result<(), String> {
@@ -406,8 +416,12 @@ impl WebServerOps for WebServerOpsAdapter {
             })),
         );
         let data = serde_json::to_vec(&msg).map_err(|e| format!("marshal: {}", e))?;
+        let sm = self.session_manager.clone();
         for sid in self.active_session_ids() {
-            self.rt.block_on(self.session_manager.broadcast(&sid, &data))?;
+            let data_clone = data.clone();
+            tokio::task::block_in_place(|| {
+                self.rt.block_on(sm.broadcast(&sid, &data_clone))
+            })?;
         }
         Ok(())
     }
