@@ -484,6 +484,11 @@ impl AgentLoop {
         self.tools.read().len()
     }
 
+    /// Return the names of all registered tools.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.read().keys().cloned().collect()
+    }
+
     /// Enable automatic MCP tool reload via mtime-based change detection.
     ///
     /// Creates an `McpManager` for the given config path, discovers tools from
@@ -2100,10 +2105,40 @@ impl AgentLoop {
     /// - LLM request (before calling the provider)
     /// - LLM response (after receiving the response)
     /// - Tool call (after each tool execution)
-    async fn run_with_trace(
+    pub async fn run_with_trace(
         &self,
         instance: &AgentInstance,
         user_message: &str,
+        context: &RequestContext,
+        trace_id: &str,
+        voice_playback: bool,
+    ) -> Vec<AgentEvent> {
+        // Add user message to instance history.
+        instance.add_user_message(user_message);
+        instance.set_state(crate::types::AgentState::Thinking);
+
+        self.run_llm_loop(instance, context, trace_id, voice_playback).await
+    }
+
+    /// Resume execution from a previously saved conversation state.
+    ///
+    /// Unlike `run_with_trace()`, this does NOT inject a user message.
+    /// The instance should already have history loaded (via `set_history()`)
+    /// and a tool result injected (via `add_tool_result()`).
+    pub async fn resume_execution(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+    ) -> Vec<AgentEvent> {
+        instance.set_state(crate::types::AgentState::Thinking);
+        self.run_llm_loop(instance, context, trace_id, false).await
+    }
+
+    /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
+    async fn run_llm_loop(
+        &self,
+        instance: &AgentInstance,
         context: &RequestContext,
         trace_id: &str,
         voice_playback: bool,
@@ -2116,10 +2151,6 @@ impl AgentLoop {
             temperature: Some(0.7),
             ..Default::default()
         };
-
-        // Add user message to instance history.
-        instance.add_user_message(user_message);
-        instance.set_state(crate::types::AgentState::Thinking);
 
         let mut turns_used = 0u32;
 
@@ -2440,7 +2471,10 @@ impl AgentLoop {
                             "已发送请求到远程节点 {}，等待响应中... (task_id: {})",
                             target, task_id
                         );
-                        instance.add_tool_result(&tc.id, &format!("Request accepted by {}. Task ID: {}", target, task_id));
+                        instance.add_tool_result(&tc.id, &format!(
+                            "Request accepted by {}. Task ID: {} | __CLUSTER_ASYNC__{{\"task_id\":\"{}\",\"target\":\"{}\"}}",
+                            target, task_id, task_id, target
+                        ));
 
                         let formatted = context.format_rpc_message(&intermediate);
                         events.push(AgentEvent::Done(formatted));

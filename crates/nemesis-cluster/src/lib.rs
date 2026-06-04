@@ -4,6 +4,7 @@
 
 pub mod types;
 pub mod cluster;
+pub mod cluster_task;
 pub mod cluster_config;
 pub mod task_manager;
 pub mod rpc_types;
@@ -22,3 +23,4 @@ pub mod transport;
 
 // Re-export commonly used types
 pub use task_manager::{TaskManager, TaskStore, InMemoryTaskStore};
+pub use cluster_task::{ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus};

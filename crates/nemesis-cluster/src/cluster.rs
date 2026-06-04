@@ -66,6 +66,9 @@ pub struct Cluster {
     role: String,
     category: String,
     tags: Vec<String>,
+    /// Dynamic capabilities reported by the AgentLoop (tool names).
+    /// Set via `set_capabilities()` after the agent is built.
+    capabilities: std::sync::Mutex<Vec<String>>,
 
     // -- Paths --
     workspace: PathBuf,
@@ -95,6 +98,10 @@ pub struct Cluster {
     stop_tx: broadcast::Sender<()>,
     bus: Mutex<Option<Arc<dyn MessageBus>>>,
 
+    // -- Cluster Agent --
+    cluster_task_list: Mutex<Option<Arc<crate::cluster_task::ClusterTaskList>>>,
+    cluster_work_queue: Mutex<Option<Arc<crate::cluster_task::ClusterWorkQueue>>>,
+
     // -- Testing override for CallWithContext --
     call_with_context_fn:
         Mutex<Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>>,
@@ -121,6 +128,7 @@ impl Cluster {
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
+            capabilities: std::sync::Mutex::new(Vec::new()),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
             dynamic_state_path: cluster_dir_path.join("state.toml"),
@@ -138,6 +146,8 @@ impl Cluster {
             running: RwLock::new(false),
             stop_tx,
             bus: Mutex::new(None),
+            cluster_task_list: Mutex::new(None),
+            cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
         }
     }
@@ -177,6 +187,7 @@ impl Cluster {
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
+            capabilities: std::sync::Mutex::new(Vec::new()),
             workspace: workspace.clone(),
             static_config_path: cluster_dir.join("peers.toml"),
             dynamic_state_path: cluster_dir.join("state.toml"),
@@ -194,6 +205,8 @@ impl Cluster {
             running: RwLock::new(false),
             stop_tx,
             bus: Mutex::new(None),
+            cluster_task_list: Mutex::new(None),
+            cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
         }
     }
@@ -215,7 +228,7 @@ impl Cluster {
                 last_seen: chrono::Utc::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
-            capabilities: vec!["cluster".into()],
+            capabilities: self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone(),
             addresses: vec![],
         };
         self.registry.upsert(local_node);
@@ -768,6 +781,16 @@ impl Cluster {
 
     // -- Bus integration ------------------------------------------------------
 
+    /// Set the cluster agent task list and work queue for callback routing.
+    pub fn set_cluster_task_queue(
+        &self,
+        task_list: Arc<crate::cluster_task::ClusterTaskList>,
+        work_queue: Arc<crate::cluster_task::ClusterWorkQueue>,
+    ) {
+        *self.cluster_task_list.lock() = Some(task_list);
+        *self.cluster_work_queue.lock() = Some(work_queue);
+    }
+
     /// Set the message bus (called by AgentLoop during setup).
     pub fn set_message_bus(&self, bus: Arc<dyn MessageBus>) {
         *self.bus.lock() = Some(bus);
@@ -903,6 +926,16 @@ impl Cluster {
     /// Called from gateway.rs after loading the name from config.cluster.json.
     pub fn set_node_name(&mut self, name: impl Into<String>) {
         self.node_name = name.into();
+    }
+
+    /// Set the dynamic capabilities for this node (tool names from AgentLoop).
+    ///
+    /// Called after the AgentLoop is built so the discovery broadcast includes
+    /// the actual tool set rather than a hardcoded empty list.
+    pub fn set_capabilities(&self, caps: Vec<String>) {
+        if let Ok(mut guard) = self.capabilities.lock() {
+            *guard = caps;
+        }
     }
 
     /// Get the stop channel receiver.
@@ -1303,6 +1336,8 @@ impl Cluster {
     /// Build the callback handler (A-side: receive result from B).
     fn build_callback_handler(&self) -> crate::rpc::server::RpcHandlerFn {
         let task_manager = self.task_manager.clone();
+        let cluster_task_list = self.cluster_task_list.lock().clone();
+        let cluster_work_queue = self.cluster_work_queue.lock().clone();
         Box::new(move |payload| {
             let task_id = payload
                 .get("task_id")
@@ -1334,6 +1369,26 @@ impl Cluster {
                 "[Cluster] peer_chat_callback received"
             );
 
+            // Check if this callback is for a cluster agent task (B-side forwarding).
+            if let (Some(tl), Some(wq)) = (&cluster_task_list, &cluster_work_queue) {
+                if let Some(parent_id) = tl.find_by_child_task_id(task_id) {
+                    tracing::info!(
+                        child_task_id = %task_id,
+                        parent_task_id = %parent_id,
+                        "[Cluster] Routing callback to cluster agent task"
+                    );
+                    tl.inject_callback(&parent_id, response);
+                    if let Err(e) = wq.submit(parent_id) {
+                        tracing::error!(error = %e, "[Cluster] Failed to re-submit task to work queue");
+                    }
+                    return Ok(serde_json::json!({
+                        "status": "accepted",
+                        "task_id": task_id,
+                    }));
+                }
+            }
+
+            // Fall through to main agent's TaskManager (A-side continuation).
             task_manager.complete_callback(task_id, status, response, error);
 
             Ok(serde_json::json!({
@@ -1755,6 +1810,10 @@ impl ClusterCallbacks for Cluster {
 
     fn tags(&self) -> Vec<String> {
         self.tags.clone()
+    }
+
+    fn capabilities(&self) -> Vec<String> {
+        self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn handle_discovered_node(

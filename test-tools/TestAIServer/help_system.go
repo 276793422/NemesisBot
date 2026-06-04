@@ -63,7 +63,7 @@ var categories = []HelpCategory{
 	{
 		Name:        "工具调用模型",
 		Description: "工具执行和 RPC 通信",
-		ModelCount:  3,
+		ModelCount:  4,
 	},
 	{
 		Name:        "安全测试模型",
@@ -142,6 +142,20 @@ var modelInfos = []ModelInfo{
 			"测试集群间通信",
 		},
 		Usage: "发送消息: <PEER_CHAT>{\"peer_id\":\"agent-b\",\"content\":\"测试消息\"}</PEER_CHAT>",
+	},
+	{
+		ID:       "testai-3.1",
+		Name:     "多跳集群通信模型",
+		Category: "工具调用模型",
+		Description: "增强版 testai-3.0，支持 route 格式的多跳链式调用",
+		Features: []string{
+			"0秒延迟",
+			"向后兼容 testai-3.0 简单格式",
+			"支持 route 数组格式实现多跳链式调用",
+			"route 格式: <PEER_CHAT>{\"route\":[\"B\",\"C\",\"D\"],\"content\":\"hello\"}</PEER_CHAT>",
+			"自动逐跳转发，终端节点回显消息",
+		},
+		Usage: "2跳: <PEER_CHAT>{\"peer_id\":\"B\",\"content\":\"hello\"}</PEER_CHAT>\n多跳: <PEER_CHAT>{\"route\":[\"B\",\"C\",\"D\"],\"content\":\"hello\"}</PEER_CHAT>",
 	},
 	{
 		ID:       "testai-4.2",
@@ -334,6 +348,18 @@ func PrintModelHelp(modelID string) {
 		fmt.Println("   3. Agent A 执行工具，发送 peer_chat 给远端 Agent B")
 		fmt.Println("   4. Agent B 处理请求并返回响应")
 		fmt.Println()
+	} else if found.ID == "testai-3.1" {
+		fmt.Println("🌐 多跳集群通信说明:")
+		fmt.Println("   增强版 testai-3.0，使用 route 数组格式支持多跳链式调用。")
+		fmt.Println("   每跳取 route[0] 作为目标，剩余路由传递给下一跳。")
+		fmt.Println()
+		fmt.Println("   多跳流程 (A→B→C→D):")
+		fmt.Println("   1. 用户发送: <PEER_CHAT>{\"route\":[\"B\",\"C\",\"D\"],\"content\":\"hello\"}</PEER_CHAT>")
+		fmt.Println("   2. A 调用 cluster_rpc 到 B，content 包含 route=[\"C\",\"D\"]")
+		fmt.Println("   3. B 调用 cluster_rpc 到 C，content 包含 route=[\"D\"]")
+		fmt.Println("   4. C 调用 cluster_rpc 到 D，content 为 \"hello\"（无更多路由）")
+		fmt.Println("   5. D 回显 \"hello\"，结果沿 D→C→B→A 逐层返回")
+		fmt.Println()
 	}
 
 	fmt.Println("═══════════════════════════════════════════════════════════════════════════")
@@ -423,6 +449,7 @@ func PrintQuickReference() {
 	fmt.Println("   • testai-1.1  - 基础测试（快速响应）")
 	fmt.Println("   • testai-2.0  - 消息回显（验证传递）")
 	fmt.Println("   • testai-3.0  - 集群通信（peer_chat）")
+	fmt.Println("   • testai-3.1  - 多跳集群通信（route 格式）")
 	fmt.Println("   • testai-5.0  - 安全测试（文件操作）⭐")
 	fmt.Println()
 

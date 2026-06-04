@@ -45,6 +45,8 @@ pub trait ClusterCallbacks: Send + Sync {
     fn category(&self) -> &str;
     /// Get custom tags.
     fn tags(&self) -> Vec<String>;
+    /// Get the dynamic capabilities (tool names from the AgentLoop).
+    fn capabilities(&self) -> Vec<String>;
     /// Handle a newly discovered or updated node.
     fn handle_discovered_node(
         &self,
@@ -99,6 +101,7 @@ impl ClusterCallbacks for NullCallbacks {
     fn role(&self) -> &str { &self.role }
     fn category(&self) -> &str { &self.category }
     fn tags(&self) -> Vec<String> { Vec::new() }
+    fn capabilities(&self) -> Vec<String> { Vec::new() }
     fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String]) {}
     fn handle_node_offline(&self, _node_id: &str, _reason: &str) {}
     fn sync_to_disk(&self) -> Result<(), String> { Ok(()) }
@@ -173,6 +176,7 @@ impl ClusterCallbacks for RegistryCallbacks {
     fn role(&self) -> &str { &self.role }
     fn category(&self) -> &str { &self.category }
     fn tags(&self) -> Vec<String> { Vec::new() }
+    fn capabilities(&self) -> Vec<String> { Vec::new() }
 
     fn handle_discovered_node(
         &self,
@@ -537,7 +541,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
         cluster.role(),
         cluster.category(),
         cluster.tags(),
-        vec![], // Capabilities set by cluster module
+        cluster.capabilities(),
     );
 
     if let Err(e) = listener.broadcast(&msg) {
@@ -567,7 +571,7 @@ fn send_announce_with(
         cluster.role(),
         cluster.category(),
         cluster.tags(),
-        vec![],
+        cluster.capabilities(),
     );
 
     let data = match msg.to_bytes() {

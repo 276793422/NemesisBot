@@ -1629,6 +1629,9 @@ pub struct ClusterRpcTool {
     stored_chat_id: Arc<std::sync::Mutex<String>>,
     /// Optional RPC call function: (target_node, action, payload) -> Result<serde_json::Value, String>
     rpc_call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>>,
+    /// Returns online peer nodes with their capabilities for dynamic tool description.
+    /// Each tuple: (node_id, node_name, capabilities).
+    peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
 }
 
 impl ClusterRpcTool {
@@ -1639,6 +1642,7 @@ impl ClusterRpcTool {
             stored_channel: Arc::new(std::sync::Mutex::new(String::new())),
             stored_chat_id: Arc::new(std::sync::Mutex::new(String::new())),
             rpc_call_fn: None,
+            peers_fn: None,
         }
     }
 
@@ -1656,6 +1660,17 @@ impl ClusterRpcTool {
     ) {
         self.rpc_call_fn = Some(f);
     }
+
+    /// Set the peers function for dynamic tool description.
+    ///
+    /// The function returns online peer nodes: `Vec<(node_id, node_name, capabilities)>`.
+    /// Called each time the LLM requests tool definitions so the peer list stays current.
+    pub fn set_peers_fn(
+        &mut self,
+        f: Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>,
+    ) {
+        self.peers_fn = Some(f);
+    }
 }
 
 #[async_trait]
@@ -1665,10 +1680,31 @@ impl Tool for ClusterRpcTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // Dynamically inject online peer list with capabilities into the target description.
+        let target_desc = if let Some(ref peers_fn) = self.peers_fn {
+            let peers = peers_fn();
+            if peers.is_empty() {
+                "Target bot ID (no peers currently online)".to_string()
+            } else {
+                let mut desc = "Target bot ID. Available online peers:\n".to_string();
+                for (id, name, caps) in &peers {
+                    let caps_str = if caps.is_empty() {
+                        "unknown capabilities".to_string()
+                    } else {
+                        caps.join(", ")
+                    };
+                    desc.push_str(&format!("- {} ({}): {}\n", id, name, caps_str));
+                }
+                desc
+            }
+        } else {
+            "Target bot ID".to_string()
+        };
+
         serde_json::json!({
             "type": "object",
             "properties": {
-                "target": {"type": "string", "description": "Target bot ID"},
+                "target": {"type": "string", "description": target_desc},
                 "message": {"type": "string", "description": "Message to send"},
                 "timeout": {"type": "integer", "description": "Timeout in seconds"}
             },

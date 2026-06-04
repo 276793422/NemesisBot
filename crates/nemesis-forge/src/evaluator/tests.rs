@@ -345,7 +345,7 @@ async fn test_evaluate_with_forge_config_max_tokens() {
     let llm = TokenCheckLLM {
         max_tokens_received: std::sync::Mutex::new(None),
     };
-    let tokens_received = llm.max_tokens_received.lock().unwrap().clone();
+    let _tokens_received = llm.max_tokens_received.lock().unwrap().clone();
     evaluator.set_provider(Box::new(llm));
 
     let result = evaluator.evaluate("skill", "test", "1.0", "content").await;

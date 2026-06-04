@@ -1,15 +1,14 @@
 //! Peer chat handler - processes incoming peer_chat RPC requests.
 //!
-//! Handles the B-side of a peer_chat: receives the message, runs it through
-//! the local LLM via an `RpcChannel` input, and sends the response back via
-//! callback to the originating node.
+//! Handles the B-side of a peer_chat: receives the message, enqueues it to
+//! the cluster agent's work queue, and the cluster agent processes it
+//! asynchronously with full tool execution capability.
 //!
 //! Key behaviour:
 //! - Immediately returns an ACK to the caller (non-blocking)
-//! - Spawns an async task for LLM processing
-//! - Configurable LLM request timeout (default 2 hours, configurable via config.cluster.json)
-//! - Callback retries (3 attempts with exponential backoff)
-//! - Falls back to persisting results if all callbacks fail
+//! - Creates a ClusterTask and submits to the work queue
+//! - The cluster agent loop picks up the task, runs it through AgentLoop
+//! - Results are sent back via callback to the originating node
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::cluster_task::{ClusterTask, ClusterTaskList, ClusterWorkQueue, TaskSource, TaskStatus};
 use crate::rpc::client::RpcClient;
 
 /// Default LLM request timeout (2 hours).
@@ -116,14 +116,16 @@ pub trait TaskResultPersister: Send + Sync {
 /// Handler for peer_chat actions on the receiving (B) side.
 ///
 /// The handler is created once and reused for multiple requests.
-/// It holds references to the LLM channel, RPC client (for callbacks),
-/// and the task result persister.
+/// It enqueues tasks to the cluster agent's work queue for full AgentLoop processing.
 pub struct PeerChatHandler {
     node_id: String,
     timeout: Duration,
     llm_channel: Option<Arc<dyn LlmChannel>>,
     rpc_client: Option<Arc<RpcClient>>,
     result_persister: Option<Arc<dyn TaskResultPersister>>,
+    /// Cluster agent work queue (preferred over llm_channel).
+    cluster_task_list: Option<Arc<ClusterTaskList>>,
+    cluster_work_queue: Option<Arc<ClusterWorkQueue>>,
     /// Track active async tasks for graceful shutdown.
     active_tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
@@ -137,6 +139,8 @@ impl PeerChatHandler {
             llm_channel: None,
             rpc_client: None,
             result_persister: None,
+            cluster_task_list: None,
+            cluster_work_queue: None,
             active_tasks: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -149,9 +153,19 @@ impl PeerChatHandler {
         }
     }
 
-    /// Set the LLM channel.
+    /// Set the LLM channel (legacy, used when cluster queue is not available).
     pub fn set_llm_channel(&mut self, channel: Arc<dyn LlmChannel>) {
         self.llm_channel = Some(channel);
+    }
+
+    /// Set the cluster agent work queue (preferred over LLM channel).
+    pub fn set_cluster_queue(
+        &mut self,
+        task_list: Arc<ClusterTaskList>,
+        work_queue: Arc<ClusterWorkQueue>,
+    ) {
+        self.cluster_task_list = Some(task_list);
+        self.cluster_work_queue = Some(work_queue);
     }
 
     /// Set the RPC client for callbacks.
@@ -251,38 +265,77 @@ impl PeerChatHandler {
             })
             .to_string();
 
-        // 7. Spawn async processing
-        let llm_channel = self.llm_channel.clone();
-        let rpc_client = self.rpc_client.clone();
-        let result_persister = self.result_persister.clone();
-        let timeout = self.timeout;
-        let node_id = self.node_id.clone();
+        // 7. Enqueue to cluster agent or fall back to legacy LLM channel
+        let cluster_task_list = self.cluster_task_list.clone();
+        let cluster_work_queue = self.cluster_work_queue.clone();
+        if let (Some(ref task_list), Some(ref work_queue)) =
+            (cluster_task_list, cluster_work_queue)
+        {
+            // Create a cluster task and enqueue to the work queue.
+            let cluster_task = ClusterTask {
+                task_id: task_id.clone(),
+                source: TaskSource {
+                    node_id: source_node_id.clone(),
+                    rpc_address: String::new(), // Filled from discovery if needed.
+                    session_key: format!("cluster_rpc:{}", sender_id),
+                },
+                status: TaskStatus::Pending,
+                content: req.content.clone(),
+                conversation: None,
+                waiting_for_task_id: None,
+                waiting_tool_call_id: None,
+                callback_result: None,
+            };
+            task_list.create_task(cluster_task);
+            if let Err(e) = work_queue.submit(task_id.clone()) {
+                tracing::error!(
+                    task_id = %task_id,
+                    error = %e,
+                    "[PeerChat] Failed to submit to work queue"
+                );
+                return PeerChatAck {
+                    status: "error".into(),
+                    task_id: String::new(),
+                };
+            }
+            tracing::info!(
+                task_id = %task_id,
+                source_node = %source_node_id,
+                "[PeerChat] Task enqueued to cluster agent work queue"
+            );
+        } else {
+            // Legacy path: use LLM channel directly.
+            let llm_channel = self.llm_channel.clone();
+            let rpc_client = self.rpc_client.clone();
+            let result_persister = self.result_persister.clone();
+            let timeout = self.timeout;
+            let node_id = self.node_id.clone();
+            let source_info_clone = source_info.clone();
+            let source_node_id_clone = source_node_id.clone();
 
-        let task_id_clone = task_id.clone();
-        let source_node_id_clone = source_node_id.clone();
-        let handle = tokio::spawn(async move {
-            process_async(
-                &task_id_clone,
-                &req,
-                &sender_id,
-                &source_node_id_clone,
-                &source_info,
-                llm_channel.as_deref(),
-                rpc_client.as_deref(),
-                result_persister.as_deref(),
-                timeout,
-                &node_id,
-            )
-            .await;
-        });
-
-        self.active_tasks.lock().push(handle);
-
-        tracing::info!(
-            task_id = %task_id,
-            source_node = %source_node_id,
-            "[PeerChat] Peer chat task accepted, processing asynchronously"
-        );
+            let task_id_clone = task_id.clone();
+            let handle = tokio::spawn(async move {
+                process_async(
+                    &task_id_clone,
+                    &req,
+                    &sender_id,
+                    &source_node_id_clone,
+                    &source_info_clone,
+                    llm_channel.as_deref(),
+                    rpc_client.as_deref(),
+                    result_persister.as_deref(),
+                    timeout,
+                    &node_id,
+                )
+                .await;
+            });
+            self.active_tasks.lock().push(handle);
+            tracing::info!(
+                task_id = %task_id,
+                source_node = %source_node_id,
+                "[PeerChat] Peer chat task accepted (legacy LLM path)"
+            );
+        }
 
         PeerChatAck {
             status: "accepted".into(),
@@ -511,7 +564,7 @@ async fn send_callback_or_persist(
 }
 
 /// Send callback to source node with retries.
-async fn send_callback(
+pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
     task_id: &str,

@@ -309,16 +309,41 @@ impl crate::registry::Tool for ClusterRpcTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // Dynamically inject online peer list with capabilities into peer_id description,
+        // so the LLM can make informed routing decisions.
+        let peer_desc = if self.cluster.is_connected() {
+            let peers = self.cluster.get_online_peers();
+            if peers.is_empty() {
+                "ID of the peer bot to call (no peers currently online)".to_string()
+            } else {
+                let mut desc = "ID of the peer bot to call. Available online peers:\n".to_string();
+                for p in &peers {
+                    let caps = if p.capabilities.is_empty() {
+                        "unknown capabilities".to_string()
+                    } else {
+                        p.capabilities.join(", ")
+                    };
+                    desc.push_str(&format!(
+                        "- {} ({}): {}\n",
+                        p.id, p.name, caps
+                    ));
+                }
+                desc
+            }
+        } else {
+            "ID of the peer bot to call (cluster not connected)".to_string()
+        };
+
         serde_json::json!({
             "type": "object",
             "properties": {
                 "peer_id": {
                     "type": "string",
-                    "description": "ID of the peer bot to call"
+                    "description": peer_desc
                 },
                 "action": {
                     "type": "string",
-                    "description": "RPC action to perform"
+                    "description": "RPC action to perform (e.g. peer_chat, ping, get_capabilities)"
                 },
                 "data": {
                     "type": "object",

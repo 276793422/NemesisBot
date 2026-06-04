@@ -664,7 +664,7 @@ async fn test_subagent_tool_llm_callback_long_content_truncation() {
 #[tokio::test]
 async fn test_spawn_tool_with_callback_and_llm() {
     let registry = Arc::new(ToolRegistry::new());
-    let mut manager = SubagentManager::new(registry);
+    let manager = SubagentManager::new(registry);
     manager.set_llm_callback(Arc::new(|_msgs| {
         crate::toolloop::LLMResponse {
             content: "background task done".to_string(),

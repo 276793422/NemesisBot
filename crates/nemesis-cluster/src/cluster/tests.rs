@@ -2279,7 +2279,7 @@ fn test_list_tasks_after_submit_and_complete() {
     cluster.start();
 
     let t1 = cluster.submit_task("a1", serde_json::json!({}), "web", "ch1");
-    let t2 = cluster.submit_task("a2", serde_json::json!({}), "web", "ch2");
+    let _t2 = cluster.submit_task("a2", serde_json::json!({}), "web", "ch2");
     cluster.complete_task(&t1, serde_json::json!("done"));
 
     let tasks = cluster.list_tasks();

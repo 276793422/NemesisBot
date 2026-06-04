@@ -204,6 +204,9 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
     fn tags(&self) -> Vec<String> {
         vec!["test".to_string()]
     }
+    fn capabilities(&self) -> Vec<String> {
+        vec!["test".to_string()]
+    }
     fn handle_discovered_node(
         &self,
         node_id: &str,

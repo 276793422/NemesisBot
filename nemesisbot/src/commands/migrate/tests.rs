@@ -28,7 +28,7 @@ fn test_detect_openclaw_home_env_var() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
-    let result = detect_openclaw_home(&None);
+    let _result = detect_openclaw_home(&None);
     unsafe { std::env::remove_var("OPENCLAW_HOME"); }
     // In parallel tests, another test might overwrite the env var
     // Just verify the function doesn't panic and returns a PathBuf
@@ -41,7 +41,7 @@ fn test_detect_openclaw_home_env_var_takes_precedence() {
     let path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
     // Even with None override, env var should work
-    let result = detect_openclaw_home(&None);
+    let _result = detect_openclaw_home(&None);
     unsafe { std::env::remove_var("OPENCLAW_HOME"); }
     // In parallel tests, env var might be overwritten, so just verify no panic
 }

@@ -415,7 +415,7 @@ fn test_convert_config_with_security() {
         "enabled": true,
         "restrict_to_workspace": true
     }));
-    let (config, warnings) = convert_config(&data);
+    let (config, _warnings) = convert_config(&data);
     // convert_config may or may not pass through security key
     // just verify it doesn't panic and returns valid output
     assert!(config.is_object());

@@ -87,6 +87,11 @@ pub enum ClusterAction {
         #[arg(long)]
         hard: bool,
     },
+    /// Manage cluster node identity (name, role, capabilities, personality)
+    Identity {
+        #[command(subcommand)]
+        action: IdentityAction,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -172,6 +177,16 @@ pub enum TokenAction {
     },
     /// Revoke/remove the token
     Revoke,
+}
+
+#[derive(clap::Subcommand)]
+pub enum IdentityAction {
+    /// Show current cluster identity content
+    Show,
+    /// Create identity from template for editing (prints file path)
+    Edit,
+    /// Reset identity to default (贾维斯 / 专家开发工程师)
+    Reset,
 }
 
 pub fn run(action: ClusterAction, local: bool) -> Result<()> {
@@ -644,6 +659,61 @@ pub fn run(action: ClusterAction, local: bool) -> Result<()> {
             let state_path = common::cluster_dir(&home).join("state.toml");
             let _ = std::fs::remove_file(&state_path);
             println!("Cluster configuration reset (hard).");
+        }
+        ClusterAction::Identity { action } => {
+            let cluster_dir = common::cluster_dir(&home);
+            let identity_path = cluster_dir.join("IDENTITY.md");
+
+            match action {
+                IdentityAction::Show => {
+                    if identity_path.exists() {
+                        let content = std::fs::read_to_string(&identity_path)
+                            .unwrap_or_else(|_| "(failed to read file)".to_string());
+                        println!("Cluster Identity");
+                        println!("=================");
+                        println!("  File: {}", identity_path.display());
+                        println!();
+                        println!("{}", content);
+                    } else {
+                        println!("Cluster identity not found.");
+                        println!("  Use 'nemesisbot cluster identity edit' to create one from template.");
+                        println!("  Or run 'nemesisbot onboard default' to install default identity (贾维斯).");
+                    }
+                }
+                IdentityAction::Edit => {
+                    // Ensure cluster directory exists
+                    let _ = std::fs::create_dir_all(&cluster_dir);
+
+                    if identity_path.exists() {
+                        println!("Cluster identity already exists at:");
+                        println!("  {}", identity_path.display());
+                        println!("Edit this file directly to customize your cluster identity.");
+                    } else {
+                        // Write template to file
+                        let template = crate::CLUSTER_IDENTITY_TEMPLATE;
+                        std::fs::write(&identity_path, template)?;
+                        println!("Cluster identity template created at:");
+                        println!("  {}", identity_path.display());
+                        println!("Edit this file to customize your cluster identity.");
+                    }
+                    println!();
+                    println!("Tip: after editing, restart gateway to apply changes.");
+                }
+                IdentityAction::Reset => {
+                    println!("Resetting cluster identity to default...");
+                    println!("  Default identity: 贾维斯（老贾）— 专家开发工程师");
+                    println!("  This will overwrite the current cluster identity file.");
+                    println!();
+
+                    let _ = std::fs::create_dir_all(&cluster_dir);
+                    let default_content = crate::DEFAULT_IDENTITY_CLUSTER;
+                    std::fs::write(&identity_path, default_content)?;
+                    println!("  Cluster identity reset to default (贾维斯).");
+                    println!("  File: {}", identity_path.display());
+                    println!();
+                    println!("Restart gateway to apply changes.");
+                }
+            }
         }
     }
     Ok(())

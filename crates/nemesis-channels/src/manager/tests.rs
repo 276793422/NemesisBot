@@ -1065,11 +1065,13 @@ impl Channel for FailStartChannel {
 
 // === Slow channel for timeout tests ===
 
+#[allow(dead_code)]
 struct SlowChannel {
     name: String,
     sent: Arc<parking_lot::RwLock<Vec<String>>>,
 }
 
+#[allow(dead_code)]
 impl SlowChannel {
     fn new(name: &str) -> Self {
         Self {
@@ -1101,7 +1103,7 @@ impl Channel for SlowChannel {
 async fn test_start_all_with_failing_channel_continues() {
     let mgr = Arc::new(ChannelManager::new());
     let good_ch = Arc::new(StubChannel::new("good"));
-    let fail_ch = Arc::new(FailStartChannel::new("fail"));
+    let _fail_ch = Arc::new(FailStartChannel::new("fail"));
 
     mgr.register(good_ch.clone()).await.unwrap();
     mgr.register(Arc::new(FailStartChannel::new("fail"))).await.unwrap();

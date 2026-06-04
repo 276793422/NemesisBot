@@ -909,7 +909,6 @@ fn test_flatten_single_top_dir_multiple_entries_v2() {
 
 #[test]
 fn test_clawhub_registry_trait_impl() {
-    use crate::registry::SkillRegistry;
     let registry = ClawHubRegistry::new();
     assert_eq!(registry.name(), "clawhub");
 }

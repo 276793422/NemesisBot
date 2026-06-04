@@ -1,8 +1,11 @@
-//! Agent factory — builds a fresh AgentLoop from disk config.
+//! Agent factory — builds AgentLoop instances from shared configuration.
 //!
-//! Extracted from gateway.rs to enable true stop/start semantics:
-//! - stop = drop old AgentLoop
-//! - start = call build_agent_loop() → fresh instance, identical to first boot
+//! Two factory functions:
+//! - `build_agent_loop()` — main agent (bus mode, session store, continuation manager, etc.)
+//! - `build_cluster_agent_loop()` — cluster agent (standalone mode, full tools, no bus)
+//!
+//! Both share the same tool registration and MCP logic via `register_tools_and_mcp()`.
+//! The difference is in mode (bus vs standalone) and which optional subsystems are attached.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,6 +65,9 @@ pub struct SharedResources {
         >,
     >,
     pub cluster_rpc_config: Option<nemesis_agent::loop_tools::ClusterRpcConfig>,
+    /// Returns online peers for dynamic cluster_rpc tool description.
+    /// Each tuple: (node_id, node_name, capabilities).
+    pub cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
 
     // MCP config
     pub mcp_config_path: PathBuf,
@@ -161,8 +167,88 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         agent_loop.set_state_manager(state_mgr);
     }
 
-    // 7. Build SharedToolConfig (from fresh config + shared Arc refs).
-    let shared_config = nemesis_agent::SharedToolConfig {
+    // 7. Build tool config + register all tools + enable MCP.
+    let tool_config = build_shared_tool_config(
+        shared,
+        &cfg,
+        &model_name,
+        Some(agent_loop.mcp_tool_snapshot()),
+    );
+    register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
+
+    // 8. Register ClusterRpcTool (using shared call_fn + peers_fn).
+    if let (Some(config), Some(call_fn)) =
+        (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
+    {
+        let mut cluster_rpc_tool = nemesis_agent::ClusterRpcTool::new(config.clone());
+        cluster_rpc_tool.set_rpc_call_fn(call_fn.clone());
+        if let Some(ref peers_fn) = shared.cluster_peers_fn {
+            cluster_rpc_tool.set_peers_fn(peers_fn.clone());
+        }
+        agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
+        info!("[AgentFactory] cluster_rpc tool registered");
+    }
+
+    // 9. Continuation manager (disk-persisted — new instance).
+    {
+        let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
+            &workspace_dir,
+        ));
+        agent_loop.set_continuation_manager(cont_mgr);
+    }
+
+    // 10. Inject shared Arc references.
+    if let Some(ref forge) = shared.forge {
+        agent_loop.set_forge(forge.clone());
+    }
+    if let Some(ref plugin) = shared.security_plugin {
+        agent_loop.set_security_plugin(plugin.clone());
+    }
+    if let Some(ref mgr) = shared.observer_manager {
+        agent_loop.set_observer_manager(mgr.clone());
+    }
+    if let Some(ref ds) = shared.data_store {
+        agent_loop.set_data_store(ds.clone());
+    }
+    agent_loop.set_channel_manager(shared.enabled_channels.clone());
+
+    // 11. Update Forge's LLM provider (old model may have been deleted).
+    //     set_provider cascades to reflector + pipeline + learning_engine.
+    if let Some(ref forge) = shared.forge {
+        let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
+        forge.set_provider(Arc::new(bridge));
+        info!(
+            "[AgentFactory] Forge provider updated to model {}",
+            model_name
+        );
+    }
+
+    info!(
+        model = %model_name,
+        tools = agent_loop.tool_count(),
+        "[AgentFactory] AgentLoop built successfully"
+    );
+
+    Ok(Arc::new(agent_loop))
+}
+
+// ---------------------------------------------------------------------------
+// Shared: tool registration + MCP
+// ---------------------------------------------------------------------------
+
+/// Build SharedToolConfig from shared resources + fresh config.
+///
+/// Extracted from build_agent_loop so both main and cluster agents
+/// share the same tool configuration logic.
+fn build_shared_tool_config(
+    shared: &Arc<SharedResources>,
+    cfg: &nemesis_config::Config,
+    model_name: &str,
+    mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
+) -> nemesis_agent::SharedToolConfig {
+    let workspace_dir = shared.home.join("workspace");
+
+    nemesis_agent::SharedToolConfig {
         workspace: Some(workspace_dir.to_string_lossy().to_string()),
         cron_service: Some(shared.cron_service.clone()),
         forge_executor: shared.forge_executor.clone(),
@@ -172,7 +258,6 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         }),
         skills_loader: shared.skills_loader.clone(),
         skills_registry: shared.skills_registry.clone(),
-        // web_search: read from fresh config
         web_search: {
             let web = &cfg.tools.web;
             let any_enabled = web.brave.enabled || web.duckduckgo.enabled || web.perplexity.enabled;
@@ -199,82 +284,157 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
                 None
             }
         },
-        // spawn: enabled by default, uses current model
         spawn: Some(nemesis_agent::loop_tools::SpawnConfig {
-            default_model: model_name.clone(),
+            default_model: model_name.to_string(),
             max_concurrent: 4,
         }),
-        // cluster_rpc: None here — registered separately below
-        cluster_rpc: None,
-        mcp_tool_snapshot: Some(agent_loop.mcp_tool_snapshot()),
-    };
+        cluster_rpc: None, // Registered separately with call_fn
+        mcp_tool_snapshot,
+    }
+}
 
-    // 8. Register shared tools.
-    let all_tools = nemesis_agent::register_shared_tools(&shared_config);
+/// Register all tools and enable MCP on the given AgentLoop.
+///
+/// Shared between main agent and cluster agent. The caller is responsible for
+/// registering cluster_rpc with call_fn after this call.
+fn register_tools_and_mcp(
+    agent_loop: &mut nemesis_agent::r#loop::AgentLoop,
+    shared: &Arc<SharedResources>,
+    tool_config: &nemesis_agent::SharedToolConfig,
+) {
+    let all_tools = nemesis_agent::register_shared_tools(tool_config);
     let tool_count = all_tools.len();
     for (name, tool) in all_tools {
         agent_loop.register_tool(name, tool);
     }
 
-    // 9. Enable MCP dynamic reload.
     if shared.mcp_enabled {
         agent_loop.enable_mcp_reload(shared.mcp_config_path.clone());
     }
+
     info!(
         "[AgentFactory] Tools registered: {}{}",
         tool_count,
         if shared.mcp_enabled { " + MCP" } else { "" }
     );
+}
 
-    // 10. Register ClusterRpcTool (using shared call_fn).
-    if let (Some(config), Some(call_fn)) =
+// ---------------------------------------------------------------------------
+// build_cluster_agent_loop — cluster agent factory
+// ---------------------------------------------------------------------------
+
+/// Build a cluster agent loop (standalone mode, no bus).
+///
+/// Returns `(AgentLoop, AgentConfig)` — the AgentLoop for running tasks,
+/// and the AgentConfig for creating per-task AgentInstance (carries system_prompt identity).
+///
+/// Shares the same tool set and MCP as the main agent.
+/// Differences from the main agent:
+/// - Standalone mode (`AgentLoop::new` instead of `new_bus`)
+/// - No session store, state manager, continuation manager
+/// - No security plugin, observer, data store, channel manager
+/// - Has cluster reference (for cluster_rpc tool to work)
+/// - System prompt loaded from `workspace/cluster/IDENTITY.md` + `SOUL.md`
+pub fn build_cluster_agent_loop(
+    shared: &Arc<SharedResources>,
+    cluster: Arc<dyn std::any::Any + Send + Sync>,
+) -> Result<(Arc<nemesis_agent::r#loop::AgentLoop>, nemesis_agent::types::AgentConfig)> {
+    use nemesis_agent::r#loop::AgentLoop;
+
+    // 1. Re-read config.json from disk.
+    let config_path = shared.home.join("config.json");
+    let cfg = nemesis_config::load_config(&config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
+
+    // 2. Resolve LLM model → create provider.
+    let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
+    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
+        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let model_name = resolution.model_name.clone();
+
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: shared.home.join("workspace").to_string_lossy().to_string(),
+        connect_mode: resolution.connect_mode,
+        account_id: String::new(),
+        headers: HashMap::new(),
+    };
+    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
+        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = Arc::from(provider);
+
+    // 3. Load cluster system prompt from workspace/cluster/IDENTITY.md + SOUL.md.
+    let system_prompt = load_cluster_system_prompt(&shared.home);
+
+    // 4. Create AgentConfig + AgentLoop (standalone mode, no bus).
+    let config = nemesis_agent::types::AgentConfig {
+        model: model_name.clone(),
+        system_prompt,
+        max_turns: 50,
+        ..Default::default()
+    };
+    let adapter = ProviderAdapter::new(provider_arc, model_name.clone());
+    let mut agent_loop = AgentLoop::new(Box::new(adapter), config.clone());
+
+    // 5. Set cluster reference (enables cluster_rpc tool).
+    agent_loop.set_cluster(cluster);
+
+    // 6. Build tool config + register all tools + enable MCP.
+    let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
+    register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
+
+    // 7. Register cluster_rpc with call_fn + peers_fn (if available).
+    if let (Some(rpc_config), Some(call_fn)) =
         (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
     {
-        let mut cluster_rpc_tool = nemesis_agent::ClusterRpcTool::new(config.clone());
+        let mut cluster_rpc_tool = nemesis_agent::ClusterRpcTool::new(rpc_config.clone());
         cluster_rpc_tool.set_rpc_call_fn(call_fn.clone());
+        if let Some(ref peers_fn) = shared.cluster_peers_fn {
+            cluster_rpc_tool.set_peers_fn(peers_fn.clone());
+        }
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
-        info!("[AgentFactory] cluster_rpc tool registered");
-    }
-
-    // 11. Continuation manager (disk-persisted — new instance).
-    {
-        let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(
-            &workspace_dir,
-        ));
-        agent_loop.set_continuation_manager(cont_mgr);
-    }
-
-    // 12. Inject shared Arc references.
-    if let Some(ref forge) = shared.forge {
-        agent_loop.set_forge(forge.clone());
-    }
-    if let Some(ref plugin) = shared.security_plugin {
-        agent_loop.set_security_plugin(plugin.clone());
-    }
-    if let Some(ref mgr) = shared.observer_manager {
-        agent_loop.set_observer_manager(mgr.clone());
-    }
-    if let Some(ref ds) = shared.data_store {
-        agent_loop.set_data_store(ds.clone());
-    }
-    agent_loop.set_channel_manager(shared.enabled_channels.clone());
-
-    // 13. Update Forge's LLM provider (old model may have been deleted).
-    //     set_provider cascades to reflector + pipeline + learning_engine.
-    if let Some(ref forge) = shared.forge {
-        let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
-        forge.set_provider(Arc::new(bridge));
-        info!(
-            "[AgentFactory] Forge provider updated to model {}",
-            model_name
-        );
+        info!("[AgentFactory] cluster_rpc tool registered for cluster agent");
     }
 
     info!(
         model = %model_name,
         tools = agent_loop.tool_count(),
-        "[AgentFactory] AgentLoop built successfully"
+        has_system_prompt = config.system_prompt.is_some(),
+        "[AgentFactory] Cluster AgentLoop built successfully"
     );
 
-    Ok(Arc::new(agent_loop))
+    Ok((Arc::new(agent_loop), config))
+}
+
+/// Load cluster system prompt from `workspace/cluster/IDENTITY.md` + `SOUL.md`.
+///
+/// Returns None if neither file exists (cluster agent runs without identity).
+fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
+    let cluster_dir = home.join("workspace").join("cluster");
+    let mut parts = Vec::new();
+
+    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md")) {
+        if !content.trim().is_empty() {
+            parts.push(content);
+        }
+    }
+    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md")) {
+        if !content.trim().is_empty() {
+            parts.push(content);
+        }
+    }
+
+    if parts.is_empty() {
+        info!("[AgentFactory] No cluster identity files found, running without system prompt");
+        None
+    } else {
+        info!(
+            files = parts.len(),
+            "[AgentFactory] Cluster system prompt loaded from {} file(s)",
+            parts.len()
+        );
+        Some(parts.join("\n\n---\n\n"))
+    }
 }

@@ -3148,3 +3148,209 @@ fn test_shared_tools_include_cli_reference() {
     let tools = register_extended_tools(None, None, None);
     assert!(tools.contains_key("cli_reference"), "cli_reference should be registered by default");
 }
+
+// =========================================================================
+// ClusterRpcTool: parameters() with peers_fn
+// =========================================================================
+
+#[test]
+fn test_cluster_rpc_params_no_peers_fn() {
+    // Without peers_fn, the "target" description should be the basic "Target bot ID"
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    let params = tool.parameters();
+    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
+    assert_eq!(target_desc, "Target bot ID");
+}
+
+#[test]
+fn test_cluster_rpc_params_with_peers() {
+    // With peers_fn returning peers, the description should list them with capabilities
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_peers_fn(Arc::new(|| {
+        vec![
+            ("Node-B".to_string(), "Bot B".to_string(), vec!["shell".to_string(), "web".to_string()]),
+        ]
+    }));
+
+    let params = tool.parameters();
+    let params_str = serde_json::to_string(&params).unwrap();
+    assert!(params_str.contains("Node-B"), "should contain peer node ID");
+    assert!(params_str.contains("Bot B"), "should contain peer node name");
+    assert!(params_str.contains("shell"), "should contain capability 'shell'");
+    assert!(params_str.contains("web"), "should contain capability 'web'");
+}
+
+#[test]
+fn test_cluster_rpc_params_empty_peers() {
+    // With peers_fn returning empty vec, description should mention "no peers currently online"
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_peers_fn(Arc::new(|| vec![]));
+
+    let params = tool.parameters();
+    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
+    assert!(
+        target_desc.contains("no peers currently online"),
+        "expected 'no peers currently online', got: {}",
+        target_desc
+    );
+}
+
+#[test]
+fn test_cluster_rpc_params_with_multiple_peers_and_empty_caps() {
+    // Multiple peers including one with empty capabilities -> "unknown capabilities"
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_peers_fn(Arc::new(|| {
+        vec![
+            ("Node-X".to_string(), "Bot X".to_string(), vec!["shell".to_string()]),
+            ("Node-Y".to_string(), "Bot Y".to_string(), vec![]),
+        ]
+    }));
+
+    let params = tool.parameters();
+    let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
+    assert!(target_desc.contains("Node-X"), "should list Node-X");
+    assert!(target_desc.contains("Bot X"), "should list Bot X name");
+    assert!(target_desc.contains("shell"), "should list shell capability");
+    assert!(target_desc.contains("Node-Y"), "should list Node-Y");
+    assert!(
+        target_desc.contains("unknown capabilities"),
+        "empty caps should show 'unknown capabilities', got: {}",
+        target_desc
+    );
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_execute_no_call_fn() {
+    // Execute without rpc_call_fn should return Err containing "not available"
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    let ctx = RequestContext::new("web", "chat-1", "user-1", "session-1");
+    let args = serde_json::json!({"target_node": "Node-B", "message": "hello"}).to_string();
+
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("not available"),
+        "expected 'not available' in error, got: {}",
+        err
+    );
+    assert!(
+        err.contains("Node-B"),
+        "error should mention the target node, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_execute_async_ack() {
+    // rpc_call_fn returns {"status": "accepted", "task_id": "t-123"}
+    // execute should return Ok("__ASYNC__:t-123:Node-B")
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async {
+                Ok(serde_json::json!({"status": "accepted", "task_id": "t-123"}))
+            })
+        },
+    ));
+
+    let ctx = RequestContext::new("web", "chat-1", "user-1", "session-1");
+    let args = serde_json::json!({"target": "Node-B", "message": "hello"}).to_string();
+
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
+    assert_eq!(result.unwrap(), "__ASYNC__:t-123:Node-B");
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_execute_sync_response() {
+    // rpc_call_fn returns {"status": "done", "content": "hello back"}
+    // execute should return Ok containing "hello back"
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async {
+                Ok(serde_json::json!({"status": "done", "content": "hello back"}))
+            })
+        },
+    ));
+
+    let ctx = RequestContext::new("web", "chat-1", "user-1", "session-1");
+    let args = serde_json::json!({"target_node": "Node-C", "message": "ping"}).to_string();
+
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
+    assert_eq!(result.unwrap(), "hello back");
+}
+
+#[test]
+fn test_cluster_rpc_description() {
+    // Verify the static description string
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    assert_eq!(tool.description(), "Send a message to another bot in the cluster");
+}
+
+#[test]
+fn test_cluster_rpc_params_required_fields() {
+    // Verify the JSON schema has correct required fields and property types
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    let params = tool.parameters();
+
+    // Check type
+    assert_eq!(params["type"], "object");
+
+    // Check required fields
+    let required = params["required"].as_array().unwrap();
+    assert!(required.iter().any(|r| r == "target"));
+    assert!(required.iter().any(|r| r == "message"));
+
+    // Check property types
+    assert_eq!(params["properties"]["target"]["type"], "string");
+    assert_eq!(params["properties"]["message"]["type"], "string");
+    assert_eq!(params["properties"]["timeout"]["type"], "integer");
+}

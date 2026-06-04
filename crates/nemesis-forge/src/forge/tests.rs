@@ -214,7 +214,7 @@ fn test_forge_init_mcp_installer() {
 #[test]
 fn test_forge_set_bridge() {
     let dir = tempfile::tempdir().unwrap();
-    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
     assert!(forge.bridge().is_none());
     let bridge = Arc::new(crate::bridge::NoOpBridge::new("node-1".into()));
     forge.set_bridge(bridge);
@@ -488,10 +488,12 @@ impl crate::reflector_llm::LLMCaller for ErrorMockLLM {
 }
 
 /// Mock LLM caller (for LearningEngine).
+#[allow(dead_code)]
 struct MockSyncProvider {
     response: String,
 }
 
+#[allow(dead_code)]
 impl MockSyncProvider {
     fn new(response: &str) -> Self {
         Self { response: response.to_string() }
@@ -859,7 +861,7 @@ async fn test_run_cycle_full_with_patterns() {
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
-    let mut engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // No LLM provider — execute_create_skill will skip but pattern detection still works
     let experiences: Vec<_> = (0..6)
@@ -877,7 +879,7 @@ async fn test_run_cycle_full_with_patterns() {
 
 #[test]
 fn test_pipeline_validation_passes_with_mock() {
-    let dir = tempfile::tempdir().unwrap();
+    let _dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let pipeline = Pipeline::new(ForgeConfig::default(), registry);
     pipeline.set_provider(Arc::new(ProgrammableMockLLM::new(
@@ -898,7 +900,7 @@ fn test_pipeline_validation_passes_with_mock() {
 
 #[test]
 fn test_pipeline_validation_with_llm_failure() {
-    let dir = tempfile::tempdir().unwrap();
+    let _dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let pipeline = Pipeline::new(ForgeConfig::default(), registry);
     pipeline.set_provider(Arc::new(ErrorMockLLM));
@@ -941,7 +943,7 @@ async fn test_learning_engine_with_llm_failure() {
     let config = ForgeConfig::default();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = crate::cycle_store::CycleStore::new(&dir.path());
-    let mut engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
+    let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // Set error provider
     engine.set_provider(Arc::new(ErrorSyncProvider));

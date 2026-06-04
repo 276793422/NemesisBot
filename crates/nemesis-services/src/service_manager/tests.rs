@@ -198,7 +198,7 @@ fn test_trigger_shutdown_multiple_times() {
     mgr.trigger_shutdown();
 
     // Subscriber created after trigger should still get the signal (broadcast retains last value)
-    let mut rx = mgr.subscribe_shutdown();
+    let _rx = mgr.subscribe_shutdown();
     // The broadcast channel has capacity 1, so lagging receivers may not get old messages
     // Just verify trigger doesn't panic
     mgr.trigger_shutdown();
@@ -269,7 +269,7 @@ async fn test_wait_group_wait_completes_on_zero() {
     wg.add();
 
     // Spawn a task that will call done() after a short delay
-    let (tx, done_rx) = tokio::sync::watch::channel(());
+    let (_tx, _done_rx) = tokio::sync::watch::channel(());
     let inner_done_tx = wg.done_tx.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -300,7 +300,7 @@ async fn test_wait_for_shutdown_with_timeout_broadcast_trigger() {
 #[tokio::test]
 async fn test_wait_for_shutdown_with_trigger_sender_dropped() {
     let mgr = ServiceManager::new();
-    let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let (_tx, _rx) = tokio::sync::oneshot::channel::<()>();
 
     // Drop sender to simulate sender being dropped
     drop(_tx);

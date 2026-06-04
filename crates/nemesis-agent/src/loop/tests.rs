@@ -3894,7 +3894,7 @@ async fn test_process_direct_with_channel_custom() {
 #[test]
 fn test_handle_command_show_system_prompt_with_config() {
     let provider = MockLlmProvider::new(vec![]);
-    let mut al = AgentLoop::new(Box::new(provider), AgentConfig {
+    let al = AgentLoop::new(Box::new(provider), AgentConfig {
         model: "test".to_string(),
         system_prompt: Some("You are a helpful assistant.".to_string()),
         max_turns: 5,

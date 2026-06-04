@@ -1084,7 +1084,7 @@ fn test_install_skill_already_exists_dir() {
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
 
-    let installer = SkillInstaller::new(temp.path().to_str().unwrap());
+    let _installer = SkillInstaller::new(temp.path().to_str().unwrap());
     // Can't test install() directly without a real registry manager,
     // but we can verify the workspace path check
     assert!(skill_dir.exists());

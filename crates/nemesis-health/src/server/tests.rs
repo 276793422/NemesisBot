@@ -501,7 +501,7 @@ async fn test_start_invalid_address() {
 
 #[tokio::test]
 async fn test_start_with_shutdown_and_stop() {
-    let server = HealthServer::new(HealthServerConfig {
+    let _server = HealthServer::new(HealthServerConfig {
         listen_addr: "127.0.0.1:0".to_string(),
         version: Some("1.0".to_string()),
     });
@@ -551,7 +551,7 @@ async fn test_health_endpoint_with_null_version() {
         .unwrap();
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["uptime_seconds"].as_u64().unwrap() >= 0);
+    let _ = json["uptime_seconds"].as_u64().unwrap();
 }
 
 #[test]

@@ -1114,7 +1114,7 @@ fn test_session_persistence_no_summarizer() {
 #[tokio::test]
 async fn test_run_agent_loop_simple() {
     let (inbound_tx, inbound_rx) = mpsc::channel(16);
-    let (outbound_tx, mut outbound_rx) = mpsc::channel(16);
+    let (outbound_tx, _outbound_rx) = mpsc::channel(16);
     drop(inbound_tx);
 
     let provider = Arc::new(MockProvider::new(vec![
@@ -1128,7 +1128,7 @@ async fn test_run_agent_loop_simple() {
             raw_response_body: None,
         },
     ]));
-    let mut executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
+    let executor = AgentLoopExecutor::new(provider, inbound_rx, outbound_tx, ExecutorConfig::default());
 
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = executor.run_agent_loop("sess1", "Hello", &ctx).await;

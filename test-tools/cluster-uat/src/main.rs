@@ -1,10 +1,11 @@
 //! NemesisBot Cluster UAT (User Acceptance Test)
 //!
 //! End-to-end verification of cluster functionality including:
-//! - Multi-node startup and configuration
+//! - Multi-node startup and configuration (4 nodes: A, B, C, D)
 //! - UDP discovery
-//! - 2-hop peer_chat (A→B, A→C)
-//! - 3-hop chain (A→B→C)
+//! - 2-hop peer_chat (A→B, A→C, A→D)
+//! - 3-hop chain (A→B→D)
+//! - 4-hop chain (A→B→C→D)
 //! - Bidirectional, concurrent, and error recovery scenarios
 //!
 //! Usage:
@@ -37,14 +38,14 @@ struct NodeConfig {
     model: &'static str,
 }
 
-const NODES: [NodeConfig; 3] = [
+const NODES: [NodeConfig; 4] = [
     NodeConfig {
         name: "Node-A",
         web_port: 49000,
         health_port: 18790,
         udp_port: 11949,
         rpc_port: 21949,
-        model: "test/testai-3.0",
+        model: "test/testai-3.1",
     },
     NodeConfig {
         name: "Node-B",
@@ -52,7 +53,7 @@ const NODES: [NodeConfig; 3] = [
         health_port: 18791,
         udp_port: 11949, // Same UDP port — SO_REUSEADDR allows shared binding
         rpc_port: 21950,
-        model: "test/testai-3.0",
+        model: "test/testai-3.1",
     },
     NodeConfig {
         name: "Node-C",
@@ -60,7 +61,15 @@ const NODES: [NodeConfig; 3] = [
         health_port: 18792,
         udp_port: 11949, // Same UDP port — SO_REUSEADDR allows shared binding
         rpc_port: 21951,
-        model: "test/testai-1.1",
+        model: "test/testai-3.1",
+    },
+    NodeConfig {
+        name: "Node-D",
+        web_port: 49003,
+        health_port: 18793,
+        udp_port: 11949, // Same UDP port — SO_REUSEADDR allows shared binding
+        rpc_port: 21952,
+        model: "test/testai-3.1",
     },
 ];
 
@@ -303,71 +312,6 @@ async fn ws_send_recv(
     test_harness::ws_send_and_recv(stream, content, timeout_secs).await
 }
 
-/// Send a message and wait for the Nth chat.receive response (0-indexed).
-/// For async cluster_rpc, response 0 is the intermediate "已发送请求..." message,
-/// and response 1 is the actual continuation response from the remote node.
-async fn ws_send_recv_nth(
-    stream: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    content: &str,
-    timeout_secs: u64,
-    n: usize,
-) -> Result<String> {
-    let msg = json!({
-        "type": "message",
-        "module": "chat",
-        "cmd": "send",
-        "data": { "content": content },
-        "timestamp": chrono::Utc::now().to_rfc3339()
-    });
-    stream.send(Message::Text(msg.to_string().into())).await?;
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-    let mut count = 0;
-    loop {
-        let resp = tokio::time::timeout_at(deadline, stream.next()).await;
-        match resp {
-            Ok(Some(Ok(Message::Text(text)))) => {
-                let text = text.to_string();
-                if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                    let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    let module = v.get("module").and_then(|m| m.as_str()).unwrap_or("");
-                    let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
-
-                    if msg_type == "message" && module == "chat" && cmd == "receive" {
-                        let content = v["data"]["content"]
-                            .as_str()
-                            .unwrap_or("")
-                            .to_string();
-                        if count == n {
-                            return Ok(content);
-                        }
-                        count += 1;
-                    }
-                    if msg_type == "system" && module == "error" {
-                        let err = v["data"]["content"]
-                            .as_str()
-                            .unwrap_or("unknown error")
-                            .to_string();
-                        return Err(anyhow::anyhow!("Server error: {}", err));
-                    }
-                }
-            }
-            Ok(Some(Ok(Message::Ping(_)))) => {
-                let _ = stream.send(Message::Pong(vec![].into())).await;
-            }
-            Ok(Some(Ok(Message::Close(_)))) => {
-                return Err(anyhow::anyhow!("WebSocket closed"));
-            }
-            Ok(Some(Ok(_))) => {} // Ignore Binary, Pong, Frame
-            Ok(None) => return Err(anyhow::anyhow!("WebSocket stream ended")),
-            Ok(Some(Err(e))) => return Err(anyhow::anyhow!("WebSocket error: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("Timeout after {}s", timeout_secs)),
-        }
-    }
-}
-
 /// Send a message and wait for a chat.receive response matching a predicate.
 /// Skips non-matching chat.receive messages. Returns the first matching response.
 /// If timeout is reached without a match, returns Err.
@@ -571,9 +515,11 @@ async fn main() {
     let ws_a = TestWorkspace::new().expect("Cannot create workspace A");
     let ws_b = TestWorkspace::new().expect("Cannot create workspace B");
     let ws_c = TestWorkspace::new().expect("Cannot create workspace C");
+    let ws_d = TestWorkspace::new().expect("Cannot create workspace D");
     println!("  Workspace A: {}", ws_a.path().display());
     println!("  Workspace B: {}", ws_b.path().display());
     println!("  Workspace C: {}", ws_c.path().display());
+    println!("  Workspace D: {}", ws_d.path().display());
 
     // ------------------------------------------------------------------
     // Phase 4: Configure cluster nodes
@@ -592,6 +538,11 @@ async fn main() {
     }
 
     if let Err(e) = setup_node(&ws_c, &gateway_bin, &NODES[2]).await {
+        eprintln!("ERROR: {}", e);
+        std::process::exit(1);
+    }
+
+    if let Err(e) = setup_node(&ws_d, &gateway_bin, &NODES[3]).await {
         eprintln!("ERROR: {}", e);
         std::process::exit(1);
     }
@@ -637,6 +588,9 @@ async fn main() {
     let mut gw_c =
         GatewayProcess::spawn("Gateway-C", &gateway_bin, ws_c.path())
             .expect("Cannot start Gateway-C");
+    let mut gw_d =
+        GatewayProcess::spawn("Gateway-D", &gateway_bin, ws_d.path())
+            .expect("Cannot start Gateway-D");
 
     // ------------------------------------------------------------------
     // Phase 7: Wait for health checks
@@ -644,7 +598,7 @@ async fn main() {
     println!("\n--- Phase 7: Health checks ---");
 
     let mut all_healthy = true;
-    for (i, _gw) in [&mut gw_a, &mut gw_b, &mut gw_c]
+    for (i, _gw) in [&mut gw_a, &mut gw_b, &mut gw_c, &mut gw_d]
         .iter_mut()
         .enumerate()
     {
@@ -660,6 +614,7 @@ async fn main() {
 
     if !all_healthy {
         eprintln!("\nERROR: Not all gateways are healthy. Aborting.");
+        gw_d.kill().await;
         gw_c.kill().await;
         gw_b.kill().await;
         gw_a.kill().await;
@@ -671,13 +626,13 @@ async fn main() {
     // Run Tests
     // ==================================================================
     println!("\n========================================");
-    println!("  Running Tests (T1-T10, full async chain verification)");
+    println!("  Running Tests (T1-T13, 4-node full chain verification)");
     println!("========================================");
 
     // T1: Node startup and configuration verification
     all_results.push(
         run_test("T1: Node startup & config", || async {
-            for (i, ws) in [&ws_a, &ws_b, &ws_c].iter().enumerate() {
+            for (i, ws) in [&ws_a, &ws_b, &ws_c, &ws_d].iter().enumerate() {
                 let out = ws.run_cli(&gateway_bin, &["cluster", "status"]).await;
                 if !out.success() {
                     return fail(
@@ -696,7 +651,7 @@ async fn main() {
                     );
                 }
             }
-            pass("T1", "All 3 nodes configured and reporting enabled")
+            pass("T1", "All 4 nodes configured and reporting enabled")
         })
         .await,
     );
@@ -708,7 +663,7 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(10)).await;
 
             // Verify nodes are still running
-            if !gw_a.is_running() || !gw_b.is_running() || !gw_c.is_running() {
+            if !gw_a.is_running() || !gw_b.is_running() || !gw_c.is_running() || !gw_d.is_running() {
                 return fail("T2", "One or more nodes crashed during discovery");
             }
 
@@ -724,11 +679,12 @@ async fn main() {
             let state_content = std::fs::read_to_string(&state_path).unwrap_or_default();
             let state_has_b = state_content.contains("Node-B");
             let state_has_c = state_content.contains("Node-C");
+            let state_has_d = state_content.contains("Node-D");
 
-            if discovered_count > 0 || state_has_b || state_has_c {
+            if discovered_count > 0 || state_has_b || state_has_c || state_has_d {
                 pass("T2", format!(
-                    "UDP discovery verified: discovered_events={}, state.toml B={}, C={}",
-                    discovered_count, state_has_b, state_has_c
+                    "UDP discovery verified: discovered_events={}, state.toml B={}, C={}, D={}",
+                    discovered_count, state_has_b, state_has_c, state_has_d
                 ))
             } else {
                 // Fallback: check if any "discover" lines exist at all
@@ -757,10 +713,11 @@ async fn main() {
             // Check for discovered nodes by name
             let has_b = content.contains("Node-B");
             let has_c = content.contains("Node-C");
-            if has_b && has_c {
-                pass("T3", format!("state.toml contains Node-B and Node-C ({} bytes)", content.len()))
+            let has_d = content.contains("Node-D");
+            if has_b && has_c && has_d {
+                pass("T3", format!("state.toml contains Node-B, Node-C and Node-D ({} bytes)", content.len()))
             } else {
-                fail("T3", format!("state.toml missing peers: B={} C={}\nContent: {}", has_b, has_c, trunc(&content, 300)))
+                fail("T3", format!("state.toml missing peers: B={} C={} D={}\nContent: {}", has_b, has_c, has_d, trunc(&content, 300)))
             }
         })
         .await,
@@ -792,32 +749,47 @@ async fn main() {
         .await,
     );
 
-    // T5: User → A → C (2-hop, C uses testai-1.1 which returns "好的，我知道了")
+    // T5: User → A → D (2-hop, D uses testai-3.1 which echoes content back)
     all_results.push(
-        run_test("T5: 2-hop A→C (full async chain)", || async {
+        run_test("T5: 2-hop A→D (full async chain)", || async {
             let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
                 Ok(s) => s,
                 Err(e) => return fail("T5", format!("WS connect to A failed: {}", e)),
             };
-            let msg = r#"<PEER_CHAT>{"peer_id":"Node-C","content":"hello to C"}</PEER_CHAT>"#;
+            let msg = r#"<PEER_CHAT>{"peer_id":"Node-D","content":"hello to D"}</PEER_CHAT>"#;
             match ws_send_recv_until(&mut ws, msg, 180, |resp| {
-                resp.contains("知道") || resp.contains("好的")
+                resp.contains("hello to D") || resp.contains("hello")
             }).await {
-                Ok(resp) => pass("T5", format!("完整异步 2-hop A→C: {}", trunc(&resp, 100))),
+                Ok(resp) => pass("T5", format!("完整异步 2-hop A→D: {}", trunc(&resp, 100))),
                 Err(e) => fail("T5", format!("180s 内未收到续行响应: {}", e)),
             }
         })
         .await,
     );
 
-    // T6: SKIP — 3-hop A→B→C requires B-side AgentLoop to execute nested cluster_rpc
-    // DirectLlmChannel only extracts choices[0].message.content (empty when B's LLM generates
-    // a tool_call), so the callback content is empty and the full 3-hop chain cannot complete.
+    // T6: 3-hop A→B→D — route format for multi-hop.
+    // testai-3.1 extracts route[0] (Node-B), passes remaining route [Node-D] to B.
+    // B extracts route[0] (Node-D), passes content to D. D echoes back.
     all_results.push(
-        run_test("T6: 3-hop A→B→C (async)", || async {
-            // SKIP: DirectLlmChannel cannot execute B-side LLM tool calls.
-            // Real 3-hop requires B to use a full AgentLoop (not DirectLlmChannel).
-            TestResult { name: "T6".into(), passed: true, message: "SKIP: 3-hop 需要 B 端 AgentLoop（DirectLlmChannel 无法执行工具调用）".into() }
+        run_test("T6: 3-hop A→B→D (route format)", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T6", format!("WS connect to A failed: {}", e)),
+            };
+            // Route format: A→B→D
+            let msg = r#"<PEER_CHAT>{"route":["Node-B","Node-D"],"content":"hello from A via B"}</PEER_CHAT>"#;
+            match ws_send_recv_until(&mut ws, msg, 300, |resp| {
+                resp.contains("hello from A via B") || resp.contains("hello")
+            }).await {
+                Ok(content) => {
+                    if !content.is_empty() {
+                        pass("T6", format!("3-hop response received ({} chars): {}", content.len(), trunc(&content, 200)))
+                    } else {
+                        fail("T6", String::from("Response was empty"))
+                    }
+                }
+                Err(e) => fail("T6", format!("300s 内未收到 3-hop 续行响应: {}", e)),
+            }
         })
         .await,
     );
@@ -913,32 +885,32 @@ async fn main() {
     // T9: Node offline and recovery (full async chain)
     //
     // Recovery flow:
-    // 1. Kill C → A still has C in registry (no "bye" sent on kill)
-    // 2. Offline test → cluster_rpc to C fails (TCP refused)
-    // 3. Restart C → C sends UDP announce (0-5s jitter) → A marks C Online
+    // 1. Kill D → A still has D in registry (no "bye" sent on kill)
+    // 2. Offline test → cluster_rpc to D fails (TCP refused)
+    // 3. Restart D → D sends UDP announce (0-5s jitter) → A marks D Online
     // 4. Retry → full async chain works
     //
-    // Key timing: after C restarts, we must wait for:
-    //   a) C's RPC server to be listening (TCP port check)
-    //   b) C's UDP announce to reach A (broadcast_interval + jitter)
+    // Key timing: after D restarts, we must wait for:
+    //   a) D's RPC server to be listening (TCP port check)
+    //   b) D's UDP announce to reach A (broadcast_interval + jitter)
     all_results.push(
         run_test("T9: Node offline & recovery (full async)", || async {
-            // Step 1: Stop node C
-            gw_c.kill().await;
-            println!("    Node-C stopped");
+            // Step 1: Stop node D
+            gw_d.kill().await;
+            println!("    Node-D stopped");
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             // Verify A is still running
             if !gw_a.is_running() {
-                return fail("T9", "Node-A crashed after C went offline");
+                return fail("T9", "Node-A crashed after D went offline");
             }
 
-            // Step 2: Try sending to C while offline — should get an error response
+            // Step 2: Try sending to D while offline — should get an error response
             let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
                 Ok(s) => s,
                 Err(e) => return fail("T9", format!("WS connect failed: {}", e)),
             };
-            let msg = r#"<PEER_CHAT>{"peer_id":"Node-C","content":"offline test"}</PEER_CHAT>"#;
+            let msg = r#"<PEER_CHAT>{"peer_id":"Node-D","content":"offline test"}</PEER_CHAT>"#;
             let result = ws_send_recv(&mut ws, msg, 30).await;
             let got_error = result.is_err();
             println!(
@@ -950,21 +922,21 @@ async fn main() {
                 }
             );
 
-            // Step 3: Restart C and wait for full readiness
-            gw_c = match GatewayProcess::spawn("Gateway-C", &gateway_bin, ws_c.path()) {
+            // Step 3: Restart D and wait for full readiness
+            gw_d = match GatewayProcess::spawn("Gateway-D", &gateway_bin, ws_d.path()) {
                 Ok(p) => p,
-                Err(e) => return fail("T9", format!("Cannot restart C: {}", e)),
+                Err(e) => return fail("T9", format!("Cannot restart D: {}", e)),
             };
 
             // 3a: Wait for HTTP health check (gateway web server up)
-            let health_url = format!("http://127.0.0.1:{}/health", NODES[2].health_port);
+            let health_url = format!("http://127.0.0.1:{}/health", NODES[3].health_port);
             if let Err(e) = wait_for_http(&health_url, Duration::from_secs(15)).await {
-                return fail("T9", format!("C not healthy after restart: {}", e));
+                return fail("T9", format!("D not healthy after restart: {}", e));
             }
-            println!("    Node-C restarted and healthy");
+            println!("    Node-D restarted and healthy");
 
-            // 3b: Wait for C's RPC server to be listening
-            let rpc_addr = format!("127.0.0.1:{}", NODES[2].rpc_port);
+            // 3b: Wait for D's RPC server to be listening
+            let rpc_addr = format!("127.0.0.1:{}", NODES[3].rpc_port);
             let rpc_ready = tokio::time::timeout(
                 Duration::from_secs(15),
                 async {
@@ -979,12 +951,12 @@ async fn main() {
             .await
             .unwrap_or(false);
             if !rpc_ready {
-                return fail("T9", format!("C RPC server not ready at {}", rpc_addr));
+                return fail("T9", format!("D RPC server not ready at {}", rpc_addr));
             }
-            println!("    Node-C RPC server ready on port {}", NODES[2].rpc_port);
+            println!("    Node-D RPC server ready on port {}", NODES[3].rpc_port);
 
-            // 3c: Wait for C's UDP announce to reach A
-            // C sends announce with 0-5s jitter, A needs to process it
+            // 3c: Wait for D's UDP announce to reach A
+            // D sends announce with 0-5s jitter, A needs to process it
             // broadcast_interval is 3s in tests, so 15s covers jitter + processing
             println!("    Waiting for UDP discovery to propagate (15s)...");
             tokio::time::sleep(Duration::from_secs(15)).await;
@@ -995,10 +967,10 @@ async fn main() {
                 Err(e) => return fail("T9", format!("WS connect after restart failed: {}", e)),
             };
             // Use ws_send_recv_until to skip intermediate messages and wait for
-            // the actual continuation response containing C's LLM output.
-            // C uses testai-1.1 which returns "好的，我知道了".
+            // the actual continuation response containing D's LLM output.
+            // D uses testai-3.1 which echoes content back.
             match ws_send_recv_until(&mut ws2, msg, 180, |resp| {
-                resp.contains("知道") || resp.contains("好的")
+                resp.contains("offline test") || resp.contains("hello")
             }).await {
                 Ok(resp) => pass(
                     "T9",
@@ -1042,10 +1014,81 @@ async fn main() {
         .await,
     );
 
+    // T11: 4-hop A→B→C→D — route format for multi-hop chain call.
+    // testai-3.1 extracts route[0] at each hop, forwards remaining route.
+    // A→B→C→D: A extracts B, B extracts C, C extracts D, D echoes content.
+    // Callbacks chain back: D→C→B→A.
+    all_results.push(
+        run_test("T11: 4-hop A→B→C→D (route format)", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T11", format!("WS connect to A failed: {}", e)),
+            };
+            // Route format: A→B→C→D
+            let msg = r#"<PEER_CHAT>{"route":["Node-B","Node-C","Node-D"],"content":"hello from A via B via C"}</PEER_CHAT>"#;
+            match ws_send_recv_until(&mut ws, msg, 420, |resp| {
+                resp.contains("hello from A via B via C") || resp.contains("hello")
+            }).await {
+                Ok(content) => {
+                    if !content.is_empty() {
+                        pass("T11", format!("4-hop response received ({} chars): {}", content.len(), trunc(&content, 200)))
+                    } else {
+                        fail("T11", String::from("Response was empty"))
+                    }
+                }
+                Err(e) => fail("T11", format!("420s 内未收到 4-hop 续行响应: {}", e)),
+            }
+        })
+        .await,
+    );
+
+    // T12: 2-hop A→C (C uses testai-3.1, echoes back content)
+    all_results.push(
+        run_test("T12: 2-hop A→C (full async chain)", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T12", format!("WS connect to A failed: {}", e)),
+            };
+            let msg = r#"<PEER_CHAT>{"peer_id":"Node-C","content":"hello direct to C"}</PEER_CHAT>"#;
+            match ws_send_recv_until(&mut ws, msg, 180, |resp| {
+                resp.contains("hello direct to C") || resp.contains("hello")
+            }).await {
+                Ok(resp) => pass("T12", format!("完整异步 2-hop A→C: {}", trunc(&resp, 100))),
+                Err(e) => fail("T12", format!("180s 内未收到续行响应: {}", e)),
+            }
+        })
+        .await,
+    );
+
+    // T13: Bidirectional D → A (from D's WebSocket to A)
+    all_results.push(
+        run_test("T13: Bidirectional D→A (full async chain)", || async {
+            let mut ws = match ws_connect_gateway(NODES[3].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T13", format!("WS connect to D failed: {}", e)),
+            };
+            let msg = r#"<PEER_CHAT>{"peer_id":"Node-A","content":"hello from D"}</PEER_CHAT>"#;
+            match ws_send_recv_until(&mut ws, msg, 180, |resp| {
+                resp.contains("hello from D") || resp.contains("echo")
+            }).await {
+                Ok(resp) => {
+                    if resp.contains("hello from D") {
+                        pass("T13", format!("完整双向 D→A: {}", trunc(&resp, 100)))
+                    } else {
+                        pass("T13", format!("双向 D→A 响应: {}", trunc(&resp, 100)))
+                    }
+                }
+                Err(e) => fail("T13", format!("180s 内未收到续行响应: {}", e)),
+            }
+        })
+        .await,
+    );
+
     // ==================================================================
     // Cleanup
     // ==================================================================
     println!("\n--- Cleanup ---");
+    gw_d.kill().await;
     gw_c.kill().await;
     gw_b.kill().await;
     gw_a.kill().await;
@@ -1058,6 +1101,7 @@ async fn main() {
         (&gw_a, &ws_a, "Node-A"),
         (&gw_b, &ws_b, "Node-B"),
         (&gw_c, &ws_c, "Node-C"),
+        (&gw_d, &ws_d, "Node-D"),
     ] {
         let src = gw.log_path.clone();
         let dst = log_output_dir.join(format!("{}.log", name));

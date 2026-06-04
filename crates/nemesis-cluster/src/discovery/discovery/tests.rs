@@ -325,7 +325,7 @@ fn test_set_broadcast_interval() {
 
 #[test]
 fn test_send_announce_direct() {
-    let registry = PeerRegistry::new(HealthConfig::default());
+    let _registry = PeerRegistry::new(HealthConfig::default());
     let listener = super::super::listener::UdpListener::new(0, None).unwrap();
     let cluster = NullCallbacks::new("test-node");
 

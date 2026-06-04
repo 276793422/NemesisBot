@@ -527,6 +527,7 @@ async fn test_async_processing_no_source_node() {
     let (tx, rx) = tokio::sync::oneshot::channel::<PeerChatResult>();
 
     struct MockPersister {
+        #[allow(dead_code)]
         tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PeerChatResult>>>,
     }
     impl TaskResultPersister for MockPersister {
@@ -959,6 +960,7 @@ async fn test_send_callback_or_persist_no_source() {
     let (tx, _rx) = tokio::sync::oneshot::channel::<PeerChatResult>();
 
     struct MockPersister {
+        #[allow(dead_code)]
         tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<PeerChatResult>>>,
     }
     impl TaskResultPersister for MockPersister {

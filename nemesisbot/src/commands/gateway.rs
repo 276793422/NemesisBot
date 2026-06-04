@@ -580,87 +580,6 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 // Cluster adapter types
 // ---------------------------------------------------------------------------
 
-/// Direct LLM channel for PeerChatHandler.
-///
-/// Calls the local LLM provider directly (via HTTP), bypassing the
-/// AgentLoop/Bus pipeline. This is the Phase 1 approach: B-side gets
-/// real LLM processing without requiring a full Bus→AgentLoop integration.
-struct DirectLlmChannel {
-    base_url: String,
-    api_key: String,
-    model: String,
-}
-
-impl DirectLlmChannel {
-    fn new(base_url: String, api_key: String, model: String) -> Self {
-        Self { base_url, api_key, model }
-    }
-}
-
-impl nemesis_cluster::rpc::peer_chat_handler::LlmChannel for DirectLlmChannel {
-    fn submit(
-        &self,
-        _session_key: &str,
-        content: &str,
-        _correlation_id: &str,
-    ) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let base_url = self.base_url.clone();
-        let api_key = self.api_key.clone();
-        let model = self.model.clone();
-        let content = content.to_string();
-
-        tokio::spawn(async move {
-            // Call the LLM HTTP API directly
-            let client = reqwest::Client::new();
-            let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-            let body = serde_json::json!({
-                "model": model,
-                "messages": [{"role": "user", "content": content}],
-                "temperature": 0.7,
-            });
-
-            let response = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .timeout(std::time::Duration::from_secs(120))
-                .send()
-                .await;
-
-            let result = match response {
-                Ok(resp) => {
-                    match resp.json::<serde_json::Value>().await {
-                        Ok(json) => {
-                            json.get("choices")
-                                .and_then(|c| c.get(0))
-                                .and_then(|c| c.get("message"))
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_str())
-                                .unwrap_or("")
-                                .to_string()
-                        }
-                        Err(e) => {
-                            tracing::error!("[Gateway] DirectLlmChannel: failed to parse response: {}", e);
-                            format!("[LLM error: {}]", e)
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("[Gateway] DirectLlmChannel: HTTP request failed: {}", e);
-                    format!("[LLM error: {}]", e)
-                }
-            };
-
-            let _ = tx.send(result);
-        });
-
-        Ok(rx)
-    }
-}
-
 /// Adapter: Cluster result store → TaskResultPersister trait.
 ///
 // Bridges the cluster's TaskResultStore to PeerChatHandler's
@@ -789,7 +708,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
         workspace: home.join("workspace").to_string_lossy().to_string(),
-        connect_mode: resolution.connect_mode,
+        connect_mode: resolution.connect_mode.clone(),
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
@@ -1087,6 +1006,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         >,
     > = None;
     let mut cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig> = None;
+    let mut cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>> = None;
+    // Cluster agent references — set inside the if block, used later for agent loop startup.
+    let mut cluster_task_list_ref: Option<Arc<nemesis_cluster::ClusterTaskList>> = None;
+    let mut cluster_work_queue_ref: Option<Arc<nemesis_cluster::ClusterWorkQueue>> = None;
+    let mut cluster_arc_ref: Option<Arc<dyn std::any::Any + Send + Sync>> = None;
+    let mut cluster_rpc_client_ref: Option<Arc<nemesis_cluster::rpc::client::RpcClient>> = None;
     if cluster_app_cfg.enabled {
         let cluster_cfg_path = common::cluster_config_path(&home);
         let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
@@ -1208,38 +1133,31 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] RPC server started on port {}", cluster_app_cfg.rpc_port);
 
         // Now register custom peer_chat handler using PeerChatHandler.
-        // Phase 1: B-side uses DirectLlmChannel to call LLM directly.
-        // Phase 2: ACK → async LLM → callback → continuation.
         // NOTE: We create the handler here but register it AFTER Arc::new(cluster)
         // so the closure can capture the Arc and register the remote node in the registry.
         let result_store = cluster.result_store().clone();
         let node_id_for_handler = node_id.clone();
         let _node_name_for_handler = node_name.clone();
 
-        // Create DirectLlmChannel: calls the local TestAIServer LLM directly.
-        // This replaces the echo-closure with real LLM processing on the B-side.
-        let llm_channel = Arc::new(DirectLlmChannel::new(
-            resolution.api_base.clone(),
-            resolution.api_key.clone(),
-            model_name.clone(),
-        ));
-
         let mut handler = nemesis_cluster::rpc::peer_chat_handler::PeerChatHandler::new(
             node_id_for_handler.clone(),
         );
-        // Use user-configured LLM timeout (default 2 hours) for B-side API request.
         let llm_timeout = if cluster_app_cfg.llm_timeout_secs > 0 {
             std::time::Duration::from_secs(cluster_app_cfg.llm_timeout_secs)
         } else {
-            // 0 means no timeout — use a very large value as safety net
             std::time::Duration::from_secs(24 * 3600)
         };
         handler.set_timeout(llm_timeout);
-        handler.set_llm_channel(llm_channel);
+
+        // Create cluster agent work queue and task list.
+        let cluster_data_dir = home.join("workspace").join("data");
+        let cluster_task_list = Arc::new(nemesis_cluster::ClusterTaskList::new(&cluster_data_dir));
+        let cluster_work_queue = Arc::new(nemesis_cluster::ClusterWorkQueue::new(64));
+        handler.set_cluster_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
         // Set RPC client for callbacks (after cluster.start() creates the client).
         let rpc_client = cluster.rpc_client_arc();
-        if let Some(client) = rpc_client {
+        if let Some(client) = rpc_client.clone() {
             handler.set_rpc_client(client);
         }
 
@@ -1265,6 +1183,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
 
         let cluster = Arc::new(cluster);
+
+        // --- Inject cluster task queue into cluster for callback routing ---
+        cluster.set_cluster_task_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
         // --- Register peer_chat handler (needs Arc<Cluster> to register remote nodes) ---
         {
@@ -1320,10 +1241,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
 
         // --- Now that Cluster is Arc-wrapped, wire up the real callback handler ---
-        // This replaces the placeholder with a handler that publishes a
-        // cluster_continuation message on the bus for AgentLoop to resume.
+        // Routes callbacks to the correct destination:
+        // 1. If the callback matches a ClusterAgent child task (nested cluster_rpc),
+        //    inject it back into the ClusterAgent's work queue.
+        // 2. Otherwise, publish to bus as cluster_continuation for the main AgentLoop.
         {
             let bus_for_cb = bus.clone();
+            let task_list_for_cb = cluster_task_list.clone();
+            let work_queue_for_cb = cluster_work_queue.clone();
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
                 let task_id = payload
                     .get("task_id")
@@ -1344,9 +1269,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
                 info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
 
-                // Publish directly to bus as a cluster_continuation message.
-                // AgentLoop's bus loop intercepts this prefix, loads the continuation
-                // snapshot, and resumes the LLM session with the B-side response.
+                // Route 1: Check if this callback belongs to a ClusterAgent child task.
+                // When the ClusterAgent's LLM generates a nested cluster_rpc, the child
+                // task's callback must be routed back to the ClusterAgent work queue,
+                // not to the main AgentLoop's continuation system.
+                if !task_id.is_empty() {
+                    if let Some(parent_task_id) = task_list_for_cb.find_by_child_task_id(task_id) {
+                        info!(
+                            "[Gateway] Callback for child task {} matched ClusterAgent parent task {}, injecting result",
+                            task_id, parent_task_id
+                        );
+                        task_list_for_cb.inject_callback(&parent_task_id, response);
+                        if let Err(e) = work_queue_for_cb.submit(parent_task_id) {
+                            warn!("[Gateway] Failed to submit resumed task to work queue: {}", e);
+                        }
+                        return Ok(serde_json::json!({"status": "received", "task_id": task_id}));
+                    }
+                }
+
+                // Route 2: Main AgentLoop continuation — publish to bus.
                 if !task_id.is_empty() {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("status".to_string(), status.to_string());
@@ -1453,7 +1394,30 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // The rpc_call_fn is stored here for SharedResources consumption.
         info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
 
+        // Build peers_fn: closure that returns online peers with capabilities
+        // from the Cluster registry. Used by ClusterRpcTool's dynamic tool description.
+        {
+            let cluster_for_peers = cluster.clone();
+            cluster_peers_fn = Some(Arc::new(move || {
+                let cluster_arc: Arc<dyn std::any::Any + Send + Sync> = cluster_for_peers.clone();
+                if let Some(c) = cluster_arc.downcast::<nemesis_cluster::cluster::Cluster>().ok() {
+                    c.get_online_peers()
+                        .into_iter()
+                        .map(|p| (p.base.id, p.base.name, p.capabilities))
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }));
+        }
+
         // ContinuationManager injection into agent_loop is now handled by the factory function.
+
+        // Save references for cluster agent loop startup (used after SharedResources is created).
+        cluster_task_list_ref = Some(cluster_task_list.clone());
+        cluster_work_queue_ref = Some(cluster_work_queue.clone());
+        cluster_arc_ref = Some(cluster.clone());
+        cluster_rpc_client_ref = rpc_client.clone();
 
         // Keep cluster alive until gateway shuts down
         std::mem::forget(cluster);
@@ -1812,6 +1776,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         enabled_channels: enabled_channels.clone(),
         cluster_rpc_call_fn,
         cluster_rpc_config,
+        cluster_peers_fn,
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
     };
@@ -1821,6 +1786,72 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
     let initial_tool_count = agent_loop.tool_count();
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
+
+    // --- Inject tool capabilities into cluster for discovery broadcast ---
+    if let Some(ref cluster_arc) = cluster_arc_ref {
+        if let Some(cluster) = cluster_arc.clone().downcast::<nemesis_cluster::cluster::Cluster>().ok() {
+            let tool_names = agent_loop.tool_names();
+            cluster.set_capabilities(tool_names);
+            info!(
+                "[Gateway] Cluster capabilities injected ({} tools)",
+                initial_tool_count
+            );
+        }
+    }
+
+    // --- Start cluster agent event loop (if cluster is enabled) ---
+    if let (Some(cluster_task_list), Some(cluster_work_queue), Some(cluster_arc)) =
+        (cluster_task_list_ref, cluster_work_queue_ref, cluster_arc_ref)
+    {
+        // --- Crash recovery: restore incomplete tasks from previous run ---
+        //
+        // If the process crashed or was killed while cluster tasks were in progress,
+        // their state was persisted to disk by save_async_state(). On restart we:
+        //   1. restore_from_disk() — load task entries + conversation snapshots into DashMap
+        //   2. recover_task_ids()  — collect Pending tasks AND reset WaitingRemote → Pending
+        //   3. re-submit all recovered tasks into the work queue
+        //
+        // WaitingRemote tasks are reset to Pending because the callback they were waiting
+        // for is lost — the remote node already sent it while we were down. Re-executing
+        // is the safest fallback. See ClusterTaskList::recover_task_ids() for details.
+        if let Err(e) = cluster_task_list.restore_from_disk() {
+            warn!("[Gateway] Failed to restore cluster tasks from disk: {}", e);
+        }
+        let recovered = cluster_task_list.recover_task_ids();
+        for task_id in &recovered {
+            if let Err(e) = cluster_work_queue.submit(task_id.clone()) {
+                warn!(
+                    task_id = %task_id,
+                    "[Gateway] Failed to re-submit recovered task: {}", e
+                );
+            }
+        }
+        if !recovered.is_empty() {
+            info!(
+                count = recovered.len(),
+                "[Gateway] Recovered {} cluster tasks from previous run",
+                recovered.len()
+            );
+        }
+
+        match crate::agent_factory::build_cluster_agent_loop(&shared_resources, cluster_arc.clone()) {
+            Ok((cluster_agent, cluster_config)) => {
+                tokio::spawn(async move {
+                    crate::cluster_agent::cluster_agent_loop(
+                        cluster_agent,
+                        cluster_config,
+                        cluster_work_queue,
+                        cluster_task_list,
+                        cluster_rpc_client_ref,
+                    ).await;
+                });
+                info!("[Gateway] Cluster agent event loop started");
+            }
+            Err(e) => {
+                warn!("[Gateway] Failed to build cluster agent: {}", e);
+            }
+        }
+    }
 
     // Create shared reference for WebServer model switching
     let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =

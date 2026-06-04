@@ -169,6 +169,154 @@ func (m *TestAI30) Delay() time.Duration {
 	return 0
 }
 
+// TestAI31 - Multi-hop cluster communication model.
+//
+// Enhanced version of testai-3.0 with proper multi-hop chain support.
+// Uses a "route" array format instead of nested PEER_CHAT tags,
+// which avoids JSON escaping issues across multiple parsing layers.
+//
+// Supported formats:
+//   1. Simple (backward compat with testai-3.0):
+//      <PEER_CHAT>{"peer_id":"Node-B","content":"hello"}</PEER_CHAT>
+//      → generates cluster_rpc tool call to Node-B with content "hello"
+//
+//   2. Chain route (new):
+//      <PEER_CHAT>{"route":["Node-B","Node-C","Node-D"],"content":"hello from A"}</PEER_CHAT>
+//      → generates cluster_rpc to Node-B with content:
+//        <PEER_CHAT>{"route":["Node-C","Node-D"],"content":"hello from A"}</PEER_CHAT>
+//      → Node-B forwards to Node-C, Node-C forwards to Node-D
+//      → Node-D (no more route) echoes content back
+//
+//   3. Terminal node (no PEER_CHAT tag):
+//      → echoes message back
+//
+//   4. Tool result (second round after cluster_rpc returns):
+//      → returns the tool result as text
+type TestAI31 struct{}
+
+func NewTestAI31() *TestAI31 {
+	return &TestAI31{}
+}
+
+func (m *TestAI31) Name() string {
+	return "testai-3.1"
+}
+
+func (m *TestAI31) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+
+	lastMsg := messages[len(messages)-1]
+
+	// Second round: tool result received — return as-is
+	if lastMsg.Role == "tool" {
+		return lastMsg.Content
+	}
+
+	content := lastMsg.Content
+
+	// Check for PEER_CHAT tag
+	if strings.Contains(content, "<PEER_CHAT>") && strings.Contains(content, "</PEER_CHAT>") {
+		start := strings.Index(content, "<PEER_CHAT>") + len("<PEER_CHAT>")
+		end := strings.Index(content, "</PEER_CHAT>")
+
+		if end > start {
+			jsonStr := strings.TrimSpace(content[start:end])
+
+			// Try route format first (multi-hop)
+			var routeReq struct {
+				Route   []string `json:"route"`
+				Content string   `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &routeReq); err == nil && len(routeReq.Route) > 0 {
+				target := routeReq.Route[0]
+				remaining := routeReq.Route[1:]
+				innerContent := routeReq.Content
+
+				// If more hops remain, wrap in PEER_CHAT route format
+				if len(remaining) > 0 {
+					innerRouteJSON, _ := json.Marshal(remaining)
+					innerContent = fmt.Sprintf(`<PEER_CHAT>{"route":%s,"content":"%s"}</PEER_CHAT>`, string(innerRouteJSON), escapeJSONString(innerContent))
+				}
+
+				return buildClusterRpcToolCall(target, innerContent)
+			}
+
+			// Try simple peer_id format (backward compat with testai-3.0)
+			var req struct {
+				PeerID  string `json:"peer_id"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(jsonStr), &req); err == nil && req.PeerID != "" {
+				return buildClusterRpcToolCall(req.PeerID, req.Content)
+			}
+		}
+	}
+
+	// No PEER_CHAT: echo the message (terminal node behavior)
+	return content
+}
+
+func (m *TestAI31) Delay() time.Duration {
+	return 0
+}
+
+// buildClusterRpcToolCall constructs a cluster_rpc tool call response.
+func buildClusterRpcToolCall(peerID, content string) string {
+	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
+
+	args := map[string]interface{}{
+		"peer_id": peerID,
+		"action":  "peer_chat",
+		"data": map[string]interface{}{
+			"type":    "chat",
+			"content": content,
+		},
+	}
+
+	argsJSON, _ := json.Marshal(args)
+
+	response := ProcessedResponse{
+		Content: "",
+		ToolCalls: []ToolCall{
+			{
+				ID:   toolCallID,
+				Type: "function",
+				Function: &FunctionCall{
+					Name:      "cluster_rpc",
+					Arguments: string(argsJSON),
+				},
+			},
+		},
+	}
+
+	responseJSON, _ := json.Marshal(response)
+	return string(responseJSON)
+}
+
+// escapeJSONString escapes a string for safe embedding inside a JSON string value.
+func escapeJSONString(s string) string {
+	var buf strings.Builder
+	for _, r := range s {
+		switch r {
+		case '"':
+			buf.WriteString(`\"`)
+		case '\\':
+			buf.WriteString(`\\`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	return buf.String()
+}
+
 // TestAI42 - 调用客户端 sleep 工具，休眠 30 秒
 // 功能：
 // 1. 第一轮：返回 sleep 工具调用（30 秒）

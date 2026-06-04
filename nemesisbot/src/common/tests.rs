@@ -634,7 +634,7 @@ fn test_ensure_exe_in_path() {
         .to_path_buf();
     let canonical = std::fs::canonicalize(&exe_dir).unwrap();
     let original = std::env::var("PATH").unwrap_or_default();
-    let separator = if cfg!(windows) { ';' } else { ':' };
+    let _separator = if cfg!(windows) { ';' } else { ':' };
 
     // Case 1: PATH does not contain exe dir → should add
     // SAFETY: test-only, single-threaded, restored at end

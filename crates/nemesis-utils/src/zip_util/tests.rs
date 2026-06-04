@@ -335,7 +335,7 @@ fn test_extract_zip_empty_archive() {
     // Create an empty zip file
     let file = File::create(&zip_path).unwrap();
     let writer = std::io::BufWriter::new(file);
-    let mut zip_writer = zip::ZipWriter::new(writer);
+    let zip_writer = zip::ZipWriter::new(writer);
     zip_writer.finish().unwrap();
 
     let result = extract_zip(

@@ -2,7 +2,6 @@ use super::*;
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
-use crate::websocket_handler::IncomingMessage;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 use tokio::sync::mpsc;

@@ -59,12 +59,13 @@ func main() {
 	registry.Register(models.NewTestAI13())
 	registry.Register(models.NewTestAI20())
 	registry.Register(models.NewTestAI30())
+	registry.Register(models.NewTestAI31())
 	registry.Register(models.NewTestAI42())
 	registry.Register(models.NewTestAI43())
 	registry.Register(models.NewTestAI50())
 	registry.Register(models.NewTestAI60())
 	registry.Register(models.NewTestAI70())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-3.0, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0")
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-2.0, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0")
 
 	// 创建 Gin 路由
 	router := gin.New()

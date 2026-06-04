@@ -1283,6 +1283,7 @@ use super::*;
             resp["data"].clone()
         }
 
+        #[allow(dead_code)]
         async fn dispatch_err(&mut self, module: &str, cmd: &str, data: Option<serde_json::Value>) -> String {
             let resp = self.dispatch(module, cmd, "req-1", data).await;
             resp["error"].as_str().unwrap_or("null").to_string()

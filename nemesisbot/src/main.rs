@@ -7,6 +7,7 @@ mod common;
 mod embedded;
 mod adapters;
 mod agent_factory;
+mod cluster_agent;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;
@@ -29,6 +30,8 @@ const CONFIG_SECURITY_OTHER: &str = include_str!("../config/config.security.othe
 const DEFAULT_IDENTITY: &str = include_str!("../default/IDENTITY.md");
 const DEFAULT_SOUL: &str = include_str!("../default/SOUL.md");
 const DEFAULT_USER: &str = include_str!("../default/USER.md");
+const DEFAULT_IDENTITY_CLUSTER: &str = include_str!("../default/IDENTITY_Cluster.md");
+const CLUSTER_IDENTITY_TEMPLATE: &str = include_str!("../config/IDENTITY.cluster.template.md");
 
 #[derive(Parser)]
 #[command(name = "nemesisbot", version, about = "NemesisBot - Personal AI Agent System")]
@@ -435,7 +438,11 @@ async fn main() -> Result<()> {
             let _ = std::fs::write(workspace_dir.join("IDENTITY.md"), DEFAULT_IDENTITY);
             let _ = std::fs::write(workspace_dir.join("SOUL.md"), DEFAULT_SOUL);
             let _ = std::fs::write(workspace_dir.join("USER.md"), DEFAULT_USER);
-            println!("  Default personality files installed (IDENTITY.md, SOUL.md, USER.md)");
+            // Cluster identity — extracted to workspace/cluster/IDENTITY.md.
+            let cluster_dir = workspace_dir.join("cluster");
+            let _ = std::fs::create_dir_all(&cluster_dir);
+            let _ = std::fs::write(cluster_dir.join("IDENTITY.md"), DEFAULT_IDENTITY_CLUSTER);
+            println!("  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)");
 
             // --- Step 10: Create additional directories ---
             let _ = std::fs::create_dir_all(workspace_dir.join("logs"));

@@ -476,7 +476,7 @@ async fn test_execute_share_with_bridge() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let dir = tempfile::tempdir().unwrap();
-    let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
 
     // Create a mock bridge that returns 3 peers
     struct MockShareBridge {

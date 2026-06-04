@@ -694,7 +694,7 @@ fn test_enabled_components_disable() {
 #[test]
 fn test_enabled_components_is_enabled_unknown() {
     // is_enabled for a component that was never inserted should return false
-    let ec = EnabledComponents::new();
+    let _ec = EnabledComponents::new();
     // All components are inserted in new(), so test with a fresh one
     // but after disable_all
     let mut ec = EnabledComponents::new();

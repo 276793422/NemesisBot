@@ -1675,8 +1675,8 @@ fn test_check_suggestion_adoption_removes_files() {
     std::fs::create_dir_all(&prompts_dir).unwrap();
 
     // Create suggestion files
-    std::fs::write(prompts_dir.join("test_suggestion.md"), "suggestion");
-    std::fs::write(prompts_dir.join("other_file.md"), "other");
+    let _ = std::fs::write(prompts_dir.join("test_suggestion.md"), "suggestion");
+    let _ = std::fs::write(prompts_dir.join("other_file.md"), "other");
 
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
