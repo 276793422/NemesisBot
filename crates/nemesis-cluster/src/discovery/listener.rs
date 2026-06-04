@@ -366,6 +366,7 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
         status: NodeStatus::Online,
         capabilities: msg.capabilities.clone(),
         addresses: msg.addresses.clone(),
+        node_type: msg.node_type.clone(),
     }
 }
 

@@ -1,6 +1,12 @@
 //! Cluster command - manage bot cluster configuration and status.
 
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
+use chrono::Local;
+use tracing::{info, warn};
 
 use crate::common;
 
@@ -91,6 +97,21 @@ pub enum ClusterAction {
     Identity {
         #[command(subcommand)]
         action: IdentityAction,
+    },
+    /// Start a lightweight cluster node (discovery + RPC, no LLM)
+    Node {
+        /// UDP discovery port (overrides config)
+        #[arg(short, long)]
+        udp_port: Option<u16>,
+        /// RPC port (overrides config)
+        #[arg(short, long)]
+        rpc_port: Option<u16>,
+        /// Node name (overrides config)
+        #[arg(short = 'n', long)]
+        name: Option<String>,
+        /// Broadcast interval in seconds
+        #[arg(short, long, default_value = "10")]
+        broadcast_interval: u64,
     },
 }
 
@@ -189,7 +210,7 @@ pub enum IdentityAction {
     Reset,
 }
 
-pub fn run(action: ClusterAction, local: bool) -> Result<()> {
+pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
 
     match action {
@@ -715,8 +736,206 @@ pub fn run(action: ClusterAction, local: bool) -> Result<()> {
                 }
             }
         }
+        ClusterAction::Node { udp_port, rpc_port, name, broadcast_interval } => {
+            run_node(&home, udp_port, rpc_port, name, broadcast_interval).await?;
+        }
     }
     Ok(())
+}
+
+/// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.
+async fn run_node(
+    home: &Path,
+    udp_port_override: Option<u16>,
+    rpc_port_override: Option<u16>,
+    name_override: Option<String>,
+    broadcast_interval: u64,
+) -> Result<()> {
+    // Load cluster config
+    let cluster_cfg_path = common::cluster_config_path(home);
+    let cluster_json = if cluster_cfg_path.exists() {
+        std::fs::read_to_string(&cluster_cfg_path)
+            .ok()
+            .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+            .unwrap_or(serde_json::json!({}))
+    } else {
+        anyhow::bail!(
+            "Cluster not initialized. Run 'nemesisbot cluster init' first.\n  Missing: {}",
+            cluster_cfg_path.display()
+        );
+    };
+
+    let node_id = cluster_json
+        .get("node_id")
+        .or_else(|| cluster_json.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let node_name = name_override.unwrap_or_else(|| {
+        cluster_json
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unnamed")
+            .to_string()
+    });
+    let udp_port = udp_port_override.unwrap_or_else(|| {
+        cluster_json.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16
+    });
+    let rpc_port = rpc_port_override.unwrap_or_else(|| {
+        cluster_json.get("rpc_port").and_then(|v| v.as_u64()).unwrap_or(21949) as u16
+    });
+
+    // Init logger
+    let cfg_path = common::config_path(home);
+    let _ = common::init_logger_from_config(&cfg_path, &[]);
+
+    println!("Cluster Node (lightweight)");
+    println!("==========================");
+    println!("  Node ID:    {}", node_id);
+    println!("  Name:       {}", node_name);
+    println!("  UDP Port:   {}", udp_port);
+    println!("  RPC Port:   {}", rpc_port);
+    println!("  Broadcast:  every {}s", broadcast_interval);
+    println!();
+
+    // Create Cluster instance
+    let cluster_config = nemesis_cluster::types::ClusterConfig {
+        node_id: node_id.clone(),
+        bind_address: format!("0.0.0.0:{}", rpc_port),
+        peers: vec![],
+    };
+    let mut cluster = nemesis_cluster::cluster::Cluster::with_workspace(
+        cluster_config,
+        home.join("workspace"),
+    );
+    cluster.set_ports(udp_port, rpc_port);
+    cluster.set_node_name(&node_name);
+    cluster.set_node_type("node");
+
+    // Load static peers from peers.toml
+    let peers_path = common::cluster_dir(home).join("peers.toml");
+    if peers_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&peers_path) {
+            if let Ok(doc) = content.parse::<toml::Value>() {
+                if let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
+                    for (key, val) in peers_table {
+                        let peer_id = key.replace('_', "-");
+                        let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
+                        let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
+                        let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
+                        let cat = val.get("category").and_then(|v| v.as_str()).unwrap_or("general");
+                        if addr.is_empty() { continue; }
+                        let (host, up) = parse_host_port(addr);
+                        let rp = if up > 0 { up + 10000 } else { 0 };
+                        let addresses = if host.is_empty() { vec![] } else { vec![host] };
+                        info!("[Node] Loading static peer: {} ({}) addr={} rpc_port={}", name, peer_id, addr, rp);
+                        cluster.handle_discovered_node(&peer_id, name, addresses, rp, role, cat, vec![], vec![], "unknown");
+                    }
+                }
+            }
+        }
+    }
+
+    // Create and set RPC server (before start)
+    let rpc_server_config = nemesis_cluster::rpc::server::RpcServerConfig {
+        bind_address: format!("0.0.0.0:{}", rpc_port),
+        ..Default::default()
+    };
+    cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(rpc_server_config)));
+
+    // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
+    cluster.start();
+    info!("[Node] Cluster started (node_id={}, name={}, udp={}, rpc={})", node_id, node_name, udp_port, rpc_port);
+
+    // Register basic RPC handlers (ping, get_info, get_capabilities)
+    if let Err(e) = cluster.register_basic_handlers() {
+        warn!("[Node] Failed to register basic RPC handlers: {}", e);
+    }
+
+    // Start RPC server
+    let rpc_server_ref = cluster.rpc_server()
+        .expect("rpc_server just set")
+        .clone();
+    if let Err(e) = rpc_server_ref.start().await {
+        anyhow::bail!("RPC server error on port {}: {}", rpc_port, e);
+    }
+    info!("[Node] RPC server started on port {}", rpc_port);
+    println!("  RPC server started on 0.0.0.0:{}", rpc_port);
+
+    // Start UDP Discovery
+    let discovery_config = nemesis_cluster::discovery::DiscoveryConfig::with_encryption(
+        udp_port,
+        Duration::from_secs(broadcast_interval),
+        "",
+    );
+    let cluster_arc: Arc<nemesis_cluster::cluster::Cluster> = Arc::new(cluster);
+    match nemesis_cluster::discovery::DiscoveryService::new(
+        cluster_arc.clone(),
+        discovery_config,
+    ) {
+        Ok(discovery) => {
+            match discovery.start() {
+                Ok(_) => {
+                    info!("[Node] UDP discovery started on port {}", udp_port);
+                    println!("  UDP discovery started on port {}", udp_port);
+                }
+                Err(e) => warn!("[Node] Failed to start UDP discovery: {}", e),
+            }
+            std::mem::forget(discovery);
+        }
+        Err(e) => warn!("[Node] Failed to create discovery service: {}", e),
+    }
+
+    println!();
+    println!("  Waiting for peers... (Ctrl+C to stop)");
+    println!();
+
+    // Real-time peer display loop
+    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    let mut last_count: usize = 0;
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let peers = cluster_arc.get_online_peers();
+                let count = peers.len();
+                if count != last_count {
+                    let now = Local::now().format("%H:%M:%S");
+                    if count > last_count {
+                        println!("[{}] Peers changed: {} -> {} online", now, last_count, count);
+                    } else {
+                        println!("[{}] Peers changed: {} -> {} online", now, last_count, count);
+                    }
+                    for p in &peers {
+                        let ntype = if p.node_type.is_empty() { "unknown" } else { &p.node_type };
+                        let caps = if p.capabilities.is_empty() {
+                            "none".to_string()
+                        } else {
+                            p.capabilities.join(", ")
+                        };
+                        println!("  - {} ({}) addr={} type={} caps=[{}]",
+                            p.base.name, p.base.id, p.base.address, ntype, caps);
+                    }
+                    println!();
+                    last_count = count;
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n  Stopping cluster node...");
+                info!("[Node] Shutdown signal received");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_host_port(addr: &str) -> (String, u16) {
+    let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+    if parts.len() == 2 {
+        (parts[1].to_string(), parts[0].parse().unwrap_or(0))
+    } else {
+        (addr.to_string(), 0)
+    }
 }
 
 fn update_cluster_config(home: &std::path::Path, key: &str, value: impl Into<serde_json::Value>) -> Result<()> {

@@ -89,6 +89,9 @@ pub struct DiscoveryMessage {
     /// List of capabilities (e.g. "llm", "tools").
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Node type: "agent" (full with LLM) or "node" (lightweight, no LLM).
+    #[serde(default)]
+    pub node_type: String,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -108,6 +111,7 @@ impl DiscoveryMessage {
         category: impl Into<String>,
         tags: Vec<String>,
         capabilities: Vec<String>,
+        node_type: impl Into<String>,
     ) -> Self {
         Self {
             version: PROTOCOL_VERSION.to_string(),
@@ -120,6 +124,7 @@ impl DiscoveryMessage {
             category: category.into(),
             tags,
             capabilities,
+            node_type: node_type.into(),
             timestamp: now_unix(),
         }
     }
@@ -137,6 +142,7 @@ impl DiscoveryMessage {
             category: String::new(),
             tags: Vec::new(),
             capabilities: Vec::new(),
+            node_type: String::new(),
             timestamp: now_unix(),
         }
     }

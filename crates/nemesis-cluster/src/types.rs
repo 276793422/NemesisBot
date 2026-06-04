@@ -49,6 +49,9 @@ pub struct ExtendedNodeInfo {
     /// The primary address is stored in `base.address`.
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// Node type: "agent" (full with LLM) or "node" (lightweight, no LLM).
+    #[serde(default)]
+    pub node_type: String,
 }
 
 impl ExtendedNodeInfo {

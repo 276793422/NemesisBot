@@ -12,6 +12,7 @@ fn make_announce(node_id: &str, addresses: &[&str], rpc_port: u16) -> DiscoveryM
         "development",
         vec![],
         vec!["llm".into()],
+        "agent",
     )
 }
 
@@ -65,7 +66,7 @@ fn test_message_to_node_info_uses_first_address() {
 #[test]
 fn test_message_to_node_info_manager_role() {
     let msg = DiscoveryMessage::new_announce(
-        "mgr-1", "ManagerNode", vec!["10.0.0.1".into()], 9000, "manager", "production", vec![], vec![],
+        "mgr-1", "ManagerNode", vec!["10.0.0.1".into()], 9000, "manager", "production", vec![], vec![], "agent",
     );
     let info = message_to_node_info(&msg);
     assert_eq!(info.base.role, NodeRole::Master);
@@ -148,7 +149,7 @@ fn test_udp_listener_send_receive_roundtrip() {
     let msg = DiscoveryMessage::new_announce(
         "test-sender", "SenderNode",
         vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![],
+        "worker", "dev", vec![], vec![], "agent",
     );
     let data = msg.to_bytes().unwrap();
     sender.send_to(&data, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -184,7 +185,7 @@ fn test_udp_listener_encrypted_roundtrip() {
     listener.broadcast(&DiscoveryMessage::new_announce(
         "encrypted-node", "EncNode",
         vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![],
+        "worker", "dev", vec![], vec![], "agent",
     )).unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
@@ -242,7 +243,7 @@ fn test_udp_listener_ignores_wrong_encryption_key() {
     let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
     let msg = DiscoveryMessage::new_announce(
         "attacker", "BadNode", vec!["10.0.0.1".into()], 9000,
-        "worker", "dev", vec![], vec![],
+        "worker", "dev", vec![], vec![], "agent",
     );
     let plaintext = msg.to_bytes().unwrap();
     let encrypted = crate::discovery::crypto::encrypt_data(&key2, &plaintext).unwrap();
@@ -339,6 +340,7 @@ fn test_message_to_node_info_from_message() {
         category: "development".into(),
         tags: vec!["test".into()],
         capabilities: vec!["cluster".into()],
+        node_type: "agent".into(),
         timestamp: 1700000000,
     };
     let info = message_to_node_info(&msg);
@@ -362,6 +364,7 @@ fn test_handle_discovery_message_own_node_ignored() {
         category: "general".into(),
         tags: vec![],
         capabilities: vec![],
+        node_type: "agent".into(),
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -384,6 +387,7 @@ fn test_handle_discovery_message_remote_announce() {
         category: "general".into(),
         tags: vec![],
         capabilities: vec![],
+        node_type: "agent".into(),
         timestamp: 1700000000,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
@@ -407,6 +411,7 @@ fn test_handle_discovery_message_bye() {
         category: "general".into(),
         tags: vec![],
         capabilities: vec![],
+        node_type: "agent".into(),
         timestamp: 1700000000,
     };
     handle_discovery_message(&announce, "local-node", &registry);
@@ -423,6 +428,7 @@ fn test_handle_discovery_message_bye() {
         category: "general".into(),
         tags: vec![],
         capabilities: vec![],
+        node_type: "agent".into(),
         timestamp: 1700000001,
     };
     let action = handle_discovery_message(&bye, "local-node", &registry);

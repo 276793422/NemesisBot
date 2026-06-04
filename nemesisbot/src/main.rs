@@ -167,11 +167,6 @@ enum Commands {
     },
     /// Graceful shutdown
     Shutdown,
-    /// Run as a background daemon
-    Daemon {
-        #[command(subcommand)]
-        action: commands::daemon::DaemonAction,
-    },
     /// Migrate from OpenClaw
     Migrate {
         #[command(flatten)]
@@ -222,7 +217,7 @@ async fn main() -> Result<()> {
     }
 
     // Lazy logging initialization:
-    // Commands like gateway/agent/daemon call init_logger_from_config() internally
+    // Commands like gateway/agent call init_logger_from_config() internally
     // which reads config.json and configures tracing properly. We must NOT init
     // a global subscriber here because tracing only allows ONE global init — if we
     // called try_init() here, the config-based init in those commands would silently
@@ -497,7 +492,7 @@ async fn main() -> Result<()> {
         }
         Commands::Cluster { action } => {
             common::ensure_default_logger();
-            commands::cluster::run(action, cli.local)?;
+            commands::cluster::run(action, cli.local).await?;
         }
         Commands::Cors { action } => {
             common::ensure_default_logger();
@@ -554,9 +549,6 @@ async fn main() -> Result<()> {
         Commands::Shutdown => {
             common::ensure_default_logger();
             commands::shutdown::run(cli.local)?;
-        }
-        Commands::Daemon { action } => {
-            commands::daemon::run(action, cli.local).await?;
         }
         Commands::Migrate { options } => {
             common::ensure_default_logger();

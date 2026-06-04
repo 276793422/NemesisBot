@@ -47,6 +47,8 @@ pub trait ClusterCallbacks: Send + Sync {
     fn tags(&self) -> Vec<String>;
     /// Get the dynamic capabilities (tool names from the AgentLoop).
     fn capabilities(&self) -> Vec<String>;
+    /// Get the node type: "agent" (with LLM) or "node" (lightweight).
+    fn node_type(&self) -> &str { "agent" }
     /// Handle a newly discovered or updated node.
     fn handle_discovered_node(
         &self,
@@ -58,6 +60,7 @@ pub trait ClusterCallbacks: Send + Sync {
         category: &str,
         tags: &[String],
         capabilities: &[String],
+        node_type: &str,
     );
     /// Handle a node going offline.
     fn handle_node_offline(&self, node_id: &str, reason: &str);
@@ -102,7 +105,8 @@ impl ClusterCallbacks for NullCallbacks {
     fn category(&self) -> &str { &self.category }
     fn tags(&self) -> Vec<String> { Vec::new() }
     fn capabilities(&self) -> Vec<String> { Vec::new() }
-    fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String]) {}
+    fn node_type(&self) -> &str { "node" }
+    fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String], _node_type: &str) {}
     fn handle_node_offline(&self, _node_id: &str, _reason: &str) {}
     fn sync_to_disk(&self) -> Result<(), String> { Ok(()) }
 }
@@ -188,6 +192,7 @@ impl ClusterCallbacks for RegistryCallbacks {
         category: &str,
         _tags: &[String],
         capabilities: &[String],
+        node_type: &str,
     ) {
         // Preserve all discovered addresses (not just the first) for
         // multi-address failover, matching Go's behavior.
@@ -209,6 +214,7 @@ impl ClusterCallbacks for RegistryCallbacks {
             status: crate::types::NodeStatus::Online,
             capabilities: capabilities.to_vec(),
             addresses: addresses.to_vec(),
+            node_type: node_type.to_string(),
         };
         self.registry.upsert(info);
     }
@@ -418,6 +424,7 @@ impl DiscoveryService {
                         &msg.category,
                         &msg.tags,
                         &msg.capabilities,
+                        &msg.node_type,
                     );
                     tracing::info!(node_id = %msg.node_id, "[Discovery] Node discovered/updated");
                     if let Err(e) = cluster.sync_to_disk() {
@@ -542,6 +549,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
         cluster.category(),
         cluster.tags(),
         cluster.capabilities(),
+        cluster.node_type(),
     );
 
     if let Err(e) = listener.broadcast(&msg) {
@@ -572,6 +580,7 @@ fn send_announce_with(
         cluster.category(),
         cluster.tags(),
         cluster.capabilities(),
+        cluster.node_type(),
     );
 
     let data = match msg.to_bytes() {

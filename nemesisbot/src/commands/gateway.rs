@@ -1054,6 +1054,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
         cluster.set_node_name(&node_name);
+        cluster.set_node_type("agent");
 
         // Load static peers from peers.toml into the registry
         // The peers.toml uses [peers.Key] table format (not [[peers]] array),
@@ -1085,6 +1086,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 cat,
                                 vec![],
                                 vec![],
+                                "unknown",
                             );
                         }
                     }
@@ -1228,6 +1230,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             "general",
                             vec![],
                             vec![],
+                            "unknown",
                         );
                     }
                 }

@@ -217,6 +217,7 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
         category: &str,
         _tags: &[String],
         _capabilities: &[String],
+        _node_type: &str,
     ) {
         let mut g = self.discovered.lock().unwrap();
         g.push((
@@ -734,6 +735,7 @@ fn test_encrypted_discovery() -> Result<String, String> {
         "development",
         vec![],
         vec![],
+        "agent",
     );
     send_encrypted_udp(port, &enc_key, &announce);
 
@@ -1002,6 +1004,7 @@ fn test_full_e2e() -> Result<String, String> {
         "development",
         vec![],
         vec!["code_generation".to_string(), "testing".to_string()],
+        "agent",
     );
     send_encrypted_udp(disc_port, &enc_key, &announce);
 

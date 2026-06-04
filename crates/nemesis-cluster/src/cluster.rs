@@ -62,6 +62,7 @@ pub struct Cluster {
     // -- Identity --
     node_id: String,
     node_name: String,
+    node_type: String,
     address: String,
     role: String,
     category: String,
@@ -124,6 +125,7 @@ impl Cluster {
         Self {
             node_id: node_id.clone(),
             node_name: format!("Bot {}", &node_id[..8.min(node_id.len())]),
+            node_type: "agent".into(),
             address: config.bind_address.clone(),
             role: "worker".into(),
             category: "general".into(),
@@ -183,6 +185,7 @@ impl Cluster {
         Self {
             node_id: node_id.clone(),
             node_name: format!("Bot {}", &node_id[..8.min(node_id.len())]),
+            node_type: "agent".into(),
             address: config.bind_address.clone(),
             role: "worker".into(),
             category: "general".into(),
@@ -218,6 +221,12 @@ impl Cluster {
         *self.running.write() = true;
 
         // Register local node
+        // Ensure the local node always has the "cluster" capability.
+        let mut local_caps = self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !local_caps.iter().any(|c| c.eq_ignore_ascii_case("cluster")) {
+            local_caps.push("cluster".into());
+        }
+
         let local_node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: self.node_id.clone(),
@@ -228,8 +237,9 @@ impl Cluster {
                 last_seen: chrono::Utc::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
-            capabilities: self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+            capabilities: local_caps.clone(),
             addresses: vec![],
+            node_type: self.node_type.clone(),
         };
         self.registry.upsert(local_node);
 
@@ -394,6 +404,7 @@ impl Cluster {
         category: &str,
         _tags: Vec<String>,
         capabilities: Vec<String>,
+        node_type: &str,
     ) {
         let primary_address = if !addresses.is_empty() {
             format!("{}:{}", addresses[0], rpc_port)
@@ -415,6 +426,7 @@ impl Cluster {
             status: NodeStatus::Online,
             capabilities,
             addresses, // Preserve all addresses for multi-address failover
+            node_type: node_type.to_string(),
         };
         self.registry.upsert(node);
 
@@ -926,6 +938,16 @@ impl Cluster {
     /// Called from gateway.rs after loading the name from config.cluster.json.
     pub fn set_node_name(&mut self, name: impl Into<String>) {
         self.node_name = name.into();
+    }
+
+    /// Get the node type ("agent" or "node").
+    pub fn node_type(&self) -> &str {
+        &self.node_type
+    }
+
+    /// Set the node type: "agent" (full with LLM) or "node" (lightweight).
+    pub fn set_node_type(&mut self, node_type: impl Into<String>) {
+        self.node_type = node_type.into();
     }
 
     /// Set the dynamic capabilities for this node (tool names from AgentLoop).
@@ -1816,6 +1838,10 @@ impl ClusterCallbacks for Cluster {
         self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    fn node_type(&self) -> &str {
+        &self.node_type
+    }
+
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -1826,6 +1852,7 @@ impl ClusterCallbacks for Cluster {
         category: &str,
         tags: &[String],
         capabilities: &[String],
+        node_type: &str,
     ) {
         self.handle_discovered_node(
             node_id,
@@ -1836,6 +1863,7 @@ impl ClusterCallbacks for Cluster {
             category,
             tags.to_vec(),
             capabilities.to_vec(),
+            node_type,
         );
     }
 

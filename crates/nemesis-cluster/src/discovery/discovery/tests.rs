@@ -33,6 +33,7 @@ fn test_create_and_sign_announce() {
         "development",
         vec![],
         vec!["llm".into()],
+        "agent",
     );
     assert_eq!(announce.msg_type, DiscoveryMessageType::Announce);
     assert_eq!(announce.version, "1.0");
@@ -145,7 +146,7 @@ fn test_null_callbacks() {
     assert_eq!(cb.role(), "worker");
     assert_eq!(cb.category(), "development");
     // No-ops should not panic
-    cb.handle_discovered_node("n1", "name", &[], 9000, "worker", "dev", &[], &[]);
+    cb.handle_discovered_node("n1", "name", &[], 9000, "worker", "dev", &[], &[], "agent");
     cb.handle_node_offline("n1", "test");
     cb.sync_to_disk().unwrap();
 }
@@ -162,6 +163,7 @@ fn test_registry_callbacks() {
         "remote-1", "RemoteNode",
         &["10.0.0.5".to_string()], 9000,
         "worker", "dev", &[], &["llm".to_string()],
+        "agent",
     );
 
     // The internal registry should have the node (we can't access it directly,
@@ -204,6 +206,7 @@ fn test_two_discovery_nodes_communicate() {
         "node-a", "node-a",
         vec!["127.0.0.1".into()], 9000,
         "worker", "dev", vec![], vec![],
+        "agent",
     );
     service_a.listener.broadcast(&msg).unwrap();
 
@@ -264,6 +267,7 @@ fn test_registry_callbacks_with_state_path() {
         "remote-1", "RemoteNode",
         &["10.0.0.5".to_string()], 9000,
         "worker", "dev", &[], &["llm".to_string()],
+        "agent",
     );
 
     // Sync to disk should succeed
@@ -291,6 +295,7 @@ fn test_registry_callbacks_manager_role() {
         "master-node", "MasterNode",
         &["10.0.0.1".to_string()], 9000,
         "master", "dev", &[], &["cluster".to_string()],
+        "agent",
     );
 }
 

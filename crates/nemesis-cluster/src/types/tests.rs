@@ -19,6 +19,7 @@ fn make_test_node(
         status,
         capabilities: capabilities.into_iter().map(String::from).collect(),
         addresses: vec![],
+        node_type: "agent".into(),
     }
 }
 
@@ -44,6 +45,7 @@ fn test_extended_node_info_serialization() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -74,6 +76,7 @@ fn test_extended_node_info_get_uptime() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     let uptime = node.get_uptime();
     // Should be very small since we just set it
@@ -148,6 +151,7 @@ fn test_to_peer_config() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        node_type: "agent".into(),
     };
     let config = node.to_peer_config();
     assert_eq!(config.id, "node-1");
@@ -190,6 +194,7 @@ fn test_addresses_field_preserved() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -245,6 +250,7 @@ fn test_extended_node_info_getters() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
         addresses: vec!["10.0.0.1".into()],
+        node_type: "agent".into(),
     };
     assert_eq!(node.get_id(), "node-42");
     assert_eq!(node.get_name(), "TestBot");
@@ -266,6 +272,7 @@ fn test_to_peer_config_master_role() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     let config = node.to_peer_config();
     assert_eq!(config.role, "master");

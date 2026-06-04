@@ -15,6 +15,7 @@ fn test_new_announce_populates_all_fields() {
         "development",
         vec!["gpu".into()],
         vec!["llm".into(), "tools".into()],
+        "agent",
     );
 
     assert_eq!(msg.version, PROTOCOL_VERSION);
@@ -62,6 +63,7 @@ fn test_validate_valid_announce() {
         "dev",
         vec![],
         vec![],
+        "agent",
     );
     assert!(msg.validate().is_ok());
 }
@@ -75,7 +77,7 @@ fn test_validate_valid_bye() {
 #[test]
 fn test_validate_wrong_version() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     msg.version = "2.0".into();
     let err = msg.validate().unwrap_err();
@@ -97,7 +99,7 @@ fn test_validate_empty_node_id() {
 #[test]
 fn test_validate_announce_missing_name() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     msg.name = String::new();
     let err = msg.validate().unwrap_err();
@@ -107,7 +109,7 @@ fn test_validate_announce_missing_name() {
 #[test]
 fn test_validate_announce_missing_addresses() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec![], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec![], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     msg.addresses = Vec::new();
     let err = msg.validate().unwrap_err();
@@ -117,7 +119,7 @@ fn test_validate_announce_missing_addresses() {
 #[test]
 fn test_validate_announce_zero_rpc_port() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 0, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 0, "worker", "dev", vec![], vec![], "agent",
     );
     msg.rpc_port = 0;
     let err = msg.validate().unwrap_err();
@@ -138,7 +140,7 @@ fn test_validate_bye_does_not_require_announce_fields() {
 #[test]
 fn test_fresh_message_not_expired() {
     let msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     assert!(!msg.is_expired());
 }
@@ -146,7 +148,7 @@ fn test_fresh_message_not_expired() {
 #[test]
 fn test_old_message_is_expired() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     // Set timestamp to 200 seconds ago — beyond the 120s threshold.
     msg.timestamp = now_unix() - 200;
@@ -156,7 +158,7 @@ fn test_old_message_is_expired() {
 #[test]
 fn test_boundary_message_not_expired() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     // Exactly 120 seconds old — NOT expired (Go uses strict >).
     msg.timestamp = now_unix() - 120;
@@ -166,7 +168,7 @@ fn test_boundary_message_not_expired() {
 #[test]
 fn test_just_past_boundary_is_expired() {
     let mut msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     // 121 seconds old — expired.
     msg.timestamp = now_unix() - 121;
@@ -188,6 +190,7 @@ fn test_json_roundtrip_announce() {
         "testing",
         vec!["tag1".into()],
         vec!["llm".into()],
+        "agent",
     );
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -207,7 +210,7 @@ fn test_json_roundtrip_bye() {
 fn test_json_field_names_match_go() {
     // Ensure the JSON keys match exactly what Go produces.
     let msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -228,7 +231,7 @@ fn test_json_field_names_match_go() {
 #[test]
 fn test_to_bytes_from_bytes() {
     let msg = DiscoveryMessage::new_announce(
-        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "Name", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     let bytes = msg.to_bytes().unwrap();
     let back = DiscoveryMessage::from_bytes(&bytes).unwrap();
@@ -310,7 +313,7 @@ fn test_deserialize_bye_from_go_json() {
 #[test]
 fn test_display_announce() {
     let msg = DiscoveryMessage::new_announce(
-        "n1", "MyNode", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![],
+        "n1", "MyNode", vec!["10.0.0.1".into()], 9000, "worker", "dev", vec![], vec![], "agent",
     );
     let s = msg.to_string();
     assert!(s.contains("type=announce"));

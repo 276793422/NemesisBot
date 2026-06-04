@@ -1148,6 +1148,7 @@ fn make_test_extended_node(id: &str, status: NodeStatus, caps: Vec<&str>, last_s
         status,
         capabilities: caps.into_iter().map(String::from).collect(),
         addresses: vec![],
+        node_type: "agent".into(),
     }
 }
 
@@ -1810,6 +1811,7 @@ fn test_extended_node_info_with_addresses() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec!["10.0.0.1".to_string(), "192.168.1.1".to_string()],
+        node_type: "agent".into(),
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -1844,6 +1846,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     let config = master.to_peer_config();
     assert_eq!(config.role, "master");
@@ -1860,6 +1863,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     let config = worker.to_peer_config();
     assert_eq!(config.role, "worker");

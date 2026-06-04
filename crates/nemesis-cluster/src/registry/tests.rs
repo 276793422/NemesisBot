@@ -15,6 +15,7 @@ fn make_node(id: &str) -> ExtendedNodeInfo {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     }
 }
 
@@ -31,6 +32,7 @@ fn make_node_with_caps(id: &str, caps: Vec<&str>) -> ExtendedNodeInfo {
         status: NodeStatus::Online,
         capabilities: caps.into_iter().map(String::from).collect(),
         addresses: vec![],
+        node_type: "agent".into(),
     }
 }
 
@@ -54,6 +56,7 @@ fn insert_peer_with_timestamp(
         status,
         capabilities: capabilities.into_iter().map(String::from).collect(),
         addresses: vec![],
+        node_type: "agent".into(),
     };
     // Insert directly into the map with a specific timestamp
     let mut peers = registry.peers.lock();

@@ -38,6 +38,7 @@ fn test_register_and_list_nodes() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     };
     cluster.register_node(remote);
 
@@ -112,6 +113,7 @@ fn test_handle_discovered_node() {
         "development",
         vec!["test".into()],
         vec!["llm".into(), "tools".into()],
+        "agent",
     );
 
     let node = cluster.get_node_info("remote-002").unwrap();
@@ -134,6 +136,7 @@ fn test_handle_node_offline() {
         "general",
         vec![],
         vec![],
+        "agent",
     );
 
     let node = cluster.get_node_info("remote-003").unwrap();
@@ -161,6 +164,7 @@ fn test_get_capabilities() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let caps = cluster.get_capabilities();
@@ -400,6 +404,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec!["192.168.1.100".into(), "10.0.0.5".into()],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -442,6 +447,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         status: NodeStatus::Offline,
         capabilities: vec![],
         addresses: vec!["10.0.0.1".into()],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -787,6 +793,7 @@ fn test_handle_discovered_node_no_addresses() {
         "test",
         vec![],
         vec!["llm".into()],
+        "agent",
     );
 
     let node = cluster.get_node_info("no-addr-node").unwrap();
@@ -817,6 +824,7 @@ fn test_remove_node() {
         "test",
         vec![],
         vec![],
+        "agent",
     );
 
     assert!(cluster.get_node_info("to-remove").is_some());
@@ -955,6 +963,7 @@ fn test_find_peers_by_capability() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let llm_peers = cluster.find_peers_by_capability("llm");
@@ -1101,6 +1110,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let result = cluster.sync_to_disk();
@@ -1126,6 +1136,7 @@ fn test_register_node_updates_existing() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     // Re-register same node with updated name
@@ -1141,6 +1152,7 @@ fn test_register_node_updates_existing() {
         status: NodeStatus::Online,
         capabilities: vec!["tools".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let node = cluster.get_node_info("node-1").unwrap();
@@ -1167,6 +1179,7 @@ fn test_get_online_peers_includes_online_nodes() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1181,6 +1194,7 @@ fn test_get_online_peers_includes_online_nodes() {
         status: NodeStatus::Offline,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let online = cluster.get_online_peers();
@@ -1208,6 +1222,7 @@ fn test_get_capabilities_dedup() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1222,6 +1237,7 @@ fn test_get_capabilities_dedup() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "forge".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let caps = cluster.get_capabilities();
@@ -1292,6 +1308,7 @@ fn test_handle_discovered_node_with_multiple_addresses() {
         "dev",
         vec!["tag1".into()],
         vec!["llm".into()],
+        "agent",
     );
 
     let node = cluster.get_node_info("multi-addr-node").unwrap();
@@ -1412,6 +1429,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         status: NodeStatus::Offline,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let peers = cluster.find_peers_by_capability("llm");
@@ -1425,14 +1443,14 @@ fn test_remove_node_then_readd() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    cluster.handle_discovered_node("node-x", "x", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![]);
+    cluster.handle_discovered_node("node-x", "x", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![], "agent");
     assert!(cluster.get_node_info("node-x").is_some());
 
     cluster.remove_node("node-x");
     assert!(cluster.get_node_info("node-x").is_none());
 
     // Re-add
-    cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![]);
+    cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![], "agent");
     let node = cluster.get_node_info("node-x").unwrap();
     assert_eq!(node.base.name, "x-v2");
     cluster.stop();
@@ -1523,6 +1541,7 @@ fn test_get_peer_returns_correct_info() {
         "test",
         vec!["tag1".into()],
         vec!["llm".into(), "forge".into()],
+        "agent",
     );
 
     let peer = cluster.get_peer("peer-xyz").unwrap();
@@ -1929,6 +1948,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -1962,6 +1982,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -2011,6 +2032,7 @@ fn test_cluster_callbacks_handle_discovered_node() {
         "dev",
         &["tag".to_string()],
         &["llm".to_string()],
+        "agent",
     );
 
     let node = cluster.get_node_info("cb-node").unwrap();
@@ -2022,7 +2044,7 @@ fn test_cluster_callbacks_handle_node_offline() {
     let cluster = Cluster::new(make_config());
     cluster.start();
 
-    cluster.handle_discovered_node("off-node", "off", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![]);
+    cluster.handle_discovered_node("off-node", "off", vec!["10.0.0.1".into()], 21949, "worker", "dev", vec![], vec![], "agent");
     ClusterCallbacks::handle_node_offline(&cluster, "off-node", "test");
     let node = cluster.get_node_info("off-node").unwrap();
     assert_eq!(node.status, NodeStatus::Offline);
@@ -2231,6 +2253,7 @@ fn test_get_peer_after_register() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec!["10.0.0.10".into()],
+        node_type: "agent".into(),
     });
 
     let peer = cluster.get_peer("peer-x").unwrap();
@@ -2253,6 +2276,7 @@ fn test_handle_discovered_node_updates_existing() {
         "test",
         vec![],
         vec!["llm".into()],
+        "agent",
     );
     let node = cluster.get_node_info("node-upd").unwrap();
     assert_eq!(node.base.name, "original-name");
@@ -2267,6 +2291,7 @@ fn test_handle_discovered_node_updates_existing() {
         "test",
         vec![],
         vec!["llm".into(), "tools".into()],
+        "agent",
     );
     let node = cluster.get_node_info("node-upd").unwrap();
     assert_eq!(node.base.name, "updated-name");
@@ -2330,6 +2355,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -2360,6 +2386,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         status: NodeStatus::Online,
         capabilities: vec![],
         addresses: vec!["192.168.1.1".into(), "10.0.0.1".into()],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -2402,6 +2429,7 @@ fn test_handle_node_offline_updates_status() {
         "test",
         vec![],
         vec![],
+        "agent",
     );
 
     let node = cluster.get_node_info("offline-test").unwrap();
@@ -2528,6 +2556,7 @@ fn test_cluster_remove_node() {
         "test",
         vec![],
         vec![],
+        "agent",
     );
     assert!(cluster.get_node_info("remove-me").is_some());
     assert!(cluster.remove_node("remove-me"));
@@ -2713,6 +2742,7 @@ fn test_sync_to_disk_with_connecting_status() {
         status: NodeStatus::Connecting,
         capabilities: vec!["llm".into()],
         addresses: vec![],
+        node_type: "agent".into(),
     });
 
     let result = cluster.sync_to_disk();
@@ -3260,6 +3290,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
         addresses: vec!["192.168.1.50".into()],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
@@ -3300,6 +3331,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         status: NodeStatus::Offline,
         capabilities: vec![],
         addresses: vec!["10.0.0.1".into()],
+        node_type: "agent".into(),
     });
 
     let resolver = ClusterPeerResolver {
