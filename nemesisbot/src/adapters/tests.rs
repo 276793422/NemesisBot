@@ -188,6 +188,7 @@ fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
         outbound_tx,
         nemesis_agent::r#loop::ConcurrentMode::Reject,
         8,
+        0,
     );
     Arc::new(al)
 }

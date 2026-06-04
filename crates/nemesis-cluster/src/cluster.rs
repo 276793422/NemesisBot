@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
@@ -96,6 +97,7 @@ pub struct Cluster {
 
     // -- State --
     running: RwLock<bool>,
+    discovery_running: Arc<AtomicBool>,
     stop_tx: broadcast::Sender<()>,
     bus: Mutex<Option<Arc<dyn MessageBus>>>,
 
@@ -146,6 +148,7 @@ impl Cluster {
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
             timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
+            discovery_running: Arc::new(AtomicBool::new(false)),
             stop_tx,
             bus: Mutex::new(None),
             cluster_task_list: Mutex::new(None),
@@ -206,6 +209,7 @@ impl Cluster {
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
             timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
+            discovery_running: Arc::new(AtomicBool::new(false)),
             stop_tx,
             bus: Mutex::new(None),
             cluster_task_list: Mutex::new(None),
@@ -243,6 +247,9 @@ impl Cluster {
         };
         self.registry.upsert(local_node);
 
+        // Load RPC auth token from config.cluster.json and apply to server/client.
+        self.load_rpc_auth_token();
+
         // Initialize RPC client with peer resolver backed by our registry.
         // If a client was already set via set_rpc_client(), this is a no-op.
         if self.rpc_client.lock().is_none() {
@@ -268,9 +275,121 @@ impl Cluster {
         logger::log_lifecycle("start", &self.node_id, &format!("rpc_port={}", self.rpc_port));
     }
 
+    /// Load the RPC auth token from `workspace/config/config.cluster.json`
+    /// and apply it to the RPC server and client.
+    ///
+    /// This is called automatically during `start()` so that token auth
+    /// works without any manual wiring in gateway.rs or cluster node.
+    fn load_rpc_auth_token(&self) {
+        let cfg_path = self.workspace.join("config").join("config.cluster.json");
+        if !cfg_path.exists() {
+            return;
+        }
+
+        let data = match std::fs::read_to_string(&cfg_path) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(path = %cfg_path.display(), error = %e, "[Cluster] Failed to read cluster config for token");
+                return;
+            }
+        };
+
+        let token = match serde_json::from_str::<serde_json::Value>(&data) {
+            Ok(v) => v.get("token").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+            Err(e) => {
+                tracing::warn!(path = %cfg_path.display(), error = %e, "[Cluster] Failed to parse cluster config for token");
+                return;
+            }
+        };
+
+        if token.is_empty() {
+            tracing::info!("[Cluster] No RPC auth token configured — running without auth");
+            return;
+        }
+
+        // Apply to RPC server
+        if let Some(ref server) = self.rpc_server {
+            server.set_auth_token(&token);
+            tracing::info!("[Cluster] RPC server auth token loaded");
+        }
+
+        // Apply to RPC client
+        if let Some(ref client) = *self.rpc_client.lock() {
+            client.set_auth_token(token.clone());
+            tracing::info!("[Cluster] RPC client auth token loaded");
+        }
+    }
+
+    /// Start UDP discovery service.
+    ///
+    /// Call this after wrapping Cluster in `Arc` and passing the `Arc` as `arc_self`.
+    /// Reads the encryption key from the same `token` field in `config.cluster.json`
+    /// used for RPC auth. If no token is configured, discovery runs without encryption.
+    pub fn start_discovery(&self, arc_self: Arc<dyn ClusterCallbacks>) {
+        if self.discovery_running.load(Ordering::SeqCst) {
+            tracing::warn!("[Cluster] Discovery already running, skipping");
+            return;
+        }
+
+        let secret = self.load_discovery_secret();
+
+        let discovery_config = crate::discovery::DiscoveryConfig::with_encryption(
+            self.udp_port,
+            self.broadcast_interval,
+            &secret,
+        );
+
+        match crate::discovery::DiscoveryService::new(arc_self, discovery_config) {
+            Ok(discovery) => {
+                match discovery.start() {
+                    Ok(_) => {
+                        self.discovery_running.store(true, Ordering::SeqCst);
+                        tracing::info!(
+                            port = %self.udp_port,
+                            encrypted = !secret.is_empty(),
+                            "[Cluster] UDP discovery started"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "[Cluster] Failed to start UDP discovery");
+                    }
+                }
+                // Keep discovery alive — background threads hold Arc references to
+                // ClusterCallbacks. The discovery struct itself can be forgotten once
+                // start() spawns the listener and broadcast threads.
+                std::mem::forget(discovery);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "[Cluster] Failed to create discovery service");
+            }
+        }
+    }
+
+    /// Load the discovery encryption secret from `workspace/config/config.cluster.json`.
+    ///
+    /// Uses the same `token` field as RPC auth. Returns empty string if no token
+    /// is configured, meaning discovery runs without encryption.
+    fn load_discovery_secret(&self) -> String {
+        let cfg_path = self.workspace.join("config").join("config.cluster.json");
+        if !cfg_path.exists() {
+            return String::new();
+        }
+
+        match std::fs::read_to_string(&cfg_path) {
+            Ok(data) => {
+                serde_json::from_str::<serde_json::Value>(&data)
+                    .ok()
+                    .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_default()
+            }
+            Err(_) => String::new(),
+        }
+    }
+
     /// Stop the cluster.
     pub fn stop(&self) {
         *self.running.write() = false;
+        self.discovery_running.store(false, Ordering::SeqCst);
         let _ = self.stop_tx.send(());
         logger::log_lifecycle("stop", &self.node_id, "Cluster stopped");
     }
@@ -581,10 +700,10 @@ impl Cluster {
     }
 
     /// Clean up a completed task.
-    pub fn cleanup_task(&self, _task_id: &str) {
-        // The task manager doesn't have delete; the task stays in history
-        // This is a no-op placeholder matching Go's CleanupTask
-    }
+    ///
+    /// **Intentionally no-op.** Go 版本的 `CleanupTask` 也是空操作——任务完成后保留在历史记录中
+    /// 用于审计和状态查询，不做删除。这不是遗漏，是设计决策。
+    pub fn cleanup_task(&self, _task_id: &str) {}
 
     // -- RPC ------------------------------------------------------------------
 

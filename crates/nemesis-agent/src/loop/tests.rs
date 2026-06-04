@@ -734,6 +734,7 @@ fn test_new_bus_creates_registry() {
         tx,
         ConcurrentMode::Reject,
         8,
+        0,
     );
 
     assert!(agent_loop.get_registry().is_some());
@@ -1537,6 +1538,7 @@ fn test_handle_command_show_agents_with_registry() {
         tx,
         ConcurrentMode::Reject,
         8,
+        0,
     );
     let result = agent_loop.handle_command("/show agents");
     assert!(result.is_some());
@@ -1848,7 +1850,7 @@ async fn test_process_inbound_message_system_internal_channel() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     // System message with internal channel (cli) - should skip processing
     let msg = nemesis_types::channel::InboundMessage {
@@ -1876,7 +1878,7 @@ async fn test_process_inbound_message_system_internal_channel() {
 async fn test_process_inbound_message_history_request() {
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
@@ -1911,7 +1913,7 @@ async fn test_process_inbound_message_session_busy() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     // First process a message to determine what session key the resolver uses.
     // Then acquire that key and verify the busy check works.
@@ -1950,7 +1952,7 @@ async fn test_process_inbound_message_route_resolver() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = make_inbound("Hello route", "web", "chat1", "user1", "");
     let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
@@ -1972,7 +1974,7 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
@@ -2026,7 +2028,7 @@ async fn test_run_bus_owned_sends_outbound() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     // Send a message
     let msg = make_inbound("Hello bus", "web", "chat1", "user1", "web:chat1");
@@ -2055,7 +2057,7 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "rpc".to_string(),
@@ -2099,7 +2101,7 @@ async fn test_process_system_message_with_result_extraction() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "system".to_string(),
@@ -2128,7 +2130,7 @@ async fn test_process_system_message_without_result_prefix() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = nemesis_types::channel::InboundMessage {
         channel: "system".to_string(),
@@ -2461,7 +2463,7 @@ async fn test_maybe_summarize_already_summarizing() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
     let instance = AgentInstance::new(test_config());
     for i in 0..30 {
         instance.add_user_message(&format!("Long user message {} with padding to increase tokens", i));
@@ -2744,7 +2746,7 @@ async fn test_run_bus_owned_with_slash_command() {
     let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
 
     let provider = MockLlmProvider::new(vec![]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg = make_inbound("/show model", "web", "chat1", "user1", "web:chat1");
     inbound_tx.send(msg).await.unwrap();
@@ -2782,7 +2784,7 @@ async fn test_run_bus_owned_multiple_messages() {
             raw_response_body: None,
         },
     ]);
-    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
 
     let msg1 = make_inbound("Message 1", "web", "chat1", "user1", "web:chat1a");
     let msg2 = make_inbound("Message 2", "web", "chat1", "user1", "web:chat1b");
@@ -2830,7 +2832,7 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
         dm_scope: "main".to_string(),
     };
 
-    let mut agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8);
+    let mut agent_loop = AgentLoop::new_bus(Box::new(provider), test_config(), outbound_tx, ConcurrentMode::Reject, 8, 0);
     agent_loop.set_route_resolver(nemesis_routing::RouteResolver::new(config));
 
     let msg = nemesis_types::channel::InboundMessage {
@@ -3344,6 +3346,7 @@ async fn test_history_returns_all_messages() {
         outbound_tx,
         ConcurrentMode::Reject,
         8,
+        0,
     );
     al.set_session_store(std::sync::Arc::new(crate::session::SessionStore::new_in_memory()));
     let al = Arc::new(al);
@@ -3426,6 +3429,7 @@ async fn test_history_e2e_via_bus_arc() {
         outbound_tx,
         ConcurrentMode::Reject,
         8,
+        0,
     );
     al.set_session_store(std::sync::Arc::new(crate::session::SessionStore::new_in_memory()));
     let (inbound_tx, inbound_rx) =

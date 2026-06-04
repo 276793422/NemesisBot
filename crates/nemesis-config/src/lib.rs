@@ -109,6 +109,8 @@ pub struct Config {
     #[serde(default)]
     pub forge: Option<ForgeFlagConfig>,
     #[serde(default)]
+    pub cluster: Option<ClusterFlagConfig>,
+    #[serde(default)]
     pub memory: Option<MemoryFlagConfig>,
     #[serde(default)]
     pub mcp: Option<McpConfig>,
@@ -130,6 +132,7 @@ impl Default for Config {
             security: None,
             skills: None,
             forge: None,
+            cluster: None,
             memory: None,
             mcp: None,
         }
@@ -179,6 +182,8 @@ pub struct AgentDefaults {
     pub concurrent_request_mode: String,
     #[serde(default = "default_queue_size")]
     pub queue_size: i64,
+    #[serde(default)]
+    pub max_continuation_permits: i64,
 }
 
 impl Default for AgentDefaults {
@@ -194,6 +199,7 @@ impl Default for AgentDefaults {
             max_tool_iterations: default_max_tool_iterations(),
             concurrent_request_mode: default_concurrent_request_mode(),
             queue_size: default_queue_size(),
+            max_continuation_permits: 0,
         }
     }
 }
@@ -636,6 +642,11 @@ pub struct SecurityFlagConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ForgeFlagConfig {
+    #[serde(default)] pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ClusterFlagConfig {
     #[serde(default)] pub enabled: bool,
 }
 
@@ -1442,6 +1453,7 @@ pub fn default_config() -> Config {
         logging: Some(LoggingConfig { llm: Some(LlmLogConfig { enabled: false, log_dir: "logs/request_logs".to_string(), detail_level: "full".to_string(), save_raw: false }), general: None }),
         security: Some(SecurityFlagConfig { enabled: false }),
         forge: Some(ForgeFlagConfig { enabled: false }),
+        cluster: None,
         memory: None,
         skills: None,
         mcp: None,

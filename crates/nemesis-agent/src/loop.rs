@@ -326,6 +326,13 @@ pub struct AgentLoop {
     concurrent_mode: ConcurrentMode,
     /// Queue size for queue mode.
     queue_size: usize,
+    /// Maximum concurrent cluster continuation tasks.
+    /// 0 = inline execution in the main loop (no spawn, serialized).
+    /// >0 = spawn with semaphore-controlled concurrency.
+    max_continuation_permits: usize,
+    /// Semaphore for limiting concurrent continuation spawns.
+    /// `None` when `max_continuation_permits == 0` (inline mode).
+    continuation_semaphore: Option<Arc<tokio::sync::Semaphore>>,
     /// Tracks which sessions are currently being summarized.
     /// Wrapped in `Arc` so the flag can be cleared from a spawned task
     /// after summarization completes (mirrors Go's `defer al.summarizing.Delete()`).
@@ -383,6 +390,8 @@ impl AgentLoop {
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode: ConcurrentMode::Reject,
             queue_size: 8,
+            max_continuation_permits: 0,
+            continuation_semaphore: None,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
@@ -413,6 +422,7 @@ impl AgentLoop {
         outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
         concurrent_mode: ConcurrentMode,
         queue_size: usize,
+        max_continuation_permits: usize,
     ) -> Self {
         let registry = Arc::new(AgentRegistry::with_default(config.clone()));
         let session_store = Arc::new(SessionStore::new_in_memory());
@@ -428,10 +438,16 @@ impl AgentLoop {
             dm_scope: "main".to_string(),
         };
 
+        let continuation_semaphore = if max_continuation_permits > 0 {
+            Some(Arc::new(tokio::sync::Semaphore::new(max_continuation_permits)))
+        } else {
+            None
+        };
+
         let model = config.model.clone();
         info!(
-            "[AgentLoop] Created in bus mode, model={}, concurrent_mode={:?}, queue_size={}",
-            model, concurrent_mode, queue_size
+            "[AgentLoop] Created in bus mode, model={}, concurrent_mode={:?}, queue_size={}, max_continuation_permits={}",
+            model, concurrent_mode, queue_size, max_continuation_permits
         );
 
         Self {
@@ -446,6 +462,8 @@ impl AgentLoop {
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode,
             queue_size,
+            max_continuation_permits,
+            continuation_semaphore,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
@@ -459,6 +477,83 @@ impl AgentLoop {
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Continuation dispatch
+    // -----------------------------------------------------------------------
+
+    /// Dispatch a cluster continuation: inline (permits=0) or spawned (permits>0).
+    /// Called from both `run_bus_owned` and `run_bus_arc`.
+    async fn dispatch_continuation(
+        &self,
+        task_id: String,
+        msg: &nemesis_types::channel::InboundMessage,
+    ) {
+        let task_response = msg.content.clone();
+        let task_metadata = msg.metadata.clone();
+        let task_failed = task_metadata.get("status").map(|s| s == "error").unwrap_or(false);
+
+        if self.max_continuation_permits == 0 {
+            // Inline: process directly in the main loop (no spawn).
+            // The main loop is blocked until continuation completes,
+            // ensuring serialized execution with no resource contention.
+            let task_error = task_metadata.get("error").map(|s| s.as_str());
+            if let Some(ref mgr) = self.continuation_manager {
+                if let Some(ref tx) = self.outbound_tx {
+                    // Clone data from RwLock guards before .await — guards are !Send
+                    // and cannot be held across yield points in an async fn.
+                    let provider = self.provider.read().clone();
+                    let model = self.active_model.read().clone();
+                    let tools = self.tools.read().clone();
+
+                    crate::loop_continuation::handle_cluster_continuation(
+                        mgr.as_ref(),
+                        &task_id,
+                        &task_response,
+                        task_failed,
+                        task_error,
+                        provider.as_ref(),
+                        &model,
+                        &tools,
+                        tx,
+                        self.observer_manager.clone(),
+                    )
+                    .await;
+                }
+            }
+        } else {
+            // Spawn with semaphore-controlled concurrency.
+            let task_error = task_metadata.get("error").cloned();
+            let provider = self.provider.read().clone();
+            let model = self.active_model.read().clone();
+            let tools = self.tools.read().clone();
+            let outbound_tx = self.outbound_tx.clone();
+            let continuation_manager = self.continuation_manager.clone();
+            let observer_manager = self.observer_manager.clone();
+            let semaphore = self.continuation_semaphore.clone().unwrap();
+
+            tokio::spawn(async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                if let Some(ref mgr) = continuation_manager {
+                    if let Some(ref tx) = outbound_tx {
+                        crate::loop_continuation::handle_cluster_continuation(
+                            mgr.as_ref(),
+                            &task_id,
+                            &task_response,
+                            task_failed,
+                            task_error.as_deref(),
+                            provider.as_ref(),
+                            &model,
+                            &tools,
+                            tx,
+                            observer_manager,
+                        )
+                        .await;
+                    }
+                }
+            });
         }
     }
 
@@ -752,52 +847,11 @@ impl AgentLoop {
                     // Check for cluster continuation marker.
                     if agent_id == "__continuation__" {
                         let task_id = response;
-                        info!("[AgentLoop] Handling cluster continuation for task {}", task_id);
-
-                        // Clone the data needed by the spawned task.
-                        // Mirrors Go's `go al.handleClusterContinuation(ctx, taskID)`.
-                        let provider = self.provider.read().clone();       // Arc clone (cheap)
-                        let model = self.active_model.read().clone();
-                        let tools = self.tools.read().clone();             // HashMap of Arc clones (cheap)
-                        let outbound_tx = self.outbound_tx.clone(); // Option<Sender> clone
-                        let continuation_manager = self.continuation_manager.clone(); // Option<Arc> clone
-                        let observer_manager = self.observer_manager.clone(); // Option<Arc> clone
-
-                        let msg_content = msg.content.clone();
-                        let msg_metadata = msg.metadata.clone();
-
-                        tokio::spawn(async move {
-                            if let Some(ref mgr) = continuation_manager {
-                                let task_response = &msg_content;
-                                let task_failed = msg_metadata.get("status")
-                                    .map(|s| s == "error")
-                                    .unwrap_or(false);
-                                let task_error = msg_metadata.get("error")
-                                    .map(|s| s.as_str());
-
-                                if let Some(ref tx) = outbound_tx {
-                                    crate::loop_continuation::handle_cluster_continuation(
-                                        mgr.as_ref(),
-                                        &task_id,
-                                        task_response,
-                                        task_failed,
-                                        task_error,
-                                        provider.as_ref(),
-                                        &model,
-                                        &tools,
-                                        tx,
-                                        observer_manager.clone(),
-                                    )
-                                    .await;
-                                }
-                            } else {
-                                warn!(
-                                    "[AgentLoop] No continuation manager configured, cannot handle continuation for task_id={}",
-                                    task_id
-                                );
-                            }
-                        });
-
+                        info!(
+                            "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                            task_id, self.max_continuation_permits
+                        );
+                        self.dispatch_continuation(task_id, &msg).await;
                         continue;
                     }
 
@@ -874,50 +928,11 @@ impl AgentLoop {
                     // Check for cluster continuation marker.
                     if agent_id == "__continuation__" {
                         let task_id = response;
-                        info!("[AgentLoop] Handling cluster continuation for task {}", task_id);
-
-                        let provider = self.provider.read().clone();
-                        let model = self.active_model.read().clone();
-                        let tools = self.tools.read().clone();
-                        let outbound_tx = self.outbound_tx.clone();
-                        let continuation_manager = self.continuation_manager.clone();
-                        let observer_manager = self.observer_manager.clone();
-
-                        let msg_content = msg.content.clone();
-                        let msg_metadata = msg.metadata.clone();
-
-                        tokio::spawn(async move {
-                            if let Some(ref mgr) = continuation_manager {
-                                let task_response = &msg_content;
-                                let task_failed = msg_metadata.get("status")
-                                    .map(|s| s == "error")
-                                    .unwrap_or(false);
-                                let task_error = msg_metadata.get("error")
-                                    .map(|s| s.as_str());
-
-                                if let Some(ref tx) = outbound_tx {
-                                    crate::loop_continuation::handle_cluster_continuation(
-                                        mgr.as_ref(),
-                                        &task_id,
-                                        task_response,
-                                        task_failed,
-                                        task_error,
-                                        provider.as_ref(),
-                                        &model,
-                                        &tools,
-                                        tx,
-                                        observer_manager.clone(),
-                                    )
-                                    .await;
-                                }
-                            } else {
-                                warn!(
-                                    "[AgentLoop] No continuation manager configured, cannot handle continuation for task_id={}",
-                                    task_id
-                                );
-                            }
-                        });
-
+                        info!(
+                            "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                            task_id, self.max_continuation_permits
+                        );
+                        self.dispatch_continuation(task_id, &msg).await;
                         continue;
                     }
 

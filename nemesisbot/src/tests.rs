@@ -658,9 +658,9 @@ fn test_cli_has_version_command() {
     assert!(names.contains(&"version"));
     assert!(names.contains(&"status"));
     assert!(names.contains(&"shutdown"));
-    assert!(names.contains(&"daemon"));
     assert!(names.contains(&"migrate"));
     assert!(names.contains(&"auth"));
     assert!(names.contains(&"log"));
     assert!(names.contains(&"workflow"));
+    assert!(names.contains(&"voice"));
 }

@@ -545,11 +545,13 @@ impl RpcServer {
             }))
         }));
 
-        // peer_chat handler — placeholder that returns an ACK.
-        // In production, the service layer replaces this with the real
-        // PeerChatHandler (which has LLM channel + RPC client for callbacks).
-        // This mirrors Go's `registerPeerChatHandlers` which is called from
-        // `SetRPCChannel` once the RPC channel is ready.
+        // peer_chat default handler — placeholder that returns an ACK.
+        //
+        // **这不是遗漏。** Production 路径中，gateway.rs 启动时会调用
+        // `rpc_server.register_handler("peer_chat", ...)` 用真正的 PeerChatHandler
+        // （包含 LLM 通道 + RPC 回调客户端）覆盖此默认 handler。此默认 handler 仅在
+        // 没有 gateway 的轻量节点（cluster node）场景下生效，用于确认收到请求。
+        // 对应 Go 版本的 `registerPeerChatHandlers`，由 `SetRPCChannel` 在就绪后注册。
         self.register_handler("peer_chat", Box::new(|payload| {
             let task_id = payload
                 .get("task_id")
@@ -562,8 +564,12 @@ impl RpcServer {
             }))
         }));
 
-        // peer_chat_callback handler — placeholder that acknowledges receipt.
-        // In production, replaced by the task completion callback handler.
+        // peer_chat_callback default handler — placeholder that acknowledges receipt.
+        //
+        // **这不是遗漏。** Production 路径中，gateway.rs 启动时会用真正的
+        // TaskManager 回调处理器覆盖此默认 handler，将结果写入续行快照并触发
+        // AgentLoop 续行。此默认 handler 仅在轻量节点场景下生效。
+        // 对应 Go 版本中 `SetRPCChannel` 注册的 callback handler。
         self.register_handler("peer_chat_callback", Box::new(|payload| {
             let task_id = payload
                 .get("task_id")

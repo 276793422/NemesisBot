@@ -601,6 +601,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 }
             }
             update_cluster_config(&home, "enabled", true)?;
+            update_main_config_cluster(&home, true)?;
             println!("Cluster enabled. Restart gateway to apply.");
         }
         ClusterAction::Disable => {
@@ -616,6 +617,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 }
             }
             update_cluster_config(&home, "enabled", false)?;
+            update_main_config_cluster(&home, false)?;
             println!("Cluster disabled. Restart gateway to apply.");
         }
         ClusterAction::Start => {
@@ -862,29 +864,11 @@ async fn run_node(
     info!("[Node] RPC server started on port {}", rpc_port);
     println!("  RPC server started on 0.0.0.0:{}", rpc_port);
 
-    // Start UDP Discovery
-    let discovery_config = nemesis_cluster::discovery::DiscoveryConfig::with_encryption(
-        udp_port,
-        Duration::from_secs(broadcast_interval),
-        "",
-    );
+    // Start UDP Discovery (managed by Cluster)
     let cluster_arc: Arc<nemesis_cluster::cluster::Cluster> = Arc::new(cluster);
-    match nemesis_cluster::discovery::DiscoveryService::new(
-        cluster_arc.clone(),
-        discovery_config,
-    ) {
-        Ok(discovery) => {
-            match discovery.start() {
-                Ok(_) => {
-                    info!("[Node] UDP discovery started on port {}", udp_port);
-                    println!("  UDP discovery started on port {}", udp_port);
-                }
-                Err(e) => warn!("[Node] Failed to start UDP discovery: {}", e),
-            }
-            std::mem::forget(discovery);
-        }
-        Err(e) => warn!("[Node] Failed to create discovery service: {}", e),
-    }
+    cluster_arc.start_discovery(cluster_arc.clone());
+    info!("[Node] UDP discovery started on port {}", udp_port);
+    println!("  UDP discovery started on port {}", udp_port);
 
     println!();
     println!("  Waiting for peers... (Ctrl+C to stop)");
@@ -947,6 +931,25 @@ fn update_cluster_config(home: &std::path::Path, key: &str, value: impl Into<ser
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(key.to_string(), value.into());
+        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
+    }
+    Ok(())
+}
+
+/// Update the master cluster switch in the main config.json.
+/// Creates the "cluster" section if it doesn't exist.
+fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<()> {
+    let cfg_path = common::config_path(home);
+    if !cfg_path.exists() {
+        return Ok(());
+    }
+    let data = std::fs::read_to_string(&cfg_path)?;
+    let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert(
+            "cluster".to_string(),
+            serde_json::json!({ "enabled": enabled }),
+        );
         std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
     }
     Ok(())

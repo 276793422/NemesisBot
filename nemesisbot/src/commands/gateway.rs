@@ -986,9 +986,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 9a: Set up cluster if enabled.
     // Mirrors Go's bot_service.go initComponents → startCluster.
-    // Loads cluster config from workspace/config/config.cluster.json,
-    // creates a Cluster instance, starts UDP discovery + RPC server,
-    // and registers the cluster_rpc tool.
+    // Master switch: config.json "cluster.enabled" (must be true).
+    // Sub-config:    config.cluster.json "enabled" (also must be true).
+    // Both must be enabled for cluster to activate.
+    let cluster_master_enabled = cfg.cluster.as_ref().map(|c| c.enabled).unwrap_or(false);
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
 
     // Cluster RPC resources — filled inside the cluster block below, consumed by SharedResources.
@@ -1012,7 +1013,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let mut cluster_work_queue_ref: Option<Arc<nemesis_cluster::ClusterWorkQueue>> = None;
     let mut cluster_arc_ref: Option<Arc<dyn std::any::Any + Send + Sync>> = None;
     let mut cluster_rpc_client_ref: Option<Arc<nemesis_cluster::rpc::client::RpcClient>> = None;
-    if cluster_app_cfg.enabled {
+    if cluster_master_enabled && cluster_app_cfg.enabled {
         let cluster_cfg_path = common::cluster_config_path(&home);
         let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
         let cluster_data: serde_json::Value = serde_json::from_str(&cluster_json).unwrap_or_default();
@@ -1338,27 +1339,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
         }
 
-        // --- Start UDP Discovery Service ---
-        // Mirrors Go's discovery.Start() call
-        let discovery_config = nemesis_cluster::discovery::DiscoveryConfig::with_encryption(
-            cluster_app_cfg.port,
-            std::time::Duration::from_secs(cluster_app_cfg.broadcast_interval),
-            "", // No encryption token for now
-        );
-        match nemesis_cluster::discovery::DiscoveryService::new(
-            cluster.clone(),
-            discovery_config,
-        ) {
-            Ok(discovery) => {
-                match discovery.start() {
-                    Ok(_) => info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port),
-                    Err(e) => warn!("[Gateway] Failed to start UDP discovery: {}", e),
-                }
-                // Keep discovery alive — prevent Drop which would stop it
-                std::mem::forget(discovery);
-            }
-            Err(e) => warn!("[Gateway] Failed to create discovery service: {}", e),
-        }
+        // --- Start UDP Discovery Service (managed by Cluster) ---
+        cluster.start_discovery(cluster.clone());
+        info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port);
 
         // RPC server was already created and set above before start().
         // RPC client was already created by Cluster::start().

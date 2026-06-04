@@ -139,12 +139,14 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         tools: Vec::new(),
     };
 
+    let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(adapter),
         agent_config,
         shared.agent_outbound_tx.clone(),
         ConcurrentMode::Reject,
         8,
+        max_continuation_permits,
     );
 
     // 5. Session store (disk-persisted — new instance, same directory).
