@@ -1065,6 +1065,75 @@ fn test_handle_task_complete_no_bus_set() {
 }
 
 #[test]
+fn test_stop_start_restart() {
+    let cluster = Cluster::new(make_config());
+
+    // First start
+    cluster.start();
+    assert!(cluster.is_running());
+    let nodes_after_start = cluster.list_nodes();
+    assert_eq!(nodes_after_start.len(), 1);
+
+    // Stop
+    cluster.stop();
+    assert!(!cluster.is_running());
+
+    // Restart — should succeed without panic or duplicate nodes
+    cluster.start();
+    assert!(cluster.is_running());
+    let nodes_after_restart = cluster.list_nodes();
+    assert_eq!(nodes_after_restart.len(), 1); // Same local node, not duplicated
+}
+
+#[test]
+fn test_rpc_server_restart() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    let config = RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(), // OS-assigned port
+        ..Default::default()
+    };
+    let server = RpcServer::new(config);
+
+    // Default handlers should be registered (in constructor now)
+    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    // First start
+    rt.block_on(server.start()).unwrap();
+    assert!(server.is_running());
+    let port1 = server.port();
+    assert_ne!(port1, 0);
+
+    // Register a custom handler
+    server.register_handler("custom_test", Box::new(|_payload| {
+        Ok(serde_json::json!({"custom": true}))
+    }));
+    assert!(server.handle_request_sync("custom_test", serde_json::json!({})).is_ok());
+
+    // Stop
+    server.stop().unwrap();
+    assert!(!server.is_running());
+
+    // Restart
+    rt.block_on(server.start()).unwrap();
+    assert!(server.is_running());
+    let port2 = server.port();
+    // Port may differ on restart (OS-assigned), but should be valid
+    assert_ne!(port2, 0);
+
+    // Custom handler should survive restart
+    assert!(server.handle_request_sync("custom_test", serde_json::json!({})).is_ok());
+    let resp = server.handle_request_sync("custom_test", serde_json::json!({})).unwrap();
+    assert_eq!(resp["custom"], true);
+
+    // Default handler should also survive (not overwritten by restart)
+    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+
+    server.stop().unwrap();
+}
+
+#[test]
 fn test_handle_task_complete_nonexistent_task() {
     let messages = Arc::new(Mutex::new(Vec::new()));
     let bus = Arc::new(MockBus {

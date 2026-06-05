@@ -80,7 +80,7 @@ impl RpcServer {
     /// Create a new RPC server with the given configuration.
     pub fn new(config: RpcServerConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(1);
-        Self {
+        let server = Self {
             config,
             handlers: Arc::new(RwLock::new(HashMap::new())),
             running: RwLock::new(false),
@@ -88,7 +88,12 @@ impl RpcServer {
             listener_port: RwLock::new(0),
             shutdown_tx,
             conn_count: Arc::new(AtomicUsize::new(0)),
-        }
+        };
+        // Register defaults in constructor, not in start().
+        // On first start: basic_handlers overwrite defaults → custom handlers overwrite defaults.
+        // On restart: start() doesn't touch handlers → all custom handlers survive.
+        server.register_default_handlers();
+        server
     }
 
     /// Set the authentication token for RPC connections.
@@ -125,9 +130,6 @@ impl RpcServer {
                 return Err("server already running".into());
             }
         }
-
-        // Register default handlers
-        self.register_default_handlers();
 
         // Bind TCP listener
         let listener = TcpListener::bind(&self.config.bind_address)

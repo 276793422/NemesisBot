@@ -32,14 +32,23 @@ pub async fn cluster_agent_loop(
     work_queue: Arc<ClusterWorkQueue>,
     task_list: Arc<ClusterTaskList>,
     rpc_client: Option<Arc<RpcClient>>,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     tracing::info!("[ClusterAgent] Event loop started");
 
     loop {
-        let task_id = match work_queue.next().await {
-            Some(id) => id,
-            None => {
-                tracing::warn!("[ClusterAgent] Work queue closed, exiting event loop");
+        let task_id = tokio::select! {
+            task = work_queue.next() => {
+                match task {
+                    Some(id) => id,
+                    None => {
+                        tracing::warn!("[ClusterAgent] Work queue closed, exiting event loop");
+                        break;
+                    }
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                tracing::info!("[ClusterAgent] Shutdown signal received, exiting event loop");
                 break;
             }
         };

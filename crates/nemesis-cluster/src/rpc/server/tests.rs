@@ -716,12 +716,12 @@ fn test_handler_with_rpc_meta_injection() {
 }
 
 #[test]
-fn test_default_handlers_registered_via_start() {
+fn test_default_handlers_registered_in_constructor() {
     let server = make_server();
-    // Before register_default_handlers, ping should not exist
-    assert!(server.handle_request_sync("ping", serde_json::json!({})).is_err());
-    server.register_default_handlers();
+    // Defaults are now registered in new(), not start(). ping should exist immediately.
     assert!(server.handle_request_sync("ping", serde_json::json!({})).is_ok());
+    // peer_chat default handler should also exist
+    assert!(server.handle_request_sync("peer_chat", serde_json::json!({"task_id": "t1"})).is_ok());
 }
 
 #[test]

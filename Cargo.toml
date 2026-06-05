@@ -48,6 +48,7 @@ members = [
     "test-tools/bus-benchmarks",
     "test-tools/approval-test",
     "test-tools/memory-test",
+    "test-tools/cluster-node",
 ]
 
 [workspace.package]

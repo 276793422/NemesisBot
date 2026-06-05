@@ -226,6 +226,10 @@ impl Cluster {
 
     /// Start the cluster. Registers the local node and initializes the RPC client.
     pub fn start(&self) {
+        if *self.running.read() {
+            tracing::debug!("[Cluster] Already running, skipping start()");
+            return;
+        }
         *self.running.write() = true;
 
         // Register local node
@@ -394,15 +398,24 @@ impl Cluster {
     /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.
     pub fn stop(&self) {
         *self.running.write() = false;
-        self.discovery_running.store(false, Ordering::SeqCst);
+
+        // Stop RPC server first — reject new connections, existing connections
+        // drain naturally via idle_timeout.
+        if let Some(ref server) = self.rpc_server {
+            if let Err(e) = server.stop() {
+                tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+            }
+        }
 
         // Stop discovery service (joins broadcast + receive threads)
+        self.discovery_running.store(false, Ordering::SeqCst);
         if let Some(discovery) = self.discovery.lock().take() {
             if let Err(e) = discovery.stop() {
                 tracing::warn!(error = %e, "[Cluster] Discovery stop error");
             }
         }
 
+        // Signal recovery/sync loops to exit
         let _ = self.stop_tx.send(());
         logger::log_lifecycle("stop", &self.node_id, "Cluster stopped");
     }

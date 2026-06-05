@@ -215,6 +215,45 @@ impl SystemTray {
 // Platform tray implementation
 // ---------------------------------------------------------------------------
 
+// Thread-local storage for cluster menu items.
+//
+// `tray_icon::menu::MenuItem` is not `Send` (internally uses `Rc`), so it
+// cannot be stored in `PlatformTray` (which must be `Send`). Instead, the
+// items are created in `run_event_loop()` on the tray thread and stored here.
+// The enable/disable functions below access them from callbacks that also run
+// on the tray thread.
+thread_local! {
+    static CLUSTER_MENU_ITEMS: std::cell::RefCell<Option<(
+        tray_icon::menu::MenuItem,
+        tray_icon::menu::MenuItem,
+    )>> = std::cell::RefCell::new(None);
+}
+
+/// Enable the "集群启动" and "集群停止" tray menu items.
+///
+/// Safe to call from any thread; no-ops when called off the tray thread
+/// (the thread-local will be `None`).
+pub fn enable_cluster_menu_items() {
+    CLUSTER_MENU_ITEMS.with(|items| {
+        if let Some((start, stop)) = items.borrow().as_ref() {
+            start.set_enabled(true);
+            stop.set_enabled(true);
+            tracing::debug!("[Desktop] Cluster menu items enabled");
+        }
+    });
+}
+
+/// Disable the "集群启动" and "集群停止" tray menu items.
+pub fn disable_cluster_menu_items() {
+    CLUSTER_MENU_ITEMS.with(|items| {
+        if let Some((start, stop)) = items.borrow().as_ref() {
+            start.set_enabled(false);
+            stop.set_enabled(false);
+            tracing::debug!("[Desktop] Cluster menu items disabled");
+        }
+    });
+}
+
 /// User event types forwarded from tray-icon to the winit event loop.
 #[derive(Debug, Clone)]
 enum TrayUserEvent {
@@ -234,6 +273,8 @@ enum TrayUserEvent {
 /// ```text
 /// 启动服务
 /// 停止服务
+/// 集群启动
+/// 集群停止
 /// ───────────
 /// 打开 Dashboard
 /// 打开聊天
@@ -247,6 +288,8 @@ enum TrayUserEvent {
 pub struct PlatformTray {
     on_start: Option<Box<dyn Fn() + Send + Sync>>,
     on_stop: Option<Box<dyn Fn() + Send + Sync>>,
+    on_cluster_start: Option<Box<dyn Fn() + Send + Sync>>,
+    on_cluster_stop: Option<Box<dyn Fn() + Send + Sync>>,
     on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
     on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
     on_quit: Option<Box<dyn Fn() + Send + Sync>>,
@@ -258,6 +301,8 @@ impl PlatformTray {
         Self {
             on_start: None,
             on_stop: None,
+            on_cluster_start: None,
+            on_cluster_stop: None,
             on_open_dashboard: None,
             on_open_chat: None,
             on_quit: None,
@@ -292,6 +337,18 @@ impl PlatformTray {
     pub fn set_on_quit(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
         tracing::debug!("[Desktop] Quit callback set");
         self.on_quit = Some(cb);
+    }
+
+    /// Set callback for "Cluster Start" menu item.
+    pub fn set_on_cluster_start(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Cluster Start callback set");
+        self.on_cluster_start = Some(cb);
+    }
+
+    /// Set callback for "Cluster Stop" menu item.
+    pub fn set_on_cluster_stop(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Cluster Stop callback set");
+        self.on_cluster_stop = Some(cb);
     }
 
     /// Start the system tray on a dedicated thread.
@@ -367,6 +424,8 @@ impl PlatformTray {
         let menu = tray_icon::menu::Menu::new();
         let start_item = tray_icon::menu::MenuItem::with_id("start", "启动服务", true, None);
         let stop_item = tray_icon::menu::MenuItem::with_id("stop", "停止服务", true, None);
+        let cluster_start_menu = tray_icon::menu::MenuItem::with_id("cluster_start", "集群启动", true, None);
+        let cluster_stop_menu = tray_icon::menu::MenuItem::with_id("cluster_stop", "集群停止", true, None);
         let sep1 = tray_icon::menu::PredefinedMenuItem::separator();
         let dashboard_item = tray_icon::menu::MenuItem::with_id("dashboard", "打开 Dashboard", true, None);
         let chat_item = tray_icon::menu::MenuItem::with_id("chat", "打开聊天", true, None);
@@ -377,6 +436,8 @@ impl PlatformTray {
 
         let _ = menu.append(&start_item);
         let _ = menu.append(&stop_item);
+        let _ = menu.append(&cluster_start_menu);
+        let _ = menu.append(&cluster_stop_menu);
         let _ = menu.append(&sep1);
         let _ = menu.append(&dashboard_item);
         let _ = menu.append(&chat_item);
@@ -384,6 +445,11 @@ impl PlatformTray {
         let _ = menu.append(&version_item);
         let _ = menu.append(&sep3);
         let _ = menu.append(&quit_item);
+
+        // Populate thread-local so enable/disable functions can reach these items
+        CLUSTER_MENU_ITEMS.with(|items| {
+            *items.borrow_mut() = Some((cluster_start_menu, cluster_stop_menu));
+        });
 
         // Create tray icon with menu bound, but disable left-click popup.
         // Only right-click shows the menu; left-double-click opens Dashboard.
@@ -414,6 +480,8 @@ impl PlatformTray {
         // Move callbacks into the event loop closure
         let on_start = self.on_start;
         let on_stop = self.on_stop;
+        let on_cluster_start = self.on_cluster_start;
+        let on_cluster_stop = self.on_cluster_stop;
         let on_open_dashboard = self.on_open_dashboard;
         let on_open_chat = self.on_open_chat;
         let on_quit = self.on_quit;
@@ -435,6 +503,14 @@ impl PlatformTray {
                         "stop" => {
                             tracing::info!("[Desktop] Stop Service clicked");
                             if let Some(ref cb) = on_stop { cb(); }
+                        }
+                        "cluster_start" => {
+                            tracing::info!("[Desktop] Cluster Start clicked");
+                            if let Some(ref cb) = on_cluster_start { cb(); }
+                        }
+                        "cluster_stop" => {
+                            tracing::info!("[Desktop] Cluster Stop clicked");
+                            if let Some(ref cb) = on_cluster_stop { cb(); }
                         }
                         "dashboard" => {
                             tracing::info!("[Desktop] Open Dashboard clicked");

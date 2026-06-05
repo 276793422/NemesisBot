@@ -1008,12 +1008,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     > = None;
     let mut cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig> = None;
     let mut cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>> = None;
-    // Cluster agent references — set inside the if block, used later for agent loop startup.
-    let mut cluster_task_list_ref: Option<Arc<nemesis_cluster::ClusterTaskList>> = None;
-    let mut cluster_work_queue_ref: Option<Arc<nemesis_cluster::ClusterWorkQueue>> = None;
-    let mut cluster_arc_ref: Option<std::sync::Weak<nemesis_cluster::cluster::Cluster>> = None;
-    let mut cluster_shutdown_ref: Option<Arc<nemesis_cluster::cluster::Cluster>> = None;
-    let mut cluster_rpc_client_ref: Option<Arc<nemesis_cluster::rpc::client::RpcClient>> = None;
+    // Cluster adapter — manages dynamic start/stop of all cluster components.
+    let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
+    // Cluster refs saved during init, used to create adapter after SharedResources is built.
+    let mut cluster_adapter_refs: Option<(
+        Arc<nemesis_cluster::cluster::Cluster>,
+        Arc<nemesis_cluster::ClusterTaskList>,
+        Arc<nemesis_cluster::ClusterWorkQueue>,
+    )> = None;
     if cluster_master_enabled && cluster_app_cfg.enabled {
         let cluster_cfg_path = common::cluster_config_path(&home);
         let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
@@ -1405,15 +1407,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // ContinuationManager injection into agent_loop is now handled by the factory function.
 
-        // Save references for cluster agent loop startup (used after SharedResources is created).
-        cluster_task_list_ref = Some(cluster_task_list.clone());
-        cluster_work_queue_ref = Some(cluster_work_queue.clone());
-        cluster_arc_ref = Some(Arc::downgrade(&cluster));
-        cluster_shutdown_ref = Some(cluster.clone());
-        cluster_rpc_client_ref = rpc_client.clone();
+        // Save references for ClusterServiceAdapter creation (after SharedResources is built).
+        // The adapter will be created later in the code where SharedResources is available.
+        // For now, save the cluster-related Arc refs needed.
+        cluster_adapter_refs = Some((cluster.clone(), cluster_task_list.clone(), cluster_work_queue.clone()));
 
-        // cluster Arc stays alive via Arc cycle: Cluster → DiscoveryService → Arc<Cluster>.
-        // The shutdown ref is used to call cluster.stop() on gateway shutdown.
     } else {
         info!("[Gateway] Cluster disabled in configuration");
     }
@@ -1782,73 +1780,31 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
 
     // --- Inject tool capabilities into cluster for discovery broadcast ---
-    if let Some(ref cluster_weak) = cluster_arc_ref {
-        if let Some(cluster) = cluster_weak.upgrade() {
-            let tool_names = agent_loop.tool_names();
-            cluster.set_capabilities(tool_names);
-            info!(
-                "[Gateway] Cluster capabilities injected ({} tools)",
-                initial_tool_count
-            );
-        }
+    if let Some((ref cluster, _, _)) = cluster_adapter_refs {
+        let tool_names = agent_loop.tool_names();
+        cluster.set_capabilities(tool_names);
+        info!(
+            "[Gateway] Cluster capabilities injected ({} tools)",
+            initial_tool_count
+        );
     }
 
-    // --- Start cluster agent event loop (if cluster is enabled) ---
-    if let (Some(cluster_task_list), Some(cluster_work_queue), Some(cluster_weak)) =
-        (cluster_task_list_ref, cluster_work_queue_ref, cluster_arc_ref)
-    {
-        if let Some(cluster_arc) = cluster_weak.upgrade() {
-            // --- Crash recovery: restore incomplete tasks from previous run ---
-            //
-            // If the process crashed or was killed while cluster tasks were in progress,
-            // their state was persisted to disk by save_async_state(). On restart we:
-            //   1. restore_from_disk() — load task entries + conversation snapshots into DashMap
-            //   2. recover_task_ids()  — collect Pending tasks AND reset WaitingRemote → Pending
-            //   3. re-submit all recovered tasks into the work queue
-            //
-            // WaitingRemote tasks are reset to Pending because the callback they were waiting
-            // for is lost — the remote node already sent it while we were down. Re-executing
-            // is the safest fallback. See ClusterTaskList::recover_task_ids() for details.
-            if let Err(e) = cluster_task_list.restore_from_disk() {
-                warn!("[Gateway] Failed to restore cluster tasks from disk: {}", e);
-            }
-            let recovered = cluster_task_list.recover_task_ids();
-            for task_id in &recovered {
-                if let Err(e) = cluster_work_queue.submit(task_id.clone()) {
-                    warn!(
-                        task_id = %task_id,
-                        "[Gateway] Failed to re-submit recovered task: {}", e
-                    );
-                }
-            }
-            if !recovered.is_empty() {
-                info!(
-                    count = recovered.len(),
-                    "[Gateway] Recovered {} cluster tasks from previous run",
-                    recovered.len()
-                );
-            }
-
-            match crate::agent_factory::build_cluster_agent_loop(&shared_resources, cluster_arc) {
-                Ok((cluster_agent, cluster_config)) => {
-                    tokio::spawn(async move {
-                        crate::cluster_agent::cluster_agent_loop(
-                            cluster_agent,
-                            cluster_config,
-                            cluster_work_queue,
-                            cluster_task_list,
-                            cluster_rpc_client_ref,
-                        ).await;
-                    });
-                    info!("[Gateway] Cluster agent event loop started");
-                }
-                Err(e) => {
-                    warn!("[Gateway] Failed to build cluster agent: {}", e);
-                }
-            }
-        } else {
-            warn!("[Gateway] Cluster已关闭，跳过cluster agent启动");
+    // --- Create ClusterServiceAdapter and perform first start ---
+    // The adapter handles: cluster.start(), RPC server start, discovery start,
+    // task recovery from disk, cluster agent loop spawn, ClusterRpcTool enable.
+    if let Some((cluster, task_list, work_queue)) = cluster_adapter_refs.take() {
+        let adapter = Arc::new(crate::cluster_service::ClusterServiceAdapter::new(
+            cluster,
+            shared_resources.clone(),
+            tokio::runtime::Handle::current(),
+            home.clone(),
+            task_list,
+            work_queue,
+        ));
+        if let Err(e) = adapter.first_start() {
+            warn!("[Gateway] Cluster adapter first start failed: {}", e);
         }
+        cluster_adapter = Some(adapter);
     }
 
     // Create shared reference for WebServer model switching
@@ -2132,12 +2088,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 16: Start outbound dispatch (bus outbound → WebSocket sessions)
-    let dispatch_bus = bus.clone();
-    let dispatch_session_mgr = web_server.session_manager().clone();
-    let dispatch_handle = tokio::spawn(async move {
-        nemesis_web::server::dispatch_outbound(dispatch_bus, dispatch_session_mgr).await;
-    });
-    info!("[Gateway] Outbound dispatch started");
+    //  MSG: 目前这里暂不需要了，因为我们通过主通道直接来收发 web 消息了
+    //let dispatch_bus = bus.clone();
+    //let dispatch_session_mgr = web_server.session_manager().clone();
+    //let dispatch_handle = tokio::spawn(async move {
+    //    nemesis_web::server::dispatch_outbound(dispatch_bus, dispatch_session_mgr).await;
+    //});
+    //info!("[Gateway] Outbound dispatch started");
 
     // Step 17: Start WebServer in background
     let web_shutdown_rx = svc_mgr.subscribe_shutdown();
@@ -2228,6 +2185,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         let mut tray = PlatformTray::new();
 
+        // Set cluster callbacks (only when cluster is configured)
+        if let Some(ref ca) = cluster_adapter {
+            let ca_start = ca.clone();
+            tray.set_on_cluster_start(Box::new(move || {
+                if let Err(e) = ca_start.start() {
+                    tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
+                }
+            }));
+            let ca_stop = ca.clone();
+            tray.set_on_cluster_stop(Box::new(move || {
+                if let Err(e) = ca_stop.stop() {
+                    tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
+                }
+            }));
+        }
+
         let start_adapter = Arc::clone(&agent_adapter);
         tray.set_on_start(Box::new(move || {
             if let Err(e) = start_adapter.start() {
@@ -2290,11 +2263,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     web_handle.abort();
     agent_adapter.stop().ok();
     bridge_outbound_handle.abort();
-    dispatch_handle.abort();
+    //  MSG: 同 step 16 ，目前暂时不用，所以注释掉了
+    //dispatch_handle.abort();
 
-    // Stop cluster (joins discovery threads, breaks Arc cycle)
-    if let Some(cluster) = cluster_shutdown_ref.take() {
-        cluster.stop();
+    // Stop cluster (adapter handles: agent abort, RPC server, discovery, recovery/sync loops)
+    if let Some(adapter) = cluster_adapter.take() {
+        let _ = adapter.stop();
     }
 
     // Clean up PID file

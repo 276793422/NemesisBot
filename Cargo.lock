@@ -793,6 +793,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cluster-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "cluster-test"
 version = "0.1.0"
 dependencies = [
