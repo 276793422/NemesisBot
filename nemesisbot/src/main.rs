@@ -8,6 +8,7 @@ mod embedded;
 mod adapters;
 mod agent_factory;
 mod cluster_agent;
+mod cluster_service;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;

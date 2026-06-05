@@ -574,6 +574,21 @@ impl AgentLoop {
         self.tools.write().insert(name, Arc::from(tool));
     }
 
+    // [ClusterService-Full] 完整方案预留：动态移除工具
+    // 当前未启用，原因：避免影响 LLM 提示词缓存命中率
+    // 启用条件：当 LLM 提供商支持按工具分组缓存或工具定义独立缓存时
+    /// Remove a tool by name from the registry.
+    /// Returns true if the tool was found and removed.
+    pub fn remove_tool_shared(&mut self, name: &str) -> bool {
+        if self.tools.write().remove(name).is_some() {
+            debug!("[AgentLoop] Removed shared tool: {}", name);
+            true
+        } else {
+            debug!("[AgentLoop] Tool '{}' not found, nothing to remove", name);
+            false
+        }
+    }
+
     /// Return the number of registered tools.
     pub fn tool_count(&self) -> usize {
         self.tools.read().len()

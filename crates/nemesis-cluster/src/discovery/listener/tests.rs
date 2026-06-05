@@ -169,7 +169,7 @@ fn test_udp_listener_encrypted_roundtrip() {
     let key = crate::discovery::crypto::derive_key("test-cluster-secret");
 
     let listener = UdpListener::new(0, Some(key)).unwrap();
-    let _port = listener.port();
+    let port = listener.port();
 
     let received = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
     let received_clone = Arc::clone(&received);
@@ -181,12 +181,18 @@ fn test_udp_listener_encrypted_roundtrip() {
     listener.start().unwrap();
     std::thread::sleep(Duration::from_millis(50));
 
-    // Send an encrypted broadcast
-    listener.broadcast(&DiscoveryMessage::new_announce(
+    // Send encrypted message directly to localhost (not via broadcast)
+    // to avoid receiving multiple copies from different broadcast addresses.
+    let sender = UdpSocket::bind("0.0.0.0:0").unwrap();
+    sender.set_broadcast(true).unwrap();
+    let msg = DiscoveryMessage::new_announce(
         "encrypted-node", "EncNode",
         vec!["10.0.0.1".into()], 9000,
         "worker", "dev", vec![], vec![], "agent",
-    )).unwrap();
+    );
+    let plain = msg.to_bytes().unwrap();
+    let encrypted = crate::discovery::crypto::encrypt_data(&key, &plain).unwrap();
+    sender.send_to(&encrypted, SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).unwrap();
 
     std::thread::sleep(Duration::from_millis(200));
     listener.stop().unwrap();

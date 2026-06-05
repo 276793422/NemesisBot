@@ -1627,6 +1627,11 @@ pub struct ClusterRpcTool {
     stored_channel: Arc<std::sync::Mutex<String>>,
     /// Stored chat_id from set_context.
     stored_chat_id: Arc<std::sync::Mutex<String>>,
+    /// Whether the cluster module is enabled and running.
+    /// When false, execute() returns immediately with "cluster not enabled" error
+    /// instead of attempting network calls that would fail unpredictably.
+    /// This guard preserves LLM prompt cache hit rates (tool definition stays in prompt).
+    enabled: Arc<std::sync::atomic::AtomicBool>,
     /// Optional RPC call function: (target_node, action, payload) -> Result<serde_json::Value, String>
     rpc_call_fn: Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>>,
     /// Returns online peer nodes with their capabilities for dynamic tool description.
@@ -1641,9 +1646,28 @@ impl ClusterRpcTool {
             config,
             stored_channel: Arc::new(std::sync::Mutex::new(String::new())),
             stored_chat_id: Arc::new(std::sync::Mutex::new(String::new())),
+            enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             rpc_call_fn: None,
             peers_fn: None,
         }
+    }
+
+    /// Set whether the cluster module is enabled.
+    /// When disabled, execute() returns immediately without attempting RPC calls.
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Check if the cluster module is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get a clone of the enabled flag Arc for external control.
+    /// The ClusterServiceAdapter uses this to toggle the tool's enabled state
+    /// without removing the tool from the prompt (preserving LLM cache).
+    pub fn enabled_arc(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.enabled.clone()
     }
 
     /// Set the RPC call function for performing actual cluster RPC calls.
@@ -1722,6 +1746,13 @@ impl Tool for ClusterRpcTool {
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
+        // Guard: check if cluster is enabled before any processing.
+        // This prevents unpredictable network errors when the cluster module is stopped.
+        // The tool definition remains in the prompt for LLM cache hit rate.
+        if !self.enabled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("集群功能未启用，无法调用远程节点。请勿重试。".to_string());
+        }
+
         let val: serde_json::Value = serde_json::from_str(args)
             .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 

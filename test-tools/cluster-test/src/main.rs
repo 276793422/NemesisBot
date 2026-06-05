@@ -180,14 +180,14 @@ impl MockCallbacks {
 }
 
 impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
-    fn node_id(&self) -> &str {
-        &self.node_id
+    fn node_id(&self) -> String {
+        self.node_id.clone()
     }
-    fn name(&self) -> &str {
-        &self.node_id
+    fn name(&self) -> String {
+        self.node_id.clone()
     }
-    fn address(&self) -> &str {
-        "127.0.0.1"
+    fn address(&self) -> String {
+        "127.0.0.1".into()
     }
     fn rpc_port(&self) -> u16 {
         self.rpc_port
@@ -195,11 +195,11 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
     fn all_local_ips(&self) -> Vec<String> {
         vec!["127.0.0.1".to_string()]
     }
-    fn role(&self) -> &str {
-        "worker"
+    fn role(&self) -> String {
+        "worker".into()
     }
-    fn category(&self) -> &str {
-        "development"
+    fn category(&self) -> String {
+        "development".into()
     }
     fn tags(&self) -> Vec<String> {
         vec!["test".to_string()]
@@ -218,7 +218,7 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
         _tags: &[String],
         _capabilities: &[String],
         _node_type: &str,
-    ) {
+    ) -> bool {
         let mut g = self.discovered.lock().unwrap();
         g.push((
             node_id.to_string(),
@@ -228,6 +228,7 @@ impl nemesis_cluster::discovery::ClusterCallbacks for MockCallbacks {
             role.to_string(),
             category.to_string(),
         ));
+        true
     }
     fn handle_node_offline(&self, node_id: &str, reason: &str) {
         self.offline_events

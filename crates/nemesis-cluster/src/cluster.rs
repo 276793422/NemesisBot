@@ -70,7 +70,8 @@ pub struct Cluster {
     tags: Vec<String>,
     /// Dynamic capabilities reported by the AgentLoop (tool names).
     /// Set via `set_capabilities()` after the agent is built.
-    capabilities: std::sync::Mutex<Vec<String>>,
+    /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
+    capabilities: Arc<std::sync::Mutex<Vec<String>>>,
 
     // -- Paths --
     workspace: PathBuf,
@@ -98,6 +99,7 @@ pub struct Cluster {
     // -- State --
     running: RwLock<bool>,
     discovery_running: Arc<AtomicBool>,
+    discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
     bus: Mutex<Option<Arc<dyn MessageBus>>>,
 
@@ -132,7 +134,7 @@ impl Cluster {
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
-            capabilities: std::sync::Mutex::new(Vec::new()),
+            capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
             dynamic_state_path: cluster_dir_path.join("state.toml"),
@@ -149,6 +151,7 @@ impl Cluster {
             timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
+            discovery: Mutex::new(None),
             stop_tx,
             bus: Mutex::new(None),
             cluster_task_list: Mutex::new(None),
@@ -193,7 +196,7 @@ impl Cluster {
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
-            capabilities: std::sync::Mutex::new(Vec::new()),
+            capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir.join("peers.toml"),
             dynamic_state_path: cluster_dir.join("state.toml"),
@@ -210,6 +213,7 @@ impl Cluster {
             timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
+            discovery: Mutex::new(None),
             stop_tx,
             bus: Mutex::new(None),
             cluster_task_list: Mutex::new(None),
@@ -354,10 +358,11 @@ impl Cluster {
                         tracing::error!(error = %e, "[Cluster] Failed to start UDP discovery");
                     }
                 }
-                // Keep discovery alive — background threads hold Arc references to
-                // ClusterCallbacks. The discovery struct itself can be forgotten once
-                // start() spawns the listener and broadcast threads.
-                std::mem::forget(discovery);
+                // Store discovery in Cluster for lifecycle management.
+                // DiscoveryService holds Arc<dyn ClusterCallbacks> which keeps
+                // the Cluster alive via Arc cycle. This cycle is broken when
+                // stop_discovery() drops the DiscoveryService.
+                *self.discovery.lock() = Some(discovery);
             }
             Err(e) => {
                 tracing::error!(error = %e, "[Cluster] Failed to create discovery service");
@@ -386,10 +391,18 @@ impl Cluster {
         }
     }
 
-    /// Stop the cluster.
+    /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.
     pub fn stop(&self) {
         *self.running.write() = false;
         self.discovery_running.store(false, Ordering::SeqCst);
+
+        // Stop discovery service (joins broadcast + receive threads)
+        if let Some(discovery) = self.discovery.lock().take() {
+            if let Err(e) = discovery.stop() {
+                tracing::warn!(error = %e, "[Cluster] Discovery stop error");
+            }
+        }
+
         let _ = self.stop_tx.send(());
         logger::log_lifecycle("stop", &self.node_id, "Cluster stopped");
     }
@@ -524,7 +537,7 @@ impl Cluster {
         _tags: Vec<String>,
         capabilities: Vec<String>,
         node_type: &str,
-    ) {
+    ) -> bool {
         let primary_address = if !addresses.is_empty() {
             format!("{}:{}", addresses[0], rpc_port)
         } else {
@@ -547,9 +560,14 @@ impl Cluster {
             addresses, // Preserve all addresses for multi-address failover
             node_type: node_type.to_string(),
         };
-        self.registry.upsert(node);
+        let changed = self.registry.upsert_if_changed(node);
 
-        if was_known {
+        if !changed && was_known {
+            tracing::trace!(
+                node_id = node_id,
+                "[Cluster] Node unchanged, health refreshed"
+            );
+        } else if was_known {
             logger::log_discovery("updated", &primary_address, Some(node_id));
         } else {
             logger::log_discovery("discovered", &primary_address, Some(node_id));
@@ -563,6 +581,7 @@ impl Cluster {
                 primary_address,
             );
         }
+        changed
     }
 
     /// Mark a node as offline.
@@ -1295,23 +1314,40 @@ impl Cluster {
             }))
         }))?;
 
-        // get_capabilities
-        let caps = self.get_capabilities();
+        // get_capabilities — shares Arc with Cluster for real-time reads
+        let caps_arc = self.capabilities.clone();
         self.register_rpc_handler("get_capabilities", Box::new(move |_payload| {
+            let caps = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(serde_json::json!({
                 "capabilities": caps,
             }))
         }))?;
 
-        // get_info
+        // get_info — returns data matching DiscoveryMessage broadcast format
+        // Static fields (cloned, immutable after startup):
         let node_id = self.node_id.clone();
         let node_name = self.node_name.clone();
         let role = self.role.clone();
+        let category = self.category.clone();
+        let tags = self.tags.clone();
+        let node_type = self.node_type.clone();
+        let rpc_port = self.rpc_port;
+        // Dynamic fields (real-time):
+        let caps_arc = self.capabilities.clone();
         self.register_rpc_handler("get_info", Box::new(move |_payload| {
+            let addresses = network::get_all_local_ips();
+            let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
             Ok(serde_json::json!({
+                "version": "1.0",
                 "node_id": node_id,
                 "name": node_name,
+                "addresses": addresses,
+                "rpc_port": rpc_port,
                 "role": role,
+                "category": category,
+                "tags": tags,
+                "capabilities": capabilities,
+                "node_type": node_type,
                 "status": "online",
             }))
         }))?;
@@ -1921,16 +1957,16 @@ fn string_value(v: Option<&serde_json::Value>) -> String {
 // ---------------------------------------------------------------------------
 
 impl ClusterCallbacks for Cluster {
-    fn node_id(&self) -> &str {
-        &self.node_id
+    fn node_id(&self) -> String {
+        self.node_id.clone()
     }
 
-    fn name(&self) -> &str {
-        &self.node_name
+    fn name(&self) -> String {
+        self.node_name.clone()
     }
 
-    fn address(&self) -> &str {
-        &self.address
+    fn address(&self) -> String {
+        self.address.clone()
     }
 
     fn rpc_port(&self) -> u16 {
@@ -1941,12 +1977,12 @@ impl ClusterCallbacks for Cluster {
         network::get_all_local_ips()
     }
 
-    fn role(&self) -> &str {
-        &self.role
+    fn role(&self) -> String {
+        self.role.clone()
     }
 
-    fn category(&self) -> &str {
-        &self.category
+    fn category(&self) -> String {
+        self.category.clone()
     }
 
     fn tags(&self) -> Vec<String> {
@@ -1957,8 +1993,8 @@ impl ClusterCallbacks for Cluster {
         self.capabilities.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn node_type(&self) -> &str {
-        &self.node_type
+    fn node_type(&self) -> String {
+        self.node_type.clone()
     }
 
     fn handle_discovered_node(
@@ -1972,7 +2008,7 @@ impl ClusterCallbacks for Cluster {
         tags: &[String],
         capabilities: &[String],
         node_type: &str,
-    ) {
+    ) -> bool {
         self.handle_discovered_node(
             node_id,
             name,
@@ -1983,7 +2019,7 @@ impl ClusterCallbacks for Cluster {
             tags.to_vec(),
             capabilities.to_vec(),
             node_type,
-        );
+        )
     }
 
     fn handle_node_offline(&self, node_id: &str, reason: &str) {

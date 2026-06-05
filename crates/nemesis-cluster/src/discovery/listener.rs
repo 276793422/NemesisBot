@@ -37,6 +37,7 @@ pub struct UdpListener {
     enc_key: Option<[u8; 32]>,
     running: Arc<AtomicBool>,
     handler: Arc<parking_lot::RwLock<Option<MessageHandler>>>,
+    receive_thread: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl UdpListener {
@@ -69,6 +70,7 @@ impl UdpListener {
             enc_key,
             running: Arc::new(AtomicBool::new(false)),
             handler: Arc::new(parking_lot::RwLock::new(None)),
+            receive_thread: parking_lot::Mutex::new(None),
         })
     }
 
@@ -89,7 +91,7 @@ impl UdpListener {
         let handler = Arc::clone(&self.handler);
         let enc_key = self.enc_key;
 
-        std::thread::Builder::new()
+        let handle = std::thread::Builder::new()
             .name("discovery-udp-listen".into())
             .spawn(move || {
                 let mut buf = [0u8; 4096];
@@ -144,15 +146,22 @@ impl UdpListener {
                 }
             })?;
 
+        *self.receive_thread.lock() = Some(handle);
+
         Ok(())
     }
 
-    /// Stop the listener.
+    /// Stop the listener and join the receive thread.
     pub fn stop(&self) -> Result<(), io::Error> {
         if !self.running.load(Ordering::SeqCst) {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "listener not running"));
         }
         self.running.store(false, Ordering::SeqCst);
+
+        // Join the receive thread
+        if let Some(handle) = self.receive_thread.lock().take() {
+            let _ = handle.join();
+        }
         Ok(())
     }
 

@@ -68,6 +68,10 @@ pub struct SharedResources {
     /// Returns online peers for dynamic cluster_rpc tool description.
     /// Each tuple: (node_id, node_name, capabilities).
     pub cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
+    /// Shared enabled flag for ClusterRpcTool.
+    /// Set by factory when tool is registered, toggled by ClusterServiceAdapter
+    /// to enable/disable the tool without removing it from the prompt.
+    pub cluster_rpc_enabled: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
 
     // MCP config
     pub mcp_config_path: PathBuf,
@@ -187,8 +191,11 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         if let Some(ref peers_fn) = shared.cluster_peers_fn {
             cluster_rpc_tool.set_peers_fn(peers_fn.clone());
         }
+        cluster_rpc_tool.set_enabled(true);
+        // Store the enabled flag for dynamic cluster start/stop.
+        *shared.cluster_rpc_enabled.write() = Some(cluster_rpc_tool.enabled_arc());
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
-        info!("[AgentFactory] cluster_rpc tool registered");
+        info!("[AgentFactory] cluster_rpc tool registered (enabled=true)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).
@@ -339,7 +346,7 @@ fn register_tools_and_mcp(
 /// - System prompt loaded from `workspace/cluster/IDENTITY.md` + `SOUL.md`
 pub fn build_cluster_agent_loop(
     shared: &Arc<SharedResources>,
-    cluster: Arc<dyn std::any::Any + Send + Sync>,
+    cluster: Arc<nemesis_cluster::cluster::Cluster>,
 ) -> Result<(Arc<nemesis_agent::r#loop::AgentLoop>, nemesis_agent::types::AgentConfig)> {
     use nemesis_agent::r#loop::AgentLoop;
 
@@ -381,7 +388,7 @@ pub fn build_cluster_agent_loop(
     let mut agent_loop = AgentLoop::new(Box::new(adapter), config.clone());
 
     // 5. Set cluster reference (enables cluster_rpc tool).
-    agent_loop.set_cluster(cluster);
+    agent_loop.set_cluster(cluster as Arc<dyn std::any::Any + Send + Sync>);
 
     // 6. Build tool config + register all tools + enable MCP.
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
@@ -396,8 +403,9 @@ pub fn build_cluster_agent_loop(
         if let Some(ref peers_fn) = shared.cluster_peers_fn {
             cluster_rpc_tool.set_peers_fn(peers_fn.clone());
         }
+        cluster_rpc_tool.set_enabled(true);
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
-        info!("[AgentFactory] cluster_rpc tool registered for cluster agent");
+        info!("[AgentFactory] cluster_rpc tool registered for cluster agent (enabled=true)");
     }
 
     info!(

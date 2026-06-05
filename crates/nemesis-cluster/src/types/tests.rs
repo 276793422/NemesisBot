@@ -328,3 +328,81 @@ fn test_node_status_connecting_string_representation() {
     let display = format!("{}", node);
     assert!(display.contains("connecting"), "expected 'connecting' in display: {}", display);
 }
+
+// -- content_eq tests --
+
+#[test]
+fn test_content_eq_identical_nodes() {
+    let node = make_test_node("node-1", NodeStatus::Online, vec!["llm"], "");
+    let same = make_test_node("node-1", NodeStatus::Online, vec!["llm"], "");
+    assert!(node.content_eq(&same));
+}
+
+#[test]
+fn test_content_eq_ignores_last_seen() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec![], "2026-01-01T00:00:00Z");
+    let b = make_test_node("node-1", NodeStatus::Online, vec![], "2026-06-01T00:00:00Z");
+    assert!(a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_id() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    let b = make_test_node("node-2", NodeStatus::Online, vec![], "");
+    assert!(!a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_capabilities() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec!["llm"], "");
+    let b = make_test_node("node-1", NodeStatus::Online, vec!["llm", "tools"], "");
+    assert!(!a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_status() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    let b = make_test_node("node-1", NodeStatus::Offline, vec![], "");
+    assert!(!a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_addresses() {
+    let a = ExtendedNodeInfo {
+        base: NodeInfo {
+            id: "node-1".into(),
+            name: "node-1-name".into(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "development".into(),
+            last_seen: "".into(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        addresses: vec!["10.0.0.1".into()],
+        node_type: "agent".into(),
+    };
+    let b = ExtendedNodeInfo {
+        base: NodeInfo {
+            id: "node-1".into(),
+            name: "node-1-name".into(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "development".into(),
+            last_seen: "".into(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        node_type: "agent".into(),
+    };
+    assert!(!a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_node_type() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    let mut b = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    b.node_type = "node".into();
+    assert!(!a.content_eq(&b));
+}

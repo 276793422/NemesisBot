@@ -1011,7 +1011,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Cluster agent references — set inside the if block, used later for agent loop startup.
     let mut cluster_task_list_ref: Option<Arc<nemesis_cluster::ClusterTaskList>> = None;
     let mut cluster_work_queue_ref: Option<Arc<nemesis_cluster::ClusterWorkQueue>> = None;
-    let mut cluster_arc_ref: Option<Arc<dyn std::any::Any + Send + Sync>> = None;
+    let mut cluster_arc_ref: Option<std::sync::Weak<nemesis_cluster::cluster::Cluster>> = None;
+    let mut cluster_shutdown_ref: Option<Arc<nemesis_cluster::cluster::Cluster>> = None;
     let mut cluster_rpc_client_ref: Option<Arc<nemesis_cluster::rpc::client::RpcClient>> = None;
     if cluster_master_enabled && cluster_app_cfg.enabled {
         let cluster_cfg_path = common::cluster_config_path(&home);
@@ -1355,10 +1356,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         };
 
         // Wire the RPC call function to use cluster.call_with_context_async
-        let cluster_for_rpc = cluster.clone();
+        let cluster_weak_for_rpc = Arc::downgrade(&cluster);
         let call_fn = std::sync::Arc::new(
             move |target: &str, action: &str, payload: serde_json::Value| {
-                let c = cluster_for_rpc.clone();
+                let c = match cluster_weak_for_rpc.upgrade() {
+                    Some(arc) => arc,
+                    None => {
+                        return Box::pin(async move {
+                            Err("Cluster已关闭，RPC调用不可用".to_string())
+                        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+                    }
+                };
                 let t = target.to_string();
                 let a = action.to_string();
                 Box::pin(async move {
@@ -1383,16 +1391,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Build peers_fn: closure that returns online peers with capabilities
         // from the Cluster registry. Used by ClusterRpcTool's dynamic tool description.
         {
-            let cluster_for_peers = cluster.clone();
+            let cluster_weak_for_peers = Arc::downgrade(&cluster);
             cluster_peers_fn = Some(Arc::new(move || {
-                let cluster_arc: Arc<dyn std::any::Any + Send + Sync> = cluster_for_peers.clone();
-                if let Some(c) = cluster_arc.downcast::<nemesis_cluster::cluster::Cluster>().ok() {
-                    c.get_online_peers()
+                match cluster_weak_for_peers.upgrade() {
+                    Some(c) => c.get_online_peers()
                         .into_iter()
                         .map(|p| (p.base.id, p.base.name, p.capabilities))
-                        .collect()
-                } else {
-                    Vec::new()
+                        .collect(),
+                    None => Vec::new(),
                 }
             }));
         }
@@ -1402,11 +1408,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Save references for cluster agent loop startup (used after SharedResources is created).
         cluster_task_list_ref = Some(cluster_task_list.clone());
         cluster_work_queue_ref = Some(cluster_work_queue.clone());
-        cluster_arc_ref = Some(cluster.clone());
+        cluster_arc_ref = Some(Arc::downgrade(&cluster));
+        cluster_shutdown_ref = Some(cluster.clone());
         cluster_rpc_client_ref = rpc_client.clone();
 
-        // Keep cluster alive until gateway shuts down
-        std::mem::forget(cluster);
+        // cluster Arc stays alive via Arc cycle: Cluster → DiscoveryService → Arc<Cluster>.
+        // The shutdown ref is used to call cluster.stop() on gateway shutdown.
     } else {
         info!("[Gateway] Cluster disabled in configuration");
     }
@@ -1763,6 +1770,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         cluster_rpc_call_fn,
         cluster_rpc_config,
         cluster_peers_fn,
+        cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
     };
@@ -1774,8 +1782,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
 
     // --- Inject tool capabilities into cluster for discovery broadcast ---
-    if let Some(ref cluster_arc) = cluster_arc_ref {
-        if let Some(cluster) = cluster_arc.clone().downcast::<nemesis_cluster::cluster::Cluster>().ok() {
+    if let Some(ref cluster_weak) = cluster_arc_ref {
+        if let Some(cluster) = cluster_weak.upgrade() {
             let tool_names = agent_loop.tool_names();
             cluster.set_capabilities(tool_names);
             info!(
@@ -1786,56 +1794,60 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // --- Start cluster agent event loop (if cluster is enabled) ---
-    if let (Some(cluster_task_list), Some(cluster_work_queue), Some(cluster_arc)) =
+    if let (Some(cluster_task_list), Some(cluster_work_queue), Some(cluster_weak)) =
         (cluster_task_list_ref, cluster_work_queue_ref, cluster_arc_ref)
     {
-        // --- Crash recovery: restore incomplete tasks from previous run ---
-        //
-        // If the process crashed or was killed while cluster tasks were in progress,
-        // their state was persisted to disk by save_async_state(). On restart we:
-        //   1. restore_from_disk() — load task entries + conversation snapshots into DashMap
-        //   2. recover_task_ids()  — collect Pending tasks AND reset WaitingRemote → Pending
-        //   3. re-submit all recovered tasks into the work queue
-        //
-        // WaitingRemote tasks are reset to Pending because the callback they were waiting
-        // for is lost — the remote node already sent it while we were down. Re-executing
-        // is the safest fallback. See ClusterTaskList::recover_task_ids() for details.
-        if let Err(e) = cluster_task_list.restore_from_disk() {
-            warn!("[Gateway] Failed to restore cluster tasks from disk: {}", e);
-        }
-        let recovered = cluster_task_list.recover_task_ids();
-        for task_id in &recovered {
-            if let Err(e) = cluster_work_queue.submit(task_id.clone()) {
-                warn!(
-                    task_id = %task_id,
-                    "[Gateway] Failed to re-submit recovered task: {}", e
+        if let Some(cluster_arc) = cluster_weak.upgrade() {
+            // --- Crash recovery: restore incomplete tasks from previous run ---
+            //
+            // If the process crashed or was killed while cluster tasks were in progress,
+            // their state was persisted to disk by save_async_state(). On restart we:
+            //   1. restore_from_disk() — load task entries + conversation snapshots into DashMap
+            //   2. recover_task_ids()  — collect Pending tasks AND reset WaitingRemote → Pending
+            //   3. re-submit all recovered tasks into the work queue
+            //
+            // WaitingRemote tasks are reset to Pending because the callback they were waiting
+            // for is lost — the remote node already sent it while we were down. Re-executing
+            // is the safest fallback. See ClusterTaskList::recover_task_ids() for details.
+            if let Err(e) = cluster_task_list.restore_from_disk() {
+                warn!("[Gateway] Failed to restore cluster tasks from disk: {}", e);
+            }
+            let recovered = cluster_task_list.recover_task_ids();
+            for task_id in &recovered {
+                if let Err(e) = cluster_work_queue.submit(task_id.clone()) {
+                    warn!(
+                        task_id = %task_id,
+                        "[Gateway] Failed to re-submit recovered task: {}", e
+                    );
+                }
+            }
+            if !recovered.is_empty() {
+                info!(
+                    count = recovered.len(),
+                    "[Gateway] Recovered {} cluster tasks from previous run",
+                    recovered.len()
                 );
             }
-        }
-        if !recovered.is_empty() {
-            info!(
-                count = recovered.len(),
-                "[Gateway] Recovered {} cluster tasks from previous run",
-                recovered.len()
-            );
-        }
 
-        match crate::agent_factory::build_cluster_agent_loop(&shared_resources, cluster_arc.clone()) {
-            Ok((cluster_agent, cluster_config)) => {
-                tokio::spawn(async move {
-                    crate::cluster_agent::cluster_agent_loop(
-                        cluster_agent,
-                        cluster_config,
-                        cluster_work_queue,
-                        cluster_task_list,
-                        cluster_rpc_client_ref,
-                    ).await;
-                });
-                info!("[Gateway] Cluster agent event loop started");
+            match crate::agent_factory::build_cluster_agent_loop(&shared_resources, cluster_arc) {
+                Ok((cluster_agent, cluster_config)) => {
+                    tokio::spawn(async move {
+                        crate::cluster_agent::cluster_agent_loop(
+                            cluster_agent,
+                            cluster_config,
+                            cluster_work_queue,
+                            cluster_task_list,
+                            cluster_rpc_client_ref,
+                        ).await;
+                    });
+                    info!("[Gateway] Cluster agent event loop started");
+                }
+                Err(e) => {
+                    warn!("[Gateway] Failed to build cluster agent: {}", e);
+                }
             }
-            Err(e) => {
-                warn!("[Gateway] Failed to build cluster agent: {}", e);
-            }
+        } else {
+            warn!("[Gateway] Cluster已关闭，跳过cluster agent启动");
         }
     }
 
@@ -2279,6 +2291,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     agent_adapter.stop().ok();
     bridge_outbound_handle.abort();
     dispatch_handle.abort();
+
+    // Stop cluster (joins discovery threads, breaks Arc cycle)
+    if let Some(cluster) = cluster_shutdown_ref.take() {
+        cluster.stop();
+    }
 
     // Clean up PID file
     let _ = std::fs::remove_file(home.join("gateway.pid"));

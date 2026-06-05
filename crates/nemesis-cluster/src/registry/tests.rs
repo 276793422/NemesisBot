@@ -713,3 +713,109 @@ fn test_check_health_invalid_timestamp() {
     let node = registry.get("invalid-health").unwrap();
     assert_eq!(node.status, NodeStatus::Online);
 }
+
+// -- upsert_if_changed tests --
+
+#[test]
+fn test_upsert_if_changed_new_peer() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let changed = registry.upsert_if_changed(make_node("new-node"));
+    assert!(changed, "first insert should return true");
+    assert!(registry.get("new-node").is_some());
+}
+
+#[test]
+fn test_upsert_if_changed_identical_content() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    // Same content — should return false
+    let changed = registry.upsert_if_changed(make_node("a"));
+    assert!(!changed, "identical content should return false");
+    assert!(registry.get("a").is_some());
+}
+
+#[test]
+fn test_upsert_if_changed_different_capabilities() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    // Different capabilities — should return true
+    let updated = make_node_with_caps("a", vec!["llm", "tools"]);
+    let changed = registry.upsert_if_changed(updated);
+    assert!(changed, "different capabilities should return true");
+
+    let node = registry.get("a").unwrap();
+    assert_eq!(node.capabilities.len(), 2);
+}
+
+#[test]
+fn test_upsert_if_changed_refreshes_health_on_no_change() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    // Simulate time passing — the health timestamp should update even when content unchanged
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let changed = registry.upsert_if_changed(make_node("a"));
+    assert!(!changed);
+}
+
+#[test]
+fn test_upsert_if_changed_different_addresses() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let original = ExtendedNodeInfo {
+        base: NodeInfo {
+            id: "a".into(),
+            name: "node-a".into(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec!["llm".into()],
+        addresses: vec!["10.0.0.1".into()],
+        node_type: "agent".into(),
+    };
+    registry.upsert(original);
+
+    let updated = ExtendedNodeInfo {
+        base: NodeInfo {
+            id: "a".into(),
+            name: "node-a".into(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec!["llm".into()],
+        addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
+        node_type: "agent".into(),
+    };
+    let changed = registry.upsert_if_changed(updated);
+    assert!(changed, "different addresses should return true");
+
+    let node = registry.get("a").unwrap();
+    assert_eq!(node.addresses.len(), 2);
+}
+
+#[test]
+fn test_upsert_if_changed_resets_consecutive_failures() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    // Simulate failures
+    registry.mark_failed("a");
+    registry.mark_failed("a");
+
+    // Upsert same content — should reset failures
+    let changed = registry.upsert_if_changed(make_node("a"));
+    assert!(!changed);
+
+    // After upsert, failures should be reset
+    let should_evict = registry.mark_failed("a");
+    assert!(!should_evict, "failures should have been reset to 0");
+    let node = registry.get("a").unwrap();
+    assert_eq!(node.status, NodeStatus::Online);
+}

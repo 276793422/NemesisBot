@@ -30,26 +30,27 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 30;
 /// departed nodes and access local node information.
 pub trait ClusterCallbacks: Send + Sync {
     /// Get the local node ID.
-    fn node_id(&self) -> &str;
+    fn node_id(&self) -> String;
     /// Get the human-readable node name (e.g. "Node-A").
-    fn name(&self) -> &str;
+    fn name(&self) -> String;
     /// Get the RPC bind address (e.g. `"0.0.0.0:9000"`).
-    fn address(&self) -> &str;
+    fn address(&self) -> String;
     /// Get the RPC port number.
     fn rpc_port(&self) -> u16;
     /// Get all local IP addresses suitable for inclusion in announce messages.
     fn all_local_ips(&self) -> Vec<String>;
     /// Get the cluster role string (e.g. `"worker"`, `"manager"`).
-    fn role(&self) -> &str;
+    fn role(&self) -> String;
     /// Get the business category.
-    fn category(&self) -> &str;
+    fn category(&self) -> String;
     /// Get custom tags.
     fn tags(&self) -> Vec<String>;
     /// Get the dynamic capabilities (tool names from the AgentLoop).
     fn capabilities(&self) -> Vec<String>;
     /// Get the node type: "agent" (with LLM) or "node" (lightweight).
-    fn node_type(&self) -> &str { "agent" }
+    fn node_type(&self) -> String { "agent".into() }
     /// Handle a newly discovered or updated node.
+    /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
         &self,
         node_id: &str,
@@ -61,7 +62,7 @@ pub trait ClusterCallbacks: Send + Sync {
         tags: &[String],
         capabilities: &[String],
         node_type: &str,
-    );
+    ) -> bool;
     /// Handle a node going offline.
     fn handle_node_offline(&self, node_id: &str, reason: &str);
     /// Persist the current peer list to disk.
@@ -96,17 +97,17 @@ impl NullCallbacks {
 }
 
 impl ClusterCallbacks for NullCallbacks {
-    fn node_id(&self) -> &str { &self.node_id }
-    fn name(&self) -> &str { &self.node_id }
-    fn address(&self) -> &str { &self.address }
+    fn node_id(&self) -> String { self.node_id.clone() }
+    fn name(&self) -> String { self.node_id.clone() }
+    fn address(&self) -> String { self.address.clone() }
     fn rpc_port(&self) -> u16 { self.rpc_port }
     fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
-    fn role(&self) -> &str { &self.role }
-    fn category(&self) -> &str { &self.category }
+    fn role(&self) -> String { self.role.clone() }
+    fn category(&self) -> String { self.category.clone() }
     fn tags(&self) -> Vec<String> { Vec::new() }
     fn capabilities(&self) -> Vec<String> { Vec::new() }
-    fn node_type(&self) -> &str { "node" }
-    fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String], _node_type: &str) {}
+    fn node_type(&self) -> String { "node".into() }
+    fn handle_discovered_node(&self, _node_id: &str, _name: &str, _addresses: &[String], _rpc_port: u16, _role: &str, _category: &str, _tags: &[String], _capabilities: &[String], _node_type: &str) -> bool { false }
     fn handle_node_offline(&self, _node_id: &str, _reason: &str) {}
     fn sync_to_disk(&self) -> Result<(), String> { Ok(()) }
 }
@@ -172,13 +173,13 @@ impl RegistryCallbacks {
 }
 
 impl ClusterCallbacks for RegistryCallbacks {
-    fn node_id(&self) -> &str { &self.node_id }
-    fn name(&self) -> &str { &self.node_id }
-    fn address(&self) -> &str { &self.address }
+    fn node_id(&self) -> String { self.node_id.clone() }
+    fn name(&self) -> String { self.node_id.clone() }
+    fn address(&self) -> String { self.address.clone() }
     fn rpc_port(&self) -> u16 { self.rpc_port }
     fn all_local_ips(&self) -> Vec<String> { get_all_local_ips() }
-    fn role(&self) -> &str { &self.role }
-    fn category(&self) -> &str { &self.category }
+    fn role(&self) -> String { self.role.clone() }
+    fn category(&self) -> String { self.category.clone() }
     fn tags(&self) -> Vec<String> { Vec::new() }
     fn capabilities(&self) -> Vec<String> { Vec::new() }
 
@@ -193,7 +194,7 @@ impl ClusterCallbacks for RegistryCallbacks {
         _tags: &[String],
         capabilities: &[String],
         node_type: &str,
-    ) {
+    ) -> bool {
         // Preserve all discovered addresses (not just the first) for
         // multi-address failover, matching Go's behavior.
         let primary_address = addresses.first().cloned().unwrap_or_default();
@@ -216,7 +217,7 @@ impl ClusterCallbacks for RegistryCallbacks {
             addresses: addresses.to_vec(),
             node_type: node_type.to_string(),
         };
-        self.registry.upsert(info);
+        self.registry.upsert_if_changed(info)
     }
 
     fn handle_node_offline(&self, node_id: &str, _reason: &str) {
@@ -342,6 +343,7 @@ pub struct DiscoveryService {
     listener: UdpListener,
     config: DiscoveryConfig,
     running: Arc<AtomicBool>,
+    broadcast_thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl DiscoveryService {
@@ -359,6 +361,7 @@ impl DiscoveryService {
             listener,
             config,
             running: Arc::new(AtomicBool::new(false)),
+            broadcast_thread: std::sync::Mutex::new(None),
         })
     }
 
@@ -407,7 +410,7 @@ impl DiscoveryService {
                 return;
             }
 
-            tracing::info!(
+            tracing::debug!(
                 msg_type = %msg.msg_type,
                 node_id = %msg.node_id,
                 "[Discovery] Received discovery message"
@@ -415,7 +418,7 @@ impl DiscoveryService {
 
             match msg.msg_type {
                 super::message::DiscoveryMessageType::Announce => {
-                    cluster.handle_discovered_node(
+                    let changed = cluster.handle_discovered_node(
                         &msg.node_id,
                         &msg.name,
                         &msg.addresses,
@@ -426,9 +429,13 @@ impl DiscoveryService {
                         &msg.capabilities,
                         &msg.node_type,
                     );
-                    tracing::info!(node_id = %msg.node_id, "[Discovery] Node discovered/updated");
-                    if let Err(e) = cluster.sync_to_disk() {
-                        tracing::error!(error = %e, "[Discovery] Failed to sync config");
+                    if changed {
+                        tracing::info!(node_id = %msg.node_id, "[Discovery] Node info updated, syncing to disk");
+                        if let Err(e) = cluster.sync_to_disk() {
+                            tracing::error!(error = %e, "[Discovery] Failed to sync config");
+                        }
+                    } else {
+                        tracing::trace!(node_id = %msg.node_id, "[Discovery] Node unchanged, health refreshed");
                     }
                 }
                 super::message::DiscoveryMessageType::Bye => {
@@ -464,7 +471,7 @@ impl DiscoveryService {
         );
         broadcast_socket.set_broadcast(true).expect("failed to set broadcast");
 
-        std::thread::Builder::new()
+        let bcast_handle = std::thread::Builder::new()
             .name("discovery-broadcast".into())
             .spawn(move || {
                 // Initial announce with jitter
@@ -484,13 +491,15 @@ impl DiscoveryService {
             })
             .expect("failed to spawn broadcast thread");
 
+        *self.broadcast_thread.lock().unwrap() = Some(bcast_handle);
+
         Ok(())
     }
 
-    /// Stop the discovery service.
+    /// Stop the discovery service and join background threads.
     ///
     /// Sends a bye message before shutting down so peers detect offline
-    /// immediately.
+    /// immediately. Joins both the receive and broadcast threads.
     pub fn stop(&self) -> Result<(), DiscoveryError> {
         if !self.running.load(Ordering::SeqCst) {
             return Err(DiscoveryError::NotRunning);
@@ -503,7 +512,14 @@ impl DiscoveryService {
             tracing::error!(error = %e, "[Discovery] Failed to broadcast bye message");
         }
 
+        // Stop listener (joins receive thread)
         self.listener.stop()?;
+
+        // Join broadcast thread
+        if let Some(handle) = self.broadcast_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+
         tracing::info!("[Discovery] Discovery stopped");
         Ok(())
     }

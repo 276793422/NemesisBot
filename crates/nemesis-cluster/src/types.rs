@@ -143,6 +143,22 @@ impl ExtendedNodeInfo {
         self.capabilities.iter().any(|c| c.to_lowercase() == lower)
     }
 
+    /// Compare stable content fields, excluding `base.last_seen` timestamp.
+    ///
+    /// Used by the registry to skip redundant upserts when a periodic
+    /// broadcast arrives with identical content.
+    pub fn content_eq(&self, other: &ExtendedNodeInfo) -> bool {
+        self.base.id == other.base.id
+            && self.base.name == other.base.name
+            && self.base.role == other.base.role
+            && self.base.address == other.base.address
+            && self.base.category == other.base.category
+            && self.status == other.status
+            && self.capabilities == other.capabilities
+            && self.addresses == other.addresses
+            && self.node_type == other.node_type
+    }
+
     /// Returns the node ID.
     ///
     /// Mirrors Go's `Node.GetID()`.

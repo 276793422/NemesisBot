@@ -212,6 +212,7 @@ fn make_test_shared(bus: &Arc<nemesis_bus::MessageBus>) -> Arc<crate::agent_fact
         cluster_rpc_call_fn: None,
         cluster_rpc_config: None,
         cluster_peers_fn: None,
+        cluster_rpc_enabled: parking_lot::RwLock::new(None),
         mcp_config_path: std::path::PathBuf::from("/tmp/test/mcp.json"),
         mcp_enabled: false,
     })

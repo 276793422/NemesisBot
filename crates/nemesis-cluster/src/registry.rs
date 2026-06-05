@@ -77,6 +77,39 @@ impl PeerRegistry {
         }
     }
 
+    /// Register or update a peer only if the content has actually changed.
+    ///
+    /// Returns `true` if a new peer was inserted or an existing peer was
+    /// updated with different content. Returns `false` when the incoming
+    /// data is identical to what's already stored (health timestamps are
+    /// always refreshed regardless).
+    pub fn upsert_if_changed(&self, info: ExtendedNodeInfo) -> bool {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut peers = self.peers.lock();
+        if let Some(existing) = peers.get_mut(&info.base.id) {
+            if existing.info.content_eq(&info) {
+                existing.last_health_check = now;
+                existing.consecutive_failures = 0;
+                false
+            } else {
+                existing.info = info;
+                existing.last_health_check = now;
+                existing.consecutive_failures = 0;
+                true
+            }
+        } else {
+            peers.insert(
+                info.base.id.clone(),
+                PeerEntry {
+                    info,
+                    last_health_check: now,
+                    consecutive_failures: 0,
+                },
+            );
+            true
+        }
+    }
+
     /// Remove a peer by node ID.
     pub fn remove(&self, node_id: &str) -> bool {
         self.peers.lock().remove(node_id).is_some()
