@@ -130,7 +130,10 @@ onUnmounted(() => {
     <div v-for="node in filtered" :key="node.id">
       <div class="node-row" @click="toggleExpand(node.id)">
         <span class="node-dot" :class="node.online ? 'online' : 'offline'" />
-        <span class="node-name-col">{{ node.name }}</span>
+        <span class="node-name-col">
+          {{ node.name }}
+          <span v-if="node.isLocal" class="badge badge-primary" style="font-size:var(--text-xs);margin-left:var(--space-1)">本节点</span>
+        </span>
         <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ node.role }}</span>
         <span class="node-caps">{{ (node.capabilities || []).slice(0, 3).join(', ') }}</span>
         <span class="node-seen">{{ node.lastSeen || '--' }}</span>

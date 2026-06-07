@@ -1518,7 +1518,12 @@ fn test_remove_node_then_readd() {
     cluster.remove_node("node-x");
     assert!(cluster.get_node_info("node-x").is_none());
 
-    // Re-add
+    // Re-discovery blocked by blacklist
+    cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![], "agent");
+    assert!(cluster.get_node_info("node-x").is_none(), "blacklisted node should not be re-added");
+
+    // After unban, re-discovery works
+    cluster.unban_node("node-x");
     cluster.handle_discovered_node("node-x", "x-v2", vec!["10.0.0.2".into()], 21949, "worker", "dev", vec![], vec![], "agent");
     let node = cluster.get_node_info("node-x").unwrap();
     assert_eq!(node.base.name, "x-v2");
@@ -3439,7 +3444,7 @@ fn test_parse_host_port_no_colon_returns_default_port() {
 
 #[test]
 fn test_set_node_name() {
-    let mut cluster = Cluster::new(make_config());
+    let cluster = Cluster::new(make_config());
     assert!(cluster.node_name().contains("local-no")); // default is "Bot local-n..."
 
     cluster.set_node_name("CustomNode");

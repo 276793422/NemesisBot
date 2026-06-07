@@ -388,8 +388,9 @@ fn read_log_entries(log_dir: &Path, days: u32) -> Vec<ClusterLogEvent> {
 /// Format a log event into a human-readable ActivityFeed entry.
 fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
     let ts = &entry.ts;
-    let time = if ts.len() >= 19 {
-        // Extract "HH:MM:SS" from RFC3339 timestamp.
+    let time = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()
+    } else if ts.len() >= 19 {
         ts[11..19].to_string()
     } else {
         ts.clone()

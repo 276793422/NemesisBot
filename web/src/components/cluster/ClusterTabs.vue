@@ -12,6 +12,7 @@ const tabs = [
   { id: 'nodes', label: '节点' },
   { id: 'tasks', label: '任务' },
   { id: 'topology', label: '拓扑' },
+  { id: 'identity', label: '身份' },
   { id: 'settings', label: '配置' },
 ]
 </script>

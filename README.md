@@ -47,6 +47,10 @@
 - **加密 UDP 自动发现** - 局域网内自动发现其他节点（AES-256-GCM 加密广播）
 - **异步 RPC 通信** - 节点间非阻塞远程调用，支持多步骤工具链，令牌认证保护
 - **续行快照模式** - LLM 上下文在异步调用点保存，回调到达后自动续行
+- **运行时身份编辑** - 通过 Dashboard 实时修改节点名称、角色、分类、标签
+- **黑名单机制** - 删除节点后阻止自动重新发现，支持手动解除
+- **智能地址解析** - 自动将 0.0.0.0 替换为真实局域网 IP
+- **Dashboard 6-Tab 管理** - 概览、拓扑、身份、任务、日志、设置一体化管理
 - **静态+动态配置** - 手动配置已知节点，自动发现新节点
 - **连接池管理** - 高效的连接复用和管理
 - **限流保护** - 防止 RPC 调用过载
@@ -412,7 +416,7 @@ nemesisbot gateway --no-console # 仅记录到文件
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 核心模块（34 个 crate）
+├── crates/                          # 核心模块（35 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
 │   ├── nemesis-tools/               # 工具系统（29+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
@@ -426,10 +430,11 @@ NemesisBot_Rust/
 │   ├── nemesis-workflow/            # 工作流引擎
 │   ├── nemesis-cron/                # 定时任务（croner 解析器）
 │   ├── nemesis-config/              # 配置管理
+│   ├── nemesis-data/                # 数据处理和存储抽象
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理）
-│   ├── nemesis-web/                 # Web API + SSE（16 个 Handler）
+│   ├── nemesis-web/                 # Web API + SSE（17 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -451,7 +456,7 @@ NemesisBot_Rust/
 │   ├── plugin-ui/                   # WebView2 窗口 DLL（wry + tao）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（21 个）
+│   └── src/commands/                # CLI 命令（22 个）
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── agent.rs                 # Agent 管理
 │       ├── cluster.rs               # 集群管理
@@ -462,6 +467,7 @@ NemesisBot_Rust/
 │       ├── cron.rs                  # 定时任务
 │       ├── mcp.rs                   # MCP 协议
 │       ├── workflow.rs              # 工作流
+│       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
 ├── test-tools/                      # 测试工具
 │   ├── TestAIServer/                # AI 服务器模拟器（Go）
@@ -485,13 +491,13 @@ NemesisBot_Rust/
 ## 技术特点
 
 - **617 个 Rust 源文件** - 清晰的 workspace crate 架构
-- **34 个核心 crate** - 模块化设计，职责清晰
+- **35 个核心 crate** - 模块化设计，职责清晰
 - **8,600+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
-- **分布式集群** - 多节点协同，异步 RPC + 续行快照
+- **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **系统托盘** - tray-icon + winit 原生实现，窗口去重
 - **桌面 GUI** - plugin-ui DLL（wry + tao），审批弹窗含安全降级
 - **SSE 流式传输** - LLM 响应实时推送到 Web 端
@@ -526,6 +532,7 @@ nemesisbot cors             # CORS 配置
 nemesisbot scanner          # 扫描引擎管理
 nemesisbot migrate          # 数据迁移
 nemesisbot agent            # Agent 管理
+nemesisbot voice            # 语音管理
 ```
 
 ---
@@ -541,10 +548,10 @@ nemesisbot agent            # Agent 管理
 | 指标 | Go 版本 | Rust 版本 |
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
-| CLI 命令 | 21 个顶级 | 21 个顶级 |
+| CLI 命令 | 21 个顶级 | 22 个顶级 |
 | 工具 | 20+ | 29+（含 mcp_discover、cli_reference、exec_async 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
-| Web API 端点 | 7 | 16（含 SSE /api/chat/stream） |
+| Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
 | SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
 | 系统托盘 | fyne.io/systray | tray-icon + winit |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |

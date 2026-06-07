@@ -62,12 +62,12 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 pub struct Cluster {
     // -- Identity --
     node_id: String,
-    node_name: String,
+    node_name: parking_lot::RwLock<String>,
     node_type: String,
     address: String,
-    role: String,
-    category: String,
-    tags: Vec<String>,
+    role: parking_lot::RwLock<String>,
+    category: parking_lot::RwLock<String>,
+    tags: parking_lot::RwLock<Vec<String>>,
     /// Dynamic capabilities reported by the AgentLoop (tool names).
     /// Set via `set_capabilities()` after the agent is built.
     /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
@@ -102,6 +102,8 @@ pub struct Cluster {
     discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
     bus: Mutex<Option<Arc<dyn MessageBus>>>,
+    /// Blacklisted peer IDs — removed nodes that should not be re-discovered.
+    removed_peers: parking_lot::RwLock<std::collections::HashSet<String>>,
 
     // -- Cluster Agent --
     cluster_task_list: Mutex<Option<Arc<crate::cluster_task::ClusterTaskList>>>,
@@ -128,12 +130,12 @@ impl Cluster {
 
         Self {
             node_id: node_id.clone(),
-            node_name: format!("Bot {}", &node_id[..8.min(node_id.len())]),
+            node_name: parking_lot::RwLock::new(format!("Bot {}", &node_id[..8.min(node_id.len())])),
             node_type: "agent".into(),
             address: config.bind_address.clone(),
-            role: "worker".into(),
-            category: "general".into(),
-            tags: Vec::new(),
+            role: parking_lot::RwLock::new("worker".into()),
+            category: parking_lot::RwLock::new("general".into()),
+            tags: parking_lot::RwLock::new(Vec::new()),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir_path.join("peers.toml"),
@@ -154,6 +156,7 @@ impl Cluster {
             discovery: Mutex::new(None),
             stop_tx,
             bus: Mutex::new(None),
+            removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -181,21 +184,32 @@ impl Cluster {
             config.node_id.clone()
         };
 
-        // Try to load existing node ID from static config
-        let node_id = match crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml"))
-        {
-            Ok(sc) if !sc.node.id.is_empty() => sc.node.id,
-            _ => node_id,
-        };
+        // Try to load existing node identity from static config
+        let sc = crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml")).ok();
+        let node_id = sc.as_ref()
+            .and_then(|s| if s.node.id.is_empty() { None } else { Some(s.node.id.clone()) })
+            .unwrap_or(node_id);
+        let node_name_default = sc.as_ref()
+            .and_then(|s| if s.node.name.is_empty() { None } else { Some(s.node.name.clone()) })
+            .unwrap_or_else(|| format!("Bot {}", &node_id[..8.min(node_id.len())]));
+        let role_default = sc.as_ref()
+            .map(|s| s.node.role.clone())
+            .unwrap_or_else(|| "worker".into());
+        let category_default = sc.as_ref()
+            .map(|s| s.node.category.clone())
+            .unwrap_or_else(|| "general".into());
+        let tags_default = sc.as_ref()
+            .map(|s| s.node.tags.clone())
+            .unwrap_or_default();
 
         Self {
             node_id: node_id.clone(),
-            node_name: format!("Bot {}", &node_id[..8.min(node_id.len())]),
+            node_name: parking_lot::RwLock::new(node_name_default),
             node_type: "agent".into(),
             address: config.bind_address.clone(),
-            role: "worker".into(),
-            category: "general".into(),
-            tags: Vec::new(),
+            role: parking_lot::RwLock::new(role_default),
+            category: parking_lot::RwLock::new(category_default),
+            tags: parking_lot::RwLock::new(tags_default),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             workspace: workspace.clone(),
             static_config_path: cluster_dir.join("peers.toml"),
@@ -216,6 +230,7 @@ impl Cluster {
             discovery: Mutex::new(None),
             stop_tx,
             bus: Mutex::new(None),
+            removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -239,13 +254,28 @@ impl Cluster {
             local_caps.push("cluster".into());
         }
 
+        // Resolve 0.0.0.0 to an actual IP for node registration.
+        // TCP bind still uses 0.0.0.0 to listen on all interfaces.
+        let display_address = if self.address.starts_with("0.0.0.0") {
+            let port = self.address.rsplit(':').next().unwrap_or("");
+            let ips = network::get_all_local_ips();
+            let ip = ips.iter()
+                .find(|ip| !ip.starts_with("127."))
+                .or_else(|| ips.first())
+                .map(|s| s.as_str())
+                .unwrap_or("127.0.0.1");
+            format!("{}:{}", ip, port)
+        } else {
+            self.address.clone()
+        };
+
         let local_node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: self.node_id.clone(),
-                name: self.node_name.clone(),
+                name: self.node_name.read().clone(),
                 role: nemesis_types::cluster::NodeRole::Master,
-                address: self.address.clone(),
-                category: self.category.clone(),
+                address: display_address,
+                category: self.category.read().clone(),
                 last_seen: chrono::Utc::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
@@ -537,9 +567,15 @@ impl Cluster {
     pub fn remove_node(&self, node_id: &str) -> bool {
         let removed = self.registry.remove(node_id);
         if removed {
+            self.removed_peers.write().insert(node_id.to_string());
             crate::logger::log_discovery("removed", "", Some(node_id));
         }
         removed
+    }
+
+    /// Remove a node from the blacklist, allowing it to be re-discovered.
+    pub fn unban_node(&self, node_id: &str) -> bool {
+        self.removed_peers.write().remove(node_id)
     }
 
     /// Handle a discovered node (from UDP broadcast or manual config).
@@ -555,6 +591,11 @@ impl Cluster {
         capabilities: Vec<String>,
         node_type: &str,
     ) -> bool {
+        // Skip blacklisted nodes
+        if self.removed_peers.read().contains(node_id) {
+            return false;
+        }
+
         let primary_address = if !addresses.is_empty() {
             format!("{}:{}", addresses[0], rpc_port)
         } else {
@@ -1016,8 +1057,8 @@ impl Cluster {
     }
 
     /// Get the node name.
-    pub fn node_name(&self) -> &str {
-        &self.node_name
+    pub fn node_name(&self) -> String {
+        self.node_name.read().clone()
     }
 
     /// Get the address.
@@ -1026,18 +1067,18 @@ impl Cluster {
     }
 
     /// Get the role.
-    pub fn role(&self) -> &str {
-        &self.role
+    pub fn role(&self) -> String {
+        self.role.read().clone()
     }
 
     /// Get the category.
-    pub fn category(&self) -> &str {
-        &self.category
+    pub fn category(&self) -> String {
+        self.category.read().clone()
     }
 
     /// Get the tags.
-    pub fn tags(&self) -> &[String] {
-        &self.tags
+    pub fn tags(&self) -> Vec<String> {
+        self.tags.read().clone()
     }
 
     /// Get the workspace path.
@@ -1090,9 +1131,10 @@ impl Cluster {
     }
 
     /// Set the human-readable node name (e.g. "Node-A").
-    /// Called from gateway.rs after loading the name from config.cluster.json.
-    pub fn set_node_name(&mut self, name: impl Into<String>) {
-        self.node_name = name.into();
+    /// Called from gateway.rs after loading the name from config.cluster.json,
+    /// or from Dashboard via node.update_identity command.
+    pub fn set_node_name(&self, name: impl Into<String>) {
+        *self.node_name.write() = name.into();
     }
 
     /// Get the node type ("agent" or "node").
@@ -1103,6 +1145,21 @@ impl Cluster {
     /// Set the node type: "agent" (full with LLM) or "node" (lightweight).
     pub fn set_node_type(&mut self, node_type: impl Into<String>) {
         self.node_type = node_type.into();
+    }
+
+    /// Set the node role ("master" or "worker").
+    pub fn set_role(&self, role: impl Into<String>) {
+        *self.role.write() = role.into();
+    }
+
+    /// Set the node category (e.g. "general", "development").
+    pub fn set_category(&self, category: impl Into<String>) {
+        *self.category.write() = category.into();
+    }
+
+    /// Set the node tags.
+    pub fn set_tags(&self, tags: Vec<String>) {
+        *self.tags.write() = tags;
     }
 
     /// Set the dynamic capabilities for this node (tool names from AgentLoop).
@@ -1165,11 +1222,11 @@ impl Cluster {
             },
             local_node: ConfigNodeInfo {
                 id: self.node_id.clone(),
-                name: self.node_name.clone(),
+                name: self.node_name.read().clone(),
                 address: self.address.clone(),
-                role: self.role.clone(),
-                category: self.category.clone(),
-                tags: self.tags.clone(),
+                role: self.role.read().clone(),
+                category: self.category.read().clone(),
+                tags: self.tags.read().clone(),
                 capabilities: Vec::new(),
             },
             discovered,
@@ -1343,10 +1400,10 @@ impl Cluster {
         // get_info — returns data matching DiscoveryMessage broadcast format
         // Static fields (cloned, immutable after startup):
         let node_id = self.node_id.clone();
-        let node_name = self.node_name.clone();
-        let role = self.role.clone();
-        let category = self.category.clone();
-        let tags = self.tags.clone();
+        let node_name = self.node_name.read().clone();
+        let role = self.role.read().clone();
+        let category = self.category.read().clone();
+        let tags = self.tags.read().clone();
         let node_type = self.node_type.clone();
         let rpc_port = self.rpc_port;
         // Dynamic fields (real-time):
@@ -1979,7 +2036,7 @@ impl ClusterCallbacks for Cluster {
     }
 
     fn name(&self) -> String {
-        self.node_name.clone()
+        self.node_name.read().clone()
     }
 
     fn address(&self) -> String {
@@ -1995,15 +2052,15 @@ impl ClusterCallbacks for Cluster {
     }
 
     fn role(&self) -> String {
-        self.role.clone()
+        self.role.read().clone()
     }
 
     fn category(&self) -> String {
-        self.category.clone()
+        self.category.read().clone()
     }
 
     fn tags(&self) -> Vec<String> {
-        self.tags.clone()
+        self.tags.read().clone()
     }
 
     fn capabilities(&self) -> Vec<String> {

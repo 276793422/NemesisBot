@@ -558,7 +558,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
 
     let msg = DiscoveryMessage::new_announce(
         cluster.node_id(),
-        cluster.node_id(), // Use node_id as name
+        cluster.name(),
         addresses,
         cluster.rpc_port(),
         cluster.role(),

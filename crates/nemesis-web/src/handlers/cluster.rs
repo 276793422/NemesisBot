@@ -114,6 +114,11 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.config_set_master_enabled(ctx, &data)
             }
+            "node.update_identity" => {
+                let data = data.ok_or("missing data")?;
+                self.node_update_identity(&data, ctx)
+            }
+            "identity.get_files" => self.identity_get_files(ctx),
             "peers" => self.peers(ctx),
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
@@ -380,6 +385,7 @@ impl ClusterHandler {
     fn nodes_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
         let nodes = cluster.list_nodes();
+        let local_node_id = cluster.node_id();
 
         // Phase 3: Get per-node stats from log reader
         let node_stats_map = match require_log_dir(ctx) {
@@ -416,6 +422,7 @@ impl ClusterHandler {
                     "taskCount": task_count,
                     "successRate": success_rate,
                     "uptime": uptime,
+                    "isLocal": n.base.id == local_node_id,
                 })
             })
             .collect();
@@ -584,6 +591,97 @@ impl ClusterHandler {
             "failCount": stats.as_ref().map(|s| s.fail_count),
             "successRate": stats.as_ref().map(|s| s.success_rate),
         })))
+    }
+
+    /// Update runtime identity (name, role, category, tags) and persist to peers.toml.
+    fn node_update_identity(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let mut updated = serde_json::json!({});
+
+        if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err("name cannot be empty".to_string());
+            }
+            cluster.set_node_name(&name);
+            updated["name"] = serde_json::json!(name);
+        }
+        if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
+            let role = role.trim().to_string();
+            if role != "manager" && role != "worker" {
+                return Err("role must be 'manager' or 'worker'".to_string());
+            }
+            cluster.set_role(&role);
+            updated["role"] = serde_json::json!(role);
+        }
+        if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
+            let category = category.trim().to_string();
+            if category.is_empty() {
+                return Err("category cannot be empty".to_string());
+            }
+            cluster.set_category(&category);
+            updated["category"] = serde_json::json!(category);
+        }
+        if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
+            let tag_list: Vec<String> = tags_arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            cluster.set_tags(tag_list.clone());
+            updated["tags"] = serde_json::json!(tag_list);
+        }
+
+        // Persist to peers.toml [node] section
+        if let Ok(workspace) = require_workspace(ctx) {
+            let ppath = peers_path(workspace);
+            let mut config = if ppath.exists() {
+                nemesis_cluster::cluster_config::load_static_config(&ppath)
+                    .map_err(|e| format!("failed to load peers.toml: {}", e))?
+            } else {
+                nemesis_cluster::cluster_config::StaticConfig {
+                    cluster: nemesis_cluster::cluster_config::ClusterMeta::default(),
+                    node: nemesis_cluster::cluster_config::NodeInfo::default(),
+                    peers: Vec::new(),
+                }
+            };
+            if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
+                config.node.name = name.trim().to_string();
+            }
+            if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
+                config.node.role = role.trim().to_string();
+            }
+            if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
+                config.node.category = category.trim().to_string();
+            }
+            if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
+                config.node.tags = tags_arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            if let Some(parent) = ppath.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
+                .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+        }
+
+        // Return current values
+        updated["current_name"] = serde_json::json!(cluster.node_name());
+        updated["current_role"] = serde_json::json!(cluster.role());
+        updated["current_category"] = serde_json::json!(cluster.category());
+        updated["current_tags"] = serde_json::json!(cluster.tags());
+        updated["current_node_type"] = serde_json::json!(cluster.node_type());
+        let caps = cluster.get_capabilities();
+        updated["current_capabilities"] = serde_json::json!(caps);
+
+        Ok(Some(updated))
     }
 
     // -- Task commands --------------------------------------------------------
@@ -1026,6 +1124,33 @@ impl ClusterHandler {
                 obj.insert("master_enabled".to_string(), serde_json::json!(master_enabled));
             }
         }
+        // Return node identity from Cluster runtime or peers.toml
+        if let Ok(cluster) = require_cluster(ctx) {
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("node_id".to_string(), serde_json::json!(cluster.node_id()));
+                obj.insert("name".to_string(), serde_json::json!(cluster.node_name()));
+                obj.insert("role".to_string(), serde_json::json!(cluster.role()));
+                obj.insert("category".to_string(), serde_json::json!(cluster.category()));
+                obj.insert("node_type".to_string(), serde_json::json!(cluster.node_type()));
+                obj.insert("tags".to_string(), serde_json::json!(cluster.tags()));
+                let caps = cluster.get_capabilities();
+                obj.insert("capabilities".to_string(), serde_json::json!(caps));
+            }
+        } else if let Ok(workspace) = require_workspace(ctx) {
+            let ppath = peers_path(workspace);
+            if ppath.exists() {
+                if let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath) {
+                    if let Some(obj) = config.as_object_mut() {
+                        obj.insert("node_id".to_string(), serde_json::json!(static_cfg.node.id));
+                        obj.insert("name".to_string(), serde_json::json!(static_cfg.node.name));
+                        obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
+                        obj.insert("category".to_string(), serde_json::json!(static_cfg.node.category));
+                        obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
+                        obj.insert("capabilities".to_string(), serde_json::json!(static_cfg.node.capabilities));
+                    }
+                }
+            }
+        }
         Ok(Some(config))
     }
 
@@ -1148,6 +1273,19 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({
             "peers": content,
             "format": "toml",
+        })))
+    }
+
+    /// Read IDENTITY.md and SOUL.md from workspace for read-only preview.
+    fn identity_get_files(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        let identity = crate::handlers::read_workspace_file(workspace, "cluster/IDENTITY.md")
+            .unwrap_or_default();
+        let soul = crate::handlers::read_workspace_file(workspace, "cluster/SOUL.md")
+            .unwrap_or_default();
+        Ok(Some(serde_json::json!({
+            "identity": identity,
+            "soul": soul,
         })))
     }
 }

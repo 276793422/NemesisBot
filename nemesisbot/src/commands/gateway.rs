@@ -1060,7 +1060,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
-        cluster.set_node_name(&node_name);
+        // Only override node_name if config.cluster.json has an explicit name.
+        // Otherwise keep the name loaded from peers.toml in with_workspace().
+        if node_name != "unnamed" {
+            cluster.set_node_name(&node_name);
+        }
         cluster.set_node_type("agent");
 
         // Load static peers from peers.toml into the registry

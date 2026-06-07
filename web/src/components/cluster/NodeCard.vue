@@ -15,6 +15,7 @@ const props = defineProps<{
     taskCount?: number
     successRate?: number
     uptime?: string
+    isLocal?: boolean
   }
 }>()
 
@@ -39,10 +40,11 @@ const roleLabel = computed(() => {
   <div class="node-detail">
     <div class="node-detail-header">
       <span class="node-name">{{ node.name }}</span>
+      <span v-if="node.isLocal" class="badge badge-primary" style="font-size:var(--text-xs)">本节点</span>
       <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ roleLabel }}</span>
       <div style="flex:1" />
-      <button class="btn btn-sm" @click="emit('ping', node.id)">Ping</button>
-      <button class="btn btn-sm btn-danger" @click="emit('remove', node.id)">移除</button>
+      <button class="btn btn-sm" @click="emit('ping', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '本节点无需 Ping' : 'Ping'">Ping</button>
+      <button class="btn btn-sm btn-danger" @click="emit('remove', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '不能移除本节点' : '移除节点'">移除</button>
     </div>
     <div class="node-detail-body">
       <div class="node-detail-row"><span class="label">地址</span><span>{{ node.address || '--' }}</span></div>
