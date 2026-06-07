@@ -12,6 +12,8 @@ if /i "%~1"=="win" (
     call scripts\build-linux.bat
 ) else if /i "%~1"=="and" (
     call scripts\build-android.bat
+) else if /i "%~1"=="apk" (
+    call scripts\build-android-apk.bat
 ) else if /i "%~1"=="run" (
     call scripts\run-demo.bat
 ) else if /i "%~1"=="onlyrun" (
