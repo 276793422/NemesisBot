@@ -76,6 +76,12 @@ pub struct AppState {
     /// Agent loop for runtime model/provider switching.
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     pub agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
+    /// Cluster runtime instance for dashboard data queries.
+    pub cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    /// Cluster lifecycle service for start/stop control.
+    pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
+    /// Cluster log directory for JSONL log reader.
+    pub cluster_log_dir: Option<String>,
 }
 
 impl AppState {

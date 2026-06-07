@@ -35,7 +35,7 @@ impl AgentHandler {
             .state
             .agent_service
             .as_ref()
-            .map(|s| s.is_running())
+            .map(|s| nemesis_services::bot_service::LifecycleService::is_running(s.as_ref()))
             .unwrap_or(false);
         let model_name = ctx.state.model_name.lock().clone();
         let model_base = ctx.state.model_base.lock().clone();

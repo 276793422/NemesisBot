@@ -127,8 +127,10 @@ async fn execute_new_task(
     rpc_client: Option<&RpcClient>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
+    let content_preview = truncate_str(&task.content, 200);
+    nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
     let context = build_context(task);
-    let trace_id = format!("cluster-{}", &task.task_id[..8.min(task.task_id.len())]);
+    let trace_id = format!("cluster-{}", &task.task_id);
     // Per-task AgentInstance. The config controls this instance's identity (system_prompt, model).
     // Currently uses the shared cluster agent config, but will be customized per task
     // when "identity switching" is implemented (e.g., per-source-node system prompt).
@@ -151,6 +153,8 @@ async fn execute_new_task(
             "[ClusterAgent] Task went async, saving state"
         );
 
+        nemesis_cluster::logger::log_task("exec_async", &task.task_id, &format!("child={}", child_task_id));
+
         task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -163,6 +167,7 @@ async fn execute_new_task(
     let result = extract_final_message(&events);
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
+    nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
     Ok(())
 }
 
@@ -174,6 +179,7 @@ async fn resume_task(
     rpc_client: Option<&RpcClient>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
+    nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
     // Per-task AgentInstance. Same rationale as execute_new_task — see its comment.
     let instance = AgentInstance::new(config.clone());
 
@@ -199,7 +205,7 @@ async fn resume_task(
     instance.add_tool_result(tool_call_id, callback_result);
 
     let context = build_context(task);
-    let trace_id = format!("cluster-resume-{}", &task.task_id[..8.min(task.task_id.len())]);
+    let trace_id = format!("cluster-resume-{}", &task.task_id);
 
     let events = agent_loop
         .resume_execution(&instance, &context, &trace_id)
@@ -218,6 +224,8 @@ async fn resume_task(
             "[ClusterAgent] Resumed task went async again"
         );
 
+        nemesis_cluster::logger::log_task("exec_async", &task.task_id, &format!("child={}", child_task_id));
+
         task_list.save_async_state(
             &task.task_id,
             child_task_id,
@@ -230,12 +238,28 @@ async fn resume_task(
     let result = extract_final_message(&events);
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
+    nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Truncate a string to at most `max_len` characters, respecting char boundaries.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    match s.char_indices().nth(max_len) {
+        Some((idx, _)) => {
+            let mut truncated = s[..idx].to_string();
+            truncated.push_str("...");
+            truncated
+        }
+        None => s.to_string(),
+    }
+}
 
 /// Build a RequestContext for a cluster task.
 fn build_context(task: &nemesis_cluster::cluster_task::ClusterTask) -> RequestContext {
@@ -354,6 +378,8 @@ async fn handle_task_error(
     task: &nemesis_cluster::cluster_task::ClusterTask,
     error_msg: &str,
 ) {
+    let error_preview = truncate_str(error_msg, 200);
+    nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &error_preview);
     task_list.update_status(&task.task_id, TaskStatus::Failed);
     send_task_callback(rpc_client, task, "error", "", error_msg).await;
     task_list.complete_task(&task.task_id);

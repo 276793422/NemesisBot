@@ -390,6 +390,78 @@ pub fn build_cluster_agent_loop(
     // 5. Set cluster reference (enables cluster_rpc tool).
     agent_loop.set_cluster(cluster as Arc<dyn std::any::Any + Send + Sync>);
 
+    // 5b. Set observer callback to capture cluster task execution details (LLM + tool calls).
+    {
+        let log_cb: Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync> = Arc::new(
+            |event_type: &str, data: &serde_json::Value| {
+                // Only log cluster-related trace events.
+                let trace_id = data.get("trace_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !trace_id.starts_with("cluster") {
+                    return;
+                }
+
+                // Extract task_id from trace_id: "cluster-XXXXXXXX" or "cluster-resume-XXXXXXXX"
+                let task_id = if trace_id.starts_with("cluster-resume-") {
+                    &trace_id["cluster-resume-".len()..]
+                } else {
+                    &trace_id["cluster-".len()..]
+                };
+
+                match event_type {
+                    "llm_request" => {
+                        let round = data.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let model = data.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                        nemesis_cluster::cluster_log::write_cluster_log(
+                            "task_llm_start",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "round": round,
+                                "model": model,
+                            }),
+                        );
+                    }
+                    "llm_response" => {
+                        let round = data.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let duration_ms =
+                            data.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let tokens = data.get("usage");
+                        nemesis_cluster::cluster_log::write_cluster_log(
+                            "task_llm_end",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "round": round,
+                                "duration_ms": duration_ms,
+                                "tokens": tokens,
+                            }),
+                        );
+                    }
+                    "tool_call" => {
+                        let tool_name = data
+                            .get("tool_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let duration_ms =
+                            data.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let round = data.get("round").and_then(|v| v.as_u64()).unwrap_or(0);
+                        nemesis_cluster::cluster_log::write_cluster_log(
+                            "task_tool_call",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "round": round,
+                                "tool": tool_name,
+                                "duration_ms": duration_ms,
+                                "success": success,
+                            }),
+                        );
+                    }
+                    _ => {}
+                }
+            },
+        );
+        agent_loop.set_observer_callback(log_cb);
+    }
+
     // 6. Build tool config + register all tools + enable MCP.
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config);

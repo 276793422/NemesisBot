@@ -127,6 +127,12 @@ pub struct WebServer {
     /// Agent loop for runtime model/provider switching.
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     agent_loop: Option<Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>>,
+    /// Cluster runtime instance for dashboard data queries.
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    /// Cluster lifecycle service for start/stop control.
+    cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
+    /// Cluster log directory for JSONL log reader.
+    cluster_log_dir: Option<String>,
 }
 
 impl WebServer {
@@ -154,6 +160,9 @@ impl WebServer {
             memory_manager: None,
             forge: None,
             agent_loop: None,
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         }
     }
 
@@ -204,6 +213,21 @@ impl WebServer {
         self.agent_loop = Some(agent_loop);
     }
 
+    /// Set the cluster runtime instance for dashboard data queries.
+    pub fn set_cluster(&mut self, cluster: Arc<nemesis_cluster::cluster::Cluster>) {
+        self.cluster = Some(cluster);
+    }
+
+    /// Set the cluster lifecycle service for start/stop control.
+    pub fn set_cluster_service(&mut self, svc: Arc<dyn nemesis_services::bot_service::LifecycleService>) {
+        self.cluster_service = Some(svc);
+    }
+
+    /// Set the cluster log directory for JSONL log reader.
+    pub fn set_cluster_log_dir(&mut self, dir: String) {
+        self.cluster_log_dir = Some(dir);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -233,6 +257,9 @@ impl WebServer {
             memory_manager: self.memory_manager.clone(),
             forge: self.forge.clone(),
             agent_loop: self.agent_loop.clone().unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
+            cluster: self.cluster.clone(),
+            cluster_service: self.cluster_service.clone(),
+            cluster_log_dir: self.cluster_log_dir.clone(),
         };
 
         let state = Arc::new(state);

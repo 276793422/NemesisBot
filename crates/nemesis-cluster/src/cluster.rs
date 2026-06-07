@@ -535,7 +535,11 @@ impl Cluster {
 
     /// Remove a node.
     pub fn remove_node(&self, node_id: &str) -> bool {
-        self.registry.remove(node_id)
+        let removed = self.registry.remove(node_id);
+        if removed {
+            crate::logger::log_discovery("removed", "", Some(node_id));
+        }
+        removed
     }
 
     /// Handle a discovered node (from UDP broadcast or manual config).

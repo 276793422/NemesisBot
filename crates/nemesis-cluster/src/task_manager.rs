@@ -305,12 +305,13 @@ impl TaskManager {
 
     /// Assign a task to a node, transitioning it to Running.
     /// Returns `false` if the task was not found or not in Pending state.
-    pub fn assign_task(&self, task_id: &str, _node_id: &str) -> bool {
+    pub fn assign_task(&self, task_id: &str, node_id: &str) -> bool {
         match self.store.get(task_id) {
             Ok(task) if task.status == TaskStatus::Pending => {
                 let _ = self
                     .store
                     .update_result(task_id, TaskStatus::Running, task.result);
+                crate::logger::log_task("assigned", task_id, node_id);
                 true
             }
             _ => false,
@@ -366,7 +367,11 @@ impl TaskManager {
     ///
     /// Mirrors Go's `TaskStore.Delete(taskID string) error`.
     pub fn delete_task(&self, task_id: &str) -> bool {
-        self.store.delete(task_id).is_ok()
+        let ok = self.store.delete(task_id).is_ok();
+        if ok {
+            crate::logger::log_task("cancelled", task_id, "");
+        }
+        ok
     }
 
     /// List all tasks.
@@ -490,6 +495,12 @@ fn cleanup_completed(
                     Some(serde_json::json!({
                         "error": "task timed out: no response received within 24 hours"
                     })),
+                );
+
+                crate::logger::log_task(
+                    "timeout",
+                    &task.id,
+                    &format!("age={}s", (chrono::Utc::now() - created_utc).num_seconds()),
                 );
 
                 // Fire callback if set

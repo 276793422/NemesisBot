@@ -36,6 +36,9 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -68,6 +71,9 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),

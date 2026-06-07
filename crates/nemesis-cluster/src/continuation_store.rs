@@ -175,6 +175,11 @@ impl ContinuationStore {
         self.snapshots.lock().is_empty()
     }
 
+    /// Return the cache directory path.
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+
     /// Remove snapshots older than `max_age`.
     ///
     /// Deletes snapshot files from disk whose modification time exceeds

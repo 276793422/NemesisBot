@@ -11,6 +11,8 @@ pub mod rpc_types;
 pub mod actions_schema;
 pub mod config_loader;
 pub mod continuation_store;
+pub mod cluster_log;
+pub mod cluster_log_reader;
 pub mod logger;
 pub mod network;
 pub mod registry;

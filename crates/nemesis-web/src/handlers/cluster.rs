@@ -1,8 +1,16 @@
-//! Cluster handler — status/config.get/config.save/peers.
+//! Cluster handler — runtime status, nodes, tasks, topology, snapshots, config.
+//!
+//! Phase 2: 8 new backend commands + pagination + config validation.
+//! Phase 3: Placeholder data filled from cluster log reader.
+//! Phase 4: SSE bridge is wired in gateway.rs via `set_cluster_log_hook`.
 
-use crate::handlers::require_workspace;
+use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
-use std::path::PathBuf;
+use nemesis_cluster::cluster::Cluster;
+use nemesis_cluster::cluster_log_reader;
+use nemesis_types::cluster::{NodeRole, TaskStatus};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct ClusterHandler {
     _priv: (),
@@ -26,17 +34,131 @@ impl ModuleHandler for ClusterHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let workspace = require_workspace(ctx)?;
         match cmd {
-            "status" => self.status(workspace),
-            "config.get" => self.config_get(workspace),
+            // Runtime data commands — need Cluster instance
+            "runtime.status" => self.runtime_status(ctx),
+            "runtime.start" => self.runtime_start(ctx),
+            "runtime.stop" => self.runtime_stop(ctx),
+            "nodes.list" => self.nodes_list(ctx),
+            "nodes.ping" => {
+                let data = data.ok_or("missing data")?;
+                let node_id = data["node_id"]
+                    .as_str()
+                    .ok_or("missing node_id")?;
+                self.nodes_ping(node_id, ctx).await
+            }
+            "nodes.remove" => {
+                let data = data.ok_or("missing data")?;
+                let node_id = data["node_id"]
+                    .as_str()
+                    .ok_or("missing node_id")?;
+                self.nodes_remove(node_id, ctx)
+            }
+            "nodes.add" => {
+                let data = data.ok_or("missing data")?;
+                self.nodes_add(&data, ctx)
+            }
+            "nodes.detail" => {
+                let data = data.ok_or("missing data")?;
+                let node_id = data["node_id"]
+                    .as_str()
+                    .ok_or("missing node_id")?;
+                self.nodes_detail(node_id, ctx)
+            }
+            "tasks.list" => {
+                let status_filter = data
+                    .as_ref()
+                    .and_then(|d| d["status_filter"].as_str().map(String::from));
+                let offset = data
+                    .as_ref()
+                    .and_then(|d| d["offset"].as_u64())
+                    .map(|v| v as usize);
+                let limit = data
+                    .as_ref()
+                    .and_then(|d| d["limit"].as_u64())
+                    .map(|v| v as usize);
+                self.tasks_list(status_filter.as_deref(), offset, limit, ctx)
+            }
+            "tasks.cancel" => {
+                let data = data.ok_or("missing data")?;
+                let task_id = data["task_id"]
+                    .as_str()
+                    .ok_or("missing task_id")?;
+                self.tasks_cancel(task_id, ctx)
+            }
+            "tasks.detail" => {
+                let data = data.ok_or("missing data")?;
+                let task_id = data["task_id"]
+                    .as_str()
+                    .ok_or("missing task_id")?;
+                self.tasks_detail(task_id, ctx)
+            }
+            "tasks.submit" => {
+                let data = data.ok_or("missing data")?;
+                self.tasks_submit(&data, ctx)
+            }
+            "topology" => self.topology(ctx),
+            "traces" => self.traces(ctx),
+            "events.recent" => self.events_recent(data.as_ref(), ctx),
+            "snapshots.list" => self.snapshots_list(ctx).await,
+            "snapshots.cleanup" => self.snapshots_cleanup(ctx).await,
+
+            // Config file operations — workspace-based, no Cluster needed
+            "status" => self.legacy_status(ctx),
+            "config.get" => self.config_get(ctx),
             "config.save" => {
                 let data = data.ok_or("missing data")?;
-                self.config_save(workspace, &data)
+                self.config_save(ctx, &data)
             }
-            "peers" => self.peers(workspace),
+            "config.set_master_enabled" => {
+                let data = data.ok_or("missing data")?;
+                self.config_set_master_enabled(ctx, &data)
+            }
+            "peers" => self.peers(ctx),
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Get the Cluster instance from AppState, or return error if not injected.
+fn require_cluster(ctx: &RequestContext) -> Result<Arc<Cluster>, String> {
+    ctx.state
+        .cluster
+        .clone()
+        .ok_or_else(|| "cluster not available".to_string())
+}
+
+/// Get the cluster log directory, or return error if not configured.
+fn require_log_dir(ctx: &RequestContext) -> Result<String, String> {
+    ctx.state
+        .cluster_log_dir
+        .clone()
+        .ok_or_else(|| "cluster log directory not configured".to_string())
+}
+
+/// Format a duration as human-readable string (e.g. "2d 3h", "45m", "12s").
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    let days = secs / 86400;
+    let hours = (secs % 86400) / 3600;
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+
+    if days > 0 {
+        format!("{}d {}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else if mins > 0 {
+        format!("{}m {}s", mins, s)
+    } else {
+        format!("{}s", s)
     }
 }
 
@@ -48,8 +170,122 @@ fn peers_path(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join("cluster/peers.toml")
 }
 
+// ---------------------------------------------------------------------------
+// Runtime data commands
+// ---------------------------------------------------------------------------
+
 impl ClusterHandler {
-    fn status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    fn runtime_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+
+        // Use adapter's running state (reflects actual start/stop from Dashboard),
+        // not cluster.is_running() which is true once cluster.start() is called at init.
+        let running = ctx.state.cluster_service.as_ref()
+            .map(|s| nemesis_services::bot_service::LifecycleService::is_running(s.as_ref()))
+            .unwrap_or(false);
+
+        // Try Cluster runtime first
+        if let Ok(cluster) = require_cluster(ctx) {
+            let nodes = cluster.list_nodes();
+            let tasks = cluster.list_tasks();
+
+            let online_nodes = nodes.iter().filter(|n| n.is_online()).count();
+            let total_nodes = nodes.len();
+            let active_tasks = tasks
+                .iter()
+                .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::Running))
+                .count();
+
+            let completed: Vec<_> = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Completed)
+                .collect();
+            let failed_count = tasks
+                .iter()
+                .filter(|t| t.status == TaskStatus::Failed)
+                .count();
+            let total_tasks = tasks.len();
+
+            // Today completed
+            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let today_completed = completed
+                .iter()
+                .filter(|t| {
+                    t.completed_at
+                        .as_ref()
+                        .map(|d| d.starts_with(&today))
+                        .unwrap_or(false)
+                })
+                .count();
+
+            // Success rate
+            let success_rate = if completed.is_empty() && failed_count == 0 {
+                1.0
+            } else {
+                let denom = completed.len() + failed_count;
+                if denom == 0 {
+                    1.0
+                } else {
+                    completed.len() as f64 / denom as f64
+                }
+            };
+
+            // Average duration
+            let avg_duration = {
+                let durations: Vec<f64> = completed
+                    .iter()
+                    .filter_map(|t| {
+                        let created = chrono::DateTime::parse_from_rfc3339(&t.created_at).ok()?;
+                        let completed_str = t.completed_at.as_ref()?;
+                        let done = chrono::DateTime::parse_from_rfc3339(completed_str).ok()?;
+                        Some((done - created).num_seconds() as f64)
+                    })
+                    .collect();
+                if durations.is_empty() {
+                    "--".to_string()
+                } else {
+                    let avg = durations.iter().sum::<f64>() / durations.len() as f64;
+                    format_duration(std::time::Duration::from_secs_f64(avg))
+                }
+            };
+
+            // Health score: online_rate*40 + success_rate*40 + activity*20
+            let online_rate = if total_nodes > 0 {
+                online_nodes as f64 / total_nodes as f64
+            } else {
+                0.0
+            };
+            let activity = if active_tasks > 0 { 1.0 } else { 0.5 };
+            let health_score = ((online_rate * 40.0 + success_rate * 40.0 + activity * 20.0) as i32)
+                .clamp(0, 100);
+
+            // Phase 3: Fill recent_events from log reader
+            let recent_events = match require_log_dir(ctx) {
+                Ok(log_dir) => {
+                    let events = cluster_log_reader::read_recent_events(
+                        Path::new(&log_dir),
+                        20,
+                    );
+                    serde_json::to_value(events).unwrap_or(serde_json::json!([]))
+                }
+                Err(_) => serde_json::json!([]),
+            };
+
+            return Ok(Some(serde_json::json!({
+                "running": running,
+                "health_score": health_score,
+                "online_nodes": online_nodes,
+                "total_nodes": total_nodes,
+                "active_tasks": active_tasks,
+                "today_completed": today_completed,
+                "total_tasks": total_tasks,
+                "success_rate": success_rate,
+                "avg_duration": avg_duration,
+                "recent_events": recent_events,
+            })));
+        }
+
+        // Fallback: read from config files (no Cluster runtime)
         let config_path = cluster_config_path(workspace);
         let config = if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)
@@ -65,12 +301,10 @@ impl ClusterHandler {
         let mut node_name: Option<String> = None;
         if peers_path.exists() {
             let content = std::fs::read_to_string(&peers_path).unwrap_or_default();
-            // Count [peers.xxx] sections only
             peers_count = content
                 .lines()
                 .filter(|l| l.starts_with("[peers.") && l.ends_with(']'))
                 .count();
-            // Extract node role and name from [node] section
             let mut in_node = false;
             for line in content.lines() {
                 if line.trim() == "[node]" {
@@ -79,7 +313,7 @@ impl ClusterHandler {
                 }
                 if in_node {
                     if line.starts_with('[') {
-                        break; // next section
+                        break;
                     }
                     if let Some(val) = line.strip_prefix("role") {
                         let val = val.trim().trim_start_matches('=').trim().trim_matches('"');
@@ -98,6 +332,17 @@ impl ClusterHandler {
         }
 
         Ok(Some(serde_json::json!({
+            "running": false,
+            "health_score": 0,
+            "online_nodes": 0,
+            "total_nodes": peers_count,
+            "active_tasks": 0,
+            "today_completed": 0,
+            "total_tasks": 0,
+            "success_rate": 0.0,
+            "avg_duration": "--",
+            "recent_events": [],
+            // Legacy fields for backward compat
             "config": config,
             "peers_count": peers_count,
             "config_exists": config_path.exists(),
@@ -106,23 +351,720 @@ impl ClusterHandler {
         })))
     }
 
-    fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let path = cluster_config_path(workspace);
-        if !path.exists() {
-            return Ok(Some(serde_json::json!({})));
+    // -- Phase 2: runtime.start / runtime.stop --------------------------------
+
+    fn runtime_start(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        // Persist enabled=true to config.cluster.json before starting runtime
+        if let Ok(workspace) = require_workspace(ctx) {
+            let _ = Self::update_cluster_config_enabled(workspace, true);
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read cluster config: {}", e))?;
-        let config: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| format!("invalid cluster config: {}", e))?;
+        let svc = ctx.state.cluster_service.as_ref()
+            .ok_or("cluster service not available")?;
+        svc.start().map_err(|e| format!("start failed: {}", e))?;
+        Ok(Some(serde_json::json!({ "started": true })))
+    }
+
+    fn runtime_stop(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let svc = ctx.state.cluster_service.as_ref()
+            .ok_or("cluster service not available")?;
+        svc.stop().map_err(|e| format!("stop failed: {}", e))?;
+        // Persist enabled=false to config.cluster.json after stopping
+        if let Ok(workspace) = require_workspace(ctx) {
+            let _ = Self::update_cluster_config_enabled(workspace, false);
+        }
+        Ok(Some(serde_json::json!({ "stopped": true })))
+    }
+
+    // -- Node commands --------------------------------------------------------
+
+    fn nodes_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let nodes = cluster.list_nodes();
+
+        // Phase 3: Get per-node stats from log reader
+        let node_stats_map = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                cluster_log_reader::aggregate_node_stats(Path::new(&log_dir))
+            }
+            Err(_) => std::collections::HashMap::new(),
+        };
+
+        let result: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|n| {
+                let role = match n.base.role {
+                    NodeRole::Master => "manager",
+                    NodeRole::Worker => "worker",
+                };
+                let uptime = format_duration(n.get_uptime());
+
+                // Phase 3: Fill taskCount and successRate from log reader
+                let stats = node_stats_map.get(&n.base.id);
+                let task_count = stats.map(|s| s.task_count);
+                let success_rate = stats.map(|s| s.success_rate);
+
+                serde_json::json!({
+                    "id": n.base.id,
+                    "name": n.base.name,
+                    "role": role,
+                    "address": n.base.address,
+                    "category": n.base.category,
+                    "tags": [],
+                    "capabilities": n.capabilities,
+                    "online": n.is_online(),
+                    "lastSeen": n.base.last_seen,
+                    "taskCount": task_count,
+                    "successRate": success_rate,
+                    "uptime": uptime,
+                })
+            })
+            .collect();
+
+        Ok(Some(serde_json::json!({ "nodes": result })))
+    }
+
+    async fn nodes_ping(
+        &self,
+        node_id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let node = cluster
+            .get_node_info(node_id)
+            .ok_or_else(|| format!("node not found: {}", node_id))?;
+
+        // TCP connect to measure latency
+        let addr = node.base.address.clone();
+        let start = std::time::Instant::now();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::net::TcpStream::connect(&addr),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                let latency = start.elapsed().as_millis() as u64;
+                Ok(Some(serde_json::json!({ "latency": latency })))
+            }
+            Ok(Err(e)) => Err(format!("ping failed: {}", e)),
+            Err(_) => Err("ping timeout (5s)".to_string()),
+        }
+    }
+
+    fn nodes_remove(
+        &self,
+        node_id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let ok = cluster.remove_node(node_id);
+        Ok(Some(serde_json::json!({ "removed": ok })))
+    }
+
+    /// Phase 2: Add a peer node by writing to peers.toml.
+    fn nodes_add(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        let address = data["address"]
+            .as_str()
+            .ok_or("missing address")?
+            .to_string();
+        let name = data["name"].as_str().unwrap_or("").to_string();
+        let role = data["role"].as_str().unwrap_or("worker").to_string();
+        let category = data["category"].as_str().unwrap_or("general").to_string();
+
+        let ppath = peers_path(workspace);
+        let mut config = if ppath.exists() {
+            nemesis_cluster::cluster_config::load_static_config(&ppath)
+                .map_err(|e| format!("failed to load peers.toml: {}", e))?
+        } else {
+            // No existing peers.toml — create a minimal config with empty fields.
+            // StaticConfig does not derive Default, so we construct manually.
+            nemesis_cluster::cluster_config::StaticConfig {
+                cluster: nemesis_cluster::cluster_config::ClusterMeta::default(),
+                node: nemesis_cluster::cluster_config::NodeInfo::default(),
+                peers: Vec::new(),
+            }
+        };
+
+        // Build a new PeerConfig
+        let peer = nemesis_cluster::cluster_config::PeerConfig {
+            id: if !name.is_empty() {
+                name.clone()
+            } else {
+                format!("peer-{}", config.peers.len() + 1)
+            },
+            name: name.clone(),
+            address: address.clone(),
+            rpc_port: 0, // will be parsed from address or auto-detected
+            role: role.clone(),
+            category: category.clone(),
+            enabled: true,
+            ..Default::default()
+        };
+
+        config.peers.push(peer);
+
+        nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
+            .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+
+        // If cluster is running, try to register the node
+        if let Ok(cluster) = require_cluster(ctx) {
+            let node_id = if !name.is_empty() {
+                name.clone()
+            } else {
+                address.clone()
+            };
+            let info = nemesis_cluster::types::ExtendedNodeInfo {
+                base: nemesis_types::cluster::NodeInfo {
+                    id: node_id.clone(),
+                    name: name.clone(),
+                    role: if role == "manager" || role == "master" {
+                        NodeRole::Master
+                    } else {
+                        NodeRole::Worker
+                    },
+                    address: address.clone(),
+                    category: category.clone(),
+                    last_seen: String::new(),
+                },
+                status: nemesis_cluster::types::NodeStatus::Offline,
+                capabilities: Vec::new(),
+                addresses: Vec::new(),
+                node_type: String::new(),
+            };
+            cluster.register_node(info);
+        }
+
+        Ok(Some(serde_json::json!({ "added": true })))
+    }
+
+    /// Phase 2: Get node detail enriched with log stats.
+    fn nodes_detail(
+        &self,
+        node_id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let node = cluster
+            .get_node_info(node_id)
+            .ok_or_else(|| format!("node not found: {}", node_id))?;
+
+        let role = match node.base.role {
+            NodeRole::Master => "manager",
+            NodeRole::Worker => "worker",
+        };
+        let uptime = format_duration(node.get_uptime());
+
+        // Enrich with log stats
+        let stats = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                let map =
+                    cluster_log_reader::aggregate_node_stats(Path::new(&log_dir));
+                map.get(node_id).cloned()
+            }
+            Err(_) => None,
+        };
+
+        Ok(Some(serde_json::json!({
+            "id": node.base.id,
+            "name": node.base.name,
+            "role": role,
+            "address": node.base.address,
+            "category": node.base.category,
+            "capabilities": node.capabilities,
+            "online": node.is_online(),
+            "lastSeen": node.base.last_seen,
+            "uptime": uptime,
+            "taskCount": stats.as_ref().map(|s| s.task_count),
+            "successCount": stats.as_ref().map(|s| s.success_count),
+            "failCount": stats.as_ref().map(|s| s.fail_count),
+            "successRate": stats.as_ref().map(|s| s.success_rate),
+        })))
+    }
+
+    // -- Task commands --------------------------------------------------------
+
+    fn tasks_list(
+        &self,
+        status_filter: Option<&str>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let tasks = cluster.list_tasks();
+
+        // Map backend status to frontend status
+        let map_status = |s: TaskStatus| -> &'static str {
+            match s {
+                TaskStatus::Pending => "queued",
+                TaskStatus::Running => "running",
+                TaskStatus::Completed => "completed",
+                TaskStatus::Failed => "failed",
+                TaskStatus::Cancelled => "failed", // cancelled treated as failed
+            }
+        };
+
+        // Filter
+        let filtered: Vec<_> = tasks
+            .iter()
+            .filter(|t| {
+                if let Some(filter) = status_filter {
+                    map_status(t.status) == filter
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        // Build stats
+        let mut queued = 0u32;
+        let mut running = 0u32;
+        let mut completed = 0u32;
+        let mut failed = 0u32;
+        for t in &tasks {
+            match t.status {
+                TaskStatus::Pending => queued += 1,
+                TaskStatus::Running => running += 1,
+                TaskStatus::Completed => completed += 1,
+                TaskStatus::Failed | TaskStatus::Cancelled => failed += 1,
+            }
+        }
+
+        // Phase 3: Batch-enrich all tasks with log reader data
+        let task_summaries = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                let all_task_ids: Vec<String> = filtered.iter().map(|t| t.id.clone()).collect();
+                if all_task_ids.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    cluster_log_reader::aggregate_task_summaries(
+                        Path::new(&log_dir),
+                        &all_task_ids,
+                    )
+                }
+            }
+            Err(_) => std::collections::HashMap::new(),
+        };
+
+        let total = filtered.len();
+        let result: Vec<serde_json::Value> = filtered
+            .iter()
+            .map(|t| {
+                let duration = match (&t.created_at, &t.completed_at) {
+                    (created, Some(completed_str)) => {
+                        let c = chrono::DateTime::parse_from_rfc3339(created).ok();
+                        let d = chrono::DateTime::parse_from_rfc3339(completed_str).ok();
+                        match (c, d) {
+                            (Some(c), Some(d)) => {
+                                let secs = (d - c).num_seconds();
+                                serde_json::json!(format!("{}s", secs))
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    _ => serde_json::Value::Null,
+                };
+
+                let input = if t.payload.is_string() {
+                    t.payload.as_str().unwrap_or("").to_string()
+                } else {
+                    t.payload.to_string()
+                };
+
+                // Phase 3: Fill rounds, toolCalls, toolChain from log reader
+                let summary = task_summaries.get(&t.id);
+                let rounds = summary.map(|s| s.rounds);
+                let tool_calls = summary.map(|s| s.tool_calls);
+                let tool_chain = summary.map(|s| {
+                    s.tool_chain
+                        .iter()
+                        .map(|t| serde_json::Value::String(t.clone()))
+                        .collect::<Vec<_>>()
+                });
+
+                serde_json::json!({
+                    "id": t.id,
+                    "status": map_status(t.status),
+                    "source": t.original_channel,
+                    "target": t.peer_id,
+                    "input": truncate_str(&input, 200),
+                    "duration": duration,
+                    "rounds": rounds,
+                    "toolCalls": tool_calls,
+                    "toolChain": tool_chain,
+                })
+            })
+            .collect();
+
+        // Phase 2: Apply pagination
+        let offset_val = offset.unwrap_or(0);
+        let limit_val = limit.unwrap_or(result.len());
+        let paginated: Vec<&serde_json::Value> = result
+            .iter()
+            .skip(offset_val)
+            .take(limit_val)
+            .collect();
+
+        Ok(Some(serde_json::json!({
+            "tasks": paginated,
+            "total": total,
+            "offset": offset_val,
+            "limit": limit_val,
+            "stats": {
+                "queued": queued,
+                "running": running,
+                "completed": completed,
+                "failed": failed,
+            }
+        })))
+    }
+
+    fn tasks_cancel(
+        &self,
+        task_id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let ok = cluster.task_manager().delete_task(task_id);
+        Ok(Some(serde_json::json!({ "cancelled": ok })))
+    }
+
+    /// Phase 2: Get task detail enriched with execution summary.
+    fn tasks_detail(
+        &self,
+        task_id: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let task = cluster
+            .get_task(task_id)
+            .ok_or_else(|| format!("task not found: {}", task_id))?;
+
+        let map_status = |s: TaskStatus| -> &'static str {
+            match s {
+                TaskStatus::Pending => "queued",
+                TaskStatus::Running => "running",
+                TaskStatus::Completed => "completed",
+                TaskStatus::Failed => "failed",
+                TaskStatus::Cancelled => "failed",
+            }
+        };
+
+        // Enrich with log reader data
+        let summary = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                let ids = vec![task_id.to_string()];
+                let map = cluster_log_reader::aggregate_task_summaries(
+                    Path::new(&log_dir),
+                    &ids,
+                );
+                map.get(task_id).cloned()
+            }
+            Err(_) => None,
+        };
+
+        Ok(Some(serde_json::json!({
+            "id": task.id,
+            "status": map_status(task.status),
+            "action": task.action,
+            "source": task.original_channel,
+            "target": task.peer_id,
+            "payload": task.payload,
+            "result": task.result,
+            "createdAt": task.created_at,
+            "completedAt": task.completed_at,
+            "rounds": summary.as_ref().map(|s| s.rounds),
+            "toolCalls": summary.as_ref().map(|s| s.tool_calls),
+            "toolChain": summary.as_ref().map(|s| s.tool_chain.clone()),
+        })))
+    }
+
+    /// Phase 2: Submit a new task or peer_chat.
+    fn tasks_submit(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let content = data["content"]
+            .as_str()
+            .ok_or("missing content")?
+            .to_string();
+        let target_node_id = data["target_node_id"].as_str();
+
+        let task_id = if let Some(target) = target_node_id {
+            // Submit peer_chat to a specific node
+            let payload = serde_json::json!({
+                "content": content,
+            });
+            cluster.submit_peer_chat(
+                target,
+                "dashboard_test",
+                payload,
+                "dashboard",
+                "dashboard_session",
+            )?
+        } else {
+            // Submit a regular task
+            let payload = serde_json::json!({
+                "content": content,
+            });
+            cluster.submit_task(
+                "dashboard_test",
+                payload,
+                "dashboard",
+                "dashboard_session",
+            )
+        };
+
+        Ok(Some(serde_json::json!({
+            "task_id": task_id,
+            "submitted": true,
+        })))
+    }
+
+    // -- Topology -------------------------------------------------------------
+
+    fn topology(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let nodes = cluster.list_nodes();
+
+        let node_list: Vec<serde_json::Value> = nodes
+            .iter()
+            .map(|n| {
+                let role = match n.base.role {
+                    NodeRole::Master => "manager",
+                    NodeRole::Worker => "worker",
+                };
+                serde_json::json!({
+                    "id": n.base.id,
+                    "name": n.base.name,
+                    "role": role,
+                    "online": n.is_online(),
+                })
+            })
+            .collect();
+
+        // Phase 3: Replace full-mesh with real RPC connections from log reader
+        let connections: Vec<serde_json::Value> = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                let rpc_conns =
+                    cluster_log_reader::read_rpc_connections(Path::new(&log_dir));
+                rpc_conns
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "from": c.from,
+                            "to": c.to,
+                            "active": true,
+                            "lastSeen": c.last_seen,
+                        })
+                    })
+                    .collect()
+            }
+            Err(_) => {
+                // Fallback: full mesh for online nodes
+                let online_ids: Vec<&str> = nodes
+                    .iter()
+                    .filter(|n| n.is_online())
+                    .map(|n| n.base.id.as_str())
+                    .collect();
+                let mut conns = Vec::new();
+                for i in 0..online_ids.len() {
+                    for j in (i + 1)..online_ids.len() {
+                        conns.push(serde_json::json!({
+                            "from": online_ids[i],
+                            "to": online_ids[j],
+                            "active": true,
+                        }));
+                    }
+                }
+                conns
+            }
+        };
+
+        // Phase 3: Fill traces from log reader
+        let traces = match require_log_dir(ctx) {
+            Ok(log_dir) => {
+                let t = cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
+                serde_json::to_value(t).unwrap_or(serde_json::json!([]))
+            }
+            Err(_) => serde_json::json!([]),
+        };
+
+        Ok(Some(serde_json::json!({
+            "nodes": node_list,
+            "connections": connections,
+            "traces": traces,
+        })))
+    }
+
+    /// Phase 2: Get RPC traces.
+    fn traces(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let log_dir = require_log_dir(ctx)?;
+        let traces =
+            cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
+        Ok(Some(serde_json::json!({ "traces": traces })))
+    }
+
+    /// Phase 2: Get recent events for the ActivityFeed.
+    fn events_recent(
+        &self,
+        data: Option<&serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let log_dir = require_log_dir(ctx)?;
+        let limit = data
+            .and_then(|d| d["limit"].as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(50);
+        let events = cluster_log_reader::read_recent_events(
+            Path::new(&log_dir),
+            limit,
+        );
+        Ok(Some(serde_json::json!({ "events": events })))
+    }
+
+    async fn snapshots_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let cont_store = cluster.continuation_store();
+
+        let _task_ids = cont_store.list_pending().await;
+        let cache_dir = cont_store.cache_dir();
+
+        let mut snapshots = Vec::new();
+        if cache_dir.exists() {
+            let mut entries = std::fs::read_dir(cache_dir)
+                .map_err(|e| format!("failed to read cache dir: {}", e))?;
+            while let Some(entry) = entries.next() {
+                let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false) {
+                    let name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let size = entry
+                        .metadata()
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let created = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| {
+                            let elapsed = t.elapsed().unwrap_or_default();
+                            format_ago(elapsed)
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    snapshots.push(serde_json::json!({
+                        "name": name,
+                        "size": format_bytes(size),
+                        "created": created,
+                    }));
+                }
+            }
+        }
+
+        Ok(Some(serde_json::json!({ "snapshots": snapshots })))
+    }
+
+    async fn snapshots_cleanup(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let cont_store = cluster.continuation_store();
+
+        // Cleanup all snapshots (max_age = 0 means remove everything)
+        let removed = cont_store
+            .cleanup_old(std::time::Duration::ZERO)
+            .await
+            .map_err(|e| format!("cleanup failed: {}", e))?;
+
+        Ok(Some(serde_json::json!({ "removed": removed })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config file operations (no Cluster needed)
+// ---------------------------------------------------------------------------
+
+impl ClusterHandler {
+    fn legacy_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        // Redirect to runtime.status which handles both cases
+        self.runtime_status(ctx)
+    }
+
+    fn config_get(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        let path = cluster_config_path(workspace);
+        let mut config: serde_json::Value = if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("failed to read cluster config: {}", e))?;
+            serde_json::from_str(&content)
+                .map_err(|e| format!("invalid cluster config: {}", e))?
+        } else {
+            serde_json::json!({})
+        };
+        // Also return the master switch status from config.json
+        if let Ok(home) = require_home(ctx) {
+            let main_cfg_path = PathBuf::from(home).join("config.json");
+            let master_enabled = if main_cfg_path.exists() {
+                std::fs::read_to_string(&main_cfg_path).ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.get("cluster").and_then(|c| c.get("enabled")).and_then(|e| e.as_bool()))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("master_enabled".to_string(), serde_json::json!(master_enabled));
+            }
+        }
         Ok(Some(config))
     }
 
     fn config_save(
         &self,
-        workspace: &str,
+        ctx: &RequestContext,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+
+        // Phase 2: Config validation
+        if let Some(cluster_cfg) = data.get("cluster") {
+            let discovery_port = cluster_cfg
+                .get("discovery_port")
+                .and_then(|v| v.as_u64());
+            let rpc_port = cluster_cfg.get("rpc_port").and_then(|v| v.as_u64());
+
+            // Check ports in valid range (1-65535)
+            if let Some(port) = discovery_port {
+                if port == 0 || port > 65535 {
+                    return Err("discovery_port must be between 1 and 65535".to_string());
+                }
+            }
+            if let Some(port) = rpc_port {
+                if port == 0 || port > 65535 {
+                    return Err("rpc_port must be between 1 and 65535".to_string());
+                }
+            }
+
+            // Check discovery_port != rpc_port
+            if let (Some(dp), Some(rp)) = (discovery_port, rpc_port) {
+                if dp == rp {
+                    return Err(
+                        "discovery_port and rpc_port must be different".to_string()
+                    );
+                }
+            }
+        }
+
         let path = cluster_config_path(workspace);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -130,12 +1072,72 @@ impl ClusterHandler {
         }
         let json = serde_json::to_string_pretty(data)
             .map_err(|e| format!("failed to serialize: {}", e))?;
-        std::fs::write(&path, json)
+        std::fs::write(&path, &json)
             .map_err(|e| format!("failed to write cluster config: {}", e))?;
+
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
-    fn peers(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    /// Update only the master switch in config.json (cluster.enabled).
+    /// Does NOT touch config.cluster.json or the runtime.
+    fn config_set_master_enabled(
+        &self,
+        ctx: &RequestContext,
+        data: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let enabled = data.get("enabled")
+            .and_then(|v| v.as_bool())
+            .ok_or("missing or invalid 'enabled' field")?;
+        let home = require_home(ctx)?;
+        let main_cfg_path = PathBuf::from(home).join("config.json");
+        if !main_cfg_path.exists() {
+            return Err("config.json not found".to_string());
+        }
+        let content = std::fs::read_to_string(&main_cfg_path)
+            .map_err(|e| format!("failed to read config.json: {}", e))?;
+        let mut main_cfg: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("invalid config.json: {}", e))?;
+        // Ensure cluster object exists
+        if main_cfg.get("cluster").is_none() {
+            main_cfg["cluster"] = serde_json::json!({});
+        }
+        if let Some(cluster_obj) = main_cfg.get_mut("cluster") {
+            if let Some(obj) = cluster_obj.as_object_mut() {
+                obj.insert("enabled".to_string(), serde_json::json!(enabled));
+            }
+        }
+        let updated = serde_json::to_string_pretty(&main_cfg)
+            .map_err(|e| format!("failed to serialize config.json: {}", e))?;
+        std::fs::write(&main_cfg_path, updated)
+            .map_err(|e| format!("failed to write config.json: {}", e))?;
+        Ok(Some(serde_json::json!({ "updated": true, "enabled": enabled })))
+    }
+
+    /// Update the `enabled` field in config.cluster.json.
+    fn update_cluster_config_enabled(workspace: &str, enabled: bool) -> Result<(), String> {
+        let path = cluster_config_path(workspace);
+        let mut cfg: serde_json::Value = if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("failed to read cluster config: {}", e))?;
+            serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        if let Some(obj) = cfg.as_object_mut() {
+            obj.insert("enabled".to_string(), serde_json::json!(enabled));
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let json = serde_json::to_string_pretty(&cfg)
+            .map_err(|e| format!("failed to serialize: {}", e))?;
+        std::fs::write(&path, json)
+            .map_err(|e| format!("failed to write cluster config: {}", e))?;
+        Ok(())
+    }
+
+    fn peers(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
         let path = peers_path(workspace);
         if !path.exists() {
             return Ok(Some(serde_json::json!({ "peers": [] })));
@@ -143,11 +1145,61 @@ impl ClusterHandler {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("failed to read peers.toml: {}", e))?;
 
-        // Parse peers.toml into a simple structure
-        // The file format is TOML, return as raw content for now
         Ok(Some(serde_json::json!({
             "peers": content,
             "format": "toml",
         })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    // Find the largest byte position <= max_len that lands on a char boundary.
+    let boundary = s
+        .char_indices()
+        .take_while(|(i, _)| *i <= max_len)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    if boundary == 0 || boundary > max_len {
+        // Fallback: take only chars that fully fit
+        let end = s
+            .char_indices()
+            .take_while(|(i, c)| *i + c.len_utf8() <= max_len)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
+    } else {
+        format!("{}...", &s[..boundary])
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.0}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn format_ago(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
 }

@@ -144,6 +144,10 @@ impl ClusterServiceAdapter {
 }
 
 impl LifecycleService for ClusterServiceAdapter {
+    fn is_running(&self) -> bool {
+        self.state.lock().unwrap().running
+    }
+
     fn start(&self) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
         if state.running {

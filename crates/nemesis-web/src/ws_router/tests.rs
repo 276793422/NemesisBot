@@ -60,6 +60,9 @@ fn make_test_state() -> Arc<AppState> {
         memory_manager: None,
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        cluster_service: None,
+        cluster_log_dir: None,
     })
 }
 

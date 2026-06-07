@@ -984,13 +984,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     info!("[Gateway] Agent loop tools configured (default + memory + skills + hardware + exec + cron{})",
           if mcp_enabled { " + MCP" } else { "" });
 
-    // Step 9a: Set up cluster if enabled.
+    // Step 9a: Set up cluster.
     // Mirrors Go's bot_service.go initComponents → startCluster.
-    // Master switch: config.json "cluster.enabled" (must be true).
-    // Sub-config:    config.cluster.json "enabled" (also must be true).
-    // Both must be enabled for cluster to activate.
+    // The Cluster object and adapter are always created for dynamic start/stop support.
+    // Network components (RPC server, discovery) only start when both config flags are enabled.
     let cluster_master_enabled = cfg.cluster.as_ref().map(|c| c.enabled).unwrap_or(false);
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
+    let cluster_should_start = cluster_master_enabled && cluster_app_cfg.enabled;
 
     // Cluster RPC resources — filled inside the cluster block below, consumed by SharedResources.
     let mut cluster_rpc_call_fn: Option<
@@ -1011,12 +1011,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
     // Cluster refs saved during init, used to create adapter after SharedResources is built.
+    #[allow(unused_assignments)] // always overwritten by the cluster init block below
     let mut cluster_adapter_refs: Option<(
         Arc<nemesis_cluster::cluster::Cluster>,
         Arc<nemesis_cluster::ClusterTaskList>,
         Arc<nemesis_cluster::ClusterWorkQueue>,
     )> = None;
-    if cluster_master_enabled && cluster_app_cfg.enabled {
+    // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
+    // Network components are started below only when cluster_should_start is true.
+    {
         let cluster_cfg_path = common::cluster_config_path(&home);
         let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
         let cluster_data: serde_json::Value = serde_json::from_str(&cluster_json).unwrap_or_default();
@@ -1123,20 +1126,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if let Err(e) = cluster.register_basic_handlers() {
             warn!("[Gateway] Failed to register basic RPC handlers: {}", e);        }
 
-        // Start RPC server FIRST (register_default_handlers runs inside start(),
-        // so we must call start() before registering our custom handlers to avoid
-        // them being overwritten).
-        let rpc_server_ref = cluster.rpc_server()
-            .expect("rpc_server just set")
-            .clone();
-        info!("[Gateway] Starting RPC server on 0.0.0.0:{}", cluster_app_cfg.rpc_port);
-        // Await start() synchronously — it binds the TCP listener and spawns the
-        // accept loop, then returns. This ensures default handlers are registered
-        // before we overwrite them below.
-        if let Err(e) = rpc_server_ref.start().await {
-            error!("[Gateway] RPC server error on port {}: {}", cluster_app_cfg.rpc_port, e);
+        // Start RPC server (network operation — only when cluster is fully enabled).
+        if cluster_should_start {
+            let rpc_server_ref = cluster.rpc_server()
+                .expect("rpc_server just set")
+                .clone();
+            info!("[Gateway] Starting RPC server on 0.0.0.0:{}", cluster_app_cfg.rpc_port);
+            // Await start() synchronously — it binds the TCP listener and spawns the
+            // accept loop, then returns. This ensures default handlers are registered
+            // before we overwrite them below.
+            if let Err(e) = rpc_server_ref.start().await {
+                error!("[Gateway] RPC server error on port {}: {}", cluster_app_cfg.rpc_port, e);
+            }
+            info!("[Gateway] RPC server started on port {}", cluster_app_cfg.rpc_port);
         }
-        info!("[Gateway] RPC server started on port {}", cluster_app_cfg.rpc_port);
 
         // Now register custom peer_chat handler using PeerChatHandler.
         // NOTE: We create the handler here but register it AFTER Arc::new(cluster)
@@ -1333,76 +1336,79 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Cluster: message bus injected for continuation flow");
         }
 
-        // --- Wire Forge-Cluster bridge ---
-        // Replace the NoOpBridge with a real ClusterForgeBridgeAdapter so that
-        // Forge can share reflections with cluster peers.
-        if let Some(ref forge_arc) = forge_for_web {
-            let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
-            forge_arc.set_bridge(Arc::new(cluster_bridge));
-            info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
-        }
+        // --- Network components: only start when cluster is fully enabled ---
+        if cluster_should_start {
+            // Wire Forge-Cluster bridge
+            if let Some(ref forge_arc) = forge_for_web {
+                let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
+                forge_arc.set_bridge(Arc::new(cluster_bridge));
+                info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
+            }
 
-        // --- Start UDP Discovery Service (managed by Cluster) ---
-        cluster.start_discovery(cluster.clone());
-        info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port);
+            // Start UDP Discovery Service (managed by Cluster)
+            cluster.start_discovery(cluster.clone());
+            info!("[Gateway] UDP discovery started on port {}", cluster_app_cfg.port);
 
-        // RPC server was already created and set above before start().
-        // RPC client was already created by Cluster::start().
+            // RPC server was already created and set above before start().
+            // RPC client was already created by Cluster::start().
 
-        // Create cluster_rpc config + RPC call function for SharedResources.
-        // The factory function will create the ClusterRpcTool and register it.
-        let rpc_cfg = nemesis_agent::ClusterRpcConfig {
-            local_node_id: node_id.clone(),
-            timeout_secs: 3600,
-            local_rpc_port: cluster_app_cfg.rpc_port,
-        };
+            // Create cluster_rpc config + RPC call function for SharedResources.
+            // The factory function will create the ClusterRpcTool and register it.
+            let rpc_cfg = nemesis_agent::ClusterRpcConfig {
+                local_node_id: node_id.clone(),
+                timeout_secs: 3600,
+                local_rpc_port: cluster_app_cfg.rpc_port,
+            };
 
-        // Wire the RPC call function to use cluster.call_with_context_async
-        let cluster_weak_for_rpc = Arc::downgrade(&cluster);
-        let call_fn = std::sync::Arc::new(
-            move |target: &str, action: &str, payload: serde_json::Value| {
-                let c = match cluster_weak_for_rpc.upgrade() {
-                    Some(arc) => arc,
-                    None => {
-                        return Box::pin(async move {
-                            Err("Cluster已关闭，RPC调用不可用".to_string())
-                        }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+            // Wire the RPC call function to use cluster.call_with_context_async
+            let cluster_weak_for_rpc = Arc::downgrade(&cluster);
+            let call_fn = std::sync::Arc::new(
+                move |target: &str, action: &str, payload: serde_json::Value| {
+                    let c = match cluster_weak_for_rpc.upgrade() {
+                        Some(arc) => arc,
+                        None => {
+                            return Box::pin(async move {
+                                Err("Cluster已关闭，RPC调用不可用".to_string())
+                            }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
+                        }
+                    };
+                    let t = target.to_string();
+                    let a = action.to_string();
+                    Box::pin(async move {
+                        let bytes = c.call_with_context_async(&t, &a, payload, std::time::Duration::from_secs(3600))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        // Deserialize the response bytes to JSON Value
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .map_err(|e| format!("Failed to parse RPC response: {}", e))
+                    }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
+                },
+            );
+
+            // Store for SharedResources (factory function will register the tool).
+            cluster_rpc_call_fn = Some(call_fn);
+            cluster_rpc_config = Some(rpc_cfg);
+
+            // cluster_rpc tool registration is now handled by the factory function.
+            // The rpc_call_fn is stored here for SharedResources consumption.
+            info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
+
+            // Build peers_fn: closure that returns online peers with capabilities
+            // from the Cluster registry. Used by ClusterRpcTool's dynamic tool description.
+            {
+                let cluster_weak_for_peers = Arc::downgrade(&cluster);
+                cluster_peers_fn = Some(Arc::new(move || {
+                    match cluster_weak_for_peers.upgrade() {
+                        Some(c) => c.get_online_peers()
+                            .into_iter()
+                            .map(|p| (p.base.id, p.base.name, p.capabilities))
+                            .collect(),
+                        None => Vec::new(),
                     }
-                };
-                let t = target.to_string();
-                let a = action.to_string();
-                Box::pin(async move {
-                    let bytes = c.call_with_context_async(&t, &a, payload, std::time::Duration::from_secs(3600))
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    // Deserialize the response bytes to JSON Value
-                    serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .map_err(|e| format!("Failed to parse RPC response: {}", e))
-                }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>
-            },
-        );
-
-        // Store for SharedResources (factory function will register the tool).
-        cluster_rpc_call_fn = Some(call_fn);
-        cluster_rpc_config = Some(rpc_cfg);
-
-        // cluster_rpc tool registration is now handled by the factory function.
-        // The rpc_call_fn is stored here for SharedResources consumption.
-        info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
-
-        // Build peers_fn: closure that returns online peers with capabilities
-        // from the Cluster registry. Used by ClusterRpcTool's dynamic tool description.
-        {
-            let cluster_weak_for_peers = Arc::downgrade(&cluster);
-            cluster_peers_fn = Some(Arc::new(move || {
-                match cluster_weak_for_peers.upgrade() {
-                    Some(c) => c.get_online_peers()
-                        .into_iter()
-                        .map(|p| (p.base.id, p.base.name, p.capabilities))
-                        .collect(),
-                    None => Vec::new(),
-                }
-            }));
+                }));
+            }
+        } else {
+            info!("[Gateway] Cluster initialized (inactive) — start via Dashboard or enable in config");
         }
 
         // ContinuationManager injection into agent_loop is now handled by the factory function.
@@ -1412,8 +1418,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // For now, save the cluster-related Arc refs needed.
         cluster_adapter_refs = Some((cluster.clone(), cluster_task_list.clone(), cluster_work_queue.clone()));
 
-    } else {
-        info!("[Gateway] Cluster disabled in configuration");
     }
 
     // C1: Create ChannelManager and wire it.
@@ -1789,8 +1793,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         );
     }
 
-    // --- Create ClusterServiceAdapter and perform first start ---
-    // The adapter handles: cluster.start(), RPC server start, discovery start,
+    // --- Create ClusterServiceAdapter (always, for dynamic start/stop from Dashboard) ---
+    // The adapter manages: cluster.start(), RPC server start, discovery start,
     // task recovery from disk, cluster agent loop spawn, ClusterRpcTool enable.
     if let Some((cluster, task_list, work_queue)) = cluster_adapter_refs.take() {
         let adapter = Arc::new(crate::cluster_service::ClusterServiceAdapter::new(
@@ -1801,8 +1805,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             task_list,
             work_queue,
         ));
-        if let Err(e) = adapter.first_start() {
-            warn!("[Gateway] Cluster adapter first start failed: {}", e);
+        // Only perform first start when both config flags are enabled.
+        // Otherwise the adapter is created but idle — can be started from Dashboard.
+        if cluster_should_start {
+            if let Err(e) = adapter.first_start() {
+                warn!("[Gateway] Cluster adapter first start failed: {}", e);
+            }
         }
         cluster_adapter = Some(adapter);
     }
@@ -1865,6 +1873,34 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     if let Some(forge) = forge_for_web {
         web_server.set_forge(forge);
         info!("[Gateway] Forge instance injected into web server");
+    }
+
+    // Inject Cluster into web server for dashboard data queries
+    if let Some(ref adapter) = cluster_adapter {
+        web_server.set_cluster(adapter.cluster().clone());
+        info!("[Gateway] Cluster instance injected into web server");
+
+        // Initialize cluster log writer for structured JSONL logging
+        let cluster_log_dir = home.join("workspace/logs/cluster_logs");
+        nemesis_cluster::cluster_log::init_cluster_log(&cluster_log_dir);
+
+        // Inject cluster lifecycle service for start/stop control
+        web_server.set_cluster_service(adapter.clone() as Arc<dyn nemesis_services::bot_service::LifecycleService>);
+        // Inject cluster log directory for JSONL log reader
+        web_server.set_cluster_log_dir(cluster_log_dir.to_string_lossy().to_string());
+        info!("[Gateway] Cluster service and log dir injected into web server");
+
+        // Phase 4: Bridge cluster log events → SSE EventHub for real-time Dashboard updates.
+        // Every cluster log entry (task_submitted, rpc_call, node_online, etc.) is forwarded
+        // to connected SSE clients via the EVENT_CLUSTER_EVENT channel.
+        let event_hub = web_server.event_hub().clone();
+        nemesis_cluster::cluster_log::set_cluster_log_hook(Arc::new(move |event, data| {
+            event_hub.publish(nemesis_web::events::EVENT_CLUSTER_EVENT, serde_json::json!({
+                "event": event,
+                "data": data,
+            }));
+        }));
+        info!("[Gateway] Cluster log → SSE EventHub bridge connected");
     }
 
     // Inject AgentLoop ref into web server for runtime model switching
@@ -2185,18 +2221,72 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         let mut tray = PlatformTray::new();
 
-        // Set cluster callbacks (only when cluster is configured)
+        // Set cluster callbacks — tray controls both config files + runtime
         if let Some(ref ca) = cluster_adapter {
+            let home_for_start = home.clone();
             let ca_start = ca.clone();
             tray.set_on_cluster_start(Box::new(move || {
+                // Write config.json cluster.enabled = true
+                let cfg_path = home_for_start.join("config.json");
+                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if cfg.get("cluster").is_none() {
+                            cfg["cluster"] = serde_json::json!({});
+                        }
+                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
+                            obj.insert("enabled".to_string(), serde_json::json!(true));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                let _ = std::fs::write(&cfg_path, updated);
+                            }
+                        }
+                    }
+                }
+                // Write config.cluster.json enabled = true
+                let cluster_cfg_path = home_for_start.join("workspace/config/config.cluster.json");
+                if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = cfg.as_object_mut() {
+                            obj.insert("enabled".to_string(), serde_json::json!(true));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                let _ = std::fs::write(&cluster_cfg_path, updated);
+                            }
+                        }
+                    }
+                }
                 if let Err(e) = ca_start.start() {
                     tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
                 }
             }));
+
+            let home_for_stop = home.clone();
             let ca_stop = ca.clone();
             tray.set_on_cluster_stop(Box::new(move || {
                 if let Err(e) = ca_stop.stop() {
                     tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
+                }
+                // Write config.cluster.json enabled = false
+                let cluster_cfg_path = home_for_stop.join("workspace/config/config.cluster.json");
+                if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path) {
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = cfg.as_object_mut() {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                let _ = std::fs::write(&cluster_cfg_path, updated);
+                            }
+                        }
+                    }
+                }
+                // Write config.json cluster.enabled = false
+                let cfg_path = home_for_stop.join("config.json");
+                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
+                            obj.insert("enabled".to_string(), serde_json::json!(false));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                let _ = std::fs::write(&cfg_path, updated);
+                            }
+                        }
+                    }
                 }
             }));
         }

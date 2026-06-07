@@ -368,6 +368,9 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -580,6 +583,9 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -690,6 +696,9 @@ use super::*;
             memory_manager: None,
             forge: None,
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+            cluster: None,
+            cluster_service: None,
+            cluster_log_dir: None,
         })
     }
 

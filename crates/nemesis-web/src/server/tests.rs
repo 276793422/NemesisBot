@@ -544,6 +544,9 @@ async fn test_handle_health_endpoint() {
         memory_manager: None,
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        cluster_service: None,
+        cluster_log_dir: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -575,6 +578,9 @@ async fn test_handle_health_not_running() {
         memory_manager: None,
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        cluster_service: None,
+        cluster_log_dir: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -1067,6 +1073,9 @@ async fn test_handle_health_with_model_state() {
         memory_manager: None,
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        cluster_service: None,
+        cluster_log_dir: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;

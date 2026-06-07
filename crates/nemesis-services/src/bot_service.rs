@@ -147,6 +147,11 @@ pub trait LifecycleService: Send + Sync {
     fn stop(&self) -> Result<(), String> {
         Ok(())
     }
+
+    /// Check whether the service is currently running.
+    fn is_running(&self) -> bool {
+        false
+    }
 }
 
 /// Type-erased handle for a service with start/stop lifecycle.
