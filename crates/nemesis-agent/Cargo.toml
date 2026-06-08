@@ -13,6 +13,7 @@ nemesis-tools = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-forge = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -136,8 +136,9 @@ async fn execute_new_task(
     // when "identity switching" is implemented (e.g., per-source-node system prompt).
     let instance = AgentInstance::new(config.clone());
 
+    let token = tokio_util::sync::CancellationToken::new();
     let events = agent_loop
-        .run_with_trace(&instance, &task.content, &context, &trace_id, false)
+        .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token)
         .await;
 
     if is_async_done(&events) {

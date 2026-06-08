@@ -264,6 +264,22 @@ function sendMessage() {
   nextTick(() => chatInput.value?.focus())
 }
 
+function stopGeneration() {
+  request('agent', 'cancel').then((res) => {
+    if (res && res.cancelled > 0) {
+      chatStore.streaming = false
+      chatStore.addMessage({
+        role: 'system',
+        content: '已停止生成',
+        timestamp: new Date().toISOString(),
+      })
+      nextTick(() => scrollToBottom())
+    }
+  }).catch(() => {
+    chatStore.streaming = false
+  })
+}
+
 // Voice toolbar toggle functions
 async function toggleDictation() {
   if (voiceDictation.value) {
@@ -552,7 +568,12 @@ onUnmounted(() => {
         @input="handleInput"
         :disabled="chatStore.streaming"
       ></textarea>
-      <button class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim() || chatStore.streaming">
+      <button v-if="chatStore.streaming" class="btn btn-stop" @click="stopGeneration" title="停止生成">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+          <rect x="6" y="6" width="12" height="12" rx="2"/>
+        </svg>
+      </button>
+      <button v-else class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
         发送
       </button>
       <button
@@ -639,5 +660,29 @@ onUnmounted(() => {
 .toolbar-toggle.active {
   border-color: var(--accent);
   color: var(--accent);
+}
+.btn-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  border: 1px solid #dc3545;
+  border-radius: var(--radius-md);
+  background: #dc3545;
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.btn-stop:hover {
+  background: #c82333;
+  border-color: #c82333;
+}
+.btn-stop svg {
+  display: block;
 }
 </style>

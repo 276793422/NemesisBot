@@ -200,6 +200,16 @@ pub trait AgentLoopService: Send + Sync + LifecycleService {
     fn process_heartbeat(&self) -> Result<String, String> {
         Ok(String::new())
     }
+
+    /// Cancel an in-progress session. Returns true if a session was found and cancelled.
+    fn cancel_session(&self, _session_key: &str) -> bool {
+        false
+    }
+
+    /// Cancel all in-progress sessions. Returns the number of sessions cancelled.
+    fn cancel_all_sessions(&self) -> usize {
+        0
+    }
 }
 
 /// A security checker middleware.

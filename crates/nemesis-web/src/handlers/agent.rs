@@ -17,13 +17,14 @@ impl ModuleHandler for AgentHandler {
     async fn handle_cmd(
         &self,
         cmd: &str,
-        _data: Option<serde_json::Value>,
+        data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         match cmd {
             "status" => self.status(ctx),
             "start" => self.start(ctx),
             "stop" => self.stop(ctx),
+            "cancel" => self.cancel(data, ctx),
             _ => Err(format!("unknown command: agent.{}", cmd)),
         }
     }
@@ -71,6 +72,18 @@ impl AgentHandler {
                 Ok(Some(serde_json::json!({ "stopped": true })))
             }
             None => Err("Agent not available".to_string()),
+        }
+    }
+
+    fn cancel(&self, _data: Option<serde_json::Value>, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let agent_loop = ctx.state.agent_loop.read().clone();
+        match agent_loop {
+            Some(al) => {
+                let cancelled = al.cancel_all_sessions();
+                tracing::info!("[Agent] Cancel request: {} session(s) cancelled", cancelled);
+                Ok(Some(serde_json::json!({ "cancelled": cancelled })))
+            }
+            None => Err("Agent not running".to_string()),
         }
     }
 }

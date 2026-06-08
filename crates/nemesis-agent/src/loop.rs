@@ -371,6 +371,10 @@ pub struct AgentLoop {
     data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Forge instance for experience collection during tool execution.
     forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    /// Per-session cancellation tokens. When a user requests cancellation,
+    /// the token for the corresponding session is cancelled, causing the
+    /// LLM loop to break at the next check point.
+    cancel_tokens: dashmap::DashMap<String, tokio_util::sync::CancellationToken>,
 }
 
 impl AgentLoop {
@@ -405,6 +409,7 @@ impl AgentLoop {
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
+            cancel_tokens: dashmap::DashMap::new(),
         }
     }
 
@@ -477,6 +482,7 @@ impl AgentLoop {
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
+            cancel_tokens: dashmap::DashMap::new(),
         }
     }
 
@@ -1159,7 +1165,8 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "cron", session_key);
 
-        let events = self.run_with_trace(&instance, content, &context, &trace_id, false).await;
+        let token = tokio_util::sync::CancellationToken::new();
+        let events = self.run_with_trace(&instance, content, &context, &trace_id, false, &token).await;
 
         // Extract final response for the conversation end event.
         let final_response = events.iter().rev()
@@ -1225,7 +1232,8 @@ impl AgentLoop {
         let instance = AgentInstance::new(config);
         let context = RequestContext::new(channel, chat_id, "heartbeat", "heartbeat");
 
-        let events = self.run_with_trace(&instance, content, &context, &trace_id, false).await;
+        let token = tokio_util::sync::CancellationToken::new();
+        let events = self.run_with_trace(&instance, content, &context, &trace_id, false, &token).await;
 
         // Extract final response for the conversation end event.
         let final_response = events.iter().rev()
@@ -1382,11 +1390,17 @@ impl AgentLoop {
             return (agent_id, BUSY_MESSAGE.to_string(), None);
         }
 
+        // Create cancellation token for this session.
+        let cancel_token = self.create_cancel_token(&session_key);
+
         // Process with the loop, then release.
         let voice_playback = msg.voice_playback.unwrap_or(false);
         let result = self
-            .run_agent_loop_internal(&session_key, &msg.content, &msg.channel, &msg.chat_id, voice_playback)
+            .run_agent_loop_internal(&session_key, &msg.content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token)
             .await;
+
+        // Clean up cancellation token and release session.
+        self.remove_cancel_token(&session_key);
         self.release_session(&session_key);
 
         match result {
@@ -1451,6 +1465,7 @@ impl AgentLoop {
             &msg.content
         };
 
+        let cancel_token = tokio_util::sync::CancellationToken::new();
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -1458,6 +1473,7 @@ impl AgentLoop {
                 origin_channel,
                 &origin_chat_id,
                 false,
+                &cancel_token,
             )
             .await;
 
@@ -1658,6 +1674,56 @@ impl AgentLoop {
     pub fn session_queue_length(&self, session_key: &str) -> usize {
         let map = self.session_busy.lock();
         map.get(session_key).map_or(0, |s| s.queue_length)
+    }
+
+    // -----------------------------------------------------------------------
+    // Session cancellation
+    // -----------------------------------------------------------------------
+
+    /// Cancel an in-progress session by session_key.
+    ///
+    /// If the session is currently being processed by the LLM loop, this
+    /// triggers the cancellation token, causing the loop to break at the
+    /// next check point (after the current LLM call or tool execution).
+    ///
+    /// Returns true if a cancellation token was found and cancelled.
+    pub fn cancel_session(&self, session_key: &str) -> bool {
+        if let Some(token) = self.cancel_tokens.get(session_key) {
+            token.cancel();
+            info!("[AgentLoop] Session cancellation requested: {}", session_key);
+            true
+        } else {
+            debug!("[AgentLoop] No active session to cancel: {}", session_key);
+            false
+        }
+    }
+
+    /// Cancel all in-progress sessions.
+    ///
+    /// Returns the number of sessions that were cancelled.
+    pub fn cancel_all_sessions(&self) -> usize {
+        let mut count = 0;
+        for entry in self.cancel_tokens.iter() {
+            entry.value().cancel();
+            count += 1;
+        }
+        if count > 0 {
+            info!("[AgentLoop] Cancelled {} active session(s)", count);
+        }
+        count
+    }
+
+    /// Create and store a cancellation token for a session.
+    /// Returns the token for the caller to pass into the processing pipeline.
+    fn create_cancel_token(&self, session_key: &str) -> tokio_util::sync::CancellationToken {
+        let token = tokio_util::sync::CancellationToken::new();
+        self.cancel_tokens.insert(session_key.to_string(), token.clone());
+        token
+    }
+
+    /// Remove the cancellation token for a session after processing completes.
+    fn remove_cancel_token(&self, session_key: &str) {
+        self.cancel_tokens.remove(session_key);
     }
 
     // -----------------------------------------------------------------------
@@ -2014,6 +2080,7 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
         voice_playback: bool,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<String, String> {
         // Generate trace ID and emit conversation_start event.
         let trace_id = format!("{}-{}", session_key, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
@@ -2038,7 +2105,7 @@ impl AgentLoop {
         let instance = self.get_or_create_instance(session_key);
         let context = RequestContext::new(channel, chat_id, "agent", session_key);
 
-        let events = self.run_with_trace(&instance, user_message, &context, &trace_id, voice_playback).await;
+        let events = self.run_with_trace(&instance, user_message, &context, &trace_id, voice_playback, cancel_token).await;
 
         // Maybe trigger summarization.
         self.maybe_summarize(&instance, session_key, channel, chat_id);
@@ -2126,7 +2193,8 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> Vec<AgentEvent> {
         let trace_id = format!("run-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
-        self.run_with_trace(instance, user_message, context, &trace_id, false).await
+        let token = tokio_util::sync::CancellationToken::new();
+        self.run_with_trace(instance, user_message, context, &trace_id, false, &token).await
     }
 
     /// Run the agent loop with a specific trace ID for observer event correlation.
@@ -2142,12 +2210,13 @@ impl AgentLoop {
         context: &RequestContext,
         trace_id: &str,
         voice_playback: bool,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Vec<AgentEvent> {
         // Add user message to instance history.
         instance.add_user_message(user_message);
         instance.set_state(crate::types::AgentState::Thinking);
 
-        self.run_llm_loop(instance, context, trace_id, voice_playback).await
+        self.run_llm_loop(instance, context, trace_id, voice_playback, cancel_token).await
     }
 
     /// Resume execution from a previously saved conversation state.
@@ -2162,7 +2231,8 @@ impl AgentLoop {
         trace_id: &str,
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
-        self.run_llm_loop(instance, context, trace_id, false).await
+        let token = tokio_util::sync::CancellationToken::new();
+        self.run_llm_loop(instance, context, trace_id, false, &token).await
     }
 
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
@@ -2172,6 +2242,7 @@ impl AgentLoop {
         context: &RequestContext,
         trace_id: &str,
         voice_playback: bool,
+        cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
@@ -2187,6 +2258,13 @@ impl AgentLoop {
         loop {
             // Auto-reload MCP tools if config file changed.
             self.check_mcp_reload();
+
+            // Check cancellation at the top of each iteration.
+            if cancel_token.is_cancelled() {
+                info!("[AgentLoop] LLM loop cancelled at top of iteration, turns_used={}", turns_used);
+                events.push(AgentEvent::Done("已取消".to_string()));
+                break;
+            }
 
             if turns_used >= self.config.max_turns {
                 warn!(
@@ -2253,7 +2331,18 @@ impl AgentLoop {
             // Clone provider Arc and model string so RwLock guards are dropped before .await.
             let active_provider = self.provider.read().clone();
             let active_model = self.active_model.read().clone();
-            let mut response = match active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs).await {
+
+            // Use tokio::select! to allow cancellation during the LLM call.
+            let chat_result = tokio::select! {
+                result = active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs) => result,
+                _ = cancel_token.cancelled() => {
+                    info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
+                    events.push(AgentEvent::Done("已取消".to_string()));
+                    break;
+                }
+            };
+
+            let mut response = match chat_result {
                 Ok(resp) => resp,
                 Err(err) => {
                     let err_lower = err.to_lowercase();
@@ -2442,6 +2531,13 @@ impl AgentLoop {
             instance.set_state(crate::types::AgentState::ExecutingTool);
             let mut hit_async = false;
             for tc in &tool_calls {
+                // Check cancellation before each tool execution.
+                if cancel_token.is_cancelled() {
+                    info!("[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}", tc.name, turns_used);
+                    events.push(AgentEvent::Done("已取消".to_string()));
+                    break;
+                }
+
                 let tool_start = std::time::Instant::now();
                 let result = self.handle_tool_call(tc, context).await;
                 let tool_duration = tool_start.elapsed();

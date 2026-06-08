@@ -357,7 +357,25 @@ impl LifecycleService for AgentLoopServiceAdapter {
     }
 }
 
-impl AgentLoopServiceTrait for AgentLoopServiceAdapter {}
+impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
+    fn cancel_session(&self, session_key: &str) -> bool {
+        let state = self.state.lock().unwrap();
+        if let Some(ref al) = state.agent_loop {
+            al.cancel_session(session_key)
+        } else {
+            false
+        }
+    }
+
+    fn cancel_all_sessions(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        if let Some(ref al) = state.agent_loop {
+            al.cancel_all_sessions()
+        } else {
+            0
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;
