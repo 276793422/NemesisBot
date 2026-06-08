@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="llm_providers">
+        <item>自定义</item>
+        <item>智谱 (Zhipu)</item>
+        <item>OpenAI</item>
+        <item>Anthropic (Claude)</item>
+        <item>DeepSeek</item>
+        <item>Google (Gemini)</item>
+        <item>Moonshot (Kimi)</item>
+        <item>Groq</item>
+        <item>Mistral</item>
+        <item>OpenRouter</item>
+        <item>Ollama (本地)</item>
+        <item>NVIDIA</item>
+        <item>Cohere</item>
+        <item>Perplexity</item>
+        <item>Together</item>
+        <item>Fireworks</item>
+        <item>Cerebras</item>
+        <item>SambaNova</item>
+    </string-array>
+</resources>

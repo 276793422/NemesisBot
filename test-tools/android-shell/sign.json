@@ -1,0 +1,16 @@
+{
+  "key_alias": "nemesisbot",
+  "key_password": "NemesisZoo",
+  "store_password": "276793422",
+  "validity_years": 25,
+  "dname": {
+    "CN": "NemesisBot",
+    "OU": "Rel",
+    "O": "NemesisBot",
+    "L": "",
+    "ST": "",
+    "C": "CN"
+  },
+  "output_dir": "../../bin/bin_android_apk",
+  "output_name": "nemesisbot-arm64-release.apk"
+}
