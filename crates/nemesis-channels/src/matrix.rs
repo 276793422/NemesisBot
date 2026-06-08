@@ -320,6 +320,10 @@ impl Channel for MatrixChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[MatrixChannel] starting Matrix channel");
         *self.running.write() = true;

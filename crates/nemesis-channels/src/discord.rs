@@ -709,6 +709,10 @@ impl Channel for DiscordChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[DiscordChannel] starting bot");
 

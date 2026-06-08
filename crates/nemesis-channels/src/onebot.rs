@@ -356,6 +356,10 @@ impl Channel for OneBotChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(ws_url = %self.config.ws_url, "[OneBotChannel] starting OneBot channel");
         *self.running.write() = true;

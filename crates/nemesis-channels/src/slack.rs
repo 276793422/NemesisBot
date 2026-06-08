@@ -550,6 +550,10 @@ impl Channel for SlackChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[SlackChannel] starting (Socket Mode)");
 

@@ -169,6 +169,10 @@ impl Channel for ExternalChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(
             input_exe = %self.config.input_exe,

@@ -196,6 +196,10 @@ impl Channel for WebhookInboundChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(
             listen_addr = %self.config.listen_addr,

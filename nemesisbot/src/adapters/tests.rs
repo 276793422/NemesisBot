@@ -228,7 +228,7 @@ async fn test_agent_loop_adapter_new() {
     let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
     // Has AgentLoop inside but not yet started (no bridge/agent handles)
     assert!(adapter.current().is_some());
-    assert!(!adapter.is_running()); // is_running checks bridge_handle presence
+    assert!(!LifecycleService::is_running(&adapter));
 }
 
 #[tokio::test]
@@ -253,5 +253,5 @@ async fn test_agent_loop_adapter_trait_object() {
         Arc::new(parking_lot::RwLock::new(None));
     let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
     let _trait_obj: &dyn LifecycleService = &adapter;
-    assert!(!adapter.is_running());
+    assert!(!LifecycleService::is_running(&adapter));
 }

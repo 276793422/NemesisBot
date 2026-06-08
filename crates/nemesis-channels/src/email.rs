@@ -750,6 +750,10 @@ impl Channel for EmailChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(
             imap_host = %self.config.imap_host,

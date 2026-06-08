@@ -664,6 +664,10 @@ impl Channel for QQChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[QQChannel] starting QQ bot");
         *self.running.write() = true;

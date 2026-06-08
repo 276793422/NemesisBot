@@ -733,6 +733,10 @@ impl Channel for FeishuChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[FeishuChannel] starting Feishu channel (WebSocket mode)");
         *self.running.write() = true;

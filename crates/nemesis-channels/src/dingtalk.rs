@@ -576,6 +576,10 @@ impl Channel for DingTalkChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[DingTalkChannel] starting DingTalk channel (Stream Mode)");
         *self.running.write() = true;

@@ -165,7 +165,11 @@ if not exist "%APK_OUT%" mkdir "%APK_OUT%"
 
 set APK_SRC=
 if "%RELEASE%"=="1" (
-    set APK_SRC=%SHELL_DIR%\app\build\outputs\apk\release\app-release-unsigned.apk
+    if exist "%SHELL_DIR%\app\build\outputs\apk\release\app-release.apk" (
+        set APK_SRC=%SHELL_DIR%\app\build\outputs\apk\release\app-release.apk
+    ) else (
+        set APK_SRC=%SHELL_DIR%\app\build\outputs\apk\release\app-release-unsigned.apk
+    )
 ) else (
     set APK_SRC=%SHELL_DIR%\app\build\outputs\apk\debug\app-debug.apk
 )
@@ -195,7 +199,8 @@ echo  APK:     %APK_OUT%\%APK_NAME%
 echo  Version: %VERSION%
 echo  Commit:  %GIT_COMMIT%
 echo.
-echo  Install: adb install -r %APK_OUT%\%APK_NAME%
-echo  Launch:  adb shell am start -n com.nemesisbot.android/.MainActivity
+echo  Install:    adb install -r %APK_OUT%\%APK_NAME%
+echo  Reinstall:  adb uninstall com.nemesisbot.android ^&^& adb install %APK_OUT%\%APK_NAME%
+echo  Launch:     adb shell am start -n com.nemesisbot.android/.MainActivity
 echo ============================================
 echo.

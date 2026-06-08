@@ -297,6 +297,10 @@ impl Channel for RPCChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         debug!("[RPCChannel] starting");
         self.base.set_enabled(true);

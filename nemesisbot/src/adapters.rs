@@ -351,13 +351,13 @@ impl LifecycleService for AgentLoopServiceAdapter {
         tracing::info!("[AgentAdapter] stop: agent loop stopped and destroyed");
         Ok(())
     }
-}
 
-impl AgentLoopServiceTrait for AgentLoopServiceAdapter {
     fn is_running(&self) -> bool {
         self.state.lock().unwrap().bridge_handle.is_some()
     }
 }
+
+impl AgentLoopServiceTrait for AgentLoopServiceAdapter {}
 
 #[cfg(test)]
 mod tests;

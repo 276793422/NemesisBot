@@ -200,11 +200,6 @@ pub trait AgentLoopService: Send + Sync + LifecycleService {
     fn process_heartbeat(&self) -> Result<String, String> {
         Ok(String::new())
     }
-
-    /// Check whether the agent loop is currently running.
-    fn is_running(&self) -> bool {
-        false
-    }
 }
 
 /// A security checker middleware.

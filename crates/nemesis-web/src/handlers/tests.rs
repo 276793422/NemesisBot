@@ -654,7 +654,7 @@ use super::*;
         let servers = result["servers"].as_array().unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["name"], "test-server");
-        assert_eq!(servers[0]["command"], "node");
+        assert_eq!(servers[0]["url"], "node");
 
         // Update server
         let data = serde_json::json!({ "name": "test-server", "command": "python" });
@@ -1738,7 +1738,7 @@ use super::*;
         let handler = skills::SkillsHandler::new();
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
-        let data = serde_json::json!({ "source": "test", "slug": "test-skill" });
+        let data = serde_json::json!({ "registry": "test", "source": "test", "slug": "test-skill" });
         let result = handler.handle_cmd("install", Some(data), &ctx).await.unwrap().unwrap();
         assert!(!result["installed"].as_bool().unwrap());
     }

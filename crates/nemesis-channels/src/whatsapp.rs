@@ -284,6 +284,10 @@ impl Channel for WhatsAppChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(url = %self.config.bridge_url, "[WhatsAppChannel] starting WhatsApp channel");
         *self.running.write() = true;

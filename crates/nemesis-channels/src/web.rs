@@ -184,6 +184,10 @@ impl Channel for WebChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!(
             host = %self.config.host,

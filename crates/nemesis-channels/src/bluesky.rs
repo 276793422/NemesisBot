@@ -301,6 +301,10 @@ impl Channel for BlueskyChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[BlueskyChannel] starting Bluesky channel");
         *self.running.write() = true;

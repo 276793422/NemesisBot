@@ -78,7 +78,7 @@ async fn test_execute_store_missing_type() {
         .execute("memory_store", &serde_json::json!({}))
         .await;
     assert!(!result.success);
-    assert!(result.content.contains("memory_type is required"));
+    assert!(result.content.contains("content is required for episodic memory"));
 }
 
 #[tokio::test]

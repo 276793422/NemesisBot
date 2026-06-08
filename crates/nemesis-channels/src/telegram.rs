@@ -1162,6 +1162,10 @@ impl Channel for TelegramChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[TelegramChannel] starting bot (polling mode)");
 

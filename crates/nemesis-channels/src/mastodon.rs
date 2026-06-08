@@ -233,6 +233,10 @@ impl Channel for MastodonChannel {
         self.base.name()
     }
 
+    fn is_running(&self) -> bool {
+        self.base.is_running()
+    }
+
     async fn start(&self) -> Result<()> {
         info!("[MastodonChannel] starting Mastodon channel");
         *self.running.write() = true;
