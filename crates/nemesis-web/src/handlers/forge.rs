@@ -744,12 +744,14 @@ fn read_recent_experiences(path: &PathBuf, limit: usize) -> Vec<serde_json::Valu
         let parsed: serde_json::Value = serde_json::from_str(l).ok()?;
         let inner = parsed.get("experience").unwrap_or(&parsed);
         Some(serde_json::json!({
+            "id": inner.get("id").and_then(|v| v.as_str()).unwrap_or(""),
             "tool_name": inner.get("tool_name").and_then(|v| v.as_str()).unwrap_or("unknown"),
             "success": inner.get("success").and_then(|v| v.as_bool()).unwrap_or(false),
             "duration_ms": inner.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0),
             "input_summary": inner.get("input_summary").and_then(|v| v.as_str()).unwrap_or(""),
-            "output_summary": inner.get("output_summary").and_then(|v| v.as_str()).unwrap_or("").chars().take(100).collect::<String>(),
+            "output_summary": inner.get("output_summary").and_then(|v| v.as_str()).unwrap_or(""),
             "timestamp": inner.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
+            "session_key": inner.get("session_key").and_then(|v| v.as_str()).unwrap_or(""),
         }))
     }).collect()
 }

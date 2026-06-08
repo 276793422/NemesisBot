@@ -2699,8 +2699,8 @@ impl AgentLoop {
             let exp = nemesis_types::forge::Experience {
                 id: uuid::Uuid::new_v4().to_string(),
                 tool_name: tool_call.name.clone(),
-                input_summary: tool_call.arguments.chars().take(100).collect(),
-                output_summary: result.chars().take(100).collect(),
+                input_summary: tool_call.arguments.clone(),
+                output_summary: result.clone(),
                 success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
                 duration_ms: tool_start.elapsed().as_millis() as u64,
                 timestamp: chrono::Utc::now().to_rfc3339(),

@@ -26,6 +26,7 @@ let countdownTimer: ReturnType<typeof setInterval> | null = null
 
 // --- Experiences state ---
 const expStats = ref<any>(null)
+const selectedExp = ref<any>(null)
 
 // --- Reflections state ---
 const reports = ref<any[]>([])
@@ -539,7 +540,7 @@ onUnmounted(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(exp, idx) in expStats.recent" :key="idx">
+                  <tr v-for="(exp, idx) in expStats.recent" :key="idx" class="clickable-row" @click="selectedExp = exp">
                     <td style="white-space: nowrap; font-size: var(--text-xs); color: var(--text-secondary);">{{ formatDate(exp.timestamp) }}</td>
                     <td style="font-weight: 500;">{{ exp.tool_name }}</td>
                     <td>
@@ -551,6 +552,40 @@ onUnmounted(() => {
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Experience detail modal -->
+      <div v-if="selectedExp" class="modal-overlay" @click.self="selectedExp = null">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3>工具调用详情</h3>
+            <button class="modal-close" @click="selectedExp = null">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="detail-grid">
+              <div class="detail-label">工具</div>
+              <div class="detail-value" style="font-weight: 500;">{{ selectedExp.tool_name }}</div>
+              <div class="detail-label">状态</div>
+              <div class="detail-value">
+                <span class="badge" :class="selectedExp.success ? 'badge-success' : 'badge-error'">{{ selectedExp.success ? '成功' : '失败' }}</span>
+              </div>
+              <div class="detail-label">耗时</div>
+              <div class="detail-value">{{ formatDuration(selectedExp.duration_ms) }}</div>
+              <div class="detail-label">时间</div>
+              <div class="detail-value">{{ formatDate(selectedExp.timestamp) }}</div>
+              <div class="detail-label" v-if="selectedExp.session_key">会话</div>
+              <div class="detail-value" v-if="selectedExp.session_key" style="font-size: var(--text-xs); color: var(--text-muted);">{{ selectedExp.session_key }}</div>
+            </div>
+            <div class="detail-section">
+              <div class="detail-label">输入</div>
+              <pre class="detail-pre">{{ selectedExp.input_summary || '--' }}</pre>
+            </div>
+            <div class="detail-section">
+              <div class="detail-label">输出</div>
+              <pre class="detail-pre">{{ selectedExp.output_summary || '--' }}</pre>
             </div>
           </div>
         </div>
@@ -824,5 +859,95 @@ onUnmounted(() => {
 <style scoped>
 .forge-status-card--active {
   background-color: #1a3a2a;
+}
+.clickable-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.clickable-row:hover {
+  background: var(--bg-tertiary, rgba(255,255,255,0.04));
+}
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-content {
+  background: var(--surface, #1e1e2e);
+  border: 1px solid var(--border, #333);
+  border-radius: 12px;
+  width: 680px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.modal-close:hover {
+  color: var(--text-primary, #eee);
+}
+.modal-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+}
+.detail-label {
+  color: var(--text-muted, #888);
+  font-size: 13px;
+  white-space: nowrap;
+  line-height: 1.8;
+}
+.detail-value {
+  font-size: 13px;
+  line-height: 1.8;
+}
+.detail-section {
+  margin-bottom: 12px;
+}
+.detail-pre {
+  background: var(--bg-primary, #111);
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 4px 0 0 0;
+  color: var(--text-primary, #ddd);
 }
 </style>
