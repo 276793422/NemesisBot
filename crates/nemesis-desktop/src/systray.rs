@@ -265,29 +265,14 @@ enum TrayUserEvent {
 
 /// Initialize GTK on Linux before tray-icon uses libayatana-appindicator.
 ///
-/// `tray-icon`'s Linux backend depends on GTK via libayatana-appindicator.
-/// GTK must be initialized before any GTK operations. This function calls
-/// `gtk_init_check` directly through FFI — the symbol is resolved at link
-/// time through tray-icon's transitive dependency on libgtk-3.so.
+/// gtk-rs tracks initialization via its own AtomicBool (gtk/src/rt.rs),
+/// independent of C's gtk_initialized. Calling gtk_init_check via FFI only
+/// sets the C flag — gtk-rs's Menu::new() will still panic. Must use
+/// gtk::init() which handles both C-level and Rust-level initialization.
 #[cfg(target_os = "linux")]
 fn try_init_gtk() -> Result<(), String> {
-    // Direct FFI link — resolved at link time through tray-icon →
-    // libappindicator → libgtk-3.so. Uses #[link] to ensure the linker
-    // finds gtk_init_check in the already-loaded GTK3 shared library.
-    #[link(name = "gtk-3")]
-    unsafe extern "C" {
-        fn gtk_init_check(argc: *mut i32, argv: *mut *mut *mut std::os::raw::c_char) -> i32;
-    }
-
-    // Provide real args (not NULL) for maximum compatibility with all
-    // GTK3 versions. argc=0, argv=[NULL] is an empty argument list.
-    let mut argc: i32 = 0;
-    let mut argv: *mut *mut std::os::raw::c_char = std::ptr::null_mut();
-    let ok = unsafe { gtk_init_check(&mut argc, &mut argv) };
-    if ok == 0 {
-        return Err("gtk_init_check returned false (no display available?)".into());
-    }
-    tracing::info!("[Desktop] GTK initialized successfully");
+    gtk::init().map_err(|e| format!("gtk::init failed: {}", e))?;
+    tracing::info!("[Desktop] GTK initialized successfully (C + Rust layers)");
     Ok(())
 }
 

@@ -27,5 +27,12 @@ tray-icon = "0.24"
 winit = "0.30"
 image = "0.25"
 
+# GTK init (Linux only) — gtk-rs tracks initialization via internal AtomicBool,
+# not the C-level gtk_initialized flag. Need gtk::rt::set_initialized() after
+# calling gtk_init_check via FFI. This does NOT add new transitive deps —
+# tray-icon already depends on gtk 0.18 through libappindicator.
+[target.'cfg(all(not(target_os = "android"), target_os = "linux"))'.dependencies]
+gtk = "0.18"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
