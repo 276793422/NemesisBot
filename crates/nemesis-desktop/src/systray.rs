@@ -378,8 +378,6 @@ impl PlatformTray {
         #[cfg(target_os = "windows")]
         use winit::platform::windows::EventLoopBuilderExtWindows;
         #[cfg(target_os = "linux")]
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        #[cfg(target_os = "linux")]
         use winit::platform::wayland::EventLoopBuilderExtWayland;
 
         let event_loop = {
@@ -392,7 +390,9 @@ impl PlatformTray {
             #[cfg(target_os = "linux")]
             {
                 let mut builder = EventLoop::<TrayUserEvent>::with_user_event();
-                builder.with_any_thread(true);
+                // Both X11 and Wayland traits provide with_any_thread, but they
+                // set the same internal flag. Use fully-qualified call to disambiguate.
+                EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
                 builder.build()
             }
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
