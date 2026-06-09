@@ -373,10 +373,14 @@ impl PlatformTray {
         use winit::event_loop::EventLoop;
 
         // Create winit event loop with user event support.
-        // On Windows, allow creation on a non-main thread (tray runs on a
-        // dedicated "nemesisbot-tray" thread).
+        // On Windows and Linux, allow creation on a non-main thread (tray runs
+        // on a dedicated "nemesisbot-tray" thread).
         #[cfg(target_os = "windows")]
         use winit::platform::windows::EventLoopBuilderExtWindows;
+        #[cfg(target_os = "linux")]
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        #[cfg(target_os = "linux")]
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
 
         let event_loop = {
             #[cfg(target_os = "windows")]
@@ -385,7 +389,13 @@ impl PlatformTray {
                 builder.with_any_thread(true);
                 builder.build()
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "linux")]
+            {
+                let mut builder = EventLoop::<TrayUserEvent>::with_user_event();
+                builder.with_any_thread(true);
+                builder.build()
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
             {
                 EventLoop::<TrayUserEvent>::with_user_event().build()
             }
