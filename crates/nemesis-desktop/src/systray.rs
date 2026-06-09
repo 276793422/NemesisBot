@@ -263,6 +263,35 @@ enum TrayUserEvent {
     Menu(tray_icon::menu::MenuEvent),
 }
 
+/// Initialize GTK on Linux before tray-icon uses libayatana-appindicator.
+///
+/// `tray-icon`'s Linux backend depends on GTK via libayatana-appindicator.
+/// GTK must be initialized before any GTK operations. This function locates
+/// `gtk_init_check` via `dlsym` (searching all loaded libraries) and calls it
+/// with NULL args (use process defaults).
+#[cfg(target_os = "linux")]
+fn try_init_gtk() -> Result<(), String> {
+    use libloading::os::unix::Library;
+
+    // Library::this() opens the main program (dlopen("", ...)), making all
+    // loaded shared-library symbols available for lookup.
+    let lib = Library::this();
+
+    let gtk_init_check = unsafe {
+        lib.get::<extern "C" fn(*mut i32, *mut *mut *mut std::os::raw::c_char) -> i32>(
+            b"gtk_init_check\0",
+        )
+    }
+    .map_err(|e| format!("gtk_init_check not found: {}", e))?;
+
+    let ok = gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut());
+    if ok == 0 {
+        return Err("gtk_init_check returned false".into());
+    }
+
+    Ok(())
+}
+
 /// Platform-native system tray using `tray-icon` + `winit`.
 ///
 /// Creates a real system tray icon with a context menu on Windows, Linux,
@@ -359,7 +388,15 @@ impl PlatformTray {
         std::thread::Builder::new()
             .name("nemesisbot-tray".into())
             .spawn(move || {
-                self.run_event_loop();
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.run_event_loop();
+                })) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("[tray] WARNING: Tray thread exited: {:?}", e);
+                        tracing::warn!("[Desktop] Tray thread exited due to error: {:?}", e);
+                    }
+                }
             })
             .expect("failed to spawn tray thread")
     }
@@ -419,6 +456,16 @@ impl PlatformTray {
         tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
             let _ = proxy.send_event(TrayUserEvent::Menu(event));
         }));
+
+        // On Linux, initialize GTK before creating tray icon.
+        // tray-icon uses libayatana-appindicator which depends on GTK,
+        // and GTK must be initialized before any GTK operations.
+        #[cfg(target_os = "linux")]
+        if let Err(e) = try_init_gtk() {
+            tracing::warn!("[Desktop] GTK init failed: {}, system tray disabled", e);
+            eprintln!("[tray] WARNING: GTK init failed ({}) — tray icon disabled", e);
+            return;
+        }
 
         // Load icon
         let icon = match crate::icons::load_tray_icon_checked() {

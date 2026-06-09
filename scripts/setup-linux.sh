@@ -132,6 +132,7 @@ APT_PACKAGES=(
     libwebkit2gtk-4.1-dev
     libxdo-dev
     libx11-dev
+    libxkbcommon-x11-0
 )
 
 MISSING_PACKAGES=()
