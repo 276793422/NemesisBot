@@ -7,7 +7,11 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Read auth_token from config.json
     let config_path = home.join("config.json");
     let cfg_str = std::fs::read_to_string(&config_path).map_err(|e| {
-        format!("Cannot read config.json: {}. Run 'nemesisbot onboard default' first.", e)
+        format!(
+            "Cannot read config.json at {}: {}.\n\
+             If the gateway was started with --local, run: nemesisbot --local dashboard",
+            config_path.display(), e
+        )
     })?;
     let cfg: serde_json::Value = serde_json::from_str(&cfg_str)?;
     let auth_token = cfg["channels"]["web"]["auth_token"]

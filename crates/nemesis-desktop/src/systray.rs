@@ -266,29 +266,28 @@ enum TrayUserEvent {
 /// Initialize GTK on Linux before tray-icon uses libayatana-appindicator.
 ///
 /// `tray-icon`'s Linux backend depends on GTK via libayatana-appindicator.
-/// GTK must be initialized before any GTK operations. This function locates
-/// `gtk_init_check` via `dlsym` (searching all loaded libraries) and calls it
-/// with NULL args (use process defaults).
+/// GTK must be initialized before any GTK operations. This function calls
+/// `gtk_init_check` directly through FFI — the symbol is resolved at link
+/// time through tray-icon's transitive dependency on libgtk-3.so.
 #[cfg(target_os = "linux")]
 fn try_init_gtk() -> Result<(), String> {
-    use libloading::os::unix::Library;
-
-    // Library::this() opens the main program (dlopen("", ...)), making all
-    // loaded shared-library symbols available for lookup.
-    let lib = Library::this();
-
-    let gtk_init_check = unsafe {
-        lib.get::<extern "C" fn(*mut i32, *mut *mut *mut std::os::raw::c_char) -> i32>(
-            b"gtk_init_check\0",
-        )
+    // Direct FFI link — resolved at link time through tray-icon →
+    // libappindicator → libgtk-3.so. Uses #[link] to ensure the linker
+    // finds gtk_init_check in the already-loaded GTK3 shared library.
+    #[link(name = "gtk-3")]
+    unsafe extern "C" {
+        fn gtk_init_check(argc: *mut i32, argv: *mut *mut *mut std::os::raw::c_char) -> i32;
     }
-    .map_err(|e| format!("gtk_init_check not found: {}", e))?;
 
-    let ok = gtk_init_check(std::ptr::null_mut(), std::ptr::null_mut());
+    // Provide real args (not NULL) for maximum compatibility with all
+    // GTK3 versions. argc=0, argv=[NULL] is an empty argument list.
+    let mut argc: i32 = 0;
+    let mut argv: *mut *mut std::os::raw::c_char = std::ptr::null_mut();
+    let ok = unsafe { gtk_init_check(&mut argc, &mut argv) };
     if ok == 0 {
-        return Err("gtk_init_check returned false".into());
+        return Err("gtk_init_check returned false (no display available?)".into());
     }
-
+    tracing::info!("[Desktop] GTK initialized successfully");
     Ok(())
 }
 
