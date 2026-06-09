@@ -206,15 +206,15 @@ if exist "web\package.json" (
         )
     )
 
-    if not exist "node_modules" (
-        echo   Installing npm dependencies...
-        call npm install --silent
-        if errorlevel 1 (
-            popd
-            echo   WARN npm install failed, skipping Vue build
-            echo.
-            goto step3_android
-        )
+    REM Always run npm install to ensure all declared dependencies are present.
+    REM npm skips already-installed packages, so this is fast when nothing is missing.
+    echo   Checking npm dependencies...
+    call npm install --silent
+    if errorlevel 1 (
+        popd
+        echo   WARN npm install failed, skipping Vue build
+        echo.
+        goto step3_android
     )
     echo   Running Vite build...
     call npm run build

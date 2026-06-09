@@ -119,14 +119,14 @@ if [ -f "web/package.json" ]; then
         rm -rf web/node_modules web/package-lock.json
     fi
 
-    if [ ! -d "web/node_modules" ]; then
-        echo "  Installing npm dependencies..."
-        (cd web && npm install 2>&1) || {
-            echo "  WARN npm install failed, skipping Vue build"
-            echo ""
-            # fall through to step 3
-        }
-    fi
+    # Always run npm install to ensure all declared dependencies are present.
+    # npm skips already-installed packages, so this is fast when nothing is missing.
+    echo "  Checking npm dependencies..."
+    (cd web && npm install 2>&1) || {
+        echo "  WARN npm install failed, skipping Vue build"
+        echo ""
+        # fall through to step 3
+    }
 
     if [ -d "web/node_modules" ]; then
         echo "  Running Vite build..."
