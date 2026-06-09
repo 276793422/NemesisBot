@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux")))]
 use std::sync::atomic::Ordering;
 use serde::{Deserialize, Serialize};
 
@@ -222,6 +222,7 @@ impl SystemTray {
 // items are created in `run_event_loop()` on the tray thread and stored here.
 // The enable/disable functions below access them from callbacks that also run
 // on the tray thread.
+#[cfg(not(target_os = "linux"))]
 thread_local! {
     static CLUSTER_MENU_ITEMS: std::cell::RefCell<Option<(
         tray_icon::menu::MenuItem,
@@ -233,6 +234,7 @@ thread_local! {
 ///
 /// Safe to call from any thread; no-ops when called off the tray thread
 /// (the thread-local will be `None`).
+#[cfg(not(target_os = "linux"))]
 pub fn enable_cluster_menu_items() {
     CLUSTER_MENU_ITEMS.with(|items| {
         if let Some((start, stop)) = items.borrow().as_ref() {
@@ -244,6 +246,7 @@ pub fn enable_cluster_menu_items() {
 }
 
 /// Disable the "集群启动" and "集群停止" tray menu items.
+#[cfg(not(target_os = "linux"))]
 pub fn disable_cluster_menu_items() {
     CLUSTER_MENU_ITEMS.with(|items| {
         if let Some((start, stop)) = items.borrow().as_ref() {
@@ -254,7 +257,18 @@ pub fn disable_cluster_menu_items() {
     });
 }
 
+#[cfg(target_os = "linux")]
+pub fn enable_cluster_menu_items() {
+    // TODO: 通过 plugin-ui bridge 实现
+}
+
+#[cfg(target_os = "linux")]
+pub fn disable_cluster_menu_items() {
+    // TODO: 通过 plugin-ui bridge 实现
+}
+
 /// User event types forwarded from tray-icon to the winit event loop.
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug, Clone)]
 enum TrayUserEvent {
     /// A tray icon event (click, double-click, etc.).
@@ -263,17 +277,167 @@ enum TrayUserEvent {
     Menu(tray_icon::menu::MenuEvent),
 }
 
-/// Initialize GTK on Linux before tray-icon uses libayatana-appindicator.
-///
-/// gtk-rs tracks initialization via its own AtomicBool (gtk/src/rt.rs),
-/// independent of C's gtk_initialized. Calling gtk_init_check via FFI only
-/// sets the C flag — gtk-rs's Menu::new() will still panic. Must use
-/// gtk::init() which handles both C-level and Rust-level initialization.
+// ---------------------------------------------------------------------------
+// Linux tray bridge — libloading 加载 plugin-ui.so
+// ---------------------------------------------------------------------------
+
 #[cfg(target_os = "linux")]
-fn try_init_gtk() -> Result<(), String> {
-    gtk::init().map_err(|e| format!("gtk::init failed: {}", e))?;
-    tracing::info!("[Desktop] GTK initialized successfully (C + Rust layers)");
-    Ok(())
+mod linux_tray {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
+
+    /// 持有所有回调的容器，通过 Box::into_raw 泄漏到堆上。
+    struct Callbacks {
+        on_start: Option<Box<dyn Fn() + Send + Sync>>,
+        on_stop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_cluster_start: Option<Box<dyn Fn() + Send + Sync>>,
+        on_cluster_stop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
+        on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
+        on_quit: Option<Box<dyn Fn() + Send + Sync>>,
+    }
+
+    /// extern "C" 回调桥接：plugin-ui 调用此函数通知菜单点击。
+    extern "C" fn on_menu_click(
+        user_data: *mut std::os::raw::c_void,
+        menu_id: *const c_char,
+    ) {
+        if user_data.is_null() || menu_id.is_null() {
+            return;
+        }
+        let cbs = unsafe { &*(user_data as *const Callbacks) };
+        let id = unsafe { CStr::from_ptr(menu_id) }
+            .to_string_lossy()
+            .into_owned();
+
+        match id.as_str() {
+            "start" => { if let Some(ref cb) = cbs.on_start { cb(); } }
+            "stop" => { if let Some(ref cb) = cbs.on_stop { cb(); } }
+            "cluster_start" => { if let Some(ref cb) = cbs.on_cluster_start { cb(); } }
+            "cluster_stop" => { if let Some(ref cb) = cbs.on_cluster_stop { cb(); } }
+            "dashboard" => { if let Some(ref cb) = cbs.on_open_dashboard { cb(); } }
+            "chat" => { if let Some(ref cb) = cbs.on_open_chat { cb(); } }
+            "quit" => { if let Some(ref cb) = cbs.on_quit { cb(); } }
+            _ => {}
+        }
+    }
+
+    pub fn run_via_plugin_ui(
+        on_start: Option<Box<dyn Fn() + Send + Sync>>,
+        on_stop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_cluster_start: Option<Box<dyn Fn() + Send + Sync>>,
+        on_cluster_stop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
+        on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
+        on_quit: Option<Box<dyn Fn() + Send + Sync>>,
+    ) {
+        // 1. 查找 plugin-ui.so
+        let exe = match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[tray:linux] cannot find exe: {}", e);
+                return;
+            }
+        };
+        let exe_dir = match exe.parent() {
+            Some(d) => d,
+            None => {
+                eprintln!("[tray:linux] exe has no parent dir");
+                return;
+            }
+        };
+        let so_path = exe_dir.join("plugins").join("libplugin_ui.so");
+        if !so_path.exists() {
+            eprintln!("[tray:linux] {} not found, tray disabled", so_path.display());
+            return;
+        }
+
+        // 2. 加载 .so
+        let lib = unsafe {
+            match libloading::Library::new(&so_path) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("[tray:linux] dlopen {} failed: {}", so_path.display(), e);
+                    return;
+                }
+            }
+        };
+
+        let tray_create: libloading::Symbol<
+            unsafe extern "C" fn(*const c_char, *const nemesis_plugin::host_services::TrayCallbacks) -> i32
+        > = unsafe {
+            match lib.get(b"plugin_tray_create_indicator\0") {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[tray:linux] symbol plugin_tray_create_indicator not found: {}", e);
+                    return;
+                }
+            }
+        };
+
+        // 3. 加载图标 RGBA 数据
+        let png_data = crate::icons::embedded_icon_png();
+        let icon_data = match image::load_from_memory(png_data) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                Some((rgba.into_raw(), w, h))
+            }
+            Err(e) => {
+                eprintln!("[tray:linux] icon decode failed: {}", e);
+                None
+            }
+        };
+
+        // 4. 构造 config_json
+        let menu_items = serde_json::json!([
+            {"id": "start", "label": "启动服务", "enabled": true},
+            {"id": "stop", "label": "停止服务", "enabled": true},
+            {"id": "cluster_start", "label": "集群启动", "enabled": true},
+            {"id": "cluster_stop", "label": "集群停止", "enabled": true},
+            {"id": "dashboard", "label": "打开 Dashboard", "enabled": true},
+            {"id": "chat", "label": "打开聊天", "enabled": true},
+            {"id": "version", "label": "NemesisBot (linux)", "enabled": false},
+            {"id": "quit", "label": "退出", "enabled": true},
+        ]);
+
+        let mut config = serde_json::json!({"menu_items": menu_items});
+        if let Some((rgba, w, h)) = icon_data {
+            config["icon_rgba"] = serde_json::json!(rgba);
+            config["icon_width"] = serde_json::json!(w);
+            config["icon_height"] = serde_json::json!(h);
+        }
+
+        let config_str = serde_json::to_string(&config).unwrap_or_default();
+        let config_cstr = CString::new(config_str).unwrap_or_default();
+
+        // 5. 构造 Callbacks 并泄漏到堆上（进程生命周期）
+        let cbs = Box::new(Callbacks {
+            on_start,
+            on_stop,
+            on_cluster_start,
+            on_cluster_stop,
+            on_open_dashboard,
+            on_open_chat,
+            on_quit,
+        });
+        let cbs_ptr = Box::into_raw(cbs);
+
+        let tray_cbs = nemesis_plugin::host_services::TrayCallbacks {
+            user_data: cbs_ptr as *mut std::os::raw::c_void,
+            on_menu_click,
+        };
+
+        // 6+7. 调用 plugin_tray_create_indicator()，然后 forget lib
+        // 注意：tray_create 借用 lib，必须先调用再 forget
+        eprintln!("[tray:linux] creating tray indicator via plugin-ui.so");
+        let rc = unsafe { tray_create(config_cstr.as_ptr(), &tray_cbs) };
+        std::mem::forget(lib); // 防止 dlclose（tray 线程需要 so 持续加载）
+        if rc != 0 {
+            eprintln!("[tray:linux] plugin_tray_create_indicator failed: {}", rc);
+            unsafe { let _ = Box::from_raw(cbs_ptr); }
+        }
+    }
 }
 
 /// Platform-native system tray using `tray-icon` + `winit`.
@@ -386,6 +550,28 @@ impl PlatformTray {
     }
 
     fn run_event_loop(self) {
+        #[cfg(target_os = "linux")]
+        {
+            linux_tray::run_via_plugin_ui(
+                self.on_start,
+                self.on_stop,
+                self.on_cluster_start,
+                self.on_cluster_stop,
+                self.on_open_dashboard,
+                self.on_open_chat,
+                self.on_quit,
+            );
+            return;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.run_event_loop_native();
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn run_event_loop_native(self) {
         #[cfg(not(target_os = "windows"))]
         use std::sync::atomic::AtomicU64;
         #[cfg(not(target_os = "windows"))]

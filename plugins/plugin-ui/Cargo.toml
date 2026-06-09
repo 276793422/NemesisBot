@@ -27,3 +27,9 @@ log = "0.4"
 
 # Build: cd plugins/plugin-ui && cargo build --release
 # Output: target/release/plugin-ui.dll (or .so/.dylib on other platforms)
+
+# Linux tray support (GTK + libayatana-appindicator)
+[target.'cfg(target_os = "linux")'.dependencies]
+tray-icon = "0.24"
+gtk = "0.18"
+image = "0.25"

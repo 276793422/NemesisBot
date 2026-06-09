@@ -21,18 +21,14 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # DLL loading for plugin-ui
 libloading = { workspace = true }
 
-# Tray icon (desktop only — not available on Android)
+# 图标加载（所有桌面平台）
 [target.'cfg(not(target_os = "android"))'.dependencies]
-tray-icon = "0.24"
-winit = "0.30"
 image = "0.25"
 
-# GTK init (Linux only) — gtk-rs tracks initialization via internal AtomicBool,
-# not the C-level gtk_initialized flag. Need gtk::rt::set_initialized() after
-# calling gtk_init_check via FFI. This does NOT add new transitive deps —
-# tray-icon already depends on gtk 0.18 through libappindicator.
-[target.'cfg(all(not(target_os = "android"), target_os = "linux"))'.dependencies]
-gtk = "0.18"
+# Windows/macOS tray (直接使用 tray-icon，不依赖 GTK)
+[target.'cfg(all(not(target_os = "android"), not(target_os = "linux")))'.dependencies]
+tray-icon = "0.24"
+winit = "0.30"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

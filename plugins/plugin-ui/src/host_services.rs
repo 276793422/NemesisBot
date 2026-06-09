@@ -5,6 +5,8 @@
 //! Keep in sync with the authoritative definition in nemesis-plugin.
 
 use std::os::raw::c_char;
+#[cfg(target_os = "linux")]
+use std::os::raw::c_void;
 
 /// Host services vtable — host 导出给 plugin 的通用能力接口。
 #[repr(C)]
@@ -61,4 +63,27 @@ pub fn host_log(host: Option<&HostServices>, level: i32, tag: &str, msg: &str) {
             log_fn(level, c_tag.as_ptr(), c_msg.as_ptr());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tray callbacks — plugin-ui → nemesis-desktop 的事件通知
+// ---------------------------------------------------------------------------
+
+/// Tray 菜单点击回调表（plugin-ui 副本，与 nemesis-plugin 权威定义保持同步）。
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub struct TrayCallbacks {
+    pub user_data: *mut c_void,
+    pub on_menu_click: extern "C" fn(user_data: *mut c_void, menu_id: *const c_char),
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for TrayCallbacks {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for TrayCallbacks {}
+#[cfg(target_os = "linux")]
+impl Copy for TrayCallbacks {}
+#[cfg(target_os = "linux")]
+impl Clone for TrayCallbacks {
+    fn clone(&self) -> Self { *self }
 }

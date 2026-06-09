@@ -144,13 +144,13 @@ impl Icon {
 // ---------------------------------------------------------------------------
 
 /// Load the embedded icon as a `tray_icon::Icon` for use in the system tray.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
 pub fn load_tray_icon() -> tray_icon::Icon {
     load_tray_icon_checked().expect("failed to load tray icon")
 }
 
 /// Same as [`load_tray_icon`] but returns a `Result` instead of panicking.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(not(target_os = "android"), not(target_os = "linux")))]
 pub fn load_tray_icon_checked() -> Result<tray_icon::Icon, String> {
     let png_data = include_bytes!("../icons/icon.png");
     let img = image::load_from_memory(png_data)

@@ -11,7 +11,7 @@
 //! Plugin 通过检查 `Option` 是否为 `None` 判断功能可用性。
 
 use std::ffi::CStr;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_void};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -265,4 +265,35 @@ unsafe fn libc_strlen(ptr: *const c_char) -> usize {
         }
     }
     len
+}
+
+// ---------------------------------------------------------------------------
+// Tray callbacks — plugin-ui → nemesis-desktop 的事件通知
+// ---------------------------------------------------------------------------
+
+/// Tray 菜单点击回调表。
+///
+/// 定义在 nemesis-plugin（权威位置），plugin-ui 保持副本同步。
+/// plugin-ui 在用户点击菜单项时调用 `on_menu_click`，
+/// nemesis-desktop 解释 menu_id 并执行对应业务逻辑。
+#[repr(C)]
+pub struct TrayCallbacks {
+    /// 由 nemesis-desktop 分配的回调上下文指针。
+    /// 传给 on_menu_click 的第一个参数。plugin-ui 不解释此值。
+    pub user_data: *mut c_void,
+    /// 菜单点击回调。menu_id 是 UTF-8 C 字符串，如 "start"、"quit"。
+    /// 含义由 nemesis-desktop 定义，plugin-ui 不参与。
+    ///
+    /// **生命周期约束**：menu_id 指针只在回调期间有效。
+    /// 调用方拥有该内存，回调内不得调用 CString::from_raw 接管所有权。
+    pub on_menu_click: extern "C" fn(user_data: *mut c_void, menu_id: *const c_char),
+}
+
+// user_data 指向的 Callbacks 结构体所有字段都是 Send + Sync。
+// on_menu_click 是函数指针，天生 Send + Sync。
+unsafe impl Send for TrayCallbacks {}
+unsafe impl Sync for TrayCallbacks {}
+impl Copy for TrayCallbacks {}
+impl Clone for TrayCallbacks {
+    fn clone(&self) -> Self { *self }
 }

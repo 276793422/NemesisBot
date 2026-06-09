@@ -3235,7 +3235,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "futures-util",
- "gtk",
  "image",
  "libloading 0.8.9",
  "nemesis-config",

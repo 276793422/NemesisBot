@@ -14,6 +14,9 @@
 mod host_services;
 mod window;
 
+#[cfg(target_os = "linux")]
+mod tray;
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
