@@ -133,6 +133,8 @@ pub struct WebServer {
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     cluster_log_dir: Option<String>,
+    /// Internal command sender for /api/internal endpoint.
+    internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }
 
 impl WebServer {
@@ -163,6 +165,7 @@ impl WebServer {
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         }
     }
 
@@ -228,6 +231,11 @@ impl WebServer {
         self.cluster_log_dir = Some(dir);
     }
 
+    /// Set the internal command sender for /api/internal endpoint.
+    pub fn set_internal_cmd_tx(&mut self, tx: tokio::sync::mpsc::Sender<crate::internal::InternalCommand>) {
+        self.internal_cmd_tx = Some(tx);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -260,6 +268,7 @@ impl WebServer {
             cluster: self.cluster.clone(),
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
+            internal_cmd_tx: self.internal_cmd_tx.clone(),
         };
 
         let state = Arc::new(state);
@@ -304,6 +313,8 @@ impl WebServer {
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
             .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream))
+            // Internal control endpoint (undocumented)
+            .route("/api/internal", axum::routing::post(crate::api_handlers::handle_api_internal))
             // CORS layer
             .layer(if self.config.cors_origins.is_empty() {
                 dev_cors_layer()

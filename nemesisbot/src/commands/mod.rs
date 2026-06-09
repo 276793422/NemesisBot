@@ -14,6 +14,7 @@ pub mod agent;
 pub mod auth;
 pub mod channel;
 pub mod cron;
+pub mod dashboard;
 pub mod mcp;
 pub mod status;
 pub mod shutdown;

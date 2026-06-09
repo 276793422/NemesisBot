@@ -689,13 +689,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     args.extend(extra_args.iter().cloned());
     let _log_flags = common::init_logger_from_config(&config_path, &args);
 
-    // Step 6: Write PID file
+    // Step 6: Write gateway state file (PID only; web_port updated after bind)
     let pid = std::process::id();
-    let pid_path = home.join("gateway.pid");
-    if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
-        warn!("[Gateway] Failed to write PID file: {}", e);
-    } else {
-        info!("[Gateway] PID file written: {} (PID: {})", pid_path.display(), pid);
+    {
+        let state_dir = home.join("workspace").join("state");
+        if let Err(e) = std::fs::create_dir_all(&state_dir) {
+            warn!("[Gateway] Failed to create state dir: {}", e);
+        }
+        let state_path = state_dir.join("gateway.json");
+        let state_json = serde_json::json!({
+            "pid": pid,
+            "web_host": "",
+            "web_port": 0,
+        });
+        if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+            warn!("[Gateway] Failed to write gateway state: {}", e);
+        } else {
+            info!("[Gateway] Gateway state written: {} (PID: {})", state_path.display(), pid);
+        }
     }
 
     // Step 7: Resolve the default LLM model and create provider
@@ -2139,6 +2150,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 17: Start WebServer in background
     let web_shutdown_rx = svc_mgr.subscribe_shutdown();
     let (bound_tx, bound_rx) = tokio::sync::oneshot::channel::<std::net::SocketAddr>();
+
+    // Create internal command channel (web handler → gateway logic)
+    let (internal_cmd_tx, internal_cmd_rx) = tokio::sync::mpsc::channel::<nemesis_web::internal::InternalCommand>(16);
+    web_server.set_internal_cmd_tx(internal_cmd_tx);
+
     let web_handle = tokio::spawn(async move {
         if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx, Some(bound_tx)).await {
             error!("[Gateway] Web server error: {}", e);
@@ -2157,6 +2173,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             web_port
         }
     };
+
+    // Update gateway state with actual web port
+    {
+        let state_path = home.join("workspace").join("state").join("gateway.json");
+        let state_json = serde_json::json!({
+            "pid": std::process::id(),
+            "web_host": web_host,
+            "web_port": real_port,
+        });
+        if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+            warn!("[Gateway] Failed to update gateway state: {}", e);
+        } else {
+            info!("[Gateway] Gateway state updated: port={}", real_port);
+        }
+    }
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)
     // via start_services() → services.health.start(). No separate spawn needed here.
@@ -2216,6 +2247,33 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let adapter = Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
         auditor.set_approval_manager(adapter);
         info!("[Gateway] Approval manager wired (popup via ProcessManager)");
+    }
+
+    // Internal command loop: /api/internal → open_plugin_window / open_browser
+    {
+        let pm = Arc::clone(&process_manager);
+        let url = format!("http://{}:{}", web_host, real_port);
+        let token = cfg.channels.web.auth_token.clone();
+        let mut rx = internal_cmd_rx;
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    nemesis_web::internal::InternalCommand::OpenDashboard => {
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            info!("[Gateway] Internal command: open_dashboard");
+                            let _ = open_plugin_window(&pm, "dashboard", &url, &token);
+                        }
+                        #[cfg(target_os = "android")]
+                        {
+                            let _ = (&pm, &url, &token);
+                            info!("[Gateway] Internal command: open_dashboard (skipped on android)");
+                        }
+                    }
+                }
+            }
+        });
+        info!("[Gateway] Internal command listener started");
     }
 
     // Step 22: Configure system tray (desktop only)
@@ -2365,8 +2423,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let _ = adapter.stop();
     }
 
-    // Clean up PID file
-    let _ = std::fs::remove_file(home.join("gateway.pid"));
+    // Clean up gateway state file
+    let _ = std::fs::remove_file(home.join("workspace").join("state").join("gateway.json"));
 
     println!("  OK Gateway stopped");
 

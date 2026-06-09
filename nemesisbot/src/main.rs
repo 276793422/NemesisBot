@@ -175,6 +175,8 @@ enum Commands {
     },
     /// Show version information
     Version,
+    /// Open the dashboard UI
+    Dashboard,
     /// Internal test commands (hidden)
     #[command(hide = true)]
     Test {
@@ -558,6 +560,13 @@ async fn main() -> Result<()> {
         Commands::Version => {
             common::ensure_default_logger();
             common::print_version_info();
+        }
+        Commands::Dashboard => {
+            common::ensure_default_logger();
+            if let Err(e) = commands::dashboard::run(cli.local).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Commands::Test { action } => {
             common::ensure_default_logger();

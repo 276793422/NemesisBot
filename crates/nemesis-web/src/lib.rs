@@ -22,6 +22,7 @@ pub mod cors;
 pub mod events;
 pub mod handlers;
 pub mod history;
+pub mod internal;
 pub mod protocol;
 pub mod session;
 pub mod sse_chat;

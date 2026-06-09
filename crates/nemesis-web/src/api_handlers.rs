@@ -82,6 +82,8 @@ pub struct AppState {
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     pub cluster_log_dir: Option<String>,
+    /// Internal command sender (gateway → web handler bridge).
+    pub internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }
 
 impl AppState {
@@ -696,6 +698,64 @@ pub fn verify_token(token: &str, expected: &str) -> bool {
 /// Returns the serialized JSON bytes suitable for HTTP response bodies.
 pub fn write_json_response<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_vec(value).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Handler: /api/internal (undocumented control endpoint)
+// ---------------------------------------------------------------------------
+
+/// `POST /api/internal` — internal control endpoint for CLI commands.
+///
+/// Requires `X-Auth-Token` header matching `web.auth_token`.
+/// Body: `{ "cmd": "open_dashboard" }`
+pub async fn handle_api_internal(
+    headers: axum::http::HeaderMap,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let token = headers
+        .get("X-Auth-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !verify_token(token, &state.auth_token) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "unauthorized"})),
+        ));
+    }
+
+    let cmd = body.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+
+    let tx = match &state.internal_cmd_tx {
+        Some(tx) => tx,
+        None => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "internal channel not available"})),
+            ));
+        }
+    };
+
+    match cmd {
+        "open_dashboard" => {
+            tx.send(crate::internal::InternalCommand::OpenDashboard)
+                .await
+                .map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "send failed"})),
+                    )
+                })?;
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "unknown command"})),
+            ));
+        }
+    }
+
+    Ok(Json(serde_json::json!({"status": "ok"})))
 }
 
 /// Write a JSON error response body with the given message and HTTP status code.
