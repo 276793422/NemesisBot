@@ -1,11 +1,11 @@
 use super::*;
-use chrono::Utc;
+use chrono::Local;
 
 fn test_cred() -> AuthCredential {
     AuthCredential {
         access_token: "at_123".to_string(),
         refresh_token: Some("rt_456".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        expires_at: Some(Local::now() + chrono::Duration::hours(1)),
         provider: "test".to_string(),
         auth_method: "oauth".to_string(),
         account_id: Some("acct_1".to_string()),
@@ -229,7 +229,7 @@ fn test_persistence_preserves_all_fields() {
     let cred = AuthCredential {
         access_token: "at_abc".to_string(),
         refresh_token: Some("rt_def".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::hours(2)),
+        expires_at: Some(Local::now() + chrono::Duration::hours(2)),
         provider: "myprov".to_string(),
         auth_method: "oauth".to_string(),
         account_id: Some("acct_123".to_string()),

@@ -4,7 +4,7 @@
 //! truncation). This module provides a separate, append-only log that never
 //! gets truncated, ensuring the user-facing chat history is always complete.
 
-use chrono::Utc;
+use chrono::Local;
 use nemesis_path::default_path_manager;
 use serde_json::Value;
 use std::fs::{self, File, OpenOptions};
@@ -27,7 +27,7 @@ pub fn append_chat_log(session_key: &str, role: &str, content: &str) {
     let entry = serde_json::json!({
         "role": role,
         "content": content,
-        "timestamp": Utc::now().to_rfc3339(),
+        "timestamp": Local::now().to_rfc3339(),
     });
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);

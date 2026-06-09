@@ -32,7 +32,7 @@ fn make_request(id: &str, operation: &str, target: &str, risk_level: &str, timeo
         reason: format!("test request for {} on {}", operation, target),
         context: HashMap::new(),
         timeout_seconds: timeout_secs,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     }
 }
 

@@ -3,7 +3,7 @@
 //! Mirrors Go `module/state/state.go` — provides atomic save/load of workspace
 //! state (last channel, last chat ID, timestamp).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -22,8 +22,8 @@ pub struct WorkspaceState {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_chat_id: String,
     /// Timestamp of the last state update.
-    #[serde(default = "Utc::now")]
-    pub timestamp: DateTime<Utc>,
+    #[serde(default = "Local::now")]
+    pub timestamp: DateTime<Local>,
 }
 
 impl Default for WorkspaceState {
@@ -31,7 +31,7 @@ impl Default for WorkspaceState {
         Self {
             last_channel: String::new(),
             last_chat_id: String::new(),
-            timestamp: Utc::now(),
+            timestamp: Local::now(),
         }
     }
 }
@@ -98,7 +98,7 @@ impl WorkspaceStateManager {
         {
             let mut state = self.state.write();
             state.last_channel = channel.to_string();
-            state.timestamp = Utc::now();
+            state.timestamp = Local::now();
         }
         self.save_atomic()
     }
@@ -108,7 +108,7 @@ impl WorkspaceStateManager {
         {
             let mut state = self.state.write();
             state.last_chat_id = chat_id.to_string();
-            state.timestamp = Utc::now();
+            state.timestamp = Local::now();
         }
         self.save_atomic()
     }
@@ -124,7 +124,7 @@ impl WorkspaceStateManager {
     }
 
     /// Get the timestamp of the last state update.
-    pub fn get_timestamp(&self) -> DateTime<Utc> {
+    pub fn get_timestamp(&self) -> DateTime<Local> {
         self.state.read().timestamp
     }
 

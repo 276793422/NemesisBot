@@ -473,11 +473,11 @@ impl MemoryManager {
                                 tags: ve.tags,
                                 score: Some(ve.score),
                                 created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
-                                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                                    .unwrap_or_else(|_| chrono::Utc::now()),
+                                    .map(|dt| dt.with_timezone(&chrono::Local))
+                                    .unwrap_or_else(|_| chrono::Local::now()),
                                 updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
-                                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                                    .unwrap_or_else(|_| chrono::Utc::now()),
+                                    .map(|dt| dt.with_timezone(&chrono::Local))
+                                    .unwrap_or_else(|_| chrono::Local::now()),
                             };
                             ScoredEntry {
                                 entry,
@@ -549,11 +549,11 @@ impl MemoryManager {
                         tags: ve.tags,
                         score: Some(ve.score),
                         created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
-                            .map(|dt| dt.with_timezone(&chrono::Utc))
-                            .unwrap_or_else(|_| chrono::Utc::now()),
+                            .map(|dt| dt.with_timezone(&chrono::Local))
+                            .unwrap_or_else(|_| chrono::Local::now()),
                         updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
-                            .map(|dt| dt.with_timezone(&chrono::Utc))
-                            .unwrap_or_else(|_| chrono::Utc::now()),
+                            .map(|dt| dt.with_timezone(&chrono::Local))
+                            .unwrap_or_else(|_| chrono::Local::now()),
                     };
                     ScoredEntry {
                         entry,
@@ -597,11 +597,11 @@ impl MemoryManager {
                     tags: ve.tags,
                     score: Some(ve.score),
                     created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                        .unwrap_or_else(|_| chrono::Local::now()),
                     updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(|_| chrono::Utc::now()),
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                        .unwrap_or_else(|_| chrono::Local::now()),
                 }));
             }
         }
@@ -747,7 +747,7 @@ impl MemoryManager {
     /// corresponding entries from the vector store.
     pub async fn cleanup_episodic(&self, older_than_days: usize) -> Result<usize, String> {
         // Collect IDs that will be removed so we can also clean vector store.
-        let cutoff = chrono::Utc::now()
+        let cutoff = chrono::Local::now()
             - chrono::Duration::days(older_than_days as i64);
         let sessions = self.episodic.list_sessions().await?;
         let mut ids_to_remove = Vec::new();

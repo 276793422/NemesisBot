@@ -478,7 +478,7 @@ impl SecurityPlugin {
             user: invocation.user.clone(),
             source: invocation.source.clone(),
             target: target.clone(),
-            timestamp: Some(chrono::Utc::now()),
+            timestamp: Some(chrono::Local::now()),
             approver: None,
             approved_at: None,
             denied_reason: None,

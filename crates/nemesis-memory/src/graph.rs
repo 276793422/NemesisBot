@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +38,7 @@ pub struct GraphTriple {
     #[serde(default)]
     pub confidence: f64,
     /// When this triple was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: DateTime<Local>,
 }
 
 impl GraphTriple {
@@ -50,7 +50,7 @@ impl GraphTriple {
             object,
             metadata: HashMap::new(),
             confidence: 1.0,
-            created_at: Utc::now(),
+            created_at: Local::now(),
         }
     }
 
@@ -73,7 +73,7 @@ pub struct GraphEntity {
     #[serde(default)]
     pub properties: HashMap<String, String>,
     /// When this entity was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: DateTime<Local>,
 }
 
 impl GraphEntity {
@@ -83,7 +83,7 @@ impl GraphEntity {
             name,
             typ,
             properties: HashMap::new(),
-            created_at: Utc::now(),
+            created_at: Local::now(),
         }
     }
 }

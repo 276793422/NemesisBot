@@ -261,7 +261,7 @@ impl ApprovalManager {
             id: id.clone(),
             operation: operation.to_string(),
             requester: requester.to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             status: ApprovalStatus::Pending,
             deny_reason: None,
         };
@@ -312,7 +312,7 @@ impl ApprovalManager {
     ///
     /// Returns the number of requests that were expired.
     pub fn cleanup_expired(&self) -> usize {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let timeout_dur = chrono::Duration::seconds(self.timeout_secs as i64);
 
         let mut map = self.requests.write();
@@ -325,7 +325,7 @@ impl ApprovalManager {
                 let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&req.timestamp) else {
                     return false;
                 };
-                now.signed_duration_since(ts.with_timezone(&chrono::Utc)) > timeout_dur
+                now.signed_duration_since(ts.with_timezone(&chrono::Local)) > timeout_dur
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -487,7 +487,7 @@ impl MultiProcessApprovalManager {
                         approved: true,
                         timed_out: false,
                         duration_seconds: start.elapsed().as_secs_f64(),
-                        response_time: chrono::Utc::now().timestamp(),
+                        response_time: chrono::Local::now().timestamp(),
                     });
                 }
 
@@ -499,7 +499,7 @@ impl MultiProcessApprovalManager {
                     approved: false,
                     timed_out: false,
                     duration_seconds: start.elapsed().as_secs_f64(),
-                    response_time: chrono::Utc::now().timestamp(),
+                    response_time: chrono::Local::now().timestamp(),
                 });
             }
             Some(factory) => {
@@ -535,7 +535,7 @@ impl MultiProcessApprovalManager {
                 );
                 window_data.insert(
                     "timestamp".to_string(),
-                    serde_json::Value::Number(chrono::Utc::now().timestamp().into()),
+                    serde_json::Value::Number(chrono::Local::now().timestamp().into()),
                 );
 
                 // Spawn child process
@@ -555,7 +555,7 @@ impl MultiProcessApprovalManager {
                                 approved: false,
                                 timed_out: false,
                                 duration_seconds: start.elapsed().as_secs_f64(),
-                                response_time: chrono::Utc::now().timestamp(),
+                                response_time: chrono::Local::now().timestamp(),
                             });
                         }
                         return Err(format!("failed to create approval window: {}", e));
@@ -588,7 +588,7 @@ impl MultiProcessApprovalManager {
                             approved,
                             timed_out: false,
                             duration_seconds: start.elapsed().as_secs_f64(),
-                            response_time: chrono::Utc::now().timestamp(),
+                            response_time: chrono::Local::now().timestamp(),
                         };
 
                         tracing::info!(
@@ -615,7 +615,7 @@ impl MultiProcessApprovalManager {
                             approved: false,
                             timed_out: true,
                             duration_seconds: start.elapsed().as_secs_f64(),
-                            response_time: chrono::Utc::now().timestamp(),
+                            response_time: chrono::Local::now().timestamp(),
                         })
                     }
                 }

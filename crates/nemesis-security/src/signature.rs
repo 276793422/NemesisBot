@@ -135,7 +135,7 @@ impl TrustStore {
             public_key: public_key.to_string(),
             name: name.to_string(),
             level,
-            added_at: chrono::Utc::now().to_rfc3339(),
+            added_at: chrono::Local::now().to_rfc3339(),
             fingerprint,
         };
         self.keys.write().insert(public_key.to_string(), entry);
@@ -344,7 +344,7 @@ impl VerificationResult {
             algorithm: ALGORITHM_NAME.to_string(),
             error: String::new(),
             files_verified,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -357,7 +357,7 @@ impl VerificationResult {
             algorithm: ALGORITHM_NAME.to_string(),
             error: error.to_string(),
             files_verified: 0,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -370,7 +370,7 @@ impl VerificationResult {
             algorithm: ALGORITHM_NAME.to_string(),
             error: error.to_string(),
             files_verified,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         }
     }
 }
@@ -463,7 +463,7 @@ impl Verifier {
     /// hash over all files (excluding `.signature`), and checks the Ed25519
     /// signature against the embedded public key.
     pub fn verify_skill(&self, skill_path: &Path) -> VerificationResult {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
 
         // Validate the path exists and is a directory.
         if !skill_path.exists() {
@@ -665,7 +665,7 @@ impl Verifier {
     /// The verification computes SHA-256 of the file content and checks it
     /// against all keys in the trust store (skipping revoked keys).
     pub fn verify_file(&self, file_path: &Path, signature: &[u8]) -> Result<VerificationResult, String> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
 
         let content = std::fs::read(file_path)
             .map_err(|e| format!("cannot read file: {}", e))?;
@@ -785,7 +785,7 @@ pub fn verify_file_with_key(
     verifying_key: &VerifyingKey,
     signature: &[u8],
 ) -> Result<VerificationResult, String> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Local::now().to_rfc3339();
 
     let content = std::fs::read(file_path)
         .map_err(|e| format!("cannot read file: {}", e))?;
@@ -852,7 +852,7 @@ pub fn sign_skill(
         signature: base64::engine::general_purpose::STANDARD.encode(sig.to_bytes().as_ref()),
         public_key: export_public_key(&verifying_key),
         signer_name: signer_name.to_string(),
-        signed_at: chrono::Utc::now().to_rfc3339(),
+        signed_at: chrono::Local::now().to_rfc3339(),
         file_count,
         hash: hex_encode(&aggregate_hash),
     };

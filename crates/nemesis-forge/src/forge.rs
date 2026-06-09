@@ -131,7 +131,7 @@ impl Forge {
         }
 
         *self.bg_running.lock() = true;
-        *self.started_at.lock() = Some(chrono::Utc::now().to_rfc3339());
+        *self.started_at.lock() = Some(chrono::Local::now().to_rfc3339());
 
         let flush_interval = self.config.collection.flush_interval_secs;
         let reflect_interval = self.config.reflection.interval_secs;
@@ -581,8 +581,8 @@ impl Forge {
             },
             content: skill_content.clone(),
             tool_signature,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            updated_at: chrono::Local::now().to_rfc3339(),
             usage_count: 0,
             last_degraded_at: None,
             success_rate: 0.0,
@@ -641,7 +641,7 @@ impl Forge {
             return;
         }
 
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
 
         let entries = match std::fs::read_dir(&prompts_dir) {
             Ok(e) => e,
@@ -656,7 +656,7 @@ impl Forge {
             }
             if let Ok(metadata) = entry.metadata() {
                 if let Ok(modified) = metadata.modified() {
-                    let modified_time: chrono::DateTime<chrono::Utc> = modified.into();
+                    let modified_time: chrono::DateTime<chrono::Local> = modified.into();
                     if modified_time < cutoff {
                         let _ = std::fs::remove_file(entry.path());
                     }

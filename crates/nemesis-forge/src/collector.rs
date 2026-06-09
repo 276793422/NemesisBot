@@ -487,7 +487,7 @@ impl ForgePlugin {
             output_summary,
             success,
             duration_ms,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             session_key: session_key.to_string(),
         };
 

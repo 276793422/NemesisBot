@@ -82,7 +82,7 @@ fn test_submit_task() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "chat-1".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
 
@@ -103,7 +103,7 @@ fn test_submit_duplicate_fails() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
 
@@ -175,7 +175,7 @@ fn test_in_memory_store_crud() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
 
@@ -205,7 +205,7 @@ fn test_in_memory_store_list_by_status() {
             result: None,
             original_channel: "rpc".to_string(),
             original_chat_id: "ch".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
         store.create(task).unwrap();
@@ -235,7 +235,7 @@ fn test_cleanup_completed_removes_old_tasks() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(old_task).unwrap();
@@ -266,7 +266,7 @@ fn test_cleanup_pending_timeout() {
     })));
 
     // Create a pending task with a very old created_at
-    let old_time = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
     let old_task = Task {
         id: "old-pending".to_string(),
         status: TaskStatus::Pending,
@@ -291,7 +291,7 @@ fn test_cleanup_pending_timeout() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(recent_task).unwrap();
@@ -523,7 +523,7 @@ fn test_in_memory_store_list_all() {
             result: None,
             original_channel: "rpc".to_string(),
             original_chat_id: "ch".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
         store.create(task).unwrap();
@@ -630,7 +630,7 @@ fn test_cleanup_completed_removes_cancelled_tasks() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -678,7 +678,7 @@ fn test_cleanup_completed_with_invalid_completed_at() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -750,7 +750,7 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
 
     // Create a task already in Completed state with completed_at 3 hours ago
-    let old_completed_at = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+    let old_completed_at = (chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339();
     let old_task = Task {
         id: "old-completed-v2".to_string(),
         status: TaskStatus::Completed,
@@ -760,13 +760,13 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
         result: Some(serde_json::json!("done")),
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: (chrono::Utc::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        created_at: (chrono::Local::now() - chrono::Duration::hours(4)).to_rfc3339(),
         completed_at: Some(old_completed_at),
     };
     store.create(old_task).unwrap();
 
     // Also create a failed task 3 hours ago
-    let old_failed_at = (chrono::Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+    let old_failed_at = (chrono::Local::now() - chrono::Duration::hours(3)).to_rfc3339();
     let old_failed_task = Task {
         id: "old-failed-v2".to_string(),
         status: TaskStatus::Failed,
@@ -776,7 +776,7 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
         result: Some(serde_json::json!({"error": "timeout"})),
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: (chrono::Utc::now() - chrono::Duration::hours(4)).to_rfc3339(),
+        created_at: (chrono::Local::now() - chrono::Duration::hours(4)).to_rfc3339(),
         completed_at: Some(old_failed_at),
     };
     store.create(old_failed_task).unwrap();
@@ -797,7 +797,7 @@ fn test_cleanup_completed_keeps_recent_completed_tasks() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
 
     // Create a task that was completed 5 minutes ago (within 2-hour window)
-    let recent_completed_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let recent_completed_at = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let recent_task = Task {
         id: "recent-completed".to_string(),
         status: TaskStatus::Completed,
@@ -807,7 +807,7 @@ fn test_cleanup_completed_keeps_recent_completed_tasks() {
         result: Some(serde_json::json!("result")),
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: (chrono::Utc::now() - chrono::Duration::minutes(10)).to_rfc3339(),
+        created_at: (chrono::Local::now() - chrono::Duration::minutes(10)).to_rfc3339(),
         completed_at: Some(recent_completed_at),
     };
     store.create(recent_task).unwrap();
@@ -830,7 +830,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     })));
 
     // Create a pending task with created_at 25 hours ago (exceeds 24-hour threshold)
-    let old_created = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
     let old_pending_task = Task {
         id: "timed-out-task".to_string(),
         status: TaskStatus::Pending,
@@ -855,7 +855,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(recent_pending).unwrap();

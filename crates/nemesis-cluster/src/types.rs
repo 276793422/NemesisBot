@@ -78,14 +78,14 @@ impl ExtendedNodeInfo {
     /// Mirrors Go's `Node.SetStatus()`.
     pub fn set_status(&mut self, status: NodeStatus) {
         self.status = status;
-        self.base.last_seen = chrono::Utc::now().to_rfc3339();
+        self.base.last_seen = chrono::Local::now().to_rfc3339();
     }
 
     /// Update the last_seen timestamp and set status to Online.
     ///
     /// Mirrors Go's `Node.UpdateLastSeen()`.
     pub fn update_last_seen(&mut self) {
-        self.base.last_seen = chrono::Utc::now().to_rfc3339();
+        self.base.last_seen = chrono::Local::now().to_rfc3339();
         if self.status != NodeStatus::Online {
             self.status = NodeStatus::Online;
         }
@@ -198,10 +198,10 @@ impl ExtendedNodeInfo {
 
         // Try to parse the last_seen timestamp (RFC 3339 format)
         if let Ok(last_seen) = chrono::DateTime::parse_from_rfc3339(&self.base.last_seen) {
-            let now = chrono::Utc::now();
-            let last_seen_utc = last_seen.to_utc();
-            if now > last_seen_utc {
-                (now - last_seen_utc).to_std().unwrap_or(std::time::Duration::ZERO)
+            let now = chrono::Local::now();
+            let last_seen_local = last_seen.with_timezone(&chrono::Local);
+            if now > last_seen_local {
+                (now - last_seen_local).to_std().unwrap_or(std::time::Duration::ZERO)
             } else {
                 std::time::Duration::ZERO
             }

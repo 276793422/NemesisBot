@@ -1,6 +1,6 @@
 //! Session management with persistence, expiry, and multi-session operations.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -62,8 +62,8 @@ pub struct Session {
     pub channel: String,
     pub sender_id: String,
     pub chat_id: String,
-    pub created_at: DateTime<Utc>,
-    pub last_active: DateTime<Utc>,
+    pub created_at: DateTime<Local>,
+    pub last_active: DateTime<Local>,
     pub metadata: HashMap<String, String>,
 }
 
@@ -113,7 +113,7 @@ impl SessionMgr {
     /// Create a new connection session.
     pub fn create_session(&self, channel: &str, sender_id: &str, chat_id: &str) -> Session {
         let id = format!("sess_{}", self.session_counter.fetch_add(1, Ordering::SeqCst));
-        let now = Utc::now();
+        let now = Local::now();
         let session = Session {
             id,
             channel: channel.to_string(),
@@ -140,7 +140,7 @@ impl SessionMgr {
     /// Touch session (update last active).
     pub fn touch(&self, id: &str) {
         if let Some(mut s) = self.sessions.get_mut(id) {
-            s.last_active = Utc::now();
+            s.last_active = Local::now();
         }
     }
 
@@ -151,7 +151,7 @@ impl SessionMgr {
 
     /// Cleanup expired connection sessions.
     pub fn cleanup_expired(&self) -> usize {
-        let now = Utc::now();
+        let now = Local::now();
         let timeout = chrono::Duration::from_std(self.timeout).unwrap_or(chrono::Duration::hours(1));
         let expired: Vec<String> = self.sessions
             .iter()
@@ -186,7 +186,7 @@ impl SessionMgr {
         if let Some(session) = sessions.get(key) {
             return session.clone();
         }
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         let session = ChatSession {
             key: key.to_string(),
             messages: Vec::new(),
@@ -205,7 +205,7 @@ impl SessionMgr {
             content: content.to_string(),
             tool_calls: Vec::new(),
             tool_call_id: None,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         };
         self.add_full_message(session_key, msg);
     }
@@ -219,7 +219,7 @@ impl SessionMgr {
     pub fn add_full_message(&self, session_key: &str, mut msg: Message) {
         let mut sessions = self.chat_sessions.lock();
         let session = sessions.entry(session_key.to_string()).or_insert_with(|| {
-            let now = Utc::now().to_rfc3339();
+            let now = Local::now().to_rfc3339();
             ChatSession {
                 key: session_key.to_string(),
                 messages: Vec::new(),
@@ -230,11 +230,11 @@ impl SessionMgr {
         });
 
         if msg.timestamp.is_none() {
-            msg.timestamp = Some(Utc::now().to_rfc3339());
+            msg.timestamp = Some(Local::now().to_rfc3339());
         }
 
         session.messages.push(msg);
-        session.updated = Utc::now().to_rfc3339();
+        session.updated = Local::now().to_rfc3339();
         drop(sessions);
         let _ = self.save_chat_session(session_key);
     }
@@ -253,7 +253,7 @@ impl SessionMgr {
         let mut sessions = self.chat_sessions.lock();
         if let Some(session) = sessions.get_mut(key) {
             session.messages = messages;
-            session.updated = Utc::now().to_rfc3339();
+            session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
         let _ = self.save_chat_session(key);
@@ -270,7 +270,7 @@ impl SessionMgr {
         let mut sessions = self.chat_sessions.lock();
         if let Some(session) = sessions.get_mut(key) {
             session.summary = Some(summary.to_string());
-            session.updated = Utc::now().to_rfc3339();
+            session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
         let _ = self.save_chat_session(key);
@@ -286,7 +286,7 @@ impl SessionMgr {
                 let start = session.messages.len() - keep_last;
                 session.messages = session.messages[start..].to_vec();
             }
-            session.updated = Utc::now().to_rfc3339();
+            session.updated = Local::now().to_rfc3339();
         }
         drop(sessions);
         let _ = self.save_chat_session(key);

@@ -424,7 +424,7 @@ impl Tool for ScreenCaptureTool {
         // Determine format and filename
         let format = args["format"].as_str().unwrap_or("png");
         let ext = if format == "jpg" { ".jpg" } else { ".png" };
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = chrono::Local::now().timestamp_millis();
         let filename = format!("screenshot_{}{}", timestamp, ext);
         let output_path = temp_dir.join(&filename);
 

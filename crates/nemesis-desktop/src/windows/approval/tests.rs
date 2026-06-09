@@ -12,7 +12,7 @@ fn make_approval_data() -> ApprovalWindowData {
         reason: "writing to system directory".to_string(),
         timeout_seconds: 60,
         context,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     }
 }
 

@@ -1,6 +1,6 @@
 //! Three-level dispatch protocol: type -> module -> cmd.
 
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 
 /// Protocol message with three-level dispatch.
@@ -53,7 +53,7 @@ impl ProtocolMessage {
             req_id: None,
             error: None,
             data,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         }
     }
 
@@ -66,7 +66,7 @@ impl ProtocolMessage {
             req_id: Some(req_id.to_string()),
             error: None,
             data,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         }
     }
 
@@ -79,7 +79,7 @@ impl ProtocolMessage {
             req_id: Some(req_id.to_string()),
             error: None,
             data,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         }
     }
 
@@ -92,7 +92,7 @@ impl ProtocolMessage {
             req_id: Some(req_id.to_string()),
             error: Some(error.to_string()),
             data: None,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         }
     }
 
@@ -105,7 +105,7 @@ impl ProtocolMessage {
             req_id: None,
             error: None,
             data,
-            timestamp: Some(Utc::now().to_rfc3339()),
+            timestamp: Some(Local::now().to_rfc3339()),
         }
     }
 

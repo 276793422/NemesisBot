@@ -167,8 +167,8 @@ fn node_result_serialization() {
         output: serde_json::json!({"result": "ok"}),
         error: None,
         state: ExecutionState::Completed,
-        started_at: chrono::Utc::now(),
-        ended_at: chrono::Utc::now(),
+        started_at: chrono::Local::now(),
+        ended_at: chrono::Local::now(),
         metadata: HashMap::new(),
     };
     let json = serde_json::to_string(&nr).unwrap();
@@ -185,8 +185,8 @@ fn node_result_with_error() {
         output: serde_json::Value::Null,
         error: Some("timeout".to_string()),
         state: ExecutionState::Failed,
-        started_at: chrono::Utc::now(),
-        ended_at: chrono::Utc::now(),
+        started_at: chrono::Local::now(),
+        ended_at: chrono::Local::now(),
         metadata: HashMap::new(),
     };
     assert_eq!(nr.state, ExecutionState::Failed);
@@ -349,8 +349,8 @@ fn execution_with_node_results() {
             output: serde_json::json!({"result": "ok"}),
             error: None,
             state: ExecutionState::Completed,
-            started_at: chrono::Utc::now(),
-            ended_at: chrono::Utc::now(),
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
             metadata: HashMap::new(),
         },
     );
@@ -363,7 +363,7 @@ fn execution_with_error() {
     let mut exec = Execution::new("test_wf".to_string(), HashMap::new());
     exec.state = ExecutionState::Failed;
     exec.error = Some("something went wrong".to_string());
-    exec.ended_at = Some(chrono::Utc::now());
+    exec.ended_at = Some(chrono::Local::now());
     assert_eq!(exec.state, ExecutionState::Failed);
     assert_eq!(exec.error.unwrap(), "something went wrong");
     assert!(exec.ended_at.is_some());
@@ -459,8 +459,8 @@ fn node_result_with_metadata() {
         output: serde_json::json!({"status": "ok"}),
         error: None,
         state: ExecutionState::Completed,
-        started_at: chrono::Utc::now(),
-        ended_at: chrono::Utc::now(),
+        started_at: chrono::Local::now(),
+        ended_at: chrono::Local::now(),
         metadata,
     };
     assert_eq!(nr.metadata.get("duration_ms").unwrap(), 1500);

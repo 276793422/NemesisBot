@@ -344,7 +344,7 @@ impl CronTool {
 
         // Determine schedule
         let schedule = if let Some(at_secs) = args["at_seconds"].as_u64() {
-            let at_ms = chrono::Utc::now().timestamp_millis() + (at_secs as i64) * 1000;
+            let at_ms = chrono::Local::now().timestamp_millis() + (at_secs as i64) * 1000;
             CronSchedule::At { at_ms }
         } else if let Some(every_secs) = args["every_seconds"].as_u64() {
             let every_ms = (every_secs as i64) * 1000;

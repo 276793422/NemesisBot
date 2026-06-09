@@ -635,8 +635,8 @@ impl ForgeToolExecutor {
             status: ArtifactStatus::Draft,
             content: content.clone(),
             tool_signature: Vec::new(),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            updated_at: chrono::Local::now().to_rfc3339(),
             usage_count: 0,
             last_degraded_at: None,
             success_rate: 0.0,
@@ -1222,7 +1222,7 @@ impl ForgeToolExecutor {
                 let report = serde_json::json!({
                     "source": bridge.local_node_id(),
                     "report_path": report_path,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "timestamp": chrono::Local::now().to_rfc3339(),
                 });
 
                 match bridge.share_reflection(report).await {

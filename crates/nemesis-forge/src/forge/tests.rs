@@ -528,7 +528,7 @@ fn make_collected_experience(tool: &str, success: bool, dur: u64) -> crate::type
             output_summary: if success { "ok" } else { "error" }.into(),
             success,
             duration_ms: dur,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             session_key: "test:session".into(),
         },
     }

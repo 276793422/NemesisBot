@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -36,7 +36,7 @@ pub struct Session {
     /// Whether the session is currently processing a request.
     pub busy: bool,
     /// Timestamp of the last activity on this session.
-    pub last_active: DateTime<Utc>,
+    pub last_active: DateTime<Local>,
     /// Last channel used (for crash recovery).
     pub last_channel: Option<String>,
     /// Last chat ID used (for crash recovery).
@@ -51,7 +51,7 @@ impl Session {
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
             busy: false,
-            last_active: Utc::now(),
+            last_active: Local::now(),
             last_channel: None,
             last_chat_id: None,
         }
@@ -59,7 +59,7 @@ impl Session {
 
     /// Touch the session, updating last_active to now.
     pub fn touch(&mut self) {
-        self.last_active = Utc::now();
+        self.last_active = Local::now();
     }
 }
 
@@ -139,7 +139,7 @@ impl SessionManager {
 
     /// Remove and return expired sessions based on a custom timeout.
     pub fn cleanup_expired_with_timeout(&self, timeout: Duration) -> Vec<Session> {
-        let now = Utc::now();
+        let now = Local::now();
         let keys_to_remove: Vec<String> = self
             .sessions
             .iter()
@@ -195,9 +195,9 @@ pub struct StoredSession {
     #[serde(default)]
     pub summary: String,
     /// When this session was created.
-    pub created: DateTime<Utc>,
+    pub created: DateTime<Local>,
     /// When this session was last updated.
-    pub updated: DateTime<Utc>,
+    pub updated: DateTime<Local>,
 }
 
 /// A single message in stored session history.
@@ -306,8 +306,8 @@ impl SessionStore {
             key: key.to_string(),
             messages: Vec::new(),
             summary: String::new(),
-            created: Utc::now(),
-            updated: Utc::now(),
+            created: Local::now(),
+            updated: Local::now(),
         };
         self.sessions.write().unwrap().insert(key.to_string(), session.clone());
         session
@@ -325,7 +325,7 @@ impl SessionStore {
     pub fn set_history(&self, key: &str, messages: Vec<StoredMessage>) {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.messages = messages;
-            session.updated = Utc::now();
+            session.updated = Local::now();
         }
     }
 
@@ -338,10 +338,10 @@ impl SessionStore {
                 content: content.to_string(),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
             });
-            session.updated = Utc::now();
+            session.updated = Local::now();
         }
     }
 
@@ -357,7 +357,7 @@ impl SessionStore {
     pub fn set_summary(&self, key: &str, summary: &str) {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.summary = summary.to_string();
-            session.updated = Utc::now();
+            session.updated = Local::now();
         }
     }
 
@@ -367,7 +367,7 @@ impl SessionStore {
             if session.messages.len() > keep_last {
                 let start = session.messages.len() - keep_last;
                 session.messages = session.messages.split_off(start);
-                session.updated = Utc::now();
+                session.updated = Local::now();
             }
         }
     }
@@ -996,7 +996,7 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
         ),
         tool_calls: Vec::new(),
         tool_call_id: None,
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         reasoning_content: None,
     });
 

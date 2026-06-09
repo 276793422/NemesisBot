@@ -1,6 +1,6 @@
 //! Logging configuration with LogEntry, SSE hook, component filtering, and dual-layer switches.
 
-use chrono::Utc;
+use chrono::Local;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -186,7 +186,7 @@ impl NemesisLogger {
 
         let entry = LogEntry {
             level: level.name().to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: Local::now().to_rfc3339(),
             component: if component.is_empty() { None } else { Some(component.to_string()) },
             message: message.to_string(),
             fields: if fields.is_some() && !fields.as_ref().unwrap().is_empty() { fields } else { None },

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::{TimeDelta, Utc};
+use chrono::{TimeDelta, Local};
 
 use crate::types::Execution;
 
@@ -132,7 +132,7 @@ impl WorkflowPersistence {
         }
 
         let all = self.list_executions()?;
-        let cutoff = Utc::now() - TimeDelta::days(max_age_days as i64);
+        let cutoff = Local::now() - TimeDelta::days(max_age_days as i64);
 
         let remaining: Vec<&Execution> = all
             .iter()

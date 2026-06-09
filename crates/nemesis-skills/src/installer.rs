@@ -435,7 +435,7 @@ impl SkillInstaller {
             registry: registry_name.to_string(),
             slug: slug.to_string(),
             installed_version: version.to_string(),
-            installed_at: chrono::Utc::now().timestamp(),
+            installed_at: chrono::Local::now().timestamp(),
         };
 
         let data = serde_json::to_string_pretty(&origin)

@@ -4,7 +4,7 @@ use nemesis_types::forge::CycleStatus;
 fn make_cycle(id: &str) -> LearningCycle {
     LearningCycle {
         id: id.into(),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
         patterns_found: 2,
         actions_taken: 1,
@@ -20,7 +20,7 @@ async fn test_append_and_read() {
     let cycle1 = make_cycle("cycle-001");
     let mut cycle2 = make_cycle("cycle-002");
     cycle2.status = CycleStatus::Completed;
-    cycle2.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    cycle2.completed_at = Some(chrono::Local::now().to_rfc3339());
 
     store.append(&cycle1).await.unwrap();
     store.append(&cycle2).await.unwrap();
@@ -40,7 +40,7 @@ async fn test_append_uses_month_directory() {
     store.append(&cycle).await.unwrap();
 
     // Verify month directory structure was created
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let month_dir = dir.path().join(now.format("%Y%m").to_string());
     assert!(month_dir.exists());
 
@@ -91,7 +91,7 @@ async fn test_read_cycles_with_since_filter() {
     let store = CycleStore::from_base(dir.path());
 
     // Create an old file manually
-    let old_date = chrono::Utc::now() - chrono::Duration::days(100);
+    let old_date = chrono::Local::now() - chrono::Duration::days(100);
     let old_month = dir.path().join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_cycle = LearningCycle {
@@ -113,7 +113,7 @@ async fn test_read_cycles_with_since_filter() {
     assert_eq!(all.len(), 2);
 
     // Read since 7 days ago (should only get recent)
-    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let since = chrono::Local::now() - chrono::Duration::days(7);
     let recent = store.read_cycles(Some(since)).await.unwrap();
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].id, "recent-cycle");
@@ -125,7 +125,7 @@ async fn test_cleanup_removes_old() {
     let store = CycleStore::from_base(dir.path());
 
     // Create an old file manually
-    let old_date = chrono::Utc::now() - chrono::Duration::days(100);
+    let old_date = chrono::Local::now() - chrono::Duration::days(100);
     let old_month = dir.path().join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_file = old_month.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
@@ -206,7 +206,7 @@ async fn test_read_cycles_ignores_non_jsonl() {
     let store = CycleStore::from_base(dir.path());
 
     // Create a non-jsonl file in the month directory
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let month_dir = dir.path().join(now.format("%Y%m").to_string());
     std::fs::create_dir_all(&month_dir).unwrap();
     std::fs::write(month_dir.join("readme.txt"), "not a cycle").unwrap();
@@ -225,7 +225,7 @@ async fn test_read_cycles_ignores_malformed_jsonl() {
     store.append(&make_cycle("valid")).await.unwrap();
 
     // Append malformed data to the same file
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let month_dir = dir.path().join(now.format("%Y%m").to_string());
     let file_path = month_dir.join(format!("{}.jsonl", now.format("%Y%m%d")));
     use std::io::Write;
@@ -270,7 +270,7 @@ async fn test_append_completed_cycle() {
     let store = CycleStore::from_base(dir.path());
     let mut cycle = make_cycle("completed");
     cycle.status = CycleStatus::Completed;
-    cycle.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    cycle.completed_at = Some(chrono::Local::now().to_rfc3339());
     cycle.patterns_found = 10;
     cycle.actions_taken = 3;
     store.append(&cycle).await.unwrap();
@@ -297,7 +297,7 @@ async fn test_read_cycles_since_now() {
     let store = CycleStore::from_base(dir.path());
     store.append(&make_cycle("a")).await.unwrap();
     // Since=now should include just-created entries
-    let since = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let since = chrono::Local::now() - chrono::Duration::seconds(1);
     let cycles = store.read_cycles(Some(since)).await.unwrap();
     assert_eq!(cycles.len(), 1);
 }
@@ -308,7 +308,7 @@ async fn test_read_cycles_future_since() {
     let store = CycleStore::from_base(dir.path());
     store.append(&make_cycle("a")).await.unwrap();
     // Since=future should return empty
-    let future = chrono::Utc::now() + chrono::Duration::days(1);
+    let future = chrono::Local::now() + chrono::Duration::days(1);
     let cycles = store.read_cycles(Some(future)).await.unwrap();
     assert!(cycles.is_empty());
 }
@@ -345,7 +345,7 @@ async fn test_cleanup_large_number_old_files() {
 
     // Create multiple old files
     for i in 0..5 {
-        let old_date = chrono::Utc::now() - chrono::Duration::days(100 + i);
+        let old_date = chrono::Local::now() - chrono::Duration::days(100 + i);
         let old_month = dir.path().join(old_date.format("%Y%m").to_string());
         std::fs::create_dir_all(&old_month).unwrap();
         let old_file = old_month.join(format!("{}.jsonl", old_date.format("%Y%m%d")));

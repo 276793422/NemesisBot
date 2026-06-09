@@ -514,7 +514,7 @@ impl RpcClient {
                 crate::rpc_types::ActionType::Custom(s) => s.as_str(),
             }.into(),
             payload: request.payload.clone(),
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         };
         let json_bytes = serde_json::to_vec(&wire).map_err(|e| {

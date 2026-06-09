@@ -98,9 +98,9 @@ pub struct ValidatedKey {
     pub child_pid: u32,
     pub child_id: Option<String>,
     /// When this key was created.
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: chrono::DateTime<chrono::Local>,
     /// When this key was last used (validated).
-    pub used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub used_at: Option<chrono::DateTime<chrono::Local>>,
 }
 
 /// Key generator for child process authentication.
@@ -125,7 +125,7 @@ impl KeyGenerator {
                 key: key.clone(),
                 child_pid,
                 child_id: Some(child_id.to_string()),
-                created_at: chrono::Utc::now(),
+                created_at: chrono::Local::now(),
                 used_at: None,
             },
         );
@@ -138,7 +138,7 @@ impl KeyGenerator {
     pub fn validate(&self, key: &str) -> Result<ValidatedKey, String> {
         let mut map = self.keys.lock();
         let entry = map.get_mut(key).ok_or_else(|| "invalid key".to_string())?;
-        entry.used_at = Some(chrono::Utc::now());
+        entry.used_at = Some(chrono::Local::now());
         Ok(entry.clone())
     }
 
@@ -160,7 +160,7 @@ impl KeyGenerator {
     /// Returns the number of keys removed. Keys are considered expired
     /// based on their `created_at` timestamp.
     pub fn cleanup(&self, max_age: Duration) -> usize {
-        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::MAX);
+        let cutoff = chrono::Local::now() - chrono::Duration::from_std(max_age).unwrap_or(chrono::Duration::MAX);
         let mut map = self.keys.lock();
         let before = map.len();
         map.retain(|_, v| v.created_at > cutoff);

@@ -80,7 +80,7 @@ impl TaskResultStore {
             action: action.into(),
             result,
             success: true,
-            stored_at: chrono::Utc::now().to_rfc3339(),
+            stored_at: chrono::Local::now().to_rfc3339(),
         });
     }
 
@@ -91,7 +91,7 @@ impl TaskResultStore {
             action: action.into(),
             result: serde_json::json!({ "error": error }),
             success: false,
-            stored_at: chrono::Utc::now().to_rfc3339(),
+            stored_at: chrono::Local::now().to_rfc3339(),
         });
     }
 
@@ -295,7 +295,7 @@ impl AsyncTaskResultStore {
             action: action.into(),
             result,
             success: true,
-            stored_at: chrono::Utc::now().to_rfc3339(),
+            stored_at: chrono::Local::now().to_rfc3339(),
         };
         self.store_async(tr).await;
     }
@@ -307,7 +307,7 @@ impl AsyncTaskResultStore {
             action: action.into(),
             result: serde_json::json!({ "error": error }),
             success: false,
-            stored_at: chrono::Utc::now().to_rfc3339(),
+            stored_at: chrono::Local::now().to_rfc3339(),
         };
         self.store_async(tr).await;
     }
@@ -568,7 +568,7 @@ impl GoTaskResultStore {
         error_msg: &str,
         source_node: &str,
     ) -> std::result::Result<(), String> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         let entry = GoTaskResultEntry {
             task_id: task_id.to_string(),
             status: "done".to_string(),

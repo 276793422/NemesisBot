@@ -184,7 +184,7 @@ impl SecurityMiddleware {
             user: self.user.clone(),
             source: self.source.clone(),
             target: target.to_string(),
-            timestamp: Some(chrono::Utc::now()),
+            timestamp: Some(chrono::Local::now()),
             ..Default::default()
         };
         let danger = req.danger_level;
@@ -319,7 +319,7 @@ impl SecurityMiddleware {
             user: self.user.clone(),
             source: self.source.clone(),
             target: format!("{} operations", batch.operations.len()),
-            timestamp: Some(chrono::Utc::now()),
+            timestamp: Some(chrono::Local::now()),
             ..Default::default()
         };
 
@@ -781,7 +781,7 @@ impl<'a> SecureFileWrapper<'a> {
                 .modified()
                 .ok()
                 .map(|t| {
-                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                    let dt: chrono::DateTime<chrono::Local> = t.into();
                     dt.to_rfc3339()
                 })
                 .unwrap_or_default(),

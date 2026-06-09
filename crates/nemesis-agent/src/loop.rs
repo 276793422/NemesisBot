@@ -1149,7 +1149,7 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
-        let trace_id = format!("direct-{}-{}", session_key, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!("direct-{}-{}", session_key, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -1209,7 +1209,7 @@ impl AgentLoop {
         channel: &str,
         chat_id: &str,
     ) -> Result<String, String> {
-        let trace_id = format!("heartbeat-{}-{}", chat_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!("heartbeat-{}-{}", chat_id, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -1934,7 +1934,7 @@ impl AgentLoop {
             ),
             tool_calls: Vec::new(),
             tool_call_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
         };
         retained.push(note);
@@ -2083,7 +2083,7 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Result<String, String> {
         // Generate trace ID and emit conversation_start event.
-        let trace_id = format!("{}-{}", session_key, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!("{}-{}", session_key, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
         let start_time = std::time::Instant::now();
 
         // Emit conversation_start observer event.
@@ -2192,7 +2192,7 @@ impl AgentLoop {
         user_message: &str,
         context: &RequestContext,
     ) -> Vec<AgentEvent> {
-        let trace_id = format!("run-{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+        let trace_id = format!("run-{}", chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
         let token = tokio_util::sync::CancellationToken::new();
         self.run_with_trace(instance, user_message, context, &trace_id, false, &token).await
     }
@@ -2502,7 +2502,7 @@ impl AgentLoop {
                         status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
                         error_message: None,
                         is_streaming: false,
-                        created_at: chrono::Utc::now().timestamp(),
+                        created_at: chrono::Local::now().timestamp(),
                     };
                     if let Err(e) = ds.insert_request_log(&log) {
                         tracing::warn!("[AgentLoop] Failed to record usage: {e}");
@@ -2703,7 +2703,7 @@ impl AgentLoop {
                 output_summary: result.clone(),
                 success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
                 duration_ms: tool_start.elapsed().as_millis() as u64,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 session_key: format!("{}:{}", context.channel, context.chat_id),
             };
             let args = serde_json::from_str(&tool_call.arguments)

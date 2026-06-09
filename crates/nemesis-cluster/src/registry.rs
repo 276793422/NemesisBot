@@ -59,7 +59,7 @@ impl PeerRegistry {
 
     /// Register or update a peer.
     pub fn upsert(&self, info: ExtendedNodeInfo) {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         let mut peers = self.peers.lock();
         if let Some(existing) = peers.get_mut(&info.base.id) {
             existing.info = info;
@@ -84,7 +84,7 @@ impl PeerRegistry {
     /// data is identical to what's already stored (health timestamps are
     /// always refreshed regardless).
     pub fn upsert_if_changed(&self, info: ExtendedNodeInfo) -> bool {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         let mut peers = self.peers.lock();
         if let Some(existing) = peers.get_mut(&info.base.id) {
             if existing.info.content_eq(&info) {
@@ -122,7 +122,7 @@ impl PeerRegistry {
 
     /// Record a successful health check for a peer.
     pub fn mark_healthy(&self, node_id: &str) {
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         if let Some(entry) = self.peers.lock().get_mut(node_id) {
             entry.last_health_check = now;
             entry.consecutive_failures = 0;
@@ -235,7 +235,7 @@ impl PeerRegistry {
     /// Returns the list of expired node IDs.
     /// Mirrors Go's `Registry.CheckTimeouts(timeout)`.
     pub fn check_timeouts(&self, timeout: std::time::Duration) -> Vec<String> {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let threshold = now - chrono::Duration::from_std(timeout).unwrap_or(chrono::Duration::seconds(90));
 
         let mut peers = self.peers.lock();
@@ -246,7 +246,7 @@ impl PeerRegistry {
                 continue;
             }
             if let Ok(last_check) = chrono::DateTime::parse_from_rfc3339(&entry.last_health_check) {
-                let last_check_utc = last_check.with_timezone(&chrono::Utc);
+                let last_check_utc = last_check.with_timezone(&chrono::Local);
                 if last_check_utc < threshold {
                     entry.info.status = NodeStatus::Offline;
                     expired.push(id.clone());
@@ -275,7 +275,7 @@ impl PeerRegistry {
     /// Compares `last_health_check` timestamp against `now - eviction_timeout`.
     /// Returns the list of evicted node IDs.
     pub fn evict_stale(&self) -> Vec<String> {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let threshold = now - chrono::Duration::seconds(self.health_config.eviction_timeout_secs as i64);
 
         let mut peers = self.peers.lock();
@@ -285,7 +285,7 @@ impl PeerRegistry {
                 // Only evict peers that are already offline (stale/failed)
                 if entry.info.status != NodeStatus::Online {
                     if let Ok(last_check) = chrono::DateTime::parse_from_rfc3339(&entry.last_health_check) {
-                        let last_check_utc = last_check.with_timezone(&chrono::Utc);
+                        let last_check_utc = last_check.with_timezone(&chrono::Local);
                         if last_check_utc < threshold {
                             return Some(id.clone());
                         }
@@ -307,7 +307,7 @@ impl PeerRegistry {
     /// Returns the list of newly stale node IDs (peers that were Online and
     /// are now marked Offline because their last health check is too old).
     pub fn check_health(&self) -> Vec<String> {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let threshold = now - chrono::Duration::seconds(self.health_config.stale_timeout_secs as i64);
 
         let mut peers = self.peers.lock();
@@ -320,7 +320,7 @@ impl PeerRegistry {
             }
 
             if let Ok(last_check) = chrono::DateTime::parse_from_rfc3339(&entry.last_health_check) {
-                let last_check_utc = last_check.with_timezone(&chrono::Utc);
+                let last_check_utc = last_check.with_timezone(&chrono::Local);
                 if last_check_utc < threshold {
                     entry.info.status = NodeStatus::Offline;
                     newly_stale.push(id.clone());

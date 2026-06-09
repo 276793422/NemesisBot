@@ -114,7 +114,7 @@ impl TasksHandler {
             "channel": channel,
             "prompt": prompt,
             "enabled": enabled,
-            "created_at": chrono::Utc::now().to_rfc3339(),
+            "created_at": chrono::Local::now().to_rfc3339(),
         });
 
         let path = cron_jobs_path(workspace);
@@ -154,7 +154,7 @@ impl TasksHandler {
         if let Some(enabled) = data.get("enabled").and_then(|v| v.as_bool()) {
             job["enabled"] = serde_json::Value::Bool(enabled);
         }
-        job["updated_at"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+        job["updated_at"] = serde_json::Value::String(chrono::Local::now().to_rfc3339());
 
         save_cron_jobs(&path, &jobs)?;
         Ok(Some(serde_json::json!({ "updated": true, "id": id })))

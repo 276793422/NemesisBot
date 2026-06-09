@@ -12,7 +12,7 @@ fn make_approval_data() -> ApprovalWindowData {
         reason: String::new(),
         timeout_seconds: 60,
         context: HashMap::new(),
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     }
 }
 

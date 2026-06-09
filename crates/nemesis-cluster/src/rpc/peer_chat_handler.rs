@@ -441,7 +441,7 @@ async fn process_async(
     let session_key = format!("cluster_rpc:{}", sender_id);
     let correlation_id = format!(
         "peer-chat-{}-{:04}",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+        chrono::Local::now().timestamp_nanos_opt().unwrap_or(0),
         rand::random::<u16>() % 10000
     );
 

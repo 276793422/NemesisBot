@@ -864,7 +864,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                             .filter_map(|l| serde_json::from_str(l).ok())
                             .collect();
                         let export = serde_json::json!({
-                            "exported_at": chrono::Utc::now().to_rfc3339(),
+                            "exported_at": chrono::Local::now().to_rfc3339(),
                             "total_entries": entries.len(),
                             "entries": entries,
                         });

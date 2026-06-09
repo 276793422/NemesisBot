@@ -47,7 +47,7 @@ impl TestRunner {
         let mut result = FunctionalValidationResult {
             stage: ValidationStage {
                 passed: false,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors: Vec::new(),
             },
             tests_run: 0,

@@ -343,7 +343,7 @@ impl ContinuationManager {
                 tool_call_id: tool_call_id.to_string(),
                 channel: channel.to_string(),
                 chat_id: chat_id.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
+                created_at: chrono::Local::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
                 warn!("[Continuation] Failed to persist continuation snapshot to disk: {}", e);
@@ -557,7 +557,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) {
     // Generate trace_id for observer event correlation.
-    let trace_id = format!("continuation-{}-{}", task_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0));
+    let trace_id = format!("continuation-{}-{}", task_id, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
     let start_time = std::time::Instant::now();
 
     // Emit conversation_start observer event.

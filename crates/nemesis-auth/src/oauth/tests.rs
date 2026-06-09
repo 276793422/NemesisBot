@@ -1182,7 +1182,7 @@ fn test_credential_needs_refresh() {
     let cred = crate::token::AuthCredential {
         access_token: "at".to_string(),
         refresh_token: Some("rt".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::minutes(3)), // within 5 min
+        expires_at: Some(Local::now() + chrono::Duration::minutes(3)), // within 5 min
         provider: "test".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -1192,7 +1192,7 @@ fn test_credential_needs_refresh() {
     let cred_not_expired = crate::token::AuthCredential {
         access_token: "at".to_string(),
         refresh_token: Some("rt".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        expires_at: Some(Local::now() + chrono::Duration::hours(1)),
         provider: "test".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -1205,7 +1205,7 @@ fn test_credential_serialization() {
     let cred = crate::token::AuthCredential {
         access_token: "at_123".to_string(),
         refresh_token: Some("rt_456".to_string()),
-        expires_at: Some(Utc::now()),
+        expires_at: Some(Local::now()),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: Some("acct_789".to_string()),
@@ -1230,7 +1230,7 @@ fn test_parse_token_response_impl_large_expires_in() {
     let cred = parse_token_response_impl(body, "openai").unwrap();
     assert!(cred.expires_at.is_some());
     let expires = cred.expires_at.unwrap();
-    let diff = expires.timestamp() - Utc::now().timestamp();
+    let diff = expires.timestamp() - Local::now().timestamp();
     assert!(diff > 86000 && diff <= 86400);
 }
 

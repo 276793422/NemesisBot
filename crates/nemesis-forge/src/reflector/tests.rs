@@ -130,7 +130,7 @@ fn test_analyze_traces_with_learning_cycle() {
 
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-123".to_string(),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
         patterns_found: 3,
         actions_taken: 1,
@@ -473,8 +473,8 @@ fn test_reflect_with_learning_cycle() {
     ];
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-test".into(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        completed_at: Some(chrono::Utc::now().to_rfc3339()),
+        started_at: chrono::Local::now().to_rfc3339(),
+        completed_at: Some(chrono::Local::now().to_rfc3339()),
         patterns_found: 5,
         actions_taken: 2,
         status: nemesis_types::forge::CycleStatus::Completed,
@@ -1191,7 +1191,7 @@ fn test_cleanup_reports_keeps_recent() {
     std::fs::create_dir_all(&reflections_dir).unwrap();
 
     // Create a recent report
-    let recent_name = format!("{}.md", chrono::Utc::now().format("%Y%m%d"));
+    let recent_name = format!("{}.md", chrono::Local::now().format("%Y%m%d"));
     std::fs::write(reflections_dir.join(&recent_name), "recent report").unwrap();
 
     let reflector = Reflector::with_reflections_dir(reflections_dir);

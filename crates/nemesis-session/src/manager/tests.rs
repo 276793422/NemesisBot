@@ -141,7 +141,7 @@ fn test_add_full_message_with_tool_calls() {
         content: "file contents here".to_string(),
         tool_calls: Vec::new(),
         tool_call_id: Some("call_123".to_string()),
-        timestamp: Some(Utc::now().to_rfc3339()),
+        timestamp: Some(Local::now().to_rfc3339()),
     };
     mgr.add_full_message("web:user1", result_msg);
 

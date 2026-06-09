@@ -575,7 +575,7 @@ impl MemoryHandler {
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
 
         let entry = serde_json::json!({
             "id": id,

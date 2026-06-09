@@ -5,12 +5,12 @@ fn make_event(event_type: &str) -> TraceEvent {
         id: uuid::Uuid::new_v4().to_string(),
         event_type: event_type.into(),
         session_key: "test-session".into(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         data: serde_json::json!({"test": true}),
     }
 }
 
-fn make_event_at(event_type: &str, time: chrono::DateTime<chrono::Utc>) -> TraceEvent {
+fn make_event_at(event_type: &str, time: chrono::DateTime<chrono::Local>) -> TraceEvent {
     TraceEvent {
         id: uuid::Uuid::new_v4().to_string(),
         event_type: event_type.into(),
@@ -75,7 +75,7 @@ async fn test_read_traces_since() {
     let path = dir.path().join("traces.jsonl");
     let store = TraceStore::new(&path);
 
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let two_hours_ago = now - chrono::Duration::hours(2);
     let one_hour_ago = now - chrono::Duration::hours(1);
 
@@ -102,7 +102,7 @@ async fn test_read_traces_since_all_match() {
     store.append(&make_event("a")).await.unwrap();
     store.append(&make_event("b")).await.unwrap();
 
-    let long_ago = chrono::Utc::now() - chrono::Duration::days(365);
+    let long_ago = chrono::Local::now() - chrono::Duration::days(365);
     let all = store.read_traces_since(long_ago).await.unwrap();
     assert_eq!(all.len(), 2);
 }
@@ -113,10 +113,10 @@ async fn test_read_traces_since_none_match() {
     let path = dir.path().join("traces.jsonl");
     let store = TraceStore::new(&path);
 
-    let past = chrono::Utc::now() - chrono::Duration::hours(2);
+    let past = chrono::Local::now() - chrono::Duration::hours(2);
     store.append(&make_event_at("old", past)).await.unwrap();
 
-    let future = chrono::Utc::now() + chrono::Duration::hours(1);
+    let future = chrono::Local::now() + chrono::Duration::hours(1);
     let none = store.read_traces_since(future).await.unwrap();
     assert!(none.is_empty());
 }
@@ -127,7 +127,7 @@ async fn test_cleanup_removes_old() {
     let path = dir.path().join("traces.jsonl");
     let store = TraceStore::new(&path);
 
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let two_days_ago = now - chrono::Duration::days(2);
     let one_hour_ago = now - chrono::Duration::hours(1);
 
@@ -152,7 +152,7 @@ async fn test_cleanup_removes_all() {
     let path = dir.path().join("traces.jsonl");
     let store = TraceStore::new(&path);
 
-    let past = chrono::Utc::now() - chrono::Duration::days(10);
+    let past = chrono::Local::now() - chrono::Duration::days(10);
     store.append(&make_event_at("old1", past)).await.unwrap();
     store.append(&make_event_at("old2", past)).await.unwrap();
 
@@ -248,7 +248,7 @@ async fn test_read_traces_since_empty_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("empty.jsonl");
     let store = TraceStore::new(&path);
-    let result = store.read_traces_since(chrono::Utc::now()).await.unwrap();
+    let result = store.read_traces_since(chrono::Local::now()).await.unwrap();
     assert!(result.is_empty());
 }
 
@@ -268,7 +268,7 @@ async fn test_cleanup_partial() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("partial.jsonl");
     let store = TraceStore::new(&path);
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let three_days_ago = now - chrono::Duration::days(3);
     store.append(&make_event_at("old", three_days_ago)).await.unwrap();
     store.append(&make_event("new")).await.unwrap();

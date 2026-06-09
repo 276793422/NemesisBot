@@ -143,7 +143,7 @@ impl SubagentManager {
             origin_chat_id: origin_chat_id.to_string(),
             status: "running".to_string(),
             result: String::new(),
-            created_ms: chrono::Utc::now().timestamp_millis(),
+            created_ms: chrono::Local::now().timestamp_millis(),
         };
 
         let mut tasks = self.tasks.lock().await;

@@ -84,7 +84,7 @@ impl AgentInstance {
                 content: prompt.clone(),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 reasoning_content: None,
             };
             instance.history.lock().unwrap().push(system_turn);
@@ -158,7 +158,7 @@ impl AgentInstance {
             content: content.to_string(),
             tool_calls: Vec::new(),
             tool_call_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
         };
         self.push_turn(turn);
@@ -171,7 +171,7 @@ impl AgentInstance {
             content: content.to_string(),
             tool_calls,
             tool_call_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content,
         };
         self.push_turn(turn);
@@ -184,7 +184,7 @@ impl AgentInstance {
             content: content.to_string(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.to_string()),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
         };
         self.push_turn(turn);
@@ -253,7 +253,7 @@ impl AgentInstance {
         }
 
         // 2. Compression note.
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Local::now().to_rfc3339();
         let compression_note = ConversationTurn {
             role: "system".to_string(),
             content: format!("[Session compressed at {}]", timestamp),

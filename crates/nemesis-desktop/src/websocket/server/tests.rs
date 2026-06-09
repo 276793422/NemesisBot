@@ -128,7 +128,7 @@ fn test_key_generator_timestamps() {
 
     // Validate the key and check used_at is set
     let validated = key_gen.validate(&key).unwrap();
-    assert!(validated.created_at <= chrono::Utc::now());
+    assert!(validated.created_at <= chrono::Local::now());
     assert!(validated.used_at.is_some());
 
     // Before validation, used_at was None in the stored copy;
@@ -268,7 +268,7 @@ fn test_validated_key_fields() {
     assert_eq!(validated.child_pid, 5678);
     assert_eq!(validated.child_id.as_deref(), Some("child-test"));
     assert_eq!(validated.key, key);
-    assert!(validated.created_at <= chrono::Utc::now());
+    assert!(validated.created_at <= chrono::Local::now());
     assert!(validated.used_at.is_some());
 }
 

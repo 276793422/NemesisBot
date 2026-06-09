@@ -1306,7 +1306,7 @@ mod router_extra {
             success: true,
             tokens_used: 500,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         let m = c.get_metrics("test");
         assert_eq!(m.total_requests, 1);
@@ -1323,7 +1323,7 @@ mod router_extra {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         c.record(Metric {
             provider: "test".to_string(),
@@ -1331,7 +1331,7 @@ mod router_extra {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         c.record(Metric {
             provider: "test".to_string(),
@@ -1339,7 +1339,7 @@ mod router_extra {
             success: false,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         let m = c.get_metrics("test");
         assert_eq!(m.total_requests, 2); // Only last 2
@@ -1354,7 +1354,7 @@ mod router_extra {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         assert_eq!(c.get_metrics("test").total_requests, 1);
         c.reset("test");
@@ -1370,7 +1370,7 @@ mod router_extra {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         c.record(Metric {
             provider: "b".to_string(),
@@ -1378,7 +1378,7 @@ mod router_extra {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
         let all = c.get_all_metrics();
         assert_eq!(all.len(), 2);

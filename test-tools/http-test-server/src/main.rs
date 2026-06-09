@@ -152,7 +152,7 @@ async fn handle_oauth_callback(
 
 async fn handle_oauth_device() -> impl IntoResponse {
     info!("POST /oauth/device");
-    let ts = chrono::Utc::now().timestamp();
+    let ts = chrono::Local::now().timestamp();
     Json(json!({
         "device_auth_id": format!("test_device_{}", ts),
         "user_code": "TEST-CODE",

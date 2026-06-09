@@ -7,7 +7,7 @@
 //! Mirrors Go's `module/channels/websocket_channel.go`.
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::Local;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -50,7 +50,7 @@ struct ServerMessage {
 impl ServerMessage {
     /// Returns current UTC time as ISO 8601 / RFC 3339 string (matches Go's `time.Time` JSON format).
     fn now_timestamp() -> String {
-        Utc::now().to_rfc3339()
+        Local::now().to_rfc3339()
     }
 
     fn message(role: &'static str, content: String) -> Self {

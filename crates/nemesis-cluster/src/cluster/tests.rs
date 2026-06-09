@@ -33,7 +33,7 @@ fn test_register_and_list_nodes() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.2:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -159,7 +159,7 @@ fn test_get_capabilities() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.5:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
@@ -399,7 +399,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "192.168.1.100:21949".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -442,7 +442,7 @@ fn test_cluster_peer_resolver_offline_peer() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:21949".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
@@ -958,7 +958,7 @@ fn test_find_peers_by_capability() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
@@ -1174,7 +1174,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -1200,7 +1200,7 @@ fn test_register_node_updates_existing() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -1216,7 +1216,7 @@ fn test_register_node_updates_existing() {
             role: nemesis_types::cluster::NodeRole::Master,
             address: "10.0.0.2:9000".into(),
             category: "prod".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["tools".into()],
@@ -1243,7 +1243,7 @@ fn test_get_online_peers_includes_online_nodes() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -1258,7 +1258,7 @@ fn test_get_online_peers_includes_online_nodes() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.2:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
@@ -1286,7 +1286,7 @@ fn test_get_capabilities_dedup() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
@@ -1301,7 +1301,7 @@ fn test_get_capabilities_dedup() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.2:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "forge".into()],
@@ -1493,7 +1493,7 @@ fn test_find_peers_by_capability_offline_excluded() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Offline,
         capabilities: vec!["llm".into()],
@@ -1645,7 +1645,7 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
 async fn test_poll_stale_pending_tasks_old_task_timed_out() {
     let tm = Arc::new(TaskManager::new());
     // Create a task with an old created_at (> 24 hours) and a peer_id
-    let old_time = (chrono::Utc::now() - chrono::Duration::hours(25)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
     let task = Task {
         id: "stale-24h".to_string(),
         status: TaskStatus::Pending,
@@ -1669,7 +1669,7 @@ async fn test_poll_stale_pending_tasks_old_task_timed_out() {
 async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
     let tm = Arc::new(TaskManager::new());
     // Create a task that is > 2 minutes old but < 24 hours, with peer_id
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "stale-5m".to_string(),
         status: TaskStatus::Pending,
@@ -1699,7 +1699,7 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_stale_with_done_response() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "stale-done".to_string(),
         status: TaskStatus::Pending,
@@ -1740,7 +1740,7 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_stale_with_running_response() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "stale-running".to_string(),
         status: TaskStatus::Pending,
@@ -1771,7 +1771,7 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
 async fn test_poll_stale_pending_tasks_no_peer_id() {
     let tm = Arc::new(TaskManager::new());
     // Task older than 2 min but with no peer_id -> should be skipped
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "no-peer".to_string(),
         status: TaskStatus::Pending,
@@ -1794,7 +1794,7 @@ async fn test_poll_stale_pending_tasks_no_peer_id() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_call_fn_error() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "call-error".to_string(),
         status: TaskStatus::Pending,
@@ -2017,7 +2017,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -2051,7 +2051,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: String::new(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -2322,7 +2322,7 @@ fn test_get_peer_after_register() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.10:21949".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -2424,7 +2424,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: String::new(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -2455,7 +2455,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:21949".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec![],
@@ -2811,7 +2811,7 @@ fn test_sync_to_disk_with_connecting_status() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.99:9000".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Connecting,
         capabilities: vec!["llm".into()],
@@ -2931,7 +2931,7 @@ async fn test_poll_stale_pending_tasks_malformed_created_at() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_unknown_status_response() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "weird-status".to_string(),
         status: TaskStatus::Pending,
@@ -2964,7 +2964,7 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_invalid_json_response() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "invalid-json".to_string(),
         status: TaskStatus::Pending,
@@ -2996,7 +2996,7 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_done_with_error_status() {
     let tm = Arc::new(TaskManager::new());
-    let old_time = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
     let task = Task {
         id: "done-err".to_string(),
         status: TaskStatus::Pending,
@@ -3359,7 +3359,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "192.168.1.50:21949".into(),
             category: "dev".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -3400,7 +3400,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
             role: nemesis_types::cluster::NodeRole::Worker,
             address: "10.0.0.1:21949".into(),
             category: "test".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Offline,
         capabilities: vec![],

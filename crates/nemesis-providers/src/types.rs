@@ -79,7 +79,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub timestamp: Option<chrono::DateTime<chrono::Local>>,
     /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
     /// Must be passed back to the API in subsequent assistant turns.
     #[serde(skip_serializing_if = "Option::is_none", default)]

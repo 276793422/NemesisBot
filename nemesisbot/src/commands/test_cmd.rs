@@ -91,7 +91,7 @@ fn make_approval_data(request_id: &str, operation: &str, risk_level: &str, targe
         "reason": format!("Test approval ({}) via nemesisbot test", operation),
         "timeout_seconds": 30,
         "context": {},
-        "timestamp": chrono::Utc::now().timestamp(),
+        "timestamp": chrono::Local::now().timestamp(),
     })
 }
 
@@ -146,7 +146,7 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
     println!("  [2/5] NEMESISBOT_FORCE_HEADLESS=1 set");
 
     // 3. Build approval data
-    let request_id = format!("headless-{}", chrono::Utc::now().timestamp_millis());
+    let request_id = format!("headless-{}", chrono::Local::now().timestamp_millis());
     let data = make_approval_data(&request_id, "file_write", "HIGH", "C:\\Temp\\test.txt");
     println!("  [3/5] Approval data prepared (request_id: {})", request_id);
 
@@ -219,7 +219,7 @@ async fn run_approval_ui(risk_level: &str, operation: &str, target: &str) -> Res
     println!();
 
     // Build approval data
-    let request_id = format!("ui-{}", chrono::Utc::now().timestamp_millis());
+    let request_id = format!("ui-{}", chrono::Local::now().timestamp_millis());
     let data = make_approval_data(&request_id, operation, risk_level, target);
 
     println!("  Request ID:  {}", request_id);

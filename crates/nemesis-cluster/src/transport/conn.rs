@@ -177,7 +177,7 @@ impl WireMessage {
             to: to.to_string(),
             action: action.to_string(),
             payload,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         }
     }
@@ -192,7 +192,7 @@ impl WireMessage {
             to: request.from.clone(),
             action: request.action.clone(),
             payload,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         }
     }
@@ -207,7 +207,7 @@ impl WireMessage {
             to: request.from.clone(),
             action: request.action.clone(),
             payload: serde_json::Value::Null,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
             error: error.to_string(),
         }
     }

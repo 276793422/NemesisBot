@@ -106,8 +106,8 @@ fn entry_unique_ids() {
 #[test]
 fn entry_timestamps_set() {
     let entry = Entry::new(MemoryType::LongTerm, "ts test".to_string());
-    assert!(entry.created_at <= chrono::Utc::now());
-    assert!(entry.updated_at <= chrono::Utc::now());
+    assert!(entry.created_at <= chrono::Local::now());
+    assert!(entry.updated_at <= chrono::Local::now());
     assert!(entry.created_at <= entry.updated_at);
 }
 

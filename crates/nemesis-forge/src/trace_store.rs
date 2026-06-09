@@ -68,14 +68,14 @@ impl TraceStore {
     /// excluded.
     pub async fn read_traces_since(
         &self,
-        since: chrono::DateTime<chrono::Utc>,
+        since: chrono::DateTime<chrono::Local>,
     ) -> std::io::Result<Vec<TraceEvent>> {
         let all = self.read_all().await?;
         let filtered: Vec<TraceEvent> = all
             .into_iter()
             .filter(|e| {
                 chrono::DateTime::parse_from_rfc3339(&e.timestamp)
-                    .map(|dt| dt.with_timezone(&chrono::Utc) >= since)
+                    .map(|dt| dt.with_timezone(&chrono::Local) >= since)
                     .unwrap_or(false)
             })
             .collect();
@@ -108,7 +108,7 @@ impl TraceStore {
             return Ok(0);
         }
 
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days as i64);
         let all = self.read_all().await?;
         let original_count = all.len();
 
@@ -116,7 +116,7 @@ impl TraceStore {
             .into_iter()
             .filter(|e| {
                 chrono::DateTime::parse_from_rfc3339(&e.timestamp)
-                    .map(|dt| dt.with_timezone(&chrono::Utc) >= cutoff)
+                    .map(|dt| dt.with_timezone(&chrono::Local) >= cutoff)
                     .unwrap_or(true) // Keep events with unparseable timestamps
             })
             .collect();

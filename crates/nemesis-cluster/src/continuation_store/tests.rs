@@ -8,7 +8,7 @@ fn make_snapshot(task_id: &str) -> ContinuationSnapshot {
         channel: "web".into(),
         chat_id: "chat-123".into(),
         ready: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -238,7 +238,7 @@ async fn test_snapshot_preserves_messages_json() {
         channel: "rpc".into(),
         chat_id: "chat-msg".into(),
         ready: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     };
 
     store.save(snap).await.unwrap();

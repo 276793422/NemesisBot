@@ -69,7 +69,7 @@ pub fn run(local: bool) -> Result<()> {
 
     // Method 2: Try named pipe / signal file
     let signal_path = home.join("shutdown.signal");
-    std::fs::write(&signal_path, chrono::Utc::now().to_rfc3339())?;
+    std::fs::write(&signal_path, chrono::Local::now().to_rfc3339())?;
     println!("  Shutdown signal file written: {}", signal_path.display());
 
     // Method 3: Try HTTP endpoint

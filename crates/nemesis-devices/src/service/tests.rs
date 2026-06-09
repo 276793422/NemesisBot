@@ -12,7 +12,7 @@ fn test_register_and_get() {
         vendor_id: Some("1234".to_string()),
         product_id: Some("5678".to_string()),
         serial: None,
-        connected_at: Some(Utc::now()),
+        connected_at: Some(Local::now()),
         metadata: HashMap::new(),
     };
     svc.register(device);
@@ -599,7 +599,7 @@ fn test_device_serialization_roundtrip() {
         vendor_id: Some("0xABCD".into()),
         product_id: Some("0x1234".into()),
         serial: Some("SN999".into()),
-        connected_at: Some(Utc::now()),
+        connected_at: Some(Local::now()),
         metadata: {
             let mut m = HashMap::new();
             m.insert("version".into(), "1.0".into());
@@ -886,7 +886,7 @@ fn test_config_serialization_roundtrip() {
 
 #[test]
 fn test_device_with_all_optional_fields() {
-    let now = Utc::now();
+    let now = Local::now();
     let device = Device {
         id: "full-dev".into(),
         name: "Full Device".into(),

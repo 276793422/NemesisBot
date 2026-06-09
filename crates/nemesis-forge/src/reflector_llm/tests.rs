@@ -158,8 +158,8 @@ fn test_build_full_analysis_prompt_with_artifacts() {
         last_degraded_at: None,
         success_rate: 0.0,
         consecutive_observing_rounds: 0,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
     }];
     let prompt = build_full_analysis_prompt(&stats, &artifacts, None, None);
     assert!(prompt.contains("test-skill"));
@@ -186,7 +186,7 @@ fn test_build_full_analysis_prompt_with_learning_cycle() {
     let stats = make_reflection_stats();
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-1".to_string(),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
         patterns_found: 5,
         actions_taken: 3,
@@ -235,7 +235,7 @@ async fn test_semantic_analysis_with_all_contexts() {
     let trace = make_trace_stats();
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-2".to_string(),
-        started_at: chrono::Utc::now().to_rfc3339(),
+        started_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
         patterns_found: 2,
         actions_taken: 1,

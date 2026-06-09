@@ -31,7 +31,7 @@ pub fn extract_rpc_correlation_id(content: &str) -> Option<(&str, &str)> {
 
 /// Get current ISO 8601 timestamp.
 pub fn now_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    chrono::Local::now().to_rfc3339()
 }
 
 /// Returns the largest byte index `i` such that `i <= max_len` and `s.is_char_boundary(i)`.

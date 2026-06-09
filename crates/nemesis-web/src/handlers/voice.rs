@@ -1586,7 +1586,7 @@ impl VoiceHandler {
             if let Some(obj) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
                 obj.insert(name.clone(), serde_json::json!({
                     "embedding": embedding,
-                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "created_at": chrono::Local::now().to_rfc3339(),
                 }));
             }
             write_voiceprint_config(config_dir, &vp_cfg)?;

@@ -1,6 +1,6 @@
 use super::*;
 use crate::types::ExecutionState;
-use chrono::Utc;
+use chrono::Local;
 
 #[test]
 fn test_set_and_get_var() {
@@ -13,7 +13,7 @@ fn test_set_and_get_var() {
 #[test]
 fn test_set_and_get_node_result() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = Utc::now();
+    let now = Local::now();
     let result = NodeResult {
         node_id: "n1".to_string(),
         output: serde_json::json!({"status": "ok", "count": 42}),
@@ -59,7 +59,7 @@ fn test_resolve_input() {
 #[test]
 fn test_resolve_node_field() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = Utc::now();
+    let now = Local::now();
     let result = NodeResult {
         node_id: "step1".to_string(),
         output: serde_json::json!({"url": "http://example.com", "status": 200}),
@@ -87,7 +87,7 @@ fn test_resolve_unresolved() {
 #[test]
 fn test_resolve_node_full_output() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = Utc::now();
+    let now = Local::now();
     let result = NodeResult {
         node_id: "n1".to_string(),
         output: serde_json::json!("direct_output"),
@@ -135,7 +135,7 @@ fn test_get_all_variables_empty() {
 #[test]
 fn test_multiple_node_results() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
 
     for i in 0..5 {
         let result = NodeResult {
@@ -183,7 +183,7 @@ fn test_resolve_input_missing_field() {
 #[test]
 fn test_resolve_node_field_missing() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let result = NodeResult {
         node_id: "n1".to_string(),
         output: serde_json::json!({"existing": "value"}),
@@ -220,7 +220,7 @@ fn test_resolve_mixed_resolved_unresolved() {
 #[test]
 fn test_overwrite_node_result() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
 
     let result1 = NodeResult {
         node_id: "n1".to_string(),
@@ -261,7 +261,7 @@ fn test_input_preserved_after_clone() {
 #[test]
 fn test_resolve_node_non_object_output() {
     let ctx = WorkflowContext::new(HashMap::new());
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let result = NodeResult {
         node_id: "n1".to_string(),
         output: serde_json::json!("string_output"),

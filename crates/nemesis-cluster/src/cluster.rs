@@ -276,7 +276,7 @@ impl Cluster {
                 role: nemesis_types::cluster::NodeRole::Master,
                 address: display_address,
                 category: self.category.read().clone(),
-                last_seen: chrono::Utc::now().to_rfc3339(),
+                last_seen: chrono::Local::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
             capabilities: local_caps.clone(),
@@ -535,7 +535,7 @@ impl Cluster {
                                 pc.status.state = n.get_status_string().into();
                                 pc
                             }).collect(),
-                            last_sync: chrono::Utc::now().to_rfc3339(),
+                            last_sync: chrono::Local::now().to_rfc3339(),
                         };
                         if let Err(e) = crate::cluster_config::save_dynamic_state(&state_path, &state) {
                             logger::log_discovery_error(&format!("Failed to sync config: {}", e));
@@ -611,7 +611,7 @@ impl Cluster {
                 role: nemesis_types::cluster::NodeRole::Worker,
                 address: primary_address.clone(),
                 category: category.into(),
-                last_seen: chrono::Utc::now().to_rfc3339(),
+                last_seen: chrono::Local::now().to_rfc3339(),
             },
             status: NodeStatus::Online,
             capabilities,
@@ -1217,7 +1217,7 @@ impl Cluster {
             cluster: ClusterMeta {
                 id: "auto-discovered".into(),
                 auto_discovery: true,
-                last_updated: chrono::Utc::now().to_rfc3339(),
+                last_updated: chrono::Local::now().to_rfc3339(),
                 rpc_auth_token: String::new(),
             },
             local_node: ConfigNodeInfo {
@@ -1230,7 +1230,7 @@ impl Cluster {
                 capabilities: Vec::new(),
             },
             discovered,
-            last_sync: chrono::Utc::now().to_rfc3339(),
+            last_sync: chrono::Local::now().to_rfc3339(),
         };
 
         crate::cluster_config::save_dynamic_state(&self.dynamic_state_path, &state)
@@ -1495,7 +1495,7 @@ impl Cluster {
                 "status": "ok",
                 "message": "Reflection received",
                 "node_id": node_id_share,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "timestamp": chrono::Local::now().to_rfc3339(),
             }))
         }))?;
 
@@ -1844,10 +1844,10 @@ async fn poll_stale_pending_tasks(
     for task in tasks {
         // Parse created_at (RFC 3339) and compute age.
         let created = match chrono::DateTime::parse_from_rfc3339(&task.created_at) {
-            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Ok(dt) => dt.with_timezone(&chrono::Local),
             Err(_) => continue,
         };
-        let age = chrono::Utc::now() - created;
+        let age = chrono::Local::now() - created;
 
         // Skip tasks younger than 2 minutes.
         if age < chrono::Duration::minutes(2) {
@@ -2182,7 +2182,7 @@ fn generate_node_id() -> String {
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "unknown".into());
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%.6f");
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.6f");
     format!("bot-{}-{}", hostname, timestamp)
 }
 

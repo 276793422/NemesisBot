@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 // Re-export the shared memory types so consumers only need this crate.
@@ -30,15 +30,15 @@ pub struct Entry {
     /// Optional relevance / quality score in [0, 1].
     pub score: Option<f64>,
     /// When this entry was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: DateTime<Local>,
     /// When this entry was last updated.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: DateTime<Local>,
 }
 
 impl Entry {
     /// Create a new entry with auto-generated ID and current timestamps.
     pub fn new(typ: MemoryType, content: String) -> Self {
-        let now = Utc::now();
+        let now = Local::now();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             typ,

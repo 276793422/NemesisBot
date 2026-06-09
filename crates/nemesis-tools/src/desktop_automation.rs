@@ -505,7 +505,7 @@ Write-Output "$($screen.X),$($screen.Y),$($screen.Width),$($screen.Height)"
             return ToolResult::error(&format!("failed to create temp directory: {}", e));
         }
 
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = chrono::Local::now().timestamp_millis();
         let filename = format!("desktop_screenshot_{}.png", timestamp);
         let output_path = temp_dir.join(&filename);
         let output_str = output_path.to_string_lossy().to_string().replace('\'', "''");

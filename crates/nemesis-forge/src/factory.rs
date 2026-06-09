@@ -4,7 +4,7 @@
 //! when a provider is available. Falls back to template-based generation
 //! when no LLM is configured.
 
-use chrono::Utc;
+use chrono::Local;
 use uuid::Uuid;
 
 use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
@@ -84,8 +84,8 @@ impl Factory {
             status: ArtifactStatus::Draft,
             content,
             tool_signature: tool_names,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Utc::now().to_rfc3339(),
+            created_at: Local::now().to_rfc3339(),
+            updated_at: Local::now().to_rfc3339(),
             usage_count: 0,
             last_degraded_at: None,
             success_rate: 0.0,
@@ -134,8 +134,8 @@ impl Factory {
             status: ArtifactStatus::Draft,
             content,
             tool_signature: tool_names,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Utc::now().to_rfc3339(),
+            created_at: Local::now().to_rfc3339(),
+            updated_at: Local::now().to_rfc3339(),
             usage_count: 0,
             last_degraded_at: None,
             success_rate: 0.0,

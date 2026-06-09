@@ -1713,8 +1713,8 @@ fn test_stored_session_serialization() {
             },
         ],
         summary: "A greeting".to_string(),
-        created: chrono::Utc::now(),
-        updated: chrono::Utc::now(),
+        created: chrono::Local::now(),
+        updated: chrono::Local::now(),
     };
     let json = serde_json::to_string_pretty(&session).unwrap();
     let back: StoredSession = serde_json::from_str(&json).unwrap();
@@ -1750,8 +1750,8 @@ fn test_stored_session_with_tool_calls() {
             },
         ],
         summary: String::new(),
-        created: chrono::Utc::now(),
-        updated: chrono::Utc::now(),
+        created: chrono::Local::now(),
+        updated: chrono::Local::now(),
     };
     let json = serde_json::to_string(&session).unwrap();
     let back: StoredSession = serde_json::from_str(&json).unwrap();

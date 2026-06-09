@@ -601,7 +601,7 @@ fn test_beat_count_starts_at_zero() {
 #[test]
 fn test_last_beat_is_recent() {
     let svc = HeartbeatService::new(HeartbeatConfig::default());
-    let now = Utc::now();
+    let now = Local::now();
     let diff = (now - svc.last_beat()).num_seconds().abs();
     assert!(diff < 5, "last_beat should be close to now");
 }

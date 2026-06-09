@@ -169,7 +169,7 @@ impl Exporter {
             kind: format!("{:?}", artifact.kind).to_lowercase(),
             name: artifact.name.clone(),
             version: artifact.version.clone(),
-            exported_at: chrono::Utc::now().to_rfc3339(),
+            exported_at: chrono::Local::now().to_rfc3339(),
             files,
         };
 

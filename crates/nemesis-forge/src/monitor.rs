@@ -167,7 +167,7 @@ impl DeploymentMonitor {
         let window_days = if window_days == 0 { 7 } else { window_days };
 
         // Filter traces within the observation window
-        let since = chrono::Utc::now() - chrono::Duration::days(window_days as i64);
+        let since = chrono::Local::now() - chrono::Duration::days(window_days as i64);
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
             .filter(|t| {
@@ -175,7 +175,7 @@ impl DeploymentMonitor {
                 t.start_time
                     .get(..19)
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(&format!("{}Z", s)).ok())
-                    .map(|dt| dt.with_timezone(&chrono::Utc) >= since)
+                    .map(|dt| dt.with_timezone(&chrono::Local) >= since)
                     .unwrap_or(true)
             })
             .collect();
@@ -238,7 +238,7 @@ impl DeploymentMonitor {
         if after_traces.len() < min_samples {
             return Some(ActionOutcome {
                 artifact_id: artifact.id.clone(),
-                measured_at: chrono::Utc::now().to_rfc3339(),
+                measured_at: chrono::Local::now().to_rfc3339(),
                 sample_size: after_traces.len(),
                 rounds_before_avg: 0.0,
                 rounds_after_avg: 0.0,
@@ -270,7 +270,7 @@ impl DeploymentMonitor {
 
         Some(ActionOutcome {
             artifact_id: artifact.id.clone(),
-            measured_at: chrono::Utc::now().to_rfc3339(),
+            measured_at: chrono::Local::now().to_rfc3339(),
             sample_size: after_traces.len(),
             rounds_before_avg: before_rounds,
             rounds_after_avg: after_rounds,
@@ -321,8 +321,8 @@ impl DeploymentMonitor {
         // Check cooldown
         if let Some(ref last_degraded) = artifact.last_degraded_at {
             if let Ok(degraded_at) = chrono::DateTime::parse_from_rfc3339(last_degraded) {
-                let now = chrono::Utc::now();
-                let days_since = (now - degraded_at.with_timezone(&chrono::Utc)).num_days();
+                let now = chrono::Local::now();
+                let days_since = (now - degraded_at.with_timezone(&chrono::Local)).num_days();
                 if days_since < cooldown_days as i64 {
                     return; // still in cooldown
                 }
@@ -335,7 +335,7 @@ impl DeploymentMonitor {
         {
             self.registry.update(&artifact.id, |a| {
                 a.status = ArtifactStatus::Degraded;
-                a.last_degraded_at = Some(chrono::Utc::now().to_rfc3339());
+                a.last_degraded_at = Some(chrono::Local::now().to_rfc3339());
                 a.consecutive_observing_rounds = 0;
             });
 
@@ -418,8 +418,8 @@ impl DeploymentMonitor {
             Some(last_degraded) => {
                 match chrono::DateTime::parse_from_rfc3339(last_degraded) {
                     Ok(degraded_at) => {
-                        let now = chrono::Utc::now();
-                        let days_since = (now - degraded_at.with_timezone(&chrono::Utc)).num_days();
+                        let now = chrono::Local::now();
+                        let days_since = (now - degraded_at.with_timezone(&chrono::Local)).num_days();
                         days_since >= cooldown_days as i64
                     }
                     Err(_) => true, // Unparseable timestamp, allow degradation
@@ -442,7 +442,7 @@ impl DeploymentMonitor {
 
         self.registry.update(artifact_id, |a| {
             a.status = ArtifactStatus::Degraded;
-            a.last_degraded_at = Some(chrono::Utc::now().to_rfc3339());
+            a.last_degraded_at = Some(chrono::Local::now().to_rfc3339());
             a.consecutive_observing_rounds = 0;
         })
     }

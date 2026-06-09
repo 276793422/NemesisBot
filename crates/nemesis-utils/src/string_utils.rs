@@ -1,6 +1,6 @@
 //! String utilities: truncation, random IDs, JSON helpers, time formatting.
 
-use chrono::Utc;
+use chrono::Local;
 
 /// Truncate a string to max_len characters, appending "..." if truncated.
 pub fn truncate(s: &str, max_len: usize) -> String {
@@ -38,12 +38,12 @@ pub fn random_short_id() -> String {
 
 /// Format a timestamp as RFC3339 string.
 pub fn format_timestamp() -> String {
-    Utc::now().to_rfc3339()
+    Local::now().to_rfc3339()
 }
 
 /// Format a timestamp as a compact datetime string (YYYY-MM-DD HH:MM:SS).
 pub fn format_datetime_compact() -> String {
-    Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// Try to parse a JSON string, returning a serde_json::Value.

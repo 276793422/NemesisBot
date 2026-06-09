@@ -566,7 +566,7 @@ async fn test_episodic_cleanup() {
 
     // Old episode
     let mut old = Episode::new("old-sess".into(), "user".into(), "old content".into());
-    old.timestamp = chrono::Utc::now() - chrono::Duration::days(10);
+    old.timestamp = chrono::Local::now() - chrono::Duration::days(10);
     mgr.append_episode(old).await.unwrap();
 
     // Recent episode

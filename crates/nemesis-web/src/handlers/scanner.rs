@@ -415,7 +415,7 @@ impl ScannerHandler {
                                     let state = EngineState {
                                         install_status: INSTALL_STATUS_FAILED.to_string(),
                                         install_error: e.clone(),
-                                        last_install_attempt: chrono::Utc::now().to_rfc3339(),
+                                        last_install_attempt: chrono::Local::now().to_rfc3339(),
                                         ..parse_engine_config(&raw).state
                                     };
                                     if let Ok(state_val) = serde_json::to_value(&state) {
@@ -474,7 +474,7 @@ impl ScannerHandler {
                             if let Some(obj) = updated.as_object_mut() {
                                 let mut state = parse_engine_config(&raw).state;
                                 state.db_status = DB_STATUS_READY.to_string();
-                                state.last_db_update = chrono::Utc::now().to_rfc3339();
+                                state.last_db_update = chrono::Local::now().to_rfc3339();
                                 if let Ok(state_val) = serde_json::to_value(&state) {
                                     obj.insert("state".to_string(), state_val);
                                 }
@@ -824,9 +824,9 @@ async fn install_engine_inner(
             let state = EngineState {
                 install_status: INSTALL_STATUS_INSTALLED.to_string(),
                 install_error: String::new(),
-                last_install_attempt: chrono::Utc::now().to_rfc3339(),
+                last_install_attempt: chrono::Local::now().to_rfc3339(),
                 db_status: DB_STATUS_READY.to_string(),
-                last_db_update: chrono::Utc::now().to_rfc3339(),
+                last_db_update: chrono::Local::now().to_rfc3339(),
             };
             if let Ok(state_val) = serde_json::to_value(&state) {
                 obj.insert("state".to_string(), state_val);

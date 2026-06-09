@@ -34,7 +34,7 @@ impl Registry {
         let mut arts = self.artifacts.lock();
 
         // Set timestamps (mirrors Go's artifact.CreatedAt = time.Now().UTC())
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         artifact.created_at = now.clone();
         artifact.updated_at = now;
 
@@ -48,7 +48,7 @@ impl Registry {
             existing.version = new_version;
             existing.content = artifact.content;
             existing.tool_signature = artifact.tool_signature;
-            existing.updated_at = chrono::Utc::now().to_rfc3339();
+            existing.updated_at = chrono::Local::now().to_rfc3339();
             existing.status = ArtifactStatus::Draft;
             let id = existing.id.clone();
             drop(arts);
@@ -87,7 +87,7 @@ impl Registry {
         let mut arts = self.artifacts.lock();
         if let Some(artifact) = arts.iter_mut().find(|a| a.id == id) {
             f(artifact);
-            artifact.updated_at = chrono::Utc::now().to_rfc3339();
+            artifact.updated_at = chrono::Local::now().to_rfc3339();
             drop(arts);
             self.save_sync();
             true

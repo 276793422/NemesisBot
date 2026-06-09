@@ -99,7 +99,7 @@ impl AuditChain {
             return Err("audit chain is closed".to_string());
         }
         let mut hasher = Sha256::new();
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Local::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
 
         let prev_hash = self.last_hash.lock().clone();

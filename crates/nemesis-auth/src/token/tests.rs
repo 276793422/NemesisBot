@@ -5,7 +5,7 @@ fn test_credential_not_expired() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: Some("refresh".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        expires_at: Some(Local::now() + chrono::Duration::hours(1)),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -19,7 +19,7 @@ fn test_credential_expired() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: None,
-        expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+        expires_at: Some(Local::now() - chrono::Duration::hours(1)),
         provider: "openai".to_string(),
         auth_method: "api_key".to_string(),
         account_id: None,
@@ -64,7 +64,7 @@ fn test_needs_refresh_when_expiring_soon() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: Some("refresh".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::minutes(3)),
+        expires_at: Some(Local::now() + chrono::Duration::minutes(3)),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -78,7 +78,7 @@ fn test_needs_refresh_when_not_expiring_soon() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: Some("refresh".to_string()),
-        expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        expires_at: Some(Local::now() + chrono::Duration::hours(1)),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -106,7 +106,7 @@ fn test_needs_refresh_already_expired() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: Some("refresh".to_string()),
-        expires_at: Some(Utc::now() - chrono::Duration::minutes(10)),
+        expires_at: Some(Local::now() - chrono::Duration::minutes(10)),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -134,7 +134,7 @@ fn test_is_expired_exactly_now() {
     let cred = AuthCredential {
         access_token: "test".to_string(),
         refresh_token: None,
-        expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
+        expires_at: Some(Local::now() - chrono::Duration::seconds(1)),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: None,
@@ -205,7 +205,7 @@ fn test_credential_serialization_roundtrip() {
     let cred = AuthCredential {
         access_token: "at_123".to_string(),
         refresh_token: Some("rt_456".to_string()),
-        expires_at: Some(Utc::now()),
+        expires_at: Some(Local::now()),
         provider: "openai".to_string(),
         auth_method: "oauth".to_string(),
         account_id: Some("acct_789".to_string()),

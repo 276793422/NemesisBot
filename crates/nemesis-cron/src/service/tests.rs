@@ -121,7 +121,7 @@ fn test_compute_next_run_cron_kind() {
 
 #[test]
 fn test_compute_next_run_invalid_expr() {
-    let now_ms = chrono::Utc::now().timestamp_millis();
+    let now_ms = chrono::Local::now().timestamp_millis();
     let schedule = CronSchedule {
         kind: "cron".to_string(),
         at_ms: None,
@@ -184,7 +184,7 @@ fn test_cron_service_status_next_wake() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let future_ms = Utc::now().timestamp_millis() + 300_000; // 5 min from now
+    let future_ms = Local::now().timestamp_millis() + 300_000; // 5 min from now
     svc.add_job("future", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
     let status = svc.status();
     assert!(status["nextWakeAtMS"].is_number());
@@ -276,7 +276,7 @@ fn test_list_jobs_include_disabled() {
 
 #[test]
 fn test_compute_next_run_at_past() {
-    let past_ms = Utc::now().timestamp_millis() - 60000; // 1 min ago
+    let past_ms = Local::now().timestamp_millis() - 60000; // 1 min ago
     let schedule = CronSchedule {
         kind: "at".to_string(),
         at_ms: Some(past_ms),
@@ -284,13 +284,13 @@ fn test_compute_next_run_at_past() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
 #[test]
 fn test_compute_next_run_at_future() {
-    let future_ms = Utc::now().timestamp_millis() + 300000; // 5 min from now
+    let future_ms = Local::now().timestamp_millis() + 300000; // 5 min from now
     let schedule = CronSchedule {
         kind: "at".to_string(),
         at_ms: Some(future_ms),
@@ -298,7 +298,7 @@ fn test_compute_next_run_at_future() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert_eq!(result, Some(future_ms));
 }
 
@@ -311,7 +311,7 @@ fn test_compute_next_run_unknown_kind() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -324,7 +324,7 @@ fn test_compute_next_run_every_zero_ms() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -337,7 +337,7 @@ fn test_compute_next_run_every_valid() {
         expr: None,
         tz: None,
     };
-    let now_ms = Utc::now().timestamp_millis();
+    let now_ms = Local::now().timestamp_millis();
     let result = compute_next_run(&schedule, now_ms);
     assert!(result.is_some());
     assert!(result.unwrap() > now_ms);
@@ -396,7 +396,7 @@ fn test_cron_job_state_serialization() {
 
 #[test]
 fn test_cron_job_serialization() {
-    let now_ms = Utc::now().timestamp_millis();
+    let now_ms = Local::now().timestamp_millis();
     let job = CronJob {
         id: "abc123".to_string(),
         name: "test job".to_string(),
@@ -479,7 +479,7 @@ fn test_add_job_at_schedule_delete_after_run() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let future_ms = Utc::now().timestamp_millis() + 300000; // 5 min from now
+    let future_ms = Local::now().timestamp_millis() + 300000; // 5 min from now
     let job = svc.add_job(
         "one_time",
         CronSchedule {
@@ -504,7 +504,7 @@ fn test_add_job_at_schedule_past_time() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let past_ms = Utc::now().timestamp_millis() - 60000; // 1 min ago
+    let past_ms = Local::now().timestamp_millis() - 60000; // 1 min ago
     let job = svc.add_job(
         "past_one_time",
         CronSchedule {
@@ -586,7 +586,7 @@ fn test_compute_next_run_cron_empty_expr() {
         expr: Some("".to_string()),
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -599,7 +599,7 @@ fn test_compute_next_run_cron_none_expr() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -821,7 +821,7 @@ fn test_set_on_job_handler() {
 #[test]
 fn test_compute_next_run_every_v2() {
     let schedule = CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(300000), expr: None, tz: None };
-    let now = Utc::now().timestamp_millis();
+    let now = Local::now().timestamp_millis();
     let result = compute_next_run(&schedule, now);
     assert_eq!(result, Some(now + 300000));
 }
@@ -829,21 +829,21 @@ fn test_compute_next_run_every_v2() {
 #[test]
 fn test_compute_next_run_every_zero() {
     let schedule = CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(0), expr: None, tz: None };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
 #[test]
 fn test_compute_next_run_cron_valid() {
     let schedule = CronSchedule { kind: "cron".to_string(), at_ms: None, every_ms: None, expr: Some("0 0 * * * *".to_string()), tz: None };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_some());
 }
 
 #[test]
 fn test_compute_next_run_unknown_kind_v2() {
     let schedule = CronSchedule { kind: "unknown".to_string(), at_ms: None, every_ms: None, expr: None, tz: None };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -907,7 +907,7 @@ fn test_compute_next_run_at_none_at_ms() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -921,7 +921,7 @@ fn test_compute_next_run_every_none_every_ms() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -935,7 +935,7 @@ fn test_compute_next_run_every_negative_ms() {
         expr: None,
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -949,7 +949,7 @@ fn test_compute_next_run_cron_invalid_expr_gronx() {
         expr: Some("0 0 0 32 1 *".to_string()), // day 32 is out of bounds
         tz: None,
     };
-    let result = compute_next_run(&schedule, Utc::now().timestamp_millis());
+    let result = compute_next_run(&schedule, Local::now().timestamp_millis());
     assert!(result.is_none());
 }
 
@@ -1056,7 +1056,7 @@ fn test_get_next_wake_ms_with_job() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let future_ms = Utc::now().timestamp_millis() + 60000;
+    let future_ms = Local::now().timestamp_millis() + 60000;
     svc.add_job("wake", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
     let wake = svc.get_next_wake_ms();
     assert!(wake.is_some());
@@ -1068,7 +1068,7 @@ fn test_get_next_wake_ms_disabled_job_ignored() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    let future_ms = Utc::now().timestamp_millis() + 60000;
+    let future_ms = Local::now().timestamp_millis() + 60000;
     let job = svc.add_job("disabled_wake", CronSchedule { kind: "at".to_string(), at_ms: Some(future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
     svc.toggle_job(&job.id).unwrap(); // disable
     let wake = svc.get_next_wake_ms();
@@ -1252,7 +1252,7 @@ fn test_cron_service_status_next_wake_multiple_jobs() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
 
-    let now_ms = Utc::now().timestamp_millis();
+    let now_ms = Local::now().timestamp_millis();
     let near_future = now_ms + 30000; // 30s
     let far_future = now_ms + 300000; // 5min
 
@@ -1306,7 +1306,7 @@ async fn test_cron_service_start_deletes_after_run() {
     });
 
     // Add an "at" job due in 1 second → delete_after_run=true
-    let near_future_ms = Utc::now().timestamp_millis() + 1000;
+    let near_future_ms = Local::now().timestamp_millis() + 1000;
     let job = svc.add_job("one_shot", CronSchedule { kind: "at".to_string(), at_ms: Some(near_future_ms), every_ms: None, expr: None, tz: None }, "m", false, None, None).unwrap();
     assert!(job.delete_after_run);
 

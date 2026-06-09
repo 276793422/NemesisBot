@@ -209,8 +209,8 @@ fn test_cleanup_with_old_execution() {
     let persistence = WorkflowPersistence::new(&path);
 
     let mut old = Execution::new("old_wf".to_string(), HashMap::new());
-    old.started_at = Utc::now() - TimeDelta::days(60);
-    old.ended_at = Some(Utc::now() - TimeDelta::days(60));
+    old.started_at = Local::now() - TimeDelta::days(60);
+    old.ended_at = Some(Local::now() - TimeDelta::days(60));
     persistence.save_execution(&old).unwrap();
 
     let removed = persistence.cleanup_old_executions(30).unwrap();

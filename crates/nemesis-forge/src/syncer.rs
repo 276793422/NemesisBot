@@ -111,7 +111,7 @@ impl Syncer {
             .to_string();
 
         if filename.is_empty() {
-            let now = chrono::Utc::now().format("%Y-%m-%d_%H%M%S");
+            let now = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
             filename = format!("remote_{}.md", now);
         }
 
@@ -119,7 +119,7 @@ impl Syncer {
         filename = Path::new(&filename)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("remote_{}.md", chrono::Utc::now().format("%Y-%m-%d_%H%M%S")));
+            .unwrap_or_else(|| format!("remote_{}.md", chrono::Local::now().format("%Y-%m-%d_%H%M%S")));
 
         let from = payload
             .get("from")

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -29,7 +29,7 @@ pub struct Episode {
     /// Message content.
     pub content: String,
     /// When this episode was created.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     /// Arbitrary metadata.
     #[serde(default)]
     pub metadata: HashMap<String, String>,
@@ -46,7 +46,7 @@ impl Episode {
             session_key,
             role,
             content,
-            timestamp: Utc::now(),
+            timestamp: Local::now(),
             metadata: HashMap::new(),
             tags: Vec::new(),
         }
@@ -275,7 +275,7 @@ impl EpisodicStore for FileEpisodicStore {
     }
 
     async fn cleanup(&self, older_than_days: usize) -> Result<usize, String> {
-        let cutoff = chrono::Utc::now()
+        let cutoff = chrono::Local::now()
             - chrono::Duration::days(older_than_days as i64);
 
         let sessions = self.list_sessions().await?;

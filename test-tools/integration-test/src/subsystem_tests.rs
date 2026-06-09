@@ -33,7 +33,7 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
     let mem_content = serde_json::json!({
         "key": "test_key",
         "value": "test value for recall",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
         "tags": ["test"]
     });
     std::fs::write(&mem_file, serde_json::to_string_pretty(&mem_content).unwrap()).unwrap();
@@ -74,7 +74,7 @@ pub async fn test_memory_search(ws: &TestWorkspace) -> Vec<TestResult> {
         let mem = serde_json::json!({
             "key": format!("search_test_{}", i),
             "value": format!("value {} with keyword ALPHA", i),
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "timestamp": chrono::Local::now().to_rfc3339(),
             "tags": ["search", format!("tag_{}", i)]
         });
         let path = memory_dir.join(format!("search_{}.json", i));

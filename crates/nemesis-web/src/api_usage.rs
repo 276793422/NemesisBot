@@ -49,7 +49,7 @@ pub async fn handle_api_usage_summary(
         return Json(serde_json::json!({"error": "DataStore not configured"}));
     };
 
-    let end = params.end.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let end = params.end.unwrap_or_else(|| chrono::Local::now().timestamp());
     let start = params.start.unwrap_or(end - 86400);
 
     match ds.query_summary(start, end) {
@@ -80,7 +80,7 @@ pub async fn handle_api_usage_trends(
         return Json(serde_json::json!({"error": "DataStore not configured"}));
     };
 
-    let end = params.end.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let end = params.end.unwrap_or_else(|| chrono::Local::now().timestamp());
     let start = params.start.unwrap_or(end - 86400);
     let group_by = params.group_by.as_deref().unwrap_or("hour");
 
@@ -111,7 +111,7 @@ pub async fn handle_api_usage_logs(
         return Json(serde_json::json!({"error": "DataStore not configured"}));
     };
 
-    let end = params.end.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let end = params.end.unwrap_or_else(|| chrono::Local::now().timestamp());
     let start = params.start.unwrap_or(end - 86400);
     let page = params.page.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(20).min(100);

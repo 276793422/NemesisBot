@@ -83,7 +83,7 @@ async fn test_multi_process_not_running_error() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let result = mgr.request_approval(&req).await;
     assert!(result.is_err());
@@ -103,7 +103,7 @@ async fn test_multi_process_auto_approve_safe() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(resp.approved);
@@ -123,7 +123,7 @@ async fn test_multi_process_reject_dangerous_no_factory() {
         reason: "dangerous".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(!resp.approved);
@@ -180,7 +180,7 @@ fn test_multi_approval_request_validate_valid() {
         reason: "test reason".to_string(),
         context: HashMap::new(),
         timeout_seconds: 30,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     assert!(req.validate().is_ok());
 }
@@ -467,7 +467,7 @@ async fn test_multi_process_safe_ops_various() {
             reason: "test".to_string(),
             context: HashMap::new(),
             timeout_seconds: 5,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
         };
         let resp = mgr.request_approval(&req).await.unwrap();
         assert_eq!(resp.approved, expected, "op {} should be approved={}", op, expected);
@@ -488,7 +488,7 @@ async fn test_multi_process_dangerous_ops_various() {
             reason: "test".to_string(),
             context: HashMap::new(),
             timeout_seconds: 5,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
         };
         let resp = mgr.request_approval(&req).await.unwrap();
         assert!(!resp.approved, "op {} should be denied", op);
@@ -559,7 +559,7 @@ async fn test_multi_process_with_child_factory_popup_not_supported() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(!resp.approved);
@@ -591,7 +591,7 @@ async fn test_multi_process_with_child_factory_spawn_error() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let result = mgr.request_approval(&req).await;
     assert!(result.is_err());
@@ -625,7 +625,7 @@ async fn test_multi_process_with_child_factory_approved() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(resp.approved);
@@ -660,7 +660,7 @@ async fn test_multi_process_with_child_factory_denied() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(!resp.approved);
@@ -694,7 +694,7 @@ async fn test_multi_process_with_child_factory_channel_dropped() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let result = mgr.request_approval(&req).await;
     assert!(result.is_err());
@@ -735,7 +735,7 @@ async fn test_multi_process_with_child_factory_timeout() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 1,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(!resp.approved);
@@ -773,7 +773,7 @@ async fn test_multi_process_with_child_factory_data_field_approved() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     assert!(resp.approved);
@@ -807,7 +807,7 @@ async fn test_multi_process_with_child_factory_no_approved_field() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 5,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let resp = mgr.request_approval(&req).await.unwrap();
     // No approved field means default false
@@ -943,7 +943,7 @@ async fn test_multi_process_uses_request_timeout_when_set() {
         reason: "test".to_string(),
         context: HashMap::new(),
         timeout_seconds: 1, // Use 1s timeout from request
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
     };
     let start = std::time::Instant::now();
     let resp = mgr.request_approval(&req).await.unwrap();

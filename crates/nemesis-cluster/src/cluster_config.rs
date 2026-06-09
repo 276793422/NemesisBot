@@ -45,7 +45,7 @@ impl Default for ClusterMeta {
         Self {
             id: "auto-discovered".into(),
             auto_discovery: true,
-            last_updated: chrono::Utc::now().to_rfc3339(),
+            last_updated: chrono::Local::now().to_rfc3339(),
             rpc_auth_token: String::new(),
         }
     }
@@ -201,7 +201,7 @@ impl Default for DynamicState {
             cluster: ClusterMeta::default(),
             local_node: NodeInfo::default(),
             discovered: Vec::new(),
-            last_sync: chrono::Utc::now().to_rfc3339(),
+            last_sync: chrono::Local::now().to_rfc3339(),
         }
     }
 }
@@ -274,7 +274,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
         cluster: ClusterMeta {
             id: "manual".into(),
             auto_discovery: true,
-            last_updated: chrono::Utc::now().to_rfc3339(),
+            last_updated: chrono::Local::now().to_rfc3339(),
             rpc_auth_token: String::new(),
         },
         node: NodeInfo {

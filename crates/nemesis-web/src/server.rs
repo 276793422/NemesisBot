@@ -697,7 +697,7 @@ pub async fn handle_events_stream(
     let stream = async_stream::stream! {
         tracing::debug!("[WebServer] SSE stream started");
         // Send initial heartbeat
-        let heartbeat_data = serde_json::json!({"ts": chrono::Utc::now().to_rfc3339()});
+        let heartbeat_data = serde_json::json!({"ts": chrono::Local::now().to_rfc3339()});
         yield Ok(SseEvent::default()
             .event("heartbeat")
             .data(heartbeat_data.to_string()));

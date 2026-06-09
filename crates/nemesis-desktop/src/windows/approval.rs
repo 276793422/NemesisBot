@@ -106,7 +106,7 @@ impl ApprovalWindow {
             "approved": approved,
             "reason": reason,
             "request_id": self.data.request_id,
-            "timestamp": chrono::Utc::now().timestamp(),
+            "timestamp": chrono::Local::now().timestamp(),
         });
 
         self.base.send_result(result)

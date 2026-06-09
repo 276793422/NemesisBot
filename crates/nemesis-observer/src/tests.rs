@@ -32,7 +32,7 @@ fn make_event(event_type: EventType) -> ConversationEvent {
     ConversationEvent {
         event_type,
         trace_id: "test-trace".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ConversationStart(ConversationStartData {
             session_key: "test".to_string(),
             channel: "test".to_string(),
@@ -93,7 +93,7 @@ async fn test_multiple_observers() {
     let event = ConversationEvent {
         event_type: EventType::ToolCall,
         trace_id: "test-trace".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ToolCall(ToolCallData {
             tool_name: "test_tool".to_string(),
             arguments: HashMap::new(),
@@ -407,7 +407,7 @@ async fn test_event_data_conversation_end_variant() {
     let event = ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: "trace-123".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "web:chat1".to_string(),
             channel: "web".to_string(),
@@ -432,7 +432,7 @@ async fn test_event_data_llm_request_variant() {
     let event = ConversationEvent {
         event_type: EventType::LlmRequest,
         trace_id: "trace-456".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::LlmRequest(LlmRequestData {
             round: 1,
             model: "gpt-4".to_string(),
@@ -461,7 +461,7 @@ async fn test_event_data_llm_response_variant() {
     let event = ConversationEvent {
         event_type: EventType::LlmResponse,
         trace_id: "trace-789".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::LlmResponse(LlmResponseData {
             round: 1,
             duration: Duration::from_millis(250),
@@ -572,7 +572,7 @@ async fn test_conversation_end_event_type() {
     let event = ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: "trace-end-001".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "web:chat-end".to_string(),
             channel: "web".to_string(),
@@ -603,7 +603,7 @@ async fn test_tool_call_event_data() {
     let event = ConversationEvent {
         event_type: EventType::ToolCall,
         trace_id: "trace-tool-001".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ToolCall(ToolCallData {
             tool_name: "file_read".to_string(),
             arguments,
@@ -629,7 +629,7 @@ async fn test_conversation_end_data_no_error_event() {
     let event = ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: "trace-end-ok".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "rpc:job-42".to_string(),
             channel: "rpc".to_string(),

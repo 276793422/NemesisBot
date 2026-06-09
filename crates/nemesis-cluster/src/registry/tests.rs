@@ -10,7 +10,7 @@ fn make_node(id: &str) -> ExtendedNodeInfo {
             role: NodeRole::Worker,
             address: format!("10.0.0.{}:9000", id.len()),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -27,7 +27,7 @@ fn make_node_with_caps(id: &str, caps: Vec<&str>) -> ExtendedNodeInfo {
             role: NodeRole::Worker,
             address: format!("10.0.0.{}:9000", id.len()),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: caps.into_iter().map(String::from).collect(),
@@ -250,15 +250,15 @@ fn test_evict_stale_removes_old_offline_peers() {
     let registry = PeerRegistry::new(config);
 
     // Insert an offline peer with a timestamp from 400 seconds ago
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(400)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "old", NodeStatus::Offline, &old_ts, vec!["llm"]);
 
     // Insert a recent offline peer (should NOT be evicted)
-    let recent_ts = (chrono::Utc::now() - chrono::Duration::seconds(60)).to_rfc3339();
+    let recent_ts = (chrono::Local::now() - chrono::Duration::seconds(60)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "recent", NodeStatus::Offline, &recent_ts, vec!["llm"]);
 
     // Insert an online peer with old timestamp (should NOT be evicted)
-    let online_old_ts = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    let online_old_ts = (chrono::Local::now() - chrono::Duration::seconds(400)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "online_old", NodeStatus::Online, &online_old_ts, vec!["llm"]);
 
     assert_eq!(registry.len(), 3);
@@ -307,7 +307,7 @@ fn test_evict_stale_boundary_exactly_at_timeout() {
 
     // Peer exactly at the threshold (300 seconds ago) should be evicted
     // because we use `<` (strictly less than threshold)
-    let boundary_ts = (chrono::Utc::now() - chrono::Duration::seconds(301)).to_rfc3339();
+    let boundary_ts = (chrono::Local::now() - chrono::Duration::seconds(301)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "boundary", NodeStatus::Offline, &boundary_ts, vec!["llm"]);
 
     let evicted = registry.evict_stale();
@@ -328,11 +328,11 @@ fn test_check_health_marks_stale_peers() {
     let registry = PeerRegistry::new(config);
 
     // Insert a peer with a timestamp from 120 seconds ago (exceeds 90s stale timeout)
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(120)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "stale", NodeStatus::Online, &old_ts, vec!["llm"]);
 
     // Insert a recent peer (should NOT be marked stale)
-    let recent_ts = (chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339();
+    let recent_ts = (chrono::Local::now() - chrono::Duration::seconds(30)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "fresh", NodeStatus::Online, &recent_ts, vec!["llm"]);
 
     let stale = registry.check_health();
@@ -376,7 +376,7 @@ fn test_check_health_does_not_touch_already_offline() {
     let registry = PeerRegistry::new(config);
 
     // Insert a peer that is already Offline with an old timestamp
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(200)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "already_offline", NodeStatus::Offline, &old_ts, vec!["llm"]);
 
     let stale = registry.check_health();
@@ -396,7 +396,7 @@ fn test_check_health_idempotent() {
     };
     let registry = PeerRegistry::new(config);
 
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(120)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "stale", NodeStatus::Online, &old_ts, vec!["llm"]);
 
     // First call marks it stale
@@ -422,15 +422,15 @@ fn test_check_health_then_evict_pipeline() {
     let registry = PeerRegistry::new(config);
 
     // Insert a peer with a very old timestamp
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(400)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "ancient", NodeStatus::Online, &old_ts, vec!["llm"]);
 
     // Insert a moderately old peer
-    let mid_ts = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
+    let mid_ts = (chrono::Local::now() - chrono::Duration::seconds(120)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "stale", NodeStatus::Online, &mid_ts, vec!["llm"]);
 
     // Insert a fresh peer
-    let fresh_ts = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+    let fresh_ts = (chrono::Local::now() - chrono::Duration::seconds(10)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "fresh", NodeStatus::Online, &fresh_ts, vec!["llm"]);
 
     assert_eq!(registry.len(), 3);
@@ -553,7 +553,7 @@ fn test_check_timeouts_marks_old_online_peers() {
     let registry = PeerRegistry::new(HealthConfig::default());
 
     // Insert peer with old health check timestamp
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(200)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "old", NodeStatus::Online, &old_ts, vec!["llm"]);
 
     let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
@@ -634,7 +634,7 @@ fn test_check_timeouts_mixed_valid_and_invalid_timestamps() {
     let registry = PeerRegistry::new(HealthConfig::default());
 
     // Valid old timestamp - should be expired
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(200)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(200)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "old-valid", NodeStatus::Online, &old_ts, vec!["llm"]);
 
     // Invalid timestamp - should be skipped
@@ -647,7 +647,7 @@ fn test_check_timeouts_mixed_valid_and_invalid_timestamps() {
     );
 
     // Valid recent timestamp - should not be expired
-    let recent_ts = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+    let recent_ts = (chrono::Local::now() - chrono::Duration::seconds(10)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "recent", NodeStatus::Online, &recent_ts, vec!["llm"]);
 
     let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
@@ -668,7 +668,7 @@ fn test_evict_stale_mixed_valid_and_invalid_timestamps() {
     let registry = PeerRegistry::new(config);
 
     // Offline with valid old timestamp - should be evicted
-    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(400)).to_rfc3339();
+    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(400)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "old-offline", NodeStatus::Offline, &old_ts, vec!["llm"]);
 
     // Offline with invalid timestamp - should be skipped
@@ -770,7 +770,7 @@ fn test_upsert_if_changed_different_addresses() {
             role: NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -786,7 +786,7 @@ fn test_upsert_if_changed_different_addresses() {
             role: NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Utc::now().to_rfc3339(),
+            last_seen: chrono::Local::now().to_rfc3339(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],

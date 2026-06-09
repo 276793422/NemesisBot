@@ -102,7 +102,7 @@ fn test_dashboard_default_values() {
 
 #[test]
 fn test_request_id_format_headless() {
-    let request_id = format!("headless-{}", chrono::Utc::now().timestamp_millis());
+    let request_id = format!("headless-{}", chrono::Local::now().timestamp_millis());
     assert!(request_id.starts_with("headless-"));
     let timestamp_part = request_id.strip_prefix("headless-").unwrap();
     assert!(timestamp_part.parse::<i64>().is_ok());
@@ -110,7 +110,7 @@ fn test_request_id_format_headless() {
 
 #[test]
 fn test_request_id_format_ui() {
-    let request_id = format!("ui-{}", chrono::Utc::now().timestamp_millis());
+    let request_id = format!("ui-{}", chrono::Local::now().timestamp_millis());
     assert!(request_id.starts_with("ui-"));
     let timestamp_part = request_id.strip_prefix("ui-").unwrap();
     assert!(timestamp_part.parse::<i64>().is_ok());

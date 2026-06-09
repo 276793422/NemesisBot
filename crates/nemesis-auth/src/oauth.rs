@@ -6,7 +6,7 @@ use crate::pkce::PkceCodes;
 use crate::token::AuthCredential;
 
 use base64::Engine;
-use chrono::Utc;
+use chrono::Local;
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -582,7 +582,7 @@ fn parse_token_response_impl(body: &[u8], provider: &str) -> Result<AuthCredenti
     let id_token = resp["id_token"].as_str().unwrap_or("").to_string();
 
     let expires_at = if expires_in > 0 {
-        Some(Utc::now() + chrono::Duration::seconds(expires_in as i64))
+        Some(Local::now() + chrono::Duration::seconds(expires_in as i64))
     } else {
         None
     };

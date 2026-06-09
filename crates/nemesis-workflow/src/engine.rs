@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::Local;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -263,7 +263,7 @@ impl WorkflowEngine {
         )
         .await;
 
-        let now = Utc::now();
+        let now = Local::now();
         execution.ended_at = Some(now);
 
         if let Err(err) = schedule_result {
@@ -379,8 +379,8 @@ impl WorkflowEngine {
                         output: serde_json::Value::Null,
                         error: Some(e.clone()),
                         state: ExecutionState::Failed,
-                        started_at: Utc::now(),
-                        ended_at: Utc::now(),
+                        started_at: Local::now(),
+                        ended_at: Local::now(),
                         metadata: HashMap::new(),
                     },
                 };
@@ -401,7 +401,7 @@ impl WorkflowEngine {
 
                 if node_state == ExecutionState::Failed {
                     execution.state = ExecutionState::Failed;
-                    execution.ended_at = Some(Utc::now());
+                    execution.ended_at = Some(Local::now());
                     let updated = execution.clone();
                     {
                         let mut execs = self.executions.write().await;
@@ -413,7 +413,7 @@ impl WorkflowEngine {
 
                 if node_state == ExecutionState::Waiting {
                     execution.state = ExecutionState::Waiting;
-                    execution.ended_at = Some(Utc::now());
+                    execution.ended_at = Some(Local::now());
                     let updated = execution.clone();
                     {
                         let mut execs = self.executions.write().await;
@@ -428,7 +428,7 @@ impl WorkflowEngine {
                 // Deadlock: remaining nodes have unsatisfied deps (should be caught by
                 // cycle detection, but guard anyway).
                 execution.state = ExecutionState::Failed;
-                execution.ended_at = Some(Utc::now());
+                execution.ended_at = Some(Local::now());
                 let updated = execution.clone();
                 {
                     let mut execs = self.executions.write().await;
@@ -440,7 +440,7 @@ impl WorkflowEngine {
         }
 
         execution.state = ExecutionState::Completed;
-        execution.ended_at = Some(Utc::now());
+        execution.ended_at = Some(Local::now());
 
         let updated = execution.clone();
         {
@@ -519,7 +519,7 @@ impl WorkflowEngine {
         }
 
         execution.state = ExecutionState::Cancelled;
-        execution.ended_at = Some(Utc::now());
+        execution.ended_at = Some(Local::now());
 
         let updated = execution.clone();
         drop(execs); // Release lock before persistence I/O
@@ -557,7 +557,7 @@ impl WorkflowEngine {
             if result.state == ExecutionState::Waiting {
                 result.output = serde_json::json!(review_result);
                 result.state = ExecutionState::Completed;
-                result.ended_at = Utc::now();
+                result.ended_at = Local::now();
 
                 // Set variable for downstream nodes: {node_id}_approved
                 if let Some(approved) = review_result.get("approved") {
@@ -584,7 +584,7 @@ impl WorkflowEngine {
         }
 
         execution.state = ExecutionState::Completed;
-        execution.ended_at = Some(Utc::now());
+        execution.ended_at = Some(Local::now());
 
         let updated = execution.clone();
         drop(execs); // Release lock before persistence I/O

@@ -311,7 +311,7 @@ impl MemoryToolExecutor {
 
         let session_key = match args["session_key"].as_str() {
             Some(sk) if !sk.is_empty() => sk.to_string(),
-            _ => format!("manual-{}", chrono::Utc::now().timestamp()),
+            _ => format!("manual-{}", chrono::Local::now().timestamp()),
         };
 
         let tags: Vec<String> = args["tags"]
@@ -328,7 +328,7 @@ impl MemoryToolExecutor {
             session_key: session_key.clone(),
             role,
             content,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
             metadata: std::collections::HashMap::new(),
             tags,
         };
@@ -370,7 +370,7 @@ impl MemoryToolExecutor {
                 name: entity_name.clone(),
                 typ: entity_type.clone(),
                 properties,
-                created_at: chrono::Utc::now(),
+                created_at: chrono::Local::now(),
             };
 
             match self.manager.upsert_entity(entity).await {

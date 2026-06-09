@@ -71,7 +71,7 @@ fn test_extended_node_info_get_uptime() {
             role: NodeRole::Worker,
             address: "10.0.0.1:9000".into(),
             category: "development".into(),
-            last_seen: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            last_seen: chrono::Local::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
@@ -304,7 +304,7 @@ fn test_cluster_config_serialization_roundtrip() {
 #[test]
 fn test_get_uptime_future_timestamp() {
     // Set last_seen to 1 hour in the future
-    let future_ts = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let future_ts = (chrono::Local::now() + chrono::Duration::hours(1)).to_rfc3339();
     let node = make_test_node("future-node", NodeStatus::Online, vec![], &future_ts);
     let uptime = node.get_uptime();
     // Future timestamps should return Duration::ZERO (negative duration case)

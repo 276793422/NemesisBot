@@ -23,7 +23,7 @@ fn disabled_logger_is_noop() {
 
     assert!(!logger.is_enabled());
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "user1".to_string(),
         chat_id: "chat1".to_string(),
@@ -43,7 +43,7 @@ fn create_session_and_log_user_request() {
     assert!(session_dir.exists());
 
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "user1".to_string(),
         chat_id: "chat1".to_string(),
@@ -72,7 +72,7 @@ fn log_llm_request_and_response() {
 
     logger.log_llm_request(&LLMRequestInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         model: "gpt-4".to_string(),
         provider_name: "openai".to_string(),
         api_key: "sk-1234567890abcdef".to_string(),
@@ -87,7 +87,7 @@ fn log_llm_request_and_response() {
 
     logger.log_llm_response(&LLMResponseInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         duration_ms: 1500,
         content: "The answer is 42.".to_string(),
         tool_calls_count: 0,
@@ -128,7 +128,7 @@ fn log_local_operations() {
 
     logger.log_local_operations(&LocalOperationInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         operations: vec![
             OperationInfo {
                 op_type: "tool_call".to_string(),
@@ -172,7 +172,7 @@ fn log_final_response() {
     logger.create_session().unwrap();
 
     logger.log_final_response(&FinalResponseInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         total_duration_ms: 3500,
         llm_rounds: 3,
         content: "Final answer here.".to_string(),
@@ -201,7 +201,7 @@ fn log_local_operations_skips_empty() {
 
     logger.log_local_operations(&LocalOperationInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         operations: vec![],
     });
 
@@ -245,7 +245,7 @@ fn truncated_mode_truncates_long_content() {
     let long_content = "x".repeat(1000);
     logger.log_llm_response(&LLMResponseInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         duration_ms: 100,
         content: long_content,
         tool_calls_count: 0,
@@ -287,7 +287,7 @@ fn log_llm_request_with_tool_calls() {
 
     logger.log_llm_response(&LLMResponseInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         duration_ms: 500,
         content: "Using tools".to_string(),
         tool_calls_count: 2,
@@ -334,7 +334,7 @@ fn log_llm_request_with_fallback_attempts() {
 
     logger.log_llm_request(&LLMRequestInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         model: "gpt-4".to_string(),
         provider_name: "openai".to_string(),
         api_key: "sk-test123456789".to_string(),
@@ -393,7 +393,7 @@ fn disabled_logger_all_methods_noop() {
     // None of these should panic
     logger.create_session().unwrap();
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "u".to_string(),
         chat_id: "c".to_string(),
@@ -402,7 +402,7 @@ fn disabled_logger_all_methods_noop() {
     logger.log_llm_request(&LLMRequestInfo::default());
     logger.log_llm_response(&LLMResponseInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         duration_ms: 100,
         content: "test".to_string(),
         tool_calls_count: 0,
@@ -412,11 +412,11 @@ fn disabled_logger_all_methods_noop() {
     });
     logger.log_local_operations(&LocalOperationInfo {
         round: 1,
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         operations: vec![OperationInfo::default()],
     });
     logger.log_final_response(&FinalResponseInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         total_duration_ms: 100,
         llm_rounds: 1,
         content: "test".to_string(),
@@ -435,7 +435,7 @@ fn multiple_sessions() {
     // First session
     logger.create_session().unwrap();
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "u".to_string(),
         chat_id: "c".to_string(),
@@ -445,7 +445,7 @@ fn multiple_sessions() {
     // Second session (overwrites first)
     logger.create_session().unwrap();
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "u".to_string(),
         chat_id: "c".to_string(),
@@ -469,7 +469,7 @@ fn log_with_special_characters() {
     logger.create_session().unwrap();
 
     logger.log_user_request(&UserRequestInfo {
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         channel: "web".to_string(),
         sender_id: "u".to_string(),
         chat_id: "c".to_string(),

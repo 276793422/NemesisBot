@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use nemesis_types::utils;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -64,7 +64,7 @@ const TRUNCATE_ARGS_LIMIT: usize = 200;
 /// Information about the user's request.
 #[derive(Debug, Clone)]
 pub struct UserRequestInfo {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub channel: String,
     pub sender_id: String,
     pub chat_id: String,
@@ -91,7 +91,7 @@ pub struct ToolCallDetail {
 #[derive(Debug, Clone)]
 pub struct LLMRequestInfo {
     pub round: usize,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub model: String,
     pub provider_name: String,
     pub api_key: String,
@@ -112,7 +112,7 @@ impl Default for LLMRequestInfo {
     fn default() -> Self {
         Self {
             round: 0,
-            timestamp: Utc::now(),
+            timestamp: Local::now(),
             model: String::new(),
             provider_name: String::new(),
             api_key: String::new(),
@@ -152,7 +152,7 @@ pub struct UsageInfo {
 #[derive(Debug, Clone)]
 pub struct LLMResponseInfo {
     pub round: usize,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub duration_ms: u64,
     pub content: String,
     pub tool_calls_count: usize,
@@ -195,14 +195,14 @@ impl Default for OperationInfo {
 #[derive(Debug, Clone)]
 pub struct LocalOperationInfo {
     pub round: usize,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub operations: Vec<OperationInfo>,
 }
 
 /// Information about the final response.
 #[derive(Debug, Clone)]
 pub struct FinalResponseInfo {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: DateTime<Local>,
     pub total_duration_ms: u64,
     pub llm_rounds: usize,
     pub content: String,
@@ -218,7 +218,7 @@ pub struct RequestLogger {
     file_index: AtomicI32,
     enabled: bool,
     #[allow(dead_code)]
-    start_time: DateTime<Utc>,
+    start_time: DateTime<Local>,
 }
 
 impl RequestLogger {
@@ -231,7 +231,7 @@ impl RequestLogger {
                 session_dir: Mutex::new(None),
                 file_index: AtomicI32::new(0),
                 enabled: false,
-                start_time: Utc::now(),
+                start_time: Local::now(),
             };
         }
 
@@ -243,7 +243,7 @@ impl RequestLogger {
             session_dir: Mutex::new(None),
             file_index: AtomicI32::new(0),
             enabled: true,
-            start_time: Utc::now(),
+            start_time: Local::now(),
         }
     }
 
@@ -265,7 +265,7 @@ impl RequestLogger {
         }
 
         // Create timestamped session directory
-        let timestamp = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+        let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         let suffix = format!("_{:03x}", rand_u16());
         let session_dir = self.base_dir.join(format!("{}{}", timestamp, suffix));
 
@@ -502,7 +502,7 @@ impl RequestLogger {
     }
 
     /// Log raw LLM request in JSON envelope format.
-    pub fn log_raw_request(&self, body: &serde_json::Value, timestamp: chrono::DateTime<chrono::Utc>, round: usize) {
+    pub fn log_raw_request(&self, body: &serde_json::Value, timestamp: chrono::DateTime<chrono::Local>, round: usize) {
         if !self.enabled { return; }
         let index = self.next_index();
         let filename = format!("{}.AI.Request.raw.json", index);
@@ -527,7 +527,7 @@ impl RequestLogger {
     }
 
     /// Log raw LLM response in JSON envelope format.
-    pub fn log_raw_response(&self, body: &str, timestamp: chrono::DateTime<chrono::Utc>, round: usize, duration_ms: u64) {
+    pub fn log_raw_response(&self, body: &str, timestamp: chrono::DateTime<chrono::Local>, round: usize, duration_ms: u64) {
         if !self.enabled { return; }
         let index = self.next_index();
         let filename = format!("{}.AI.Response.raw.json", index);

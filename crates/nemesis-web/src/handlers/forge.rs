@@ -283,7 +283,7 @@ impl ForgeHandler {
                 let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 let size = path.metadata().map(|m| m.len()).unwrap_or(0);
                 let modified = path.metadata().ok().and_then(|m| m.modified().ok()).map(|t| {
-                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                    let dt: chrono::DateTime<chrono::Local> = t.into();
                     dt.to_rfc3339()
                 }).unwrap_or_default();
 
@@ -401,7 +401,7 @@ impl ForgeHandler {
             if artifact.get("id").and_then(|v| v.as_str()) == Some(id) {
                 if let Some(obj) = artifact.as_object_mut() {
                     obj.insert("status".to_string(), serde_json::Value::String(status.to_string()));
-                    obj.insert("updated_at".to_string(), serde_json::Value::String(chrono::Utc::now().to_rfc3339()));
+                    obj.insert("updated_at".to_string(), serde_json::Value::String(chrono::Local::now().to_rfc3339()));
                 }
                 found = true;
                 break;
@@ -804,7 +804,7 @@ fn find_latest_file(dir: &PathBuf, ext: &str) -> Option<serde_json::Value> {
     let path = find_latest_file_path(dir, ext)?;
     let name = path.file_name()?.to_string_lossy().to_string();
     let modified = path.metadata().ok()?.modified().ok()?;
-    let dt: chrono::DateTime<chrono::Utc> = modified.into();
+    let dt: chrono::DateTime<chrono::Local> = modified.into();
     Some(serde_json::json!({
         "name": name,
         "modified": dt.to_rfc3339(),

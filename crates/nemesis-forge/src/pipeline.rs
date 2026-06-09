@@ -108,7 +108,7 @@ impl Pipeline {
             stage1_static: None,
             stage2_functional: None,
             stage3_quality: None,
-            last_validated: chrono::Utc::now().to_rfc3339(),
+            last_validated: chrono::Local::now().to_rfc3339(),
         };
 
         // Stage 1: Static validation
@@ -138,7 +138,7 @@ impl Pipeline {
             stage1_static: None,
             stage2_functional: None,
             stage3_quality: None,
-            last_validated: chrono::Utc::now().to_rfc3339(),
+            last_validated: chrono::Local::now().to_rfc3339(),
         };
 
         // Stage 1: Static validation
@@ -248,7 +248,7 @@ impl Pipeline {
         StaticValidationResult {
             stage: ValidationStage {
                 passed: errors.is_empty(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors,
             },
             warnings,
@@ -297,7 +297,7 @@ impl Pipeline {
         FunctionalValidationResult {
             stage: ValidationStage {
                 passed: errors.is_empty(),
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors,
             },
             tests_run,
@@ -409,7 +409,7 @@ impl Pipeline {
                                 QualityValidationResult {
                                     stage: ValidationStage {
                                         passed: score >= min_score,
-                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        timestamp: chrono::Local::now().to_rfc3339(),
                                         errors: if score < min_score {
                                             vec![format!("Quality score {} below threshold {}", score, min_score)]
                                         } else {
@@ -426,7 +426,7 @@ impl Pipeline {
                                 QualityValidationResult {
                                     stage: ValidationStage {
                                         passed: false,
-                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        timestamp: chrono::Local::now().to_rfc3339(),
                                         errors: vec!["Failed to parse LLM response as JSON".to_string()],
                                     },
                                     score: 0,
@@ -441,7 +441,7 @@ impl Pipeline {
                         QualityValidationResult {
                             stage: ValidationStage {
                                 passed: false,
-                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                timestamp: chrono::Local::now().to_rfc3339(),
                                 errors: vec![format!("LLM call failed: {}", e)],
                             },
                             score: 0,
@@ -462,7 +462,7 @@ impl Pipeline {
                 QualityValidationResult {
                     stage: ValidationStage {
                         passed: true,
-                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        timestamp: chrono::Local::now().to_rfc3339(),
                         errors: vec![],
                     },
                     score: 70,

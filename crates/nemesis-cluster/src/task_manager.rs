@@ -103,7 +103,7 @@ impl TaskStore for InMemoryTaskStore {
             .ok_or_else(|| format!("task not found: {}", task_id))?;
         task.status = status;
         task.result = result;
-        task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        task.completed_at = Some(chrono::Local::now().to_rfc3339());
         Ok(())
     }
 
@@ -296,7 +296,7 @@ impl TaskManager {
             result: None,
             original_channel: original_channel.to_string(),
             original_chat_id: original_chat_id.to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
         let _ = self.store.create(task.clone());
@@ -472,8 +472,8 @@ fn cleanup_completed(
         for task in tasks {
             if let Some(ref completed_at) = task.completed_at {
                 if let Ok(completed) = chrono::DateTime::parse_from_rfc3339(completed_at) {
-                    let completed_utc = completed.with_timezone(&chrono::Utc);
-                    if chrono::Utc::now() - completed_utc > two_hours {
+                    let completed_utc = completed.with_timezone(&chrono::Local);
+                    if chrono::Local::now() - completed_utc > two_hours {
                         let _ = store.delete(&task.id);
                     }
                 }
@@ -486,8 +486,8 @@ fn cleanup_completed(
     let pending_tasks = store.list_by_status(TaskStatus::Pending);
     for task in pending_tasks {
         if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&task.created_at) {
-            let created_utc = created.with_timezone(&chrono::Utc);
-            if chrono::Utc::now() - created_utc > twenty_four_hours {
+            let created_utc = created.with_timezone(&chrono::Local);
+            if chrono::Local::now() - created_utc > twenty_four_hours {
                 // Mark as failed with timeout error
                 let _ = store.update_result(
                     &task.id,
@@ -500,7 +500,7 @@ fn cleanup_completed(
                 crate::logger::log_task(
                     "timeout",
                     &task.id,
-                    &format!("age={}s", (chrono::Utc::now() - created_utc).num_seconds()),
+                    &format!("age={}s", (chrono::Local::now() - created_utc).num_seconds()),
                 );
 
                 // Fire callback if set

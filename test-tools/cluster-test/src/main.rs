@@ -389,7 +389,7 @@ fn test_task_dispatch_callback() -> Result<String, String> {
 
     // A calls B's peer_chat
     let addr_b = format!("127.0.0.1:{}", port_b);
-    let task_id = format!("task-test-{}", chrono::Utc::now().timestamp_millis());
+    let task_id = format!("task-test-{}", chrono::Local::now().timestamp_millis());
     let req = WireMessage::new_request(
         "node-A",
         "node-B",
@@ -1027,7 +1027,7 @@ fn test_full_e2e() -> Result<String, String> {
 
     // Phase 3: Authenticated RPC — A calls B
     let addr_b = format!("127.0.0.1:{}", port_b);
-    let task_id = format!("e2e-task-{}", chrono::Utc::now().timestamp_millis());
+    let task_id = format!("e2e-task-{}", chrono::Local::now().timestamp_millis());
     let req = WireMessage::new_request(
         "node-A",
         "node-B",

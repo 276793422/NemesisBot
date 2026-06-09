@@ -344,7 +344,7 @@ fn read_log_entries(log_dir: &Path, days: u32) -> Vec<ClusterLogEvent> {
     let mut all_entries = Vec::new();
 
     for offset in 0..days {
-        let date = chrono::Utc::now() - chrono::Duration::days(offset as i64);
+        let date = chrono::Local::now() - chrono::Duration::days(offset as i64);
         let filename = format!("cluster_{}.log", date.format("%Y-%m-%d"));
         let path = log_dir.join(&filename);
 

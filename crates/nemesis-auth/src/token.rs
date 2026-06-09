@@ -1,6 +1,6 @@
 //! Auth credential types.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 /// Stored authentication credential.
@@ -10,7 +10,7 @@ pub struct AuthCredential {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Local>>,
     pub provider: String,
     pub auth_method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,7 +21,7 @@ impl AuthCredential {
     /// Check if the credential is expired.
     pub fn is_expired(&self) -> bool {
         match self.expires_at {
-            Some(t) => Utc::now() >= t,
+            Some(t) => Local::now() >= t,
             None => false,
         }
     }
@@ -35,7 +35,7 @@ impl AuthCredential {
     /// Mirrors Go AuthCredential.NeedsRefresh.
     pub fn needs_refresh(&self) -> bool {
         match self.expires_at {
-            Some(t) => Utc::now() + chrono::Duration::minutes(5) >= t,
+            Some(t) => Local::now() + chrono::Duration::minutes(5) >= t,
             None => false,
         }
     }

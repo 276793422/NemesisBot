@@ -228,7 +228,7 @@ impl DataStore {
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.
     pub fn rollup_old_logs(&self) -> Result<u64, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let cutoff = chrono::Utc::now().timestamp() - 30 * 86400;
+        let cutoff = chrono::Local::now().timestamp() - 30 * 86400;
 
         conn.execute(
             "INSERT OR REPLACE INTO daily_rollups

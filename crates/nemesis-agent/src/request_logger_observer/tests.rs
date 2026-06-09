@@ -14,7 +14,7 @@ fn make_start_event(trace: &str, content: &str) -> ConversationEvent {
     ConversationEvent {
         event_type: EventType::ConversationStart,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ConversationStart(ConversationStartData {
             session_key: "test:chat1".to_string(),
             channel: "web".to_string(),
@@ -29,7 +29,7 @@ fn make_llm_request_event(trace: &str, round: usize) -> ConversationEvent {
     ConversationEvent {
         event_type: EventType::LLMRequest,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::LLMRequest(LLMRequestEventData {
             round,
             model: "gpt-4".to_string(),
@@ -53,7 +53,7 @@ fn make_llm_response_event(trace: &str, round: usize) -> ConversationEvent {
     ConversationEvent {
         event_type: EventType::LLMResponse,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::LLMResponse(LLMResponseEventData {
             round,
             duration_ms: 1500,
@@ -75,7 +75,7 @@ fn make_tool_call_event(trace: &str, round: usize, tool: &str, success: bool) ->
     ConversationEvent {
         event_type: EventType::ToolCall,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ToolCall(ToolCallEventData {
             tool_name: tool.to_string(),
             success,
@@ -92,7 +92,7 @@ fn make_end_event(trace: &str, rounds: usize) -> ConversationEvent {
     ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "test:chat1".to_string(),
             channel: "web".to_string(),
@@ -214,7 +214,7 @@ fn full_lifecycle_with_tool_calls_and_response() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::LLMResponse,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::LLMResponse(LLMResponseEventData {
             round: 1,
             duration_ms: 2000,
@@ -239,7 +239,7 @@ fn full_lifecycle_with_tool_calls_and_response() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::ToolCall,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ToolCall(ToolCallEventData {
             tool_name: "search".to_string(),
             success: false,
@@ -259,7 +259,7 @@ fn full_lifecycle_with_tool_calls_and_response() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "test:chat1".to_string(),
             channel: "web".to_string(),
@@ -285,7 +285,7 @@ fn conversation_end_with_error_flag() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::ConversationEnd,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ConversationEnd(ConversationEndData {
             session_key: "test:chat1".to_string(),
             channel: "web".to_string(),
@@ -313,7 +313,7 @@ fn llm_response_with_tool_call_details() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::LLMResponse,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::LLMResponse(LLMResponseEventData {
             round: 1,
             duration_ms: 3000,
@@ -357,7 +357,7 @@ fn tool_call_with_arguments_and_result() {
     observer.on_event(&ConversationEvent {
         event_type: EventType::ToolCall,
         trace_id: trace.to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
         data: EventData::ToolCall(ToolCallEventData {
             tool_name: "list_dir".to_string(),
             success: true,

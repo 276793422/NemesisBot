@@ -210,7 +210,7 @@ fn test_decode_response_wire_message_error_response() {
         to: "node-a".into(),
         action: "peer_chat".into(),
         payload: serde_json::Value::Null,
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
         error: "remote node crashed".into(),
     };
     let bytes = serde_json::to_vec(&wire).unwrap();
@@ -232,7 +232,7 @@ fn test_decode_response_wire_message_success() {
         to: "node-a".into(),
         action: "ping".into(),
         payload: serde_json::json!({"status": "healthy"}),
-        timestamp: chrono::Utc::now().timestamp(),
+        timestamp: chrono::Local::now().timestamp(),
         error: String::new(),
     };
     let bytes = serde_json::to_vec(&wire).unwrap();

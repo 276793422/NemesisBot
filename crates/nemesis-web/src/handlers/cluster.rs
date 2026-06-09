@@ -212,7 +212,7 @@ impl ClusterHandler {
             let total_tasks = tasks.len();
 
             // Today completed
-            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             let today_completed = completed
                 .iter()
                 .filter(|t| {

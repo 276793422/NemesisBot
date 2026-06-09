@@ -1,6 +1,6 @@
 //! Cron service for scheduled job execution.
 
-use chrono::Utc;
+use chrono::Local;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -115,7 +115,7 @@ impl CronService {
                     break;
                 }
                 // Check jobs — mirrors Go's checkJobs()
-                let now_ms = Utc::now().timestamp_millis();
+                let now_ms = Local::now().timestamp_millis();
                 let due: Vec<String> = {
                     let s = store.lock();
                     s.jobs.iter()
@@ -166,7 +166,7 @@ impl CronService {
                         let mut s = store.lock();
                         if let Some(job) = s.jobs.iter_mut().find(|j| j.id == *job_id) {
                             job.state.last_run_at_ms = Some(start_time);
-                            job.updated_at_ms = Utc::now().timestamp_millis();
+                            job.updated_at_ms = Local::now().timestamp_millis();
 
                             match &handler_result {
                                 Some(Ok(_)) => {
@@ -196,7 +196,7 @@ impl CronService {
                                     job.state.next_run_at_ms = None;
                                 }
                             } else {
-                                job.state.next_run_at_ms = compute_next_run(&job.schedule, Utc::now().timestamp_millis());
+                                job.state.next_run_at_ms = compute_next_run(&job.schedule, Local::now().timestamp_millis());
                             }
                         }
                         // Remove delete_after_run jobs that have completed
@@ -226,7 +226,7 @@ impl CronService {
     pub fn add_job(&self, name: &str, schedule: CronSchedule, message: &str, deliver: bool, channel: Option<&str>, to: Option<&str>) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
         info!("[Cron] Job added: name={}, schedule_kind={}, cron={}", name, schedule.kind, cron_expr);
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
             id: generate_id(),
@@ -300,7 +300,7 @@ impl CronService {
     /// Update a job's name and/or schedule.
     pub fn update_job(&self, job_id: &str, name: Option<&str>, schedule: Option<CronSchedule>) -> Result<(), String> {
         info!("[Cron] Job updated: id={}", job_id);
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
@@ -316,7 +316,7 @@ impl CronService {
 
     /// Toggle a job's enabled state. Returns the new state.
     pub fn toggle_job(&self, job_id: &str) -> Result<bool, String> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
@@ -336,7 +336,7 @@ impl CronService {
     /// Returns the updated job if found.
     pub fn enable_job(&self, job_id: &str, enabled: bool) -> Result<CronJob, String> {
         info!("[Cron] Job enable/disable: id={}, enabled={}", job_id, enabled);
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
@@ -368,7 +368,7 @@ impl CronService {
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
         let start = std::time::Instant::now();
         info!("[Cron] Executing job: id={}", job_id);
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         let job = store.jobs.iter_mut().find(|j| j.id == job_id)
             .ok_or_else(|| {
@@ -456,7 +456,7 @@ impl CronService {
     }
 
     fn recompute_next_runs(&self) {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_ms = Local::now().timestamp_millis();
         let mut store = self.store.lock();
         for job in &mut store.jobs {
             if job.enabled {
@@ -495,7 +495,9 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
                 _ => return None,
             };
 
-            let now = chrono::DateTime::from_timestamp_millis(now_ms).unwrap_or_else(|| chrono::Utc::now());
+            let now = chrono::DateTime::from_timestamp_millis(now_ms)
+                .map(|dt| dt.with_timezone(&chrono::Local))
+                .unwrap_or_else(|| chrono::Local::now());
 
             // Apply timezone if specified
             let tz = schedule.tz.as_deref().unwrap_or("UTC");
@@ -516,7 +518,7 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
             };
 
             match cron.find_next_occurrence(&now.with_timezone(&tz), false) {
-                Ok(next) => Some(next.with_timezone(&chrono::Utc).timestamp_millis()),
+                Ok(next) => Some(next.with_timezone(&chrono::Local).timestamp_millis()),
                 Err(e) => {
                     tracing::warn!("[cron] failed to compute next run for expr '{}': {}", expr, e);
                     None

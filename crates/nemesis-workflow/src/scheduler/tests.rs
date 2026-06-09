@@ -443,7 +443,7 @@ fn test_build_executor_context_empty() {
 #[test]
 fn test_build_executor_context_with_node_results() {
     use crate::types::NodeResult;
-    use chrono::Utc;
+    use chrono::Local;
 
     let input = HashMap::new();
     let wf_ctx = WorkflowContext::new(input);
@@ -452,8 +452,8 @@ fn test_build_executor_context_with_node_results() {
         output: serde_json::json!({"field1": "val1", "field2": 42}),
         error: None,
         state: ExecutionState::Completed,
-        started_at: Utc::now(),
-        ended_at: Utc::now(),
+        started_at: Local::now(),
+        ended_at: Local::now(),
         metadata: HashMap::new(),
     };
     wf_ctx.set_node_result("node_a", result);

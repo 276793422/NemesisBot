@@ -1,6 +1,6 @@
 //! Device service: Config, SetBus, Start/Stop, USB monitoring, event notifications.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub struct Device {
     pub vendor_id: Option<String>,
     pub product_id: Option<String>,
     pub serial: Option<String>,
-    pub connected_at: Option<DateTime<Utc>>,
+    pub connected_at: Option<DateTime<Local>>,
     pub metadata: HashMap<String, String>,
 }
 

@@ -203,7 +203,7 @@ pub struct Metric {
     pub success: bool,
     pub tokens_used: i64,
     pub cost: f64,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: chrono::DateTime<chrono::Local>,
 }
 
 /// Aggregated provider metrics.
@@ -290,7 +290,7 @@ impl MetricsCollector {
 
     /// Prune (remove) samples older than the given duration from all providers.
     pub fn prune(&self, older_than: std::time::Duration) {
-        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::seconds(0));
+        let cutoff = chrono::Local::now() - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::seconds(0));
         let providers: Vec<String> = self.samples.iter().map(|e| e.key().clone()).collect();
         for provider in providers {
             if let Some(mut entry) = self.samples.get_mut(&provider) {
@@ -491,7 +491,7 @@ impl Router {
                             success: true,
                             tokens_used: resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
                             cost: candidate.cost_per_1k * resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as f64 / 1000.0,
-                            timestamp: chrono::Utc::now(),
+                            timestamp: chrono::Local::now(),
                         });
                         return Ok(resp);
                     }
@@ -508,7 +508,7 @@ impl Router {
                             success: false,
                             tokens_used: 0,
                             cost: 0.0,
-                            timestamp: chrono::Utc::now(),
+                            timestamp: chrono::Local::now(),
                         });
                         if e.is_retriable() {
                             // Try fallback candidates

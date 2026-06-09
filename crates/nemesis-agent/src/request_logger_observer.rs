@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -32,7 +32,7 @@ pub enum EventType {
 pub struct ConversationEvent {
     pub event_type: EventType,
     pub trace_id: String,
-    pub timestamp: chrono::DateTime<Utc>,
+    pub timestamp: chrono::DateTime<Local>,
     pub data: EventData,
 }
 
@@ -120,9 +120,9 @@ pub struct ToolCallEventData {
 /// Per-conversation state tracked by the observer.
 struct ConversationState {
     logger: RequestLogger,
-    start_time: chrono::DateTime<Utc>,
+    start_time: chrono::DateTime<Local>,
     /// Timestamp captured at LlmRequest event (for raw logging mode).
-    last_request_time: Option<chrono::DateTime<Utc>>,
+    last_request_time: Option<chrono::DateTime<Local>>,
 }
 
 /// Observer adapter that creates a new RequestLogger per conversation
@@ -182,7 +182,7 @@ impl RequestLoggerObserver {
     fn handle_conversation_start(
         &self,
         trace_id: &str,
-        timestamp: chrono::DateTime<Utc>,
+        timestamp: chrono::DateTime<Local>,
         data: &ConversationStartData,
     ) {
         let logger = RequestLogger::new(self.config.clone(), &self.workspace);
@@ -218,9 +218,9 @@ impl RequestLoggerObserver {
             if self.config.save_raw {
                 // Raw mode: write request file immediately so it's captured
                 // even if the LLM call fails. Record timestamp for response file.
-                state.last_request_time = Some(chrono::Utc::now());
+                state.last_request_time = Some(chrono::Local::now());
                 let envelope = serde_json::json!({
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "timestamp": chrono::Local::now().to_rfc3339(),
                     "round": data.round,
                     "body": {
                         "model": data.model,
@@ -239,7 +239,7 @@ impl RequestLoggerObserver {
 
                 state.logger.log_llm_request(&LLMRequestInfo {
                     round: data.round,
-                    timestamp: Utc::now(),
+                    timestamp: Local::now(),
                     model: data.model.clone(),
                     provider_name: data.provider_name.clone(),
                     api_key: data.api_key.clone(),
@@ -260,7 +260,7 @@ impl RequestLoggerObserver {
         if let Some(state) = active.get_mut(trace_id) {
             if self.config.save_raw {
                 // Raw mode: write response file only (request already written in handle_llm_request)
-                let response_time = chrono::Utc::now();
+                let response_time = chrono::Local::now();
                 if let Some(ref resp_body) = data.raw_response_body {
                     state.logger.log_raw_response(resp_body, response_time, data.round, data.duration_ms);
                 }
@@ -277,7 +277,7 @@ impl RequestLoggerObserver {
 
                 state.logger.log_llm_response(&LLMResponseInfo {
                     round: data.round,
-                    timestamp: Utc::now(),
+                    timestamp: Local::now(),
                     duration_ms: data.duration_ms,
                     content: data.content.clone(),
                     tool_calls_count: data.tool_calls_count,
@@ -316,7 +316,7 @@ impl RequestLoggerObserver {
             };
             state.logger.log_local_operations(&LocalOperationInfo {
                 round: data.llm_round,
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::Local::now(),
                 operations: vec![op],
             });
         }
@@ -325,7 +325,7 @@ impl RequestLoggerObserver {
     fn handle_conversation_end(
         &self,
         trace_id: &str,
-        timestamp: chrono::DateTime<Utc>,
+        timestamp: chrono::DateTime<Local>,
         data: &ConversationEndData,
     ) {
         let mut active = self.active.lock().unwrap();

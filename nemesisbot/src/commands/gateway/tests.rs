@@ -338,7 +338,7 @@ fn test_approval_popup_data_construction() {
         "reason": reason,
         "timeout_seconds": timeout_secs.max(30),
         "context": {},
-        "timestamp": chrono::Utc::now().timestamp(),
+        "timestamp": chrono::Local::now().timestamp(),
     });
 
     assert_eq!(data["request_id"], "req-123");

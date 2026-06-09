@@ -167,7 +167,7 @@ impl ForgeDataProvider for FileForgeProvider {
         let report = payload.get("report").ok_or("report field is required")?;
 
         // Generate a filename from source node and timestamp
-        let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let filename = format!("remote-{}-{}.json", source_node, timestamp);
         let path = self.remote_dir.join(&filename);
 
@@ -338,7 +338,7 @@ impl ForgeHandler {
             response: serde_json::json!({
                 "status": "received",
                 "node_id": self.node_id,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "timestamp": chrono::Local::now().to_rfc3339(),
             }),
             error: None,
         }

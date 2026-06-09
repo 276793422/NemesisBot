@@ -296,8 +296,8 @@ fn count_executions(workflow_dir: &std::path::Path) -> usize {
         .unwrap_or(0)
 }
 
-/// Format a DateTime<Utc> for display.
-fn format_datetime(dt: &chrono::DateTime<chrono::Utc>) -> String {
+/// Format a DateTime<Local> for display.
+fn format_datetime(dt: &chrono::DateTime<chrono::Local>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -480,9 +480,9 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                 // Try to calculate duration
                 if let Some(started) = exec.get("started_at").and_then(|v| v.as_str()) {
                     let start_ok = chrono::DateTime::parse_from_rfc3339(started)
-                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                        .map(|dt| dt.with_timezone(&chrono::Local));
                     let end_ok = chrono::DateTime::parse_from_rfc3339(ended)
-                        .map(|dt| dt.with_timezone(&chrono::Utc));
+                        .map(|dt| dt.with_timezone(&chrono::Local));
                     if let (Ok(start_dt), Ok(end_dt)) = (start_ok, end_ok) {
                         let duration = end_dt.signed_duration_since(start_dt);
                         let millis = duration.num_milliseconds();

@@ -861,7 +861,7 @@ async fn cmd_clamav_install_inner(
     }
 
     let mut state = engine_cfg.state.clone();
-    state.last_install_attempt = chrono::Utc::now().to_rfc3339();
+    state.last_install_attempt = chrono::Local::now().to_rfc3339();
 
     if force && state.install_status == "installed" {
         println!("Force reinstalling ClamAV...");
@@ -1009,7 +1009,7 @@ async fn cmd_clamav_install_inner(
             match tokio::time::timeout(Duration::from_secs(120), updater.update(tokio_util::sync::CancellationToken::new(), None)).await {
                 Ok(Ok(())) => {
                     state.db_status = "ready".to_string();
-                    state.last_db_update = chrono::Utc::now().to_rfc3339();
+                    state.last_db_update = chrono::Local::now().to_rfc3339();
                     println!("  clamav           virus database ready");
                 }
                 Ok(Err(e)) => {
@@ -1099,7 +1099,7 @@ async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     if let Some(raw_val) = full_cfg.engines.get("clamav").cloned() {
         let mut ec = parse_engine_config(&raw_val);
         ec.state.db_status = "ready".to_string();
-        ec.state.last_db_update = chrono::Utc::now().to_rfc3339();
+        ec.state.last_db_update = chrono::Local::now().to_rfc3339();
         if ec.clamav_path.is_empty() {
             ec.clamav_path = clamav_path;
         }

@@ -52,7 +52,7 @@ fn test_migration_from_old_location() {
     let old_state = WorkspaceState {
         last_channel: "rpc:node1".to_string(),
         last_chat_id: "old_chat".to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
     };
     let old_data = serde_json::to_string_pretty(&old_state).unwrap();
     fs::write(workspace.join("state.json"), &old_data).unwrap();
@@ -129,7 +129,7 @@ fn test_workspace_state_serialization_with_fields() {
     let state = WorkspaceState {
         last_channel: "web:user1".to_string(),
         last_chat_id: "chat_abc".to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
     };
     let json = serde_json::to_string_pretty(&state).unwrap();
 
@@ -198,7 +198,7 @@ fn test_new_manager_with_valid_state_file() {
     let state = WorkspaceState {
         last_channel: "discord:ch1".to_string(),
         last_chat_id: "msg_123".to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
     };
     let json = serde_json::to_string_pretty(&state).unwrap();
     fs::write(state_dir.join("state.json"), &json).unwrap();
@@ -239,7 +239,7 @@ fn test_workspace_state_default() {
     assert!(state.last_channel.is_empty());
     assert!(state.last_chat_id.is_empty());
     // Timestamp should be approximately now
-    let now = Utc::now();
+    let now = Local::now();
     let diff = now.signed_duration_since(state.timestamp);
     assert!(diff.num_seconds().abs() < 5);
 }
@@ -403,7 +403,7 @@ fn test_workspace_state_serialization_roundtrip() {
     let original = WorkspaceState {
         last_channel: "telegram:user42".to_string(),
         last_chat_id: "msg_999".to_string(),
-        timestamp: Utc::now(),
+        timestamp: Local::now(),
     };
     let json = serde_json::to_string(&original).unwrap();
     let restored: WorkspaceState = serde_json::from_str(&json).unwrap();

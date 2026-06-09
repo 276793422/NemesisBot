@@ -217,7 +217,7 @@ fn test_submit_prebuilt_task() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "chat-1".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     assert!(tm.submit(task).is_ok());
@@ -238,7 +238,7 @@ fn test_submit_duplicate_task_fails() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     assert!(tm.submit(task.clone()).is_ok());
@@ -367,7 +367,7 @@ fn test_store_create_get_delete_roundtrip() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -395,7 +395,7 @@ fn test_store_update_result_sets_completed_at() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -424,7 +424,7 @@ fn test_store_list_all_multiple() {
             result: None,
             original_channel: "rpc".to_string(),
             original_chat_id: "ch".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
         store.create(task).unwrap();
@@ -445,7 +445,7 @@ fn test_store_list_by_status_mixed() {
             result: None,
             original_channel: "rpc".to_string(),
             original_chat_id: "ch".to_string(),
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
         };
         store.create(task).unwrap();
@@ -472,7 +472,7 @@ fn test_store_create_duplicate_fails() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     assert!(store.create(task.clone()).is_ok());
@@ -491,7 +491,7 @@ fn make_snapshot(task_id: &str) -> ContinuationSnapshot {
         channel: "web".to_string(),
         chat_id: "chat-default".to_string(),
         ready: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -510,7 +510,7 @@ async fn test_continuation_save_overwrite() {
         channel: "rpc".to_string(),
         chat_id: "chat-updated".to_string(),
         ready: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     };
     store.save(snap2).await.unwrap();
 
@@ -615,7 +615,7 @@ async fn test_continuation_disk_recovery_preserves_data() {
             channel: "web".to_string(),
             chat_id: "chat-r".to_string(),
             ready: true,
-            created_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Local::now().to_rfc3339(),
         };
         store.save(snap).await.unwrap();
     }
@@ -1915,7 +1915,7 @@ async fn test_continuation_save_load_roundtrip() {
         channel: "web".to_string(),
         chat_id: "chat-99".to_string(),
         ready: true,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     };
 
     store.save(snap).await.unwrap();
@@ -1940,7 +1940,7 @@ async fn test_continuation_save_false_ready() {
         channel: "rpc".to_string(),
         chat_id: "c".to_string(),
         ready: false,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
     };
 
     store.save(snap).await.unwrap();
@@ -2183,7 +2183,7 @@ fn test_store_create_and_get() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -2205,7 +2205,7 @@ fn test_store_update_to_running() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -2226,7 +2226,7 @@ fn test_store_update_with_result_value() {
         result: None,
         original_channel: "rpc".to_string(),
         original_chat_id: "ch".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
         completed_at: None,
     };
     store.create(task).unwrap();
@@ -2426,7 +2426,7 @@ fn test_cluster_config_empty_node_id() {
 
 #[test]
 fn test_extended_node_info_get_uptime_recent() {
-    let node = make_test_extended_node("n1", NodeStatus::Online, vec![], &chrono::Utc::now().to_rfc3339());
+    let node = make_test_extended_node("n1", NodeStatus::Online, vec![], &chrono::Local::now().to_rfc3339());
     let uptime = node.get_uptime();
     assert!(uptime.as_secs() < 10);
 }

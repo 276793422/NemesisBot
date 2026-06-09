@@ -9,7 +9,7 @@
 //! - `is_heartbeat_file_empty()` - checks if template is comments-only
 //! - File-based logging to `logs/heartbeat.log`
 
-use chrono::Utc;
+use chrono::Local;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -103,7 +103,7 @@ const INTERNAL_CHANNELS: &[&str] = &["system", "rpc", "cluster", "internal"];
 pub struct HeartbeatService {
     config: HeartbeatConfig,
     running: Arc<AtomicBool>,
-    last_beat: Arc<Mutex<chrono::DateTime<Utc>>>,
+    last_beat: Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: Arc<AtomicU64>,
     handle: Mutex<Option<JoinHandle<()>>>,
     handler: Mutex<Option<HeartbeatHandler>>,
@@ -124,7 +124,7 @@ impl HeartbeatService {
         Self {
             config,
             running: Arc::new(AtomicBool::new(false)),
-            last_beat: Arc::new(Mutex::new(Utc::now())),
+            last_beat: Arc::new(Mutex::new(Local::now())),
             beat_count: Arc::new(AtomicU64::new(0)),
             handle: Mutex::new(None),
             handler: Mutex::new(None),
@@ -254,7 +254,7 @@ impl HeartbeatService {
     }
 
     /// Get last heartbeat time.
-    pub fn last_beat(&self) -> chrono::DateTime<Utc> {
+    pub fn last_beat(&self) -> chrono::DateTime<Local> {
         *self.last_beat.lock()
     }
 
@@ -580,7 +580,7 @@ fn execute_heartbeat_tick(
     message_bus: &Option<Arc<dyn MessageBus>>,
     state_manager: &Option<Arc<dyn StateManager>>,
     skip_file: &Arc<Mutex<Option<String>>>,
-    last_beat: &Arc<Mutex<chrono::DateTime<Utc>>>,
+    last_beat: &Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: &Arc<AtomicU64>,
 ) {
     // Step 1: Check skip file.
@@ -622,7 +622,7 @@ fn execute_heartbeat_tick(
 
     // Update beat tracking.
     let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
-    *last_beat.lock() = Utc::now();
+    *last_beat.lock() = Local::now();
     tracing::debug!("[Heartbeat] Heartbeat tick #{}", count);
 
     // Step 4: Call handler.

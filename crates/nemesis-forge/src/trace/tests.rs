@@ -5,7 +5,7 @@ fn make_event(event_type: &str, session_key: &str) -> TraceEvent {
         id: uuid::Uuid::new_v4().to_string(),
         event_type: event_type.into(),
         session_key: session_key.into(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         data: serde_json::json!({}),
     }
 }
@@ -27,7 +27,7 @@ fn test_record_signals() {
     collector.record_signal(SessionSignal {
         signal_type: "retry".into(),
         tool_name: "file_read".into(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         session_key: "sess-1".into(),
     });
 
@@ -46,7 +46,7 @@ fn test_compute_stats() {
     collector.record_signal(SessionSignal {
         signal_type: "retry".into(),
         tool_name: "tool_a".into(),
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         session_key: "sess-1".into(),
     });
 

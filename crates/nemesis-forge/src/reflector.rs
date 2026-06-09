@@ -505,7 +505,7 @@ impl Reflector {
         }
 
         ReflectionReport {
-            date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            date: chrono::Local::now().format("%Y-%m-%d").to_string(),
             period: period.to_string(),
             focus: focus.to_string(),
             stats,
@@ -640,19 +640,19 @@ impl Reflector {
     pub fn resolve_period(period: &str) -> Option<String> {
         match period {
             "today" => {
-                let now = chrono::Utc::now();
+                let now = chrono::Local::now();
                 let start_of_day = now.date_naive().and_hms_opt(0, 0, 0)
                     .unwrap_or_default();
                 Some(start_of_day.and_utc().to_rfc3339())
             }
             "week" => {
-                let cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+                let cutoff = chrono::Local::now() - chrono::Duration::days(7);
                 Some(cutoff.to_rfc3339())
             }
             "all" => None,
             _ => {
                 // Default: today
-                let now = chrono::Utc::now();
+                let now = chrono::Local::now();
                 let start_of_day = now.date_naive().and_hms_opt(0, 0, 0)
                     .unwrap_or_default();
                 Some(start_of_day.and_utc().to_rfc3339())
@@ -881,7 +881,7 @@ impl Reflector {
         std::fs::create_dir_all(&self.reflections_dir)
             .map_err(|e| format!("failed to create reflections dir: {}", e))?;
 
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let filename = format!(
             "reflection_{}_{}.md",
             report.date,
@@ -906,7 +906,7 @@ impl Reflector {
             return 0;
         }
 
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days as i64);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days as i64);
         let mut deleted = 0;
 
         if let Ok(entries) = std::fs::read_dir(&self.reflections_dir) {
@@ -918,7 +918,7 @@ impl Reflector {
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
                     if let Ok(metadata) = path.metadata() {
                         if let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Utc> =
+                            let modified_time: chrono::DateTime<chrono::Local> =
                                 modified.into();
                             if modified_time < cutoff {
                                 if std::fs::remove_file(&path).is_ok() {
@@ -995,7 +995,7 @@ impl Reflector {
             return Ok(());
         }
 
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
         let mut errors = Vec::new();
 
         if let Ok(entries) = std::fs::read_dir(&self.reflections_dir) {
@@ -1007,7 +1007,7 @@ impl Reflector {
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
                     if let Ok(metadata) = path.metadata() {
                         if let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Utc> =
+                            let modified_time: chrono::DateTime<chrono::Local> =
                                 modified.into();
                             if modified_time < cutoff {
                                 if let Err(e) = std::fs::remove_file(&path) {

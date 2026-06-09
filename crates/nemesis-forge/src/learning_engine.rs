@@ -102,7 +102,7 @@ impl LearningAction {
             confidence: 0.0,
             pattern_id: None,
             artifact_id: None,
-            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            created_at: Some(chrono::Local::now().to_rfc3339()),
             executed_at: None,
         }
     }
@@ -270,7 +270,7 @@ impl LearningEngine {
         );
         let mut cycle = LearningCycle {
             id: cycle_id,
-            started_at: chrono::Utc::now().to_rfc3339(),
+            started_at: chrono::Local::now().to_rfc3339(),
             completed_at: None,
             patterns_found: 0,
             actions_taken: 0,
@@ -342,7 +342,7 @@ impl LearningEngine {
         }
 
         cycle.status = nemesis_types::forge::CycleStatus::Completed;
-        cycle.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        cycle.completed_at = Some(chrono::Local::now().to_rfc3339());
 
         // Persist cycle
         if let Err(e) = self.cycle_store.append(&cycle).await {
@@ -640,8 +640,8 @@ impl LearningEngine {
                         status: new_status,
                         content: content.clone(),
                         tool_signature: tool_sig,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        created_at: chrono::Local::now().to_rfc3339(),
+                        updated_at: chrono::Local::now().to_rfc3339(),
                         usage_count: 0,
                         last_degraded_at: None,
                         success_rate: 0.0,
@@ -687,8 +687,8 @@ impl LearningEngine {
                 status: nemesis_types::forge::ArtifactStatus::Draft,
                 content,
                 tool_signature: extract_tool_signature_from_chain(&action.description),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                updated_at: chrono::Local::now().to_rfc3339(),
                 usage_count: 0,
                 last_degraded_at: None,
                 success_rate: 0.0,
@@ -735,7 +735,7 @@ impl LearningEngine {
             action.rationale.as_deref().unwrap_or("N/A"),
             action.description,
             action.confidence,
-            chrono::Utc::now().to_rfc3339()
+            chrono::Local::now().to_rfc3339()
         );
 
         let path = workspace_dir.join(format!("{}_suggestion.md", filename));
@@ -746,7 +746,7 @@ impl LearningEngine {
         }
 
         action.status = "executed".to_string();
-        action.executed_at = Some(chrono::Utc::now().to_rfc3339());
+        action.executed_at = Some(chrono::Local::now().to_rfc3339());
         action.artifact_id = Some(path.to_string_lossy().to_string());
     }
 
@@ -862,7 +862,7 @@ impl LearningEngine {
     /// recorded within the last 30 days. Falls back to the in-memory cache
     /// if the store read fails.
     pub async fn get_latest_cycle_from_store(&self) -> Option<LearningCycle> {
-        let since = chrono::Utc::now() - chrono::Duration::days(30);
+        let since = chrono::Local::now() - chrono::Duration::days(30);
 
         match self.cycle_store.read_cycles(Some(since)).await {
             Ok(cycles) => cycles.into_iter().last(),
@@ -1135,8 +1135,8 @@ impl LearningEngine {
                         status: new_status,
                         content: current_content.clone(),
                         tool_signature: tool_sig,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                        updated_at: chrono::Utc::now().to_rfc3339(),
+                        created_at: chrono::Local::now().to_rfc3339(),
+                        updated_at: chrono::Local::now().to_rfc3339(),
                         usage_count: 0,
                         last_degraded_at: None,
                         success_rate: 0.0,
@@ -1146,7 +1146,7 @@ impl LearningEngine {
 
                     result.status = "executed".to_string();
                     result.artifact_id = Some(artifact_id);
-                    result.executed_at = Some(chrono::Utc::now().to_rfc3339());
+                    result.executed_at = Some(chrono::Local::now().to_rfc3339());
                     return result;
                 }
 
@@ -1186,8 +1186,8 @@ impl LearningEngine {
                 status: nemesis_types::forge::ArtifactStatus::Draft,
                 content,
                 tool_signature: extract_tool_signature_from_chain_public(&action.description),
-                created_at: chrono::Utc::now().to_rfc3339(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                updated_at: chrono::Local::now().to_rfc3339(),
                 usage_count: 0,
                 last_degraded_at: None,
                 success_rate: 0.0,
@@ -1197,7 +1197,7 @@ impl LearningEngine {
 
             result.status = "executed".to_string();
             result.artifact_id = Some(artifact_id);
-            result.executed_at = Some(chrono::Utc::now().to_rfc3339());
+            result.executed_at = Some(chrono::Local::now().to_rfc3339());
         }
 
         result

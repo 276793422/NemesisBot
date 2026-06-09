@@ -21,8 +21,8 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
         metadata: HashMap::new(),
         tags: vec![],
         score: 0.0,
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
     }
 }
 

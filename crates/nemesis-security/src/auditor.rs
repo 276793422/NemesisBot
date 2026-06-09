@@ -161,11 +161,11 @@ pub struct OperationRequest {
     pub user: String,
     pub source: String,
     pub target: String,
-    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub timestamp: Option<chrono::DateTime<chrono::Local>>,
     /// Who approved (if applicable).
     pub approver: Option<String>,
     /// When approved.
-    pub approved_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub approved_at: Option<chrono::DateTime<chrono::Local>>,
     /// Reason for denial (if denied).
     pub denied_reason: Option<String>,
 }
@@ -314,7 +314,7 @@ impl SecurityAuditor {
             request: req.clone(),
             decision: decision_str.to_string(),
             reason: reason.clone(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             policy_rule: policy.clone(),
         };
         self.log_audit_event(&event);
@@ -401,7 +401,7 @@ impl SecurityAuditor {
         match active.get_mut(request_id) {
             Some(req) => {
                 req.approver = Some(approver.to_string());
-                req.approved_at = Some(chrono::Utc::now());
+                req.approved_at = Some(chrono::Local::now());
                 let _reason = format!("Approved by {}", approver);
                 tracing::info!(
                     request_id = request_id,

@@ -73,7 +73,7 @@ fn test_metrics_collector() {
         success: true,
         tokens_used: 500,
         cost: 0.015,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     collector.record(Metric {
         provider: "openai".to_string(),
@@ -81,7 +81,7 @@ fn test_metrics_collector() {
         success: false,
         tokens_used: 0,
         cost: 0.0,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let metrics = collector.get_metrics("openai");
@@ -100,7 +100,7 @@ fn test_metrics_ring_buffer() {
             success: true,
             tokens_used: 100,
             cost: 0.01,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
     }
     let metrics = collector.get_metrics("test");
@@ -176,7 +176,7 @@ fn test_get_all_metrics() {
         success: true,
         tokens_used: 500,
         cost: 0.015,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     collector.record(Metric {
         provider: "anthropic".to_string(),
@@ -184,7 +184,7 @@ fn test_get_all_metrics() {
         success: true,
         tokens_used: 300,
         cost: 0.01,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let all = collector.get_all_metrics();
@@ -202,7 +202,7 @@ fn test_reset_metrics() {
         success: true,
         tokens_used: 500,
         cost: 0.015,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     assert_eq!(collector.get_metrics("openai").total_requests, 1);
     collector.reset("openai");
@@ -219,7 +219,7 @@ fn test_prune_old_samples() {
         success: true,
         tokens_used: 500,
         cost: 0.01,
-        timestamp: chrono::Utc::now() - chrono::Duration::hours(2),
+        timestamp: chrono::Local::now() - chrono::Duration::hours(2),
     });
     // Recent sample
     collector.record(Metric {
@@ -228,7 +228,7 @@ fn test_prune_old_samples() {
         success: true,
         tokens_used: 200,
         cost: 0.005,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     assert_eq!(collector.get_metrics("test").total_requests, 2);
@@ -283,7 +283,7 @@ fn test_metrics_collector_record_throughput() {
             success: i % 10 != 0,
             tokens_used: 100,
             cost: 0.001,
-            timestamp: chrono::Utc::now(),
+            timestamp: chrono::Local::now(),
         });
     }
     let elapsed = start.elapsed();
@@ -371,7 +371,7 @@ fn test_select_latency_policy() {
         success: true,
         tokens_used: 100,
         cost: 0.001,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     router.metrics().record(Metric {
         provider: "slow-provider".to_string(),
@@ -379,7 +379,7 @@ fn test_select_latency_policy() {
         success: true,
         tokens_used: 100,
         cost: 0.001,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -512,7 +512,7 @@ fn test_metrics_avg_latency() {
         success: true,
         tokens_used: 100,
         cost: 0.01,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     collector.record(Metric {
         provider: "test".to_string(),
@@ -520,7 +520,7 @@ fn test_metrics_avg_latency() {
         success: true,
         tokens_used: 200,
         cost: 0.02,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let metrics = collector.get_metrics("test");
@@ -536,7 +536,7 @@ fn test_metrics_avg_cost_per_1k() {
         success: true,
         tokens_used: 1000,
         cost: 0.05,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let metrics = collector.get_metrics("test");
@@ -552,7 +552,7 @@ fn test_metrics_zero_tokens_cost() {
         success: true,
         tokens_used: 0,
         cost: 0.0,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
 
     let metrics = collector.get_metrics("test");
@@ -643,7 +643,7 @@ fn test_router_metrics_accessor() {
         success: true,
         tokens_used: 100,
         cost: 0.01,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::Local::now(),
     });
     let m = metrics.get_metrics("test");
     assert_eq!(m.total_requests, 1);

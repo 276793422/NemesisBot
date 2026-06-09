@@ -247,7 +247,7 @@ async fn file_store_cleanup_old_episodes() {
 
     // Old episode
     let mut old = Episode::new("s-old".into(), "user".into(), "old content".into());
-    old.timestamp = chrono::Utc::now() - chrono::Duration::days(10);
+    old.timestamp = chrono::Local::now() - chrono::Duration::days(10);
     store.append(old).await.unwrap();
 
     // Recent episode

@@ -177,7 +177,7 @@ impl ObserverEvent {
             } => ConversationEvent {
                 event_type: EventType::ConversationStart,
                 trace_id: trace_id.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::Local::now(),
                 data: EventData::ConversationStart(ConversationStartData {
                     session_key: session_key.clone(),
                     channel: channel.clone(),
@@ -197,7 +197,7 @@ impl ObserverEvent {
             } => ConversationEvent {
                 event_type: EventType::ConversationEnd,
                 trace_id: trace_id.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::Local::now(),
                 data: EventData::ConversationEnd(ConversationEndData {
                     session_key: session_key.clone(),
                     channel: channel.clone(),
@@ -222,7 +222,7 @@ impl ObserverEvent {
             } => ConversationEvent {
                 event_type: EventType::LlmRequest,
                 trace_id: trace_id.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::Local::now(),
                 data: EventData::LlmRequest(LlmRequestData {
                     round: *round,
                     model: model.clone(),
@@ -252,7 +252,7 @@ impl ObserverEvent {
             } => ConversationEvent {
                 event_type: EventType::LlmResponse,
                 trace_id: trace_id.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: chrono::Local::now(),
                 data: EventData::LlmResponse(LlmResponseData {
                     round: *round,
                     duration: std::time::Duration::from_millis(*duration_ms),
@@ -287,7 +287,7 @@ impl ObserverEvent {
                 ConversationEvent {
                     event_type: EventType::ToolCall,
                     trace_id: trace_id.clone(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: chrono::Local::now(),
                     data: EventData::ToolCall(ToolCallData {
                         tool_name: tool_name.clone(),
                         arguments: args_map,
@@ -1295,7 +1295,7 @@ impl AgentLoopExecutor {
                         status_code: if response.content.starts_with("Error:") { 500 } else { 200 },
                         error_message: None,
                         is_streaming: false,
-                        created_at: chrono::Utc::now().timestamp(),
+                        created_at: chrono::Local::now().timestamp(),
                     };
                     if let Err(e) = ds.insert_request_log(&log) {
                         tracing::warn!("[AgentLoopExecutor] Failed to record usage: {e}");

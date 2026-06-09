@@ -29,7 +29,7 @@ async fn health(State(state): State<Arc<HealthState>>) -> Json<Value> {
         "status": "healthy",
         "uptime_seconds": state.start_time.elapsed().as_secs(),
         "version": state.version,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
     }))
 }
 
@@ -56,7 +56,7 @@ async fn ready(State(state): State<Arc<HealthState>>) -> Json<Value> {
         "ready": all_healthy,
         "beat_count": state.beat_count.load(Ordering::SeqCst),
         "checks": check_results,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
     }))
 }
 

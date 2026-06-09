@@ -29,7 +29,7 @@ pub async fn run_headless_window(
         "approved": true,
         "reason": "auto-approve (test mode)",
         "request_id": data.request_id,
-        "timestamp": chrono::Utc::now().timestamp(),
+        "timestamp": chrono::Local::now().timestamp(),
     });
 
     info!("[HeadlessWindow] {}: Sending auto-approve result", window_id);

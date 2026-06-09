@@ -9,7 +9,7 @@
 //!   - Stats and active count
 
 use crate::websocket_handler::SendQueue;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,8 +27,8 @@ pub struct Session {
     pub id: String,
     pub sender_id: String,
     pub chat_id: String,
-    pub created_at: DateTime<Utc>,
-    pub last_active: DateTime<Utc>,
+    pub created_at: DateTime<Local>,
+    pub last_active: DateTime<Local>,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ impl SessionManager {
         let id = generate_session_id();
         let sender_id = format!("web:{}", id);
         let chat_id = sender_id.clone();
-        let now = Utc::now();
+        let now = Local::now();
 
         let session = Session {
             id: id.clone(),
@@ -120,7 +120,7 @@ impl SessionManager {
     /// Update last active time for a session.
     pub fn touch_session(&self, session_id: &str) {
         if let Some(mut entry) = self.sessions.get_mut(session_id) {
-            entry.session.last_active = Utc::now();
+            entry.session.last_active = Local::now();
         }
     }
 
@@ -209,7 +209,7 @@ impl SessionManager {
                 loop {
                     interval.tick().await;
 
-                    let now = Utc::now();
+                    let now = Local::now();
                     let mut to_remove = Vec::new();
 
                     for entry in sessions.iter() {

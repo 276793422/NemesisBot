@@ -137,7 +137,7 @@ extra: HashMap::new(),
 
 #[test]
 fn test_message_with_timestamp() {
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let msg = Message {
         role: "user".to_string(),
         content: "hello".to_string(),

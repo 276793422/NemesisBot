@@ -68,7 +68,7 @@ fn test_pid_file_parsing_empty() {
 fn test_shutdown_signal_file_creation() {
     let tmp = TempDir::new().unwrap();
     let signal_path = tmp.path().join("shutdown.signal");
-    let timestamp = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Local::now().to_rfc3339();
     std::fs::write(&signal_path, &timestamp).unwrap();
 
     assert!(signal_path.exists());

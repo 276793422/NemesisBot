@@ -113,7 +113,7 @@ pub async fn test_forge_collect_tool_experience(ws: &TestWorkspace) -> Vec<TestR
             "output_summary": "success",
             "success": true,
             "duration_ms": 150,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "timestamp": chrono::Local::now().to_rfc3339(),
             "session_key": "test:collect"
         });
         let exp_path = exp_dir.join("test_exp_001.jsonl");

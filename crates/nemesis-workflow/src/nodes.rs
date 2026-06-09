@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::Local;
 
 use crate::context::WorkflowContext;
 use crate::types::{ExecutionState, NodeDef, NodeResult};
@@ -121,7 +121,7 @@ impl NodeExecutor for LLMNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let prompt = node
             .config
             .get("prompt")
@@ -140,7 +140,7 @@ impl NodeExecutor for LLMNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -161,7 +161,7 @@ impl NodeExecutor for ToolNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let tool_name = node
             .config
             .get("tool")
@@ -176,7 +176,7 @@ impl NodeExecutor for ToolNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -197,7 +197,7 @@ impl NodeExecutor for ConditionNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let condition = node
             .config
             .get("condition")
@@ -212,7 +212,7 @@ impl NodeExecutor for ConditionNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -245,7 +245,7 @@ impl NodeExecutor for ParallelNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         // Try "nodes" first, fall back to "branches"
         let children = {
@@ -264,7 +264,7 @@ impl NodeExecutor for ParallelNodeExecutor {
                 error: None,
                 state: ExecutionState::Completed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -343,7 +343,7 @@ impl NodeExecutor for ParallelNodeExecutor {
             error: first_error,
             state,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -364,7 +364,7 @@ impl NodeExecutor for DelayNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let secs = node
             .config
             .get("seconds")
@@ -377,7 +377,7 @@ impl NodeExecutor for DelayNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -398,7 +398,7 @@ impl NodeExecutor for TransformNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let expression = node
             .config
             .get("expression")
@@ -420,7 +420,7 @@ impl NodeExecutor for TransformNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -453,7 +453,7 @@ impl NodeExecutor for LoopNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let max_iter = node
             .config
             .get("max_iterations")
@@ -478,7 +478,7 @@ impl NodeExecutor for LoopNodeExecutor {
                 error: None,
                 state: ExecutionState::Completed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -565,7 +565,7 @@ impl NodeExecutor for LoopNodeExecutor {
             error: loop_error,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -597,7 +597,7 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         let workflow_name = node
             .config
@@ -612,7 +612,7 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
                 error: Some("sub_workflow requires 'workflow' config".to_string()),
                 state: ExecutionState::Failed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -664,7 +664,7 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
             error: None,
             state: exec_result.state,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: result_metadata,
         })
     }
@@ -687,7 +687,7 @@ impl NodeExecutor for HTTPNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         let url = node
             .config
@@ -709,7 +709,7 @@ impl NodeExecutor for HTTPNodeExecutor {
                 error: Some("http node requires 'url' config".to_string()),
                 state: ExecutionState::Failed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -787,7 +787,7 @@ impl NodeExecutor for HTTPNodeExecutor {
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -812,7 +812,7 @@ impl NodeExecutor for ScriptNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         let script = node
             .config
@@ -833,7 +833,7 @@ impl NodeExecutor for ScriptNodeExecutor {
                 error: Some("script node requires 'script' config".to_string()),
                 state: ExecutionState::Failed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -890,7 +890,7 @@ impl NodeExecutor for ScriptNodeExecutor {
             error,
             state,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -931,7 +931,7 @@ impl NodeExecutor for HumanReviewNodeExecutor {
         _context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         let message = node
             .config
@@ -948,7 +948,7 @@ impl NodeExecutor for HumanReviewNodeExecutor {
             error: None,
             state: ExecutionState::Waiting,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -1099,7 +1099,7 @@ impl NodeExecutor for ParallelNodeStub {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let children = get_config_node_list(&node.config, "nodes");
 
         if children.is_empty() {
@@ -1109,7 +1109,7 @@ impl NodeExecutor for ParallelNodeStub {
                 error: None,
                 state: ExecutionState::Completed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -1176,7 +1176,7 @@ impl NodeExecutor for ParallelNodeStub {
             error: first_error,
             state,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -1196,7 +1196,7 @@ impl NodeExecutor for LoopNodeStub {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
         let max_iter = node
             .config
             .get("max_iterations")
@@ -1221,7 +1221,7 @@ impl NodeExecutor for LoopNodeStub {
                 error: None,
                 state: ExecutionState::Completed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -1293,7 +1293,7 @@ impl NodeExecutor for LoopNodeStub {
             error: loop_error,
             state: ExecutionState::Completed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -1314,7 +1314,7 @@ impl NodeExecutor for SubWorkflowNodeStub {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Utc::now();
+        let now = Local::now();
 
         let workflow_name = node
             .config
@@ -1329,7 +1329,7 @@ impl NodeExecutor for SubWorkflowNodeStub {
                 error: Some("sub_workflow requires 'workflow' config".to_string()),
                 state: ExecutionState::Failed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             });
         }
@@ -1371,7 +1371,7 @@ impl NodeExecutor for SubWorkflowNodeStub {
             )),
             state: ExecutionState::Failed,
             started_at: now,
-            ended_at: Utc::now(),
+            ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
@@ -1402,7 +1402,7 @@ async fn execute_inline_node(
         // For complex types (llm, tool, parallel, loop, sub_workflow),
         // return a placeholder since they need external dependencies
         _ => {
-            let now = Utc::now();
+            let now = Local::now();
             Ok(NodeResult {
                 node_id: node_def.id.clone(),
                 output: serde_json::json!({
@@ -1413,7 +1413,7 @@ async fn execute_inline_node(
                 error: None,
                 state: ExecutionState::Completed,
                 started_at: now,
-                ended_at: Utc::now(),
+                ended_at: Local::now(),
                 metadata: HashMap::new(),
             })
         }

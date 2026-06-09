@@ -69,7 +69,7 @@ impl CycleStore {
     ///
     /// If `since` is `None`, returns all records. The filtering is done by
     /// checking the filename date (YYYYMMDD.jsonl) against the `since` date.
-    pub async fn read_cycles(&self, since: Option<chrono::DateTime<chrono::Utc>>) -> std::io::Result<Vec<LearningCycle>> {
+    pub async fn read_cycles(&self, since: Option<chrono::DateTime<chrono::Local>>) -> std::io::Result<Vec<LearningCycle>> {
         let mut results = Vec::new();
 
         if !self.base_dir.exists() {
@@ -142,7 +142,7 @@ impl CycleStore {
     /// Walks the month-based directory structure and deletes JSONL files
     /// whose filename date is older than the cutoff.
     pub async fn cleanup(&self, max_age_days: i64) -> std::io::Result<usize> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
         let cutoff_str = cutoff.format("%Y%m%d").to_string();
         let mut removed = 0usize;
 

@@ -151,7 +151,7 @@ use super::*;
     #[test]
     fn test_format_datetime() {
         use chrono::TimeZone;
-        let dt = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 30, 45).unwrap();
+        let dt = chrono::Local.with_ymd_and_hms(2026, 1, 15, 10, 30, 45).unwrap();
         let formatted = format_datetime(&dt);
         assert_eq!(formatted, "2026-01-15 10:30:45");
     }
@@ -673,7 +673,7 @@ edges:
     #[test]
     fn test_format_datetime_midnight() {
         use chrono::TimeZone;
-        let dt = chrono::Utc.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap();
+        let dt = chrono::Local.with_ymd_and_hms(2026, 12, 31, 0, 0, 0).unwrap();
         let formatted = format_datetime(&dt);
         assert_eq!(formatted, "2026-12-31 00:00:00");
     }
@@ -681,7 +681,7 @@ edges:
     #[test]
     fn test_format_datetime_end_of_day() {
         use chrono::TimeZone;
-        let dt = chrono::Utc.with_ymd_and_hms(2026, 6, 15, 23, 59, 59).unwrap();
+        let dt = chrono::Local.with_ymd_and_hms(2026, 6, 15, 23, 59, 59).unwrap();
         let formatted = format_datetime(&dt);
         assert_eq!(formatted, "2026-06-15 23:59:59");
     }

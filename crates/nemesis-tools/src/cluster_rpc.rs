@@ -127,7 +127,7 @@ impl ClusterOps for StubClusterOps {
     ) -> Result<String, String> {
         let task_id = format!(
             "task-{}-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0),
             peer_id
         );
         info!(
@@ -249,7 +249,7 @@ impl ClusterRpcTool {
         // 2. Generate and inject task_id
         let task_id = format!(
             "task-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
         );
         payload["task_id"] = serde_json::json!(task_id);
 

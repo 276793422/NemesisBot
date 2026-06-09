@@ -81,7 +81,7 @@ impl ExperienceStore {
     /// If `max_experiences_per_day` is set and the daily limit has been reached,
     /// the record is silently skipped (matching Go's behavior).
     pub async fn append_aggregated(&self, record: &AggregatedExperience) -> std::io::Result<()> {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let month_dir = self.base_dir.join(now.format("%Y%m").to_string());
         tokio::fs::create_dir_all(&month_dir).await?;
 
@@ -143,7 +143,7 @@ impl ExperienceStore {
     /// before `since` are skipped entirely.
     pub async fn read_aggregated_since(
         &self,
-        since: Option<chrono::DateTime<chrono::Utc>>,
+        since: Option<chrono::DateTime<chrono::Local>>,
     ) -> std::io::Result<Vec<AggregatedExperience>> {
         let mut results = Vec::new();
         self.walk_jsonl_files_since(&mut results, since).await?;
@@ -163,7 +163,7 @@ impl ExperienceStore {
     /// Read aggregated experiences grouped by day, filtered since the given time.
     pub async fn read_aggregated_by_day_since(
         &self,
-        since: Option<chrono::DateTime<chrono::Utc>>,
+        since: Option<chrono::DateTime<chrono::Local>>,
     ) -> std::io::Result<HashMap<String, Vec<AggregatedExperience>>> {
         let records = self.read_aggregated_since(since).await?;
         let mut grouped: HashMap<String, Vec<AggregatedExperience>> = HashMap::new();
@@ -188,7 +188,7 @@ impl ExperienceStore {
     /// Get the top N patterns by count since the given time.
     pub async fn get_top_patterns_since(
         &self,
-        since: Option<chrono::DateTime<chrono::Utc>>,
+        since: Option<chrono::DateTime<chrono::Local>>,
         top_n: usize,
     ) -> std::io::Result<Vec<AggregatedExperience>> {
         let records = self.read_aggregated_since(since).await?;
@@ -230,7 +230,7 @@ impl ExperienceStore {
 
     /// Remove experience files older than the specified number of days.
     pub async fn cleanup(&self, max_age_days: i64) -> std::io::Result<usize> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(max_age_days);
+        let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
         let cutoff_str = cutoff.format("%Y%m%d").to_string();
         let mut removed = 0usize;
 
@@ -300,7 +300,7 @@ impl ExperienceStore {
 
     /// Check if a JSONL filename (YYYYMMDD.jsonl) is newer than or equal to
     /// the given `since` time.
-    fn file_newer_than(filename: &str, since: &chrono::DateTime<chrono::Utc>) -> bool {
+    fn file_newer_than(filename: &str, since: &chrono::DateTime<chrono::Local>) -> bool {
         let name = filename.trim_end_matches(".jsonl");
         let since_str = since.format("%Y%m%d").to_string();
         // Compare as string dates: YYYYMMDD format sorts lexicographically
@@ -324,7 +324,7 @@ impl ExperienceStore {
     async fn walk_jsonl_files_since(
         &self,
         results: &mut Vec<AggregatedExperience>,
-        since: Option<chrono::DateTime<chrono::Utc>>,
+        since: Option<chrono::DateTime<chrono::Local>>,
     ) -> std::io::Result<()> {
         if !self.base_dir.exists() {
             return Ok(());

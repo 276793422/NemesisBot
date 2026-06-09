@@ -114,7 +114,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
             "reason": reason,
             "timeout_seconds": timeout_secs.max(30),
             "context": {},
-            "timestamp": chrono::Utc::now().timestamp(),
+            "timestamp": chrono::Local::now().timestamp(),
         });
 
         info!(

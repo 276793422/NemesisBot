@@ -9,8 +9,8 @@ fn make_artifact(id: &str, usage: u64, status: ArtifactStatus) -> Artifact {
         status,
         content: "test".into(),
         tool_signature: vec!["tool_a".into()],
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        updated_at: chrono::Local::now().to_rfc3339(),
         usage_count: usage,
         last_degraded_at: None,
         success_rate: 0.0,
@@ -20,7 +20,7 @@ fn make_artifact(id: &str, usage: u64, status: ArtifactStatus) -> Artifact {
 
 fn make_trace(rounds: u32, duration_ms: i64, tools: &[&str], has_signals: bool) -> ConversationTrace {
     ConversationTrace {
-        start_time: chrono::Utc::now().to_rfc3339(),
+        start_time: chrono::Local::now().to_rfc3339(),
         total_rounds: rounds,
         duration_ms,
         tool_steps: tools.iter().map(|t| ToolStep { tool_name: t.to_string() }).collect(),
@@ -82,7 +82,7 @@ fn test_cooldown_not_elapsed_recent_degradation() {
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
 
     let mut artifact = make_artifact("cool2", 10, ArtifactStatus::Active);
-    artifact.last_degraded_at = Some(chrono::Utc::now().to_rfc3339());
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339());
     assert!(!monitor.is_degradation_cooldown_elapsed(&artifact));
 }
 
@@ -92,7 +92,7 @@ fn test_cooldown_elapsed_old_degradation() {
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
 
     let mut artifact = make_artifact("cool3", 10, ArtifactStatus::Active);
-    let ten_days_ago = (chrono::Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+    let ten_days_ago = (chrono::Local::now() - chrono::Duration::days(10)).to_rfc3339();
     artifact.last_degraded_at = Some(ten_days_ago);
     // Default cooldown is 7 days, so 10 days should be fine
     assert!(monitor.is_degradation_cooldown_elapsed(&artifact));
@@ -103,7 +103,7 @@ fn test_apply_degradation_respects_cooldown() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
 
     let mut artifact = make_artifact("cool4", 10, ArtifactStatus::Active);
-    artifact.last_degraded_at = Some(chrono::Utc::now().to_rfc3339()); // Just degraded
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339()); // Just degraded
     let id = registry.add(artifact);
 
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
@@ -172,7 +172,7 @@ fn test_run_evaluation_cycle_respects_cooldown() {
 
     let mut artifact = make_artifact("cycle2", 10, ArtifactStatus::Observing);
     artifact.consecutive_observing_rounds = 3;
-    artifact.last_degraded_at = Some(chrono::Utc::now().to_rfc3339()); // Just degraded
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339()); // Just degraded
     let id = registry.add(artifact.clone());
 
     let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
@@ -330,7 +330,7 @@ fn test_handle_verdict_positive_resets_counter() {
     let artifact = monitor.registry.get(&id).unwrap();
     let outcome = ActionOutcome {
         artifact_id: id.clone(),
-        measured_at: chrono::Utc::now().to_rfc3339(),
+        measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
         rounds_before_avg: 5.0,
         rounds_after_avg: 3.0,
@@ -566,7 +566,7 @@ fn test_handle_verdict_negative_triggers_deprecation() {
     let artifact = monitor.registry.get(&id).unwrap();
     let outcome = ActionOutcome {
         artifact_id: id.clone(),
-        measured_at: chrono::Utc::now().to_rfc3339(),
+        measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
         rounds_before_avg: 5.0,
         rounds_after_avg: 8.0,
@@ -592,7 +592,7 @@ fn test_handle_verdict_observing_increments() {
     let artifact = monitor.registry.get(&id).unwrap();
     let outcome = ActionOutcome {
         artifact_id: id.clone(),
-        measured_at: chrono::Utc::now().to_rfc3339(),
+        measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
         rounds_before_avg: 5.0,
         rounds_after_avg: 5.5,
@@ -618,7 +618,7 @@ fn test_handle_verdict_neutral_no_change() {
     let artifact = monitor.registry.get(&id).unwrap();
     let outcome = ActionOutcome {
         artifact_id: id.clone(),
-        measured_at: chrono::Utc::now().to_rfc3339(),
+        measured_at: chrono::Local::now().to_rfc3339(),
         sample_size: 10,
         rounds_before_avg: 5.0,
         rounds_after_avg: 5.0,

@@ -328,7 +328,7 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
         "module": "chat",
         "cmd": "send",
         "data": { "content": content },
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": chrono::Local::now().to_rfc3339()
     });
     stream.send(Message::Text(msg.to_string().into())).await?;
 

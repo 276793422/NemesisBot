@@ -65,7 +65,7 @@ fn test_session_manager_cleanup_expired() {
     // Force session into the past.
     {
         let mut session = mgr.sessions.get_mut("web:chat1").unwrap();
-        session.last_active = Utc::now() - chrono::Duration::seconds(60);
+        session.last_active = Local::now() - chrono::Duration::seconds(60);
     }
 
     let removed = mgr.cleanup_expired();
@@ -484,8 +484,8 @@ fn test_stored_session_serialization() {
             reasoning_content: None,
         }],
         summary: "test summary".to_string(),
-        created: Utc::now(),
-        updated: Utc::now(),
+        created: Local::now(),
+        updated: Local::now(),
     };
     let json = serde_json::to_string(&session).unwrap();
     let parsed: StoredSession = serde_json::from_str(&json).unwrap();
@@ -797,8 +797,8 @@ fn test_stored_session_debug() {
         key: "test-key".to_string(),
         messages: Vec::new(),
         summary: String::new(),
-        created: chrono::Utc::now(),
-        updated: chrono::Utc::now(),
+        created: chrono::Local::now(),
+        updated: chrono::Local::now(),
     };
     let debug_str = format!("{:?}", session);
     assert!(debug_str.contains("test-key"));
@@ -844,7 +844,7 @@ fn test_session_store_disk_roundtrip() {
             content: format!("Message {}", i),
             tool_calls: Vec::new(),
             tool_call_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             reasoning_content: None,
         })
         .collect();
@@ -1363,8 +1363,8 @@ fn test_force_compress_preserves_system_and_last() {
 fn test_session_store_get_or_create_creates_with_timestamps() {
     let store = SessionStore::new_in_memory();
     let session = store.get_or_create("test:ts");
-    assert!(session.created <= Utc::now());
-    assert!(session.updated <= Utc::now());
+    assert!(session.created <= Local::now());
+    assert!(session.updated <= Local::now());
 }
 
 #[test]
@@ -1390,11 +1390,11 @@ fn test_session_manager_cleanup_expired_with_timeout_expired() {
     // Force sessions into the past
     {
         let mut s1 = mgr.sessions.get_mut("web:chat1").unwrap();
-        s1.last_active = Utc::now() - chrono::Duration::seconds(60);
+        s1.last_active = Local::now() - chrono::Duration::seconds(60);
     }
     {
         let mut s2 = mgr.sessions.get_mut("web:chat2").unwrap();
-        s2.last_active = Utc::now() - chrono::Duration::seconds(60);
+        s2.last_active = Local::now() - chrono::Duration::seconds(60);
     }
 
     let removed = mgr.cleanup_expired_with_timeout(Duration::from_millis(10));

@@ -109,7 +109,7 @@ impl ScreenCaptureTool {
             )));
         }
 
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let timestamp = chrono::Local::now().timestamp_millis();
         let ext = format!(".{}", format);
         let filename = format!("screenshot_{}{}", timestamp, ext);
         Ok(temp_dir.join(filename))

@@ -9,7 +9,7 @@ fn make_experience(tool: &str) -> Experience {
         output_summary: "ok".into(),
         success: true,
         duration_ms: 100,
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
         session_key: "test-session".into(),
     }
 }
@@ -21,7 +21,7 @@ fn make_aggregated(hash: &str, tool: &str, count: u64) -> AggregatedExperience {
         count,
         avg_duration_ms: 100,
         success_rate: 0.9,
-        last_seen: chrono::Utc::now().to_rfc3339(),
+        last_seen: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -46,7 +46,7 @@ async fn test_read_aggregated_since_filter() {
     let store = ExperienceStore::from_forge_dir(dir.path());
 
     // Create an old file manually
-    let old_date = chrono::Utc::now() - chrono::Duration::days(100);
+    let old_date = chrono::Local::now() - chrono::Duration::days(100);
     let old_month = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_agg = AggregatedExperience {
@@ -69,7 +69,7 @@ async fn test_read_aggregated_since_filter() {
     assert_eq!(all.len(), 2);
 
     // Read since 7 days ago (should only get recent)
-    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let since = chrono::Local::now() - chrono::Duration::days(7);
     let recent = store.read_aggregated_since(Some(since)).await.unwrap();
     assert_eq!(recent.len(), 1);
     assert_eq!(recent[0].pattern_hash, "recent_hash");
@@ -112,7 +112,7 @@ async fn test_get_top_patterns_since() {
     let store = ExperienceStore::from_forge_dir(dir.path());
 
     // Create an old file manually with high count
-    let old_date = chrono::Utc::now() - chrono::Duration::days(100);
+    let old_date = chrono::Local::now() - chrono::Duration::days(100);
     let old_month = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&old_month).unwrap();
     let old_agg = AggregatedExperience {
@@ -134,7 +134,7 @@ async fn test_get_top_patterns_since() {
     assert_eq!(all_top[0].tool_name, "old_tool"); // 999 > 20
 
     // With since filter, only recent should appear
-    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let since = chrono::Local::now() - chrono::Duration::days(7);
     let recent_top = store.get_top_patterns_since(Some(since), 1).await.unwrap();
     assert_eq!(recent_top[0].tool_name, "recent_tool");
 }
@@ -160,14 +160,14 @@ async fn test_cleanup_removes_old() {
     let store = ExperienceStore::from_forge_dir(dir.path());
 
     // Create an old file manually
-    let old_date = chrono::Utc::now() - chrono::Duration::days(100);
+    let old_date = chrono::Local::now() - chrono::Duration::days(100);
     let month_dir = dir.path().join("experiences").join(old_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&month_dir).unwrap();
     let old_file = month_dir.join(format!("{}.jsonl", old_date.format("%Y%m%d")));
     std::fs::write(&old_file, "test data\n").unwrap();
 
     // Create a recent file
-    let recent_date = chrono::Utc::now();
+    let recent_date = chrono::Local::now();
     let recent_month = dir.path().join("experiences").join(recent_date.format("%Y%m").to_string());
     std::fs::create_dir_all(&recent_month).unwrap();
     let recent_file = recent_month.join(format!("{}.jsonl", recent_date.format("%Y%m%d")));
@@ -282,7 +282,7 @@ async fn test_read_aggregated_since_future() {
     let store = ExperienceStore::from_forge_dir(dir.path());
     let agg = make_aggregated("hash1", "tool", 5);
     store.append_aggregated(&agg).await.unwrap();
-    let future = chrono::Utc::now() + chrono::Duration::days(1);
+    let future = chrono::Local::now() + chrono::Duration::days(1);
     let result = store.read_aggregated_since(Some(future)).await.unwrap();
     assert!(result.is_empty());
 }
@@ -385,14 +385,14 @@ async fn test_clear_nonexistent_file() {
 
 #[test]
 fn test_file_newer_than_same_day() {
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let filename = format!("{}.jsonl", now.format("%Y%m%d"));
     assert!(ExperienceStore::file_newer_than(&filename, &now));
 }
 
 #[test]
 fn test_file_newer_than_older() {
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let old_date = now - chrono::Duration::days(10);
     let filename = format!("{}.jsonl", old_date.format("%Y%m%d"));
     assert!(!ExperienceStore::file_newer_than(&filename, &now));
@@ -400,7 +400,7 @@ fn test_file_newer_than_older() {
 
 #[test]
 fn test_file_newer_than_newer() {
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let future_date = now + chrono::Duration::days(10);
     let filename = format!("{}.jsonl", future_date.format("%Y%m%d"));
     assert!(ExperienceStore::file_newer_than(&filename, &now));
@@ -504,7 +504,7 @@ async fn test_read_aggregated_since_today() {
     let store = ExperienceStore::from_forge_dir(dir.path());
     store.append_aggregated(&make_aggregated("h1", "tool", 5)).await.unwrap();
 
-    let today = chrono::Utc::now() - chrono::Duration::days(1);
+    let today = chrono::Local::now() - chrono::Duration::days(1);
     let result = store.read_aggregated_since(Some(today)).await.unwrap();
     assert_eq!(result.len(), 1);
 }
@@ -567,5 +567,5 @@ async fn test_append_experience_deduplication() {
 #[tokio::test]
 async fn test_file_newer_than_invalid_filename() {
     // "notadate" >= "20260512" is true lexicographically (lowercase > digits)
-    assert!(ExperienceStore::file_newer_than("notadate.jsonl", &chrono::Utc::now()));
+    assert!(ExperienceStore::file_newer_than("notadate.jsonl", &chrono::Local::now()));
 }

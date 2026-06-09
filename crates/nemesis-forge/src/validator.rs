@@ -32,7 +32,7 @@ impl StaticValidator {
         let mut result = StaticValidationResult {
             stage: ValidationStage {
                 passed: false,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors: Vec::new(),
             },
             warnings: Vec::new(),
@@ -224,7 +224,7 @@ Respond with ONLY a JSON object:
         let mut result = QualityValidationResult {
             stage: ValidationStage {
                 passed: false,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors: Vec::new(),
             },
             score: 0,
@@ -341,7 +341,7 @@ Respond with ONLY a JSON object:
         QualityValidationResult {
             stage: ValidationStage {
                 passed: score >= self.min_score,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 errors: Vec::new(),
             },
             score,

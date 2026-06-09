@@ -158,7 +158,7 @@ impl Frame {
             to: req.target.clone().unwrap_or_default(),
             action: action_str.into(),
             payload: req.payload.clone(),
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: chrono::Local::now().timestamp(),
             error: String::new(),
         };
         let payload = serde_json::to_vec(&wire).map_err(|e| {

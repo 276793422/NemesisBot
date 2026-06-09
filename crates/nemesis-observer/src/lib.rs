@@ -37,7 +37,7 @@ impl std::fmt::Display for EventType {
 pub struct ConversationEvent {
     pub event_type: EventType,
     pub trace_id: String,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub timestamp: chrono::DateTime<chrono::Local>,
     pub data: EventData,
 }
 

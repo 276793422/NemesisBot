@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -144,8 +144,8 @@ pub struct NodeResult {
     pub output: serde_json::Value,
     pub error: Option<String>,
     pub state: ExecutionState,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: DateTime<Utc>,
+    pub started_at: DateTime<Local>,
+    pub ended_at: DateTime<Local>,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -160,8 +160,8 @@ pub struct Execution {
     pub input: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub node_results: HashMap<String, NodeResult>,
-    pub started_at: DateTime<Utc>,
-    pub ended_at: Option<DateTime<Utc>>,
+    pub started_at: DateTime<Local>,
+    pub ended_at: Option<DateTime<Local>>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -177,7 +177,7 @@ impl Execution {
             state: ExecutionState::Pending,
             input,
             node_results: HashMap::new(),
-            started_at: Utc::now(),
+            started_at: Local::now(),
             ended_at: None,
             error: None,
             variables: HashMap::new(),

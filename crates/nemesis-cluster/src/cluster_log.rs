@@ -52,7 +52,7 @@ impl ClusterLogWriter {
     }
 
     fn write_entry(&self, event: &str, mut fields: serde_json::Value) {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let date_str = now.format("%Y-%m-%d").to_string();
 
         // Build the log entry.

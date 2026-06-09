@@ -210,7 +210,7 @@ impl ClusterCallbacks for RegistryCallbacks {
                 role: node_role,
                 address: format!("{}:{}", primary_address, rpc_port),
                 category: category.to_string(),
-                last_seen: chrono::Utc::now().to_rfc3339(),
+                last_seen: chrono::Local::now().to_rfc3339(),
             },
             status: crate::types::NodeStatus::Online,
             capabilities: capabilities.to_vec(),
@@ -241,7 +241,7 @@ impl ClusterCallbacks for RegistryCallbacks {
             cluster: crate::cluster_config::ClusterMeta {
                 id: "auto-discovered".into(),
                 auto_discovery: true,
-                last_updated: chrono::Utc::now().to_rfc3339(),
+                last_updated: chrono::Local::now().to_rfc3339(),
                 rpc_auth_token: String::new(),
             },
             local_node: crate::cluster_config::NodeInfo {
@@ -254,7 +254,7 @@ impl ClusterCallbacks for RegistryCallbacks {
                 capabilities: Vec::new(),
             },
             discovered,
-            last_sync: chrono::Utc::now().to_rfc3339(),
+            last_sync: chrono::Local::now().to_rfc3339(),
         };
 
         crate::cluster_config::save_dynamic_state(state_path, &state)
