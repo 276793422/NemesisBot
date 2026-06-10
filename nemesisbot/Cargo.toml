@@ -37,6 +37,7 @@ nemesis-desktop = { workspace = true }
 nemesis-devices = { workspace = true }
 nemesis-voice = { workspace = true }
 nemesis-logger = { workspace = true }
+nemesis-utils = { workspace = true }
 serde_yaml = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

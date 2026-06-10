@@ -331,33 +331,22 @@ mod linux_tray {
         on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
         on_quit: Option<Box<dyn Fn() + Send + Sync>>,
     ) {
-        // 1. 查找 plugin-ui.so
-        let exe = match std::env::current_exe() {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("[tray:linux] cannot find exe: {}", e);
-                return;
-            }
-        };
-        let exe_dir = match exe.parent() {
-            Some(d) => d,
+        // 1. 查找 plugin-ui library
+        let lib_path = match nemesis_utils::find_plugin_library("plugin_ui") {
+            Some(p) => p,
             None => {
-                eprintln!("[tray:linux] exe has no parent dir");
+                let filename = nemesis_utils::plugin_library_filename("plugin_ui");
+                eprintln!("[tray:linux] plugin-ui {} not found, tray disabled", filename);
                 return;
             }
         };
-        let so_path = exe_dir.join("plugins").join("libplugin_ui.so");
-        if !so_path.exists() {
-            eprintln!("[tray:linux] {} not found, tray disabled", so_path.display());
-            return;
-        }
 
-        // 2. 加载 .so
+        // 2. 加载 library
         let lib = unsafe {
-            match libloading::Library::new(&so_path) {
+            match libloading::Library::new(&lib_path) {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[tray:linux] dlopen {} failed: {}", so_path.display(), e);
+                    eprintln!("[tray:linux] dlopen {} failed: {}", lib_path.display(), e);
                     return;
                 }
             }

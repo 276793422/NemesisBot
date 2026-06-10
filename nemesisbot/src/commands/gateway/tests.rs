@@ -52,10 +52,10 @@ fn test_parse_host_port_wildcard() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_plugin_ui_dll_exists_returns_bool() {
+fn test_plugin_ui_library_exists_returns_bool() {
     // This just verifies the function doesn't panic. The result depends on
     // the test environment so we only check the return type.
-    let _ = plugin_ui_dll_exists();
+    let _ = plugin_ui_library_exists();
 }
 
 // -------------------------------------------------------------------------
@@ -594,9 +594,9 @@ fn test_print_agent_startup_info_with_skills_dir() {
 }
 
 #[test]
-fn test_plugin_ui_dll_exists_no_panic() {
+fn test_plugin_ui_library_exists_no_panic() {
     // Just ensure the function runs without panic
-    let _ = plugin_ui_dll_exists();
+    let _ = plugin_ui_library_exists();
 }
 
 #[test]

@@ -246,9 +246,9 @@ fn test_make_approval_data_serialization() {
 }
 
 #[test]
-fn test_check_dll_exists_no_panic() {
+fn test_check_plugin_library_exists_no_panic() {
     // This just verifies the function doesn't panic
-    let _ = check_dll_exists();
+    let _ = check_plugin_library_exists();
 }
 
 #[test]

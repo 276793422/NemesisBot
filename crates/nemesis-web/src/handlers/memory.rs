@@ -96,15 +96,10 @@ impl ModuleHandler for MemoryHandler {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Auto-detect plugin DLL path next to the current executable.
+/// Auto-detect plugin library path next to the current executable.
 fn detect_plugin_path() -> Option<String> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let plugin_dll = exe_dir.join("plugins").join("plugin_onnx.dll");
-    if plugin_dll.exists() {
-        Some(plugin_dll.to_string_lossy().to_string())
-    } else {
-        None
-    }
+    nemesis_utils::find_plugin_library("plugin_onnx")
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 /// Read the `memory.enabled` field from the main config.json.
@@ -318,9 +313,10 @@ impl MemoryHandler {
             // 1. Check plugin
             let _plugin_path = detect_plugin_path().ok_or_else(|| {
                 hub.publish("memory-setup", serde_json::json!({
-                    "status": "error", "message": "Plugin DLL not found"
+                    "status": "error", "message": "Plugin not found"
                 }));
-                "Plugin DLL not found at {exe_dir}/plugins/plugin_onnx.dll".to_string()
+                let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
+                format!("Plugin not found at {{exe_dir}}/plugins/{}", filename)
             })?;
 
             hub.publish("memory-setup", serde_json::json!({

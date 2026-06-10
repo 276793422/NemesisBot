@@ -5,7 +5,7 @@
 //! The main switch lives in `config.json: memory.enabled`.
 //! The sub-switch lives in `config.enhanced_memory.json: enabled`.
 //!
-//! Plugin is always auto-detected at `{exe_dir}/plugins/plugin_onnx.dll`.
+//! Plugin is always auto-detected at `{exe_dir}/plugins/` (platform-specific filename).
 
 use std::path::Path;
 
@@ -20,7 +20,7 @@ use crate::common;
 
 #[derive(clap::Subcommand)]
 pub enum MemoryAction {
-    /// Enable enhanced memory (requires plugin_onnx.dll in plugins/)
+    /// Enable enhanced memory (requires plugin library in plugins/)
     Enable,
     /// Disable enhanced memory
     Disable,
@@ -57,11 +57,14 @@ async fn cmd_enable(home: &Path) -> Result<()> {
             .with_context(|| format!("creating config dir {}", parent.display()))?;
     }
 
-    // --- Step 1: Verify plugin DLL exists ---
+    // --- Step 1: Verify plugin library exists ---
     let plugin_path = detect_plugin_path().ok_or_else(|| {
+        let label = nemesis_utils::plugin_library_label();
+        let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
         anyhow::anyhow!(
-            "Plugin DLL not found. Enhanced memory requires plugin_onnx.dll.\n\
-             Expected location: {{exe_dir}}/plugins/plugin_onnx.dll"
+            "Plugin {} not found. Enhanced memory requires {}.\n\
+             Expected location: {{exe_dir}}/plugins/{}",
+            label, filename, filename
         )
     })?;
     println!("Plugin found: {}", plugin_path);
@@ -253,15 +256,10 @@ fn set_main_switch(cfg_path: &Path, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-/// Auto-detect plugin DLL next to the current executable.
+/// Auto-detect plugin library next to the current executable.
 fn detect_plugin_path() -> Option<String> {
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let plugin_dll = exe_dir.join("plugins").join("plugin_onnx.dll");
-    if plugin_dll.exists() {
-        Some(plugin_dll.to_string_lossy().to_string())
-    } else {
-        None
-    }
+    nemesis_utils::find_plugin_library("plugin_onnx")
+        .map(|p| p.to_string_lossy().to_string())
 }
 
 /// Check if any .onnx files exist under the given directory (recursively).

@@ -151,13 +151,15 @@ impl MemoryManager {
             return mgr;
         }
 
-        // Auto-detect plugin — it is always at {exe_dir}/plugins/plugin_onnx.dll
+        // Auto-detect plugin (platform-specific filename in {exe_dir}/plugins/)
         let plugin_path = match Self::detect_plugin_path() {
             Some(p) => p,
             None => {
+                let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
                 tracing::warn!(
-                    "[Memory] Plugin DLL not found at {{exe_dir}}/plugins/plugin_onnx.dll. \
-                     Disabling enhanced memory."
+                    "[Memory] Plugin not found at {{exe_dir}}/plugins/{}. \
+                     Disabling enhanced memory.",
+                    filename
                 );
                 Self::disable_enhanced_memory_config(config_dir, &emb_config);
                 return mgr;
@@ -205,17 +207,12 @@ impl MemoryManager {
         embedding_config::save_embedding_config(&disabled, config_dir);
     }
 
-    /// Auto-detect plugin DLL path next to the current executable.
+    /// Auto-detect plugin library path next to the current executable.
     ///
-    /// Checks `{exe_dir}/plugins/plugin_onnx.dll`.
+    /// Checks `{exe_dir}/plugins/` for the platform-appropriate library name.
     pub fn detect_plugin_path() -> Option<String> {
-        let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-        let plugin_dll = exe_dir.join("plugins").join("plugin_onnx.dll");
-        if plugin_dll.exists() {
-            Some(plugin_dll.to_string_lossy().to_string())
-        } else {
-            None
-        }
+        nemesis_utils::find_plugin_library("plugin_onnx")
+            .map(|p| p.to_string_lossy().to_string())
     }
 
     /// Enable or disable vector search at runtime without dropping the store.
@@ -241,8 +238,9 @@ impl MemoryManager {
         }
 
         // Detect plugin
+        let filename = nemesis_utils::plugin_library_filename("plugin_onnx");
         let plugin_path = Self::detect_plugin_path()
-            .ok_or("plugin_onnx.dll not found")?;
+            .ok_or_else(|| format!("{} not found", filename))?;
 
         let storage_path = self.data_dir.join("vector").join("vector_store.jsonl");
         let store_config = StoreConfig {

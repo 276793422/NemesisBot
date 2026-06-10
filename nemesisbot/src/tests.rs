@@ -248,13 +248,13 @@ fn test_onboard_default_detection_neither() {
 
 #[test]
 fn test_platform_detection() {
-    let platform = if cfg!(target_os = "windows") { "Windows" }
+    let _platform = if cfg!(target_os = "windows") { "Windows" }
         else if cfg!(target_os = "macos") { "macOS" }
         else if cfg!(target_os = "linux") { "Linux" }
         else { "Unknown" };
     // On this Windows machine, should be "Windows"
     #[cfg(target_os = "windows")]
-    assert_eq!(platform, "Windows");
+    assert_eq!(_platform, "Windows");
 }
 
 // -------------------------------------------------------------------------

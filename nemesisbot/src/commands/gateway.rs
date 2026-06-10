@@ -50,18 +50,9 @@ pub fn is_shutdown_requested() -> bool {
 // Plugin window management via ProcessManager
 // ---------------------------------------------------------------------------
 
-/// Check if plugin-ui.dll exists in the `plugins/` directory next to the executable.
-fn plugin_ui_dll_exists() -> bool {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    let exe_dir = match exe.parent() {
-        Some(d) => d,
-        None => return false,
-    };
-    exe_dir.join("plugins").join("plugin_ui.dll").exists()
-        || exe_dir.join("plugins").join("plugin-ui.dll").exists()
+/// Check if plugin-ui library exists in the `plugins/` directory next to the executable.
+fn plugin_ui_library_exists() -> bool {
+    nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
 
 /// Adapter connecting ProcessManager to the security auditor's ApprovalManager trait.
@@ -93,14 +84,15 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         reason: &str,
         timeout_secs: u64,
     ) -> Result<bool, String> {
-        // Check if plugin-ui.dll exists. If not, reject immediately —
-        // we cannot show an approval popup without the UI DLL, and
+        // Check if plugin-ui library exists. If not, reject immediately —
+        // we cannot show an approval popup without the UI plugin, and
         // allowing the operation without user confirmation is unsafe.
-        if !plugin_ui_dll_exists() {
+        if !plugin_ui_library_exists() {
+            let label = nemesis_utils::plugin_library_label();
             warn!(
-                "[Gateway] Approval rejected: plugin-ui.dll not found (operation={}, target={}, risk={}). \
+                "[Gateway] Approval rejected: plugin-ui {} not found (operation={}, target={}, risk={}). \
                  Cannot show approval popup — denying by default.",
-                operation, target, risk_level
+                label, operation, target, risk_level
             );
             return Ok(false);
         }
@@ -421,7 +413,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 /// sent via WebSocket. If that fails (child dead or unresponsive), the stale
 /// child is terminated and a new one is spawned.
 ///
-/// Falls back to browser if the plugin-ui.dll is not found.
+/// Falls back to browser if the plugin-ui library is not found.
 #[cfg(not(target_os = "android"))]
 fn open_plugin_window(
     process_manager: &Arc<nemesis_desktop::process::ProcessManager>,
@@ -432,11 +424,9 @@ fn open_plugin_window(
     let exe = std::env::current_exe().map_err(|e| format!("get exe path: {}", e))?;
     let exe_dir = exe.parent().ok_or("no parent dir")?;
 
-    // Check if plugin-ui.dll exists
-    let dll_path = exe_dir.join("plugins").join("plugin_ui.dll");
-    let dll_path_alt = exe_dir.join("plugins").join("plugin-ui.dll");
-    if !dll_path.exists() && !dll_path_alt.exists() {
-        warn!("[Gateway] plugin-ui.dll not found, falling back to browser");
+    // Check if plugin-ui library exists
+    if nemesis_utils::find_plugin_library_in(exe_dir, "plugin_ui").is_none() {
+        warn!("[Gateway] plugin-ui library not found, falling back to browser");
         return open_browser(backend_url);
     }
 

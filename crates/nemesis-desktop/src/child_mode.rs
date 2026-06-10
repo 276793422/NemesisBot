@@ -415,37 +415,28 @@ fn load_and_run_plugin_window(
     ws_port: u16,
     ws_path: &str,
 ) -> Result<(), String> {
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("get exe path: {}", e))?
-        .parent()
-        .ok_or("no parent dir for exe")?
-        .to_path_buf();
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("get exe path: {}", e))?;
+    let exe_dir = exe.parent().ok_or("no parent dir for exe")?;
 
-    // Try both naming conventions under plugins/ directory
-    let dll_candidates = [
-        exe_dir.join("plugins").join("plugin_ui.dll"),
-        exe_dir.join("plugins").join("plugin-ui.dll"),
-    ];
-
-    let dll_path = dll_candidates.iter()
-        .find(|p| p.exists())
+    let lib_path = nemesis_utils::find_plugin_library_in(exe_dir, "plugin_ui")
         .ok_or_else(|| {
+            let filename = nemesis_utils::plugin_library_filename("plugin_ui");
             format!(
-                "plugin-ui.dll not found in {} (searched: {:?})",
-                exe_dir.display(),
-                dll_candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
+                "plugin-ui library not found in {}/plugins/ (expected: {})",
+                exe_dir.display(), filename
             )
         })?;
 
-    eprintln!("[Child] Loading plugin DLL: {}", dll_path.display());
+    eprintln!("[Child] Loading plugin library: {}", lib_path.display());
 
-    // Load the DLL
+    // Load the library
     let lib = unsafe {
-        libloading::Library::new(dll_path)
-            .map_err(|e| format!("load DLL '{}': {}", dll_path.display(), e))?
+        libloading::Library::new(&lib_path)
+            .map_err(|e| format!("load library '{}': {}", lib_path.display(), e))?
     };
 
-    // Try to call plugin_init if the DLL exports it (unified interface)
+    // Try to call plugin_init if the library exports it (unified interface)
     let _init_result: i32 = unsafe {
         if let Ok(plugin_init_fn) = lib.get::<libloading::Symbol<unsafe extern "C" fn(*const std::ffi::c_char, *const nemesis_plugin::HostServices) -> i32>>(b"plugin_init\0") {
             let c_config_dir = std::ffi::CString::new(".").unwrap_or_default();

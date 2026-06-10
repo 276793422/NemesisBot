@@ -95,23 +95,16 @@ fn make_approval_data(request_id: &str, operation: &str, risk_level: &str, targe
     })
 }
 
-/// Check if plugin-ui.dll exists next to the executable.
-fn check_dll_exists() -> Result<std::path::PathBuf> {
-    let exe = std::env::current_exe()?;
-    let exe_dir = exe.parent().ok_or(anyhow::anyhow!("no exe dir"))?;
-    let candidates = [
-        exe_dir.join("plugins").join("plugin_ui.dll"),
-        exe_dir.join("plugins").join("plugin-ui.dll"),
-    ];
-    for p in &candidates {
-        if p.exists() {
-            return Ok(p.clone());
-        }
-    }
-    Err(anyhow::anyhow!(
-        "plugin-ui.dll not found (searched: {:?})",
-        candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-    ))
+/// Check if plugin-ui library exists next to the executable.
+fn check_plugin_library_exists() -> Result<std::path::PathBuf> {
+    nemesis_utils::find_plugin_library("plugin_ui")
+        .ok_or_else(|| {
+            let label = nemesis_utils::plugin_library_label();
+            anyhow::anyhow!(
+                "plugin-ui {} not found (searched: {{exe_dir}}/plugins/)",
+                label
+            )
+        })
 }
 
 /// Print a test result banner.
@@ -209,9 +202,9 @@ async fn run_approval_ui(risk_level: &str, operation: &str, target: &str) -> Res
     println!("=== UI Approval Test ===");
     println!();
 
-    // Check DLL
-    let dll_path = check_dll_exists()?;
-    println!("  DLL:  {}", dll_path.display());
+    // Check plugin library
+    let lib_path = check_plugin_library_exists()?;
+    println!("  Library:  {}", lib_path.display());
 
     // Create ProcessManager
     let pm = create_process_manager().await?;
@@ -288,9 +281,9 @@ async fn run_dashboard(host: &str, port: u16, token: &str) -> Result<()> {
     println!("=== Dashboard Window Test ===");
     println!();
 
-    // Check DLL
-    let dll_path = check_dll_exists()?;
-    println!("  DLL:  {}", dll_path.display());
+    // Check plugin library
+    let lib_path = check_plugin_library_exists()?;
+    println!("  Library:  {}", lib_path.display());
 
     // Create ProcessManager
     let pm = create_process_manager().await?;

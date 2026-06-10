@@ -85,13 +85,15 @@ pub fn is_audio_file(filename: &str, content_type: &str) -> bool {
 
 /// Sanitize a filename by removing dangerous characters and path traversal attempts.
 pub fn sanitize_filename(filename: &str) -> String {
-    let base = std::path::Path::new(filename)
+    // Normalize backslashes to forward slashes so that Path::file_name()
+    // extracts the last segment correctly on all platforms.
+    let normalized = filename.replace('\\', "/");
+    let base = std::path::Path::new(&normalized)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| filename.to_string());
     base.replace("..", "")
         .replace('/', "_")
-        .replace('\\', "_")
 }
 
 /// Download a file from a URL to a local temp directory.

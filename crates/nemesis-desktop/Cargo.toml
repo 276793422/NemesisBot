@@ -7,6 +7,7 @@ edition.workspace = true
 nemesis-types = { workspace = true }
 nemesis-config = { workspace = true }
 nemesis-plugin = { workspace = true }
+nemesis-utils = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = "0.26"
 serde = { workspace = true }
