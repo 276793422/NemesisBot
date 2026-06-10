@@ -12,7 +12,15 @@
 //! Place alongside nemesisbot.exe in plugins/ subdirectory.
 
 mod host_services;
+
+#[cfg(not(target_os = "linux"))]
 mod window;
+
+#[cfg(target_os = "linux")]
+mod window_gtk;
+
+#[cfg(target_os = "linux")]
+mod appindicator_glib;
 
 #[cfg(target_os = "linux")]
 mod tray;
@@ -226,8 +234,18 @@ pub extern "C" fn plugin_create_window(config_json: *const c_char) -> i32 {
 
     // Dispatch to appropriate window handler
     let result = match config.window_type.as_str() {
-        "dashboard" => window::create_dashboard_window(&config),
-        "approval" => window::create_approval_window(&config),
+        "dashboard" => {
+            #[cfg(not(target_os = "linux"))]
+            { window::create_dashboard_window(&config) }
+            #[cfg(target_os = "linux")]
+            { window_gtk::create_dashboard_window(&config) }
+        }
+        "approval" => {
+            #[cfg(not(target_os = "linux"))]
+            { window::create_approval_window(&config) }
+            #[cfg(target_os = "linux")]
+            { window_gtk::create_approval_window(&config) }
+        }
         _ => {
             eprintln!("[plugin-ui] Unknown window type: {}", config.window_type);
             Err(PLUGIN_ERR_UNKNOWN_TYPE)

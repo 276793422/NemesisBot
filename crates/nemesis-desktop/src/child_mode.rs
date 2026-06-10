@@ -430,6 +430,13 @@ fn load_and_run_plugin_window(
 
     eprintln!("[Child] Loading plugin library: {}", lib_path.display());
 
+    // WebKitGTK on Linux: set env vars BEFORE dlopen'ing the library.
+    // These must be set before libwebkit2gtk is loaded to take effect.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Load the library
     let lib = unsafe {
         libloading::Library::new(&lib_path)

@@ -1,4 +1,9 @@
 fn main() {
+    #[cfg(target_os = "linux")]
+    {
+        println!("cargo:rustc-link-lib=dylib=ayatana-appindicator3");
+    }
+
     #[cfg(target_os = "windows")]
     {
         // WebView2 loader needs these Windows libraries

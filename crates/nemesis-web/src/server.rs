@@ -330,7 +330,27 @@ impl WebServer {
             tracing::info!("[WebServer] Serving static files from embedded memory");
             router = router.fallback(move |req: axum::extract::Request| {
                 let files = files.clone();
-                async move { serve_embedded_static(files, req).await }
+                async move {
+                    // Handle CORS preflight for static assets (WebKitGTK may send
+                    // OPTIONS before loading module scripts with crossorigin attr).
+                    if req.method() == http::method::Method::OPTIONS {
+                        let origin = req.headers()
+                            .get(http::header::ORIGIN)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("*")
+                            .to_string();
+                        return (
+                            axum::http::StatusCode::NO_CONTENT,
+                            [
+                                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                                (http::header::ACCESS_CONTROL_ALLOW_METHODS, "GET, OPTIONS".to_string()),
+                                (http::header::ACCESS_CONTROL_ALLOW_HEADERS, "*".to_string()),
+                                (http::header::VARY, "Origin".to_string()),
+                            ],
+                        ).into_response();
+                    }
+                    serve_embedded_static(files, req).await
+                }
             });
         } else if let Some(ref static_dir) = self.config.static_dir {
             let dir_path = PathBuf::from(static_dir);
@@ -523,6 +543,21 @@ fn content_type_for(path: &str) -> String {
     ct.to_string()
 }
 
+/// CORS headers appended to every static-file response.
+///
+/// The main CORS middleware is applied to the route router via `.layer()`,
+/// but on Linux/WebKitGTK the fallback handler may not inherit it.
+/// WebKitGTK is stricter than WebView2 (Chromium) about `crossorigin`
+/// module scripts — without `Access-Control-Allow-Origin` it silently
+/// blocks the JS, resulting in a blank page.
+fn cors_origin_value(req: &axum::extract::Request) -> String {
+    req.headers()
+        .get(http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("*")
+        .to_string()
+}
+
 /// Serve a static file request from an in-memory `StaticFiles` provider.
 ///
 /// 1. Exact path match
@@ -534,13 +569,18 @@ async fn serve_embedded_static(
 ) -> axum::response::Response {
     let path = req.uri().path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
+    let origin = cors_origin_value(&req);
 
     // 1. Exact match
     if let Some(content) = files.get_file(path) {
         let ct = content_type_for(path);
         return (
             axum::http::StatusCode::OK,
-            [(http::header::CONTENT_TYPE, ct)],
+            [
+                (http::header::CONTENT_TYPE, ct),
+                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                (http::header::VARY, "Origin".to_string()),
+            ],
             content,
         ).into_response();
     }
@@ -550,7 +590,11 @@ async fn serve_embedded_static(
         if let Some(content) = files.get_file("index.html") {
             return (
                 axum::http::StatusCode::OK,
-                [(http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string())],
+                [
+                    (http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+                    (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                    (http::header::VARY, "Origin".to_string()),
+                ],
                 content,
             ).into_response();
         }

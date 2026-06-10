@@ -1,11 +1,7 @@
-//! Window creation logic for Dashboard and Approval windows.
+//! Window creation logic for Dashboard and Approval windows (tao + wry).
 //!
-//! Pure WebView rendering — zero business logic.
-//! All content (URLs, HTML, init scripts) is provided via WindowConfig
-//! by the host process (nemesisbot).
-//!
-//! Dashboard: loads a URL directly + optional init script for token injection.
-//! Approval: serves inline HTML via custom protocol + captures user response.
+//! This module is only used on non-Linux platforms.
+//! On Linux, window_gtk.rs provides the GTK + WebKitGTK implementation.
 
 use crate::{
     is_close_requested,
@@ -23,7 +19,7 @@ use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Icon, WindowBuilder};
 use wry::{WebContext, WebViewBuilder};
 
-// Embedded brand icon (256×256 PNG, rendered from SVG by icon-tool)
+// Embedded brand icon (256x256 PNG, rendered from SVG by icon-tool)
 const ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 
 // ---------------------------------------------------------------------------
@@ -103,6 +99,12 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
     if let Some(ref script) = config.init_script {
         builder = builder.with_initialization_script(script);
     }
+
+    // Log navigation events for debugging (especially useful on Linux/WebKitGTK)
+    builder = builder.with_navigation_handler(|url: String| {
+        eprintln!("[plugin-ui] navigation: {}", url);
+        true
+    });
 
     let _webview = builder.build(&window).map_err(|e| {
         eprintln!("[plugin-ui] failed to create webview: {:?}", e);
