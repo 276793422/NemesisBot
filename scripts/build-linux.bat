@@ -1,1 +1,1 @@
-cmd /c wsl bash -lic "./scripts/build-linux.sh"
+cmd /c wsl bash -lic "./scripts/build-wsl.sh"
