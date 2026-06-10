@@ -317,7 +317,7 @@ done
 
 # Check libraries via pkg-config
 info "Checking libraries..."
-for lib in openssl gtk+-3.0 javascriptcoregtk-4.1 libsoup-3.0 webkit2gtk-4.1 x11; do
+for lib in openssl gtk+-3.0 javascriptcoregtk-4.1 libsoup-3.0 webkit2gtk-4.1 ayatana-appindicator3-0.1 x11; do
     if pkg-config --exists "$lib" 2>/dev/null; then
         ok "$lib: $(pkg-config --modversion "$lib" 2>/dev/null)"
     else
@@ -328,7 +328,7 @@ for lib in openssl gtk+-3.0 javascriptcoregtk-4.1 libsoup-3.0 webkit2gtk-4.1 x11
 done
 
 # Check optional libraries
-for lib in ayatana-appindicator3-0.1 xdo; do
+for lib in xdo; do
     if pkg-config --exists "$lib" 2>/dev/null; then
         ok "$lib: $(pkg-config --modversion "$lib" 2>/dev/null)"
     else
