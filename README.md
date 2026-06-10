@@ -150,7 +150,7 @@ nemesisbot gateway
 - 打开 Web UI（窗口去重，不会重复弹窗）
 - 退出程序
 
-**系统托盘**（Linux）：需要 `plugin-ui.so` 放在 `plugins/` 目录下，通过 GTK 实现系统托盘图标。主框架 `nemesis-desktop` 不依赖 GTK/tray-icon/winit。
+**系统托盘**（Linux）：通过 `plugin-ui.so` 运行时加载（需要 GTK3），使用 `libayatana-appindicator3` + GtkMenu/libdbusmenu 协议。主框架 `nemesis-desktop` 不依赖 GTK/tray-icon/winit。已选择继续使用 libayatana-appindicator3（而非 GMenuModel），因为大多数桌面面板不支持 GMenuModel（菜单会不可见）。废弃警告已通过 GLib log filter 抑制。
 
 ### 病毒扫描（可选）
 
@@ -455,7 +455,7 @@ NemesisBot_Rust/
 │   ├── nemesis-devices/             # 设备管理
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
-│   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK）
+│   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
 │   └── src/commands/                # CLI 命令（22 个）
@@ -478,8 +478,10 @@ NemesisBot_Rust/
 │   ├── cluster-test/                # P2P 集群测试
 │   └── test-harness/                # 测试辅助工具
 ├── docs/                            # 文档目录
+│   ├── BUG/                         # 已知问题和调查
+│   ├── INFO/                        # 技术信息和决策记录
+│   ├── PLAN/                        # 开发计划（进行中）
 │   └── REPORT/                      # 分析报告
-│       └── 2026-05-13_GO_VS_RUST_COMPARISON_FINAL.md
 ├── build.bat                        # Windows 构建脚本
 ├── build.sh                         # Linux/macOS 构建脚本
 ├── build-android.bat                # Android 交叉编译脚本
@@ -492,15 +494,15 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **617 个 Rust 源文件** - 清晰的 workspace crate 架构
+- **645 个 Rust 源文件** - 清晰的 workspace crate 架构
 - **35 个核心 crate** - 模块化设计，职责清晰
-- **8,600+ 单元测试** - 全部通过，覆盖率超过 Go 版本
+- **9,500+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
-- **系统托盘** - tray-icon + winit 原生实现（Windows/macOS）；Linux 通过 plugin-ui.so 运行时加载 GTK，主框架零 UI 依赖
+- **系统托盘** - tray-icon + winit 原生实现（Windows/macOS）；Linux 通过 plugin-ui.so 运行时加载 GTK + libayatana-appindicator3，主框架零 UI 依赖
 - **桌面 GUI** - plugin-ui DLL（wry + tao），审批弹窗含安全降级
 - **SSE 流式传输** - LLM 响应实时推送到 Web 端
 - **Forge 自学习** - Collector → Reflector → Pattern → Action → Deploy → Monitor 闭环
@@ -547,6 +549,8 @@ nemesisbot voice            # 语音管理
 
 参照 Golang 的版本是：8524282c14e86f92883933f44345ca941fd90252
 
+**最新状态**：已实现 100% 功能对等，所有 21 个通道、29+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
+
 | 指标 | Go 版本 | Rust 版本 |
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
@@ -555,7 +559,7 @@ nemesisbot voice            # 语音管理
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
 | SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
-| 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK（Linux） |
+| 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
 | 单元测试 | ~6,500 | ~8,600+ |
@@ -576,6 +580,29 @@ nemesisbot voice            # 语音管理
 - MCP HTTP Transport — 支持 Streamable HTTP 协议连接远程 MCP 服务器
 - ToolExecutor — 独立批处理执行器
 - 审批 DLL 安全降级 — plugin-ui.dll 缺失时自动拒绝，不放行
+
+---
+
+## 重要技术决策
+
+### Linux 系统托盘技术选型
+
+**决策**：继续使用 `libayatana-appindicator3` + GTK，而非迁移到 `ksni` 或 `libayatana-appindicator-glib`（GMenuModel）。
+
+**原因**：
+- `libayatana-appindicator-glib` 虽无废弃警告，但使用 GMenuModel 协议
+- **大多数桌面面板不支持 GMenuModel**（菜单会不可见）
+- `libayatana-appindicator3` 虽然标记为"deprecated"，但使用 GtkMenu/libdbusmenu 协议，**所有桌面面板都支持**
+- "废弃"标签是误导性的，该库仍在维护且所有主要发行版都包含
+
+**实现**：
+- 通过 `suppress_deprecation_warning()` 函数抑制特定废弃警告
+- 其他 GLib/GTK 警告正常输出
+- 主框架 `nemesis-desktop` 不依赖 GTK，仅 `plugin-ui.so` 运行时加载
+
+**未来迁移条件**：等桌面面板采用 GMenuModel 或 GTK4 indicator APIs 后再考虑。
+
+详细文档：`docs/INFO/2026-06-10_ksni-tray-migration.md`
 
 ---
 
