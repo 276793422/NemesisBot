@@ -39,6 +39,7 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -74,6 +75,7 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -643,7 +645,7 @@ use super::*;
         // Add server
         let data = serde_json::json!({
             "name": "test-server",
-            "command": "node",
+            "url": "node",
             "args": ["server.js"]
         });
         let result = handler.handle_cmd("server.add", Some(data), &ctx).await.unwrap().unwrap();
@@ -657,13 +659,13 @@ use super::*;
         assert_eq!(servers[0]["url"], "node");
 
         // Update server
-        let data = serde_json::json!({ "name": "test-server", "command": "python" });
+        let data = serde_json::json!({ "name": "test-server", "url": "python" });
         let result = handler.handle_cmd("server.update", Some(data), &ctx).await.unwrap().unwrap();
         assert!(result["updated"].as_bool().unwrap());
 
         // Verify update
         let result = handler.handle_cmd("servers", None, &ctx).await.unwrap().unwrap();
-        assert_eq!(result["servers"][0]["command"], "python");
+        assert_eq!(result["servers"][0]["url"], "python");
 
         // Delete server
         let data = serde_json::json!({ "name": "test-server" });
@@ -1739,8 +1741,9 @@ use super::*;
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
         let data = serde_json::json!({ "registry": "test", "source": "test", "slug": "test-skill" });
-        let result = handler.handle_cmd("install", Some(data), &ctx).await.unwrap().unwrap();
-        assert!(!result["installed"].as_bool().unwrap());
+        let result = handler.handle_cmd("install", Some(data), &ctx).await;
+        // Source doesn't exist, should return error
+        assert!(result.is_err() || result.unwrap().is_none());
     }
 
     // --- Skills: config.get and config.save ---

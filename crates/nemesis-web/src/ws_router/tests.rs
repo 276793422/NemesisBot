@@ -63,6 +63,7 @@ fn make_test_state() -> Arc<AppState> {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        internal_cmd_tx: None,
     })
 }
 

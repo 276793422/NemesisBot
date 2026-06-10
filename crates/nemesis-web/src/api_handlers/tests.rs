@@ -371,6 +371,7 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         };
         let mgr = state.session_manager_ref();
         assert_eq!(mgr.active_count(), 0);
@@ -586,6 +587,7 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
         assert!(state.running.load(std::sync::atomic::Ordering::SeqCst));
@@ -699,6 +701,7 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            internal_cmd_tx: None,
         })
     }
 

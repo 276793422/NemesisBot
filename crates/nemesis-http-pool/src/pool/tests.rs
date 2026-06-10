@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;

@@ -150,6 +150,8 @@ nemesisbot gateway
 - 打开 Web UI（窗口去重，不会重复弹窗）
 - 退出程序
 
+**系统托盘**（Linux）：需要 `plugin-ui.so` 放在 `plugins/` 目录下，通过 GTK 实现系统托盘图标。主框架 `nemesis-desktop` 不依赖 GTK/tray-icon/winit。
+
 ### 病毒扫描（可选）
 
 ```bash
@@ -433,7 +435,7 @@ NemesisBot_Rust/
 │   ├── nemesis-data/                # 数据处理和存储抽象
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
-│   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理）
+│   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理；Linux 通过 plugin-ui.so 运行时加载）
 │   ├── nemesis-web/                 # Web API + SSE（17 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
@@ -453,7 +455,7 @@ NemesisBot_Rust/
 │   ├── nemesis-devices/             # 设备管理
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
-│   ├── plugin-ui/                   # WebView2 窗口 DLL（wry + tao）
+│   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
 │   └── src/commands/                # CLI 命令（22 个）
@@ -498,7 +500,7 @@ NemesisBot_Rust/
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
-- **系统托盘** - tray-icon + winit 原生实现，窗口去重
+- **系统托盘** - tray-icon + winit 原生实现（Windows/macOS）；Linux 通过 plugin-ui.so 运行时加载 GTK，主框架零 UI 依赖
 - **桌面 GUI** - plugin-ui DLL（wry + tao），审批弹窗含安全降级
 - **SSE 流式传输** - LLM 响应实时推送到 Web 端
 - **Forge 自学习** - Collector → Reflector → Pattern → Action → Deploy → Monitor 闭环
@@ -553,7 +555,7 @@ nemesisbot voice            # 语音管理
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
 | SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
-| 系统托盘 | fyne.io/systray | tray-icon + winit |
+| 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
 | 单元测试 | ~6,500 | ~8,600+ |
