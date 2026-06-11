@@ -3528,4 +3528,5 @@ pub fn register_extended_tools(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
 mod coverage_boost_tests;
