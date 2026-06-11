@@ -700,3 +700,276 @@ fn test_touch_on_expired_session_is_no_op() {
     assert_eq!(mgr.count(), 0);
     assert!(mgr.get(&id).is_none());
 }
+
+// ==================== Additional edge case tests for comprehensive coverage ====================
+
+#[test]
+fn test_concurrent_session_access() {
+    use std::sync::Arc;
+    let mgr = Arc::new(SessionMgr::new(Duration::from_secs(3600)));
+    let mut handles = vec![];
+
+    // Spawn multiple threads creating sessions concurrently
+    for i in 0..10 {
+        let mgr_clone = Arc::clone(&mgr);
+        let handle = std::thread::spawn(move || {
+            mgr_clone.create_session("web", &format!("user{}", i), &format!("chat{}", i));
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // All sessions should be created successfully
+    assert_eq!(mgr.count(), 10);
+}
+
+#[test]
+fn test_load_chat_sessions_from_corrupted_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions").to_string_lossy().to_string();
+
+    // Create a corrupted JSON file
+    std::fs::create_dir_all(&path).unwrap();
+    let corrupted_file = std::path::PathBuf::from(&path).join("web_user1.json");
+    std::fs::write(&corrupted_file, "this is not valid json {{{").unwrap();
+
+    // Should not panic, just skip corrupted files
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+    assert_eq!(mgr.count(), 0);
+}
+
+#[test]
+fn test_persistence_with_special_characters_in_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions").to_string_lossy().to_string();
+
+    {
+        let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+        mgr.add_message("web:user:with:colons", "user", "test message");
+    }
+
+    // Reload and verify
+    let mgr2 = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+    let history = mgr2.get_history("web:user:with:colons");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, "test message");
+}
+
+#[test]
+fn test_save_chat_session_with_empty_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions").to_string_lossy().to_string();
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+
+    // Create session with empty messages
+    let session = mgr.get_or_create_chat("web:empty_session");
+    assert!(session.messages.is_empty());
+
+    // Should save successfully
+    let result = mgr.save_chat_session("web:empty_session");
+    assert!(result.is_ok());
+
+    // Reload and verify
+    let mgr2 = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+    let loaded_session = mgr2.get_or_create_chat("web:empty_session");
+    assert!(loaded_session.messages.is_empty());
+}
+
+#[test]
+fn test_truncate_history_with_large_keep_value() {
+    let mgr = SessionMgr::new(Duration::from_secs(3600));
+
+    // Add some messages
+    for i in 0..5 {
+        mgr.add_message("web:user1", "user", &format!("msg {}", i));
+    }
+
+    // Try to keep more messages than exist
+    mgr.truncate_history("web:user1", 1000);
+    let history = mgr.get_history("web:user1");
+    // Should keep all 5 messages
+    assert_eq!(history.len(), 5);
+}
+
+#[test]
+fn test_session_metadata_manipulation() {
+    let mgr = SessionMgr::new(Duration::from_secs(3600));
+    let session = mgr.create_session("web", "user1", "chat1");
+
+    // Get the session and manipulate metadata
+    let mut session_mut = mgr.get(&session.id).unwrap();
+    session_mut.metadata.insert("user_agent".to_string(), "Mozilla".to_string());
+    session_mut.metadata.insert("ip".to_string(), "127.0.0.1".to_string());
+
+    // The modified session won't affect the stored one since we work with clones
+    // This test demonstrates the clone behavior
+    let stored = mgr.get(&session.id).unwrap();
+    assert!(stored.metadata.is_empty());
+}
+
+#[test]
+fn test_multiple_summaries_for_same_session() {
+    let mgr = SessionMgr::new(Duration::from_secs(3600));
+    mgr.add_message("web:user1", "user", "hello");
+
+    mgr.set_summary("web:user1", "First summary");
+    assert_eq!(mgr.get_summary("web:user1"), Some("First summary".to_string()));
+
+    mgr.set_summary("web:user1", "Updated summary");
+    assert_eq!(mgr.get_summary("web:user1"), Some("Updated summary".to_string()));
+}
+
+#[test]
+fn test_save_chat_session_invalid_directory_permission() {
+    // This test verifies graceful handling of filesystem errors
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), "/root/nonexistent/path/that/likely/fails");
+
+    // Should not panic, just fail silently
+    mgr.add_message("web:user_failing", "user", "test");
+    let result = mgr.save_chat_session("web:user_failing");
+    // The result might be Ok or Err depending on filesystem, but shouldn't panic
+    // We just verify the manager is still functional
+    let history = mgr.get_history("web:user_failing");
+    assert!(!history.is_empty());
+}
+
+#[test]
+fn test_save_chat_session_with_complex_serialization() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions").to_string_lossy().to_string();
+    let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+
+    // Create a complex message with all fields populated
+    let complex_msg = Message {
+        role: "assistant".to_string(),
+        content: "Complex response".to_string(),
+        tool_calls: vec![
+            ToolCall {
+                id: "call_1".to_string(),
+                call_type: Some("function".to_string()),
+                function: Some(FunctionCall {
+                    name: "tool1".to_string(),
+                    arguments: r#"{"arg1":"value1"}"#.to_string(),
+                }),
+            },
+            ToolCall {
+                id: "call_2".to_string(),
+                call_type: Some("function".to_string()),
+                function: Some(FunctionCall {
+                    name: "tool2".to_string(),
+                    arguments: r#"{"arg2":"value2"}"#.to_string(),
+                }),
+            },
+        ],
+        tool_call_id: None,
+        timestamp: Some("2026-06-11T12:00:00Z".to_string()),
+    };
+
+    mgr.add_full_message("web:complex", complex_msg);
+
+    // Add a tool response
+    let tool_response = Message {
+        role: "tool".to_string(),
+        content: "Tool result".to_string(),
+        tool_calls: vec![],
+        tool_call_id: Some("call_1".to_string()),
+        timestamp: Some("2026-06-11T12:00:01Z".to_string()),
+    };
+
+    mgr.add_full_message("web:complex", tool_response);
+
+    // Set a summary
+    mgr.set_summary("web:complex", "Complex tool interaction");
+
+    // Reload and verify all data persisted correctly
+    let mgr2 = SessionMgr::with_storage(Duration::from_secs(3600), &path);
+    let history = mgr2.get_history("web:complex");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].tool_calls.len(), 2);
+    assert_eq!(history[1].tool_call_id, Some("call_1".to_string()));
+    assert_eq!(mgr2.get_summary("web:complex"), Some("Complex tool interaction".to_string()));
+}
+
+#[test]
+fn test_concurrent_chat_session_operations() {
+    use std::sync::Arc;
+    use std::sync::Barrier;
+    let mgr = Arc::new(SessionMgr::new(Duration::from_secs(3600)));
+    let barrier = Arc::new(Barrier::new(3));
+    let mut handles = vec![];
+
+    // Spawn multiple threads performing different operations concurrently
+    for i in 0..3 {
+        let mgr_clone = Arc::clone(&mgr);
+        let barrier_clone = Arc::clone(&barrier);
+        let handle = std::thread::spawn(move || {
+            barrier_clone.wait();
+            mgr_clone.add_message(&format!("web:user{}", i), "user", &format!("message from thread {}", i));
+            mgr_clone.set_summary(&format!("web:user{}", i), &format!("Summary from thread {}", i));
+            mgr_clone.get_history(&format!("web:user{}", i));
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Verify all operations completed successfully
+    for i in 0..3 {
+        let history = mgr.get_history(&format!("web:user{}", i));
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, format!("message from thread {}", i));
+        assert_eq!(mgr.get_summary(&format!("web:user{}", i)), Some(format!("Summary from thread {}", i)));
+    }
+}
+
+#[test]
+fn test_chat_session_timestamp_auto_fill() {
+    let mgr = SessionMgr::new(Duration::from_secs(3600));
+
+    // Create message without timestamp
+    let msg_no_timestamp = Message {
+        role: "user".to_string(),
+        content: "message without timestamp".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+    };
+
+    mgr.add_full_message("web:timestamp_test", msg_no_timestamp);
+
+    let history = mgr.get_history("web:timestamp_test");
+    assert_eq!(history.len(), 1);
+    // Timestamp should be auto-filled
+    assert!(history[0].timestamp.is_some());
+
+    // Verify the timestamp is in valid RFC3339 format
+    let timestamp_str = history[0].timestamp.as_ref().unwrap();
+    assert!(timestamp_str.len() > 0); // Basic check that timestamp was filled
+}
+
+#[test]
+fn test_message_fields_serialization_order() {
+    let msg = Message {
+        role: "user".to_string(),
+        content: "test".to_string(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: Some("2026-06-11T00:00:00Z".to_string()),
+    };
+
+    let json = serde_json::to_string(&msg).unwrap();
+    // Verify that the JSON contains expected fields
+    assert!(json.contains("\"role\""));
+    assert!(json.contains("\"content\""));
+    assert!(json.contains("\"timestamp\""));
+    // Empty collections should be skipped
+    assert!(!json.contains("\"tool_calls\""));
+    assert!(!json.contains("\"tool_call_id\""));
+}

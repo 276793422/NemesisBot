@@ -58,7 +58,7 @@ impl DataStore {
             .prepare(
                 "SELECT
                     COUNT(*)                  as total_requests,
-                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) as success_count,
+                    COALESCE(SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END), 0) as success_count,
                     COALESCE(SUM(input_tokens), 0)            as total_input_tokens,
                     COALESCE(SUM(output_tokens), 0)           as total_output_tokens,
                     COALESCE(SUM(cache_creation_tokens), 0)   as total_cache_creation_tokens,

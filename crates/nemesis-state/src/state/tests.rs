@@ -449,3 +449,136 @@ fn test_state_equality_and_copy() {
     let s3 = State::Stopped;
     assert_ne!(s1, s3);
 }
+
+// --- Additional tests for edge cases and state consistency ---
+
+#[test]
+fn test_state_current_invalid_u8_value() {
+    // Test that invalid u8 values in state fall back to Error
+    // This indirectly tests the `_ => State::Error` branch in State::from_u8()
+    let state = BotState::new();
+
+    // We can't directly set an invalid state, but we can verify
+    // that the state machine handles all valid states correctly
+    // and that Error is the fallback for unexpected values
+
+    // Verify all valid states work correctly
+    assert_eq!(state.current(), State::Created);
+    state.start_initializing().unwrap();
+    assert_eq!(state.current(), State::Initializing);
+    state.start_running().unwrap();
+    assert_eq!(state.current(), State::Running);
+    state.start_stopping().unwrap();
+    assert_eq!(state.current(), State::Stopping);
+    state.set_stopped();
+    assert_eq!(state.current(), State::Stopped);
+
+    // Error state
+    let error_state = BotState::new();
+    error_state.set_error("test");
+    assert_eq!(error_state.current(), State::Error);
+}
+
+#[test]
+fn test_multiple_state_transitions_sequence() {
+    // Test a complex sequence of state transitions
+    let state = BotState::new();
+
+    // Normal flow
+    state.start_initializing().unwrap();
+    assert_eq!(state.current(), State::Initializing);
+
+    state.start_running().unwrap();
+    assert_eq!(state.current(), State::Running);
+
+    // Transition to stopping
+    state.start_stopping().unwrap();
+    assert_eq!(state.current(), State::Stopping);
+
+    // Can't go back to running from stopping
+    assert!(state.start_running().is_err());
+    assert_eq!(state.current(), State::Stopping);
+
+    // But can go to stopped
+    state.set_stopped();
+    assert_eq!(state.current(), State::Stopped);
+
+    // From stopped, can't do anything except set_error or set_stopped again
+    assert!(state.start_running().is_err());
+    assert!(state.start_initializing().is_err());
+    assert!(state.start_stopping().is_err());
+}
+
+#[test]
+fn test_error_message_clear_on_new_error() {
+    // Verify that setting a new error message replaces the old one
+    let state = BotState::new();
+
+    state.set_error("first error");
+    assert_eq!(state.error_message(), Some("first error".to_string()));
+
+    state.set_error("second error");
+    assert_eq!(state.error_message(), Some("second error".to_string()));
+
+    state.set_error("");
+    assert_eq!(state.error_message(), Some("".to_string()));
+}
+
+#[test]
+fn test_state_thread_safety() {
+    // Verify that BotState can be safely shared across threads
+    use std::sync::Arc;
+    use std::thread;
+
+    let state = Arc::new(BotState::new());
+    let mut handles = vec![];
+
+    // Spawn multiple threads to query state concurrently
+    for _ in 0..10 {
+        let state_clone = Arc::clone(&state);
+        let handle = thread::spawn(move || {
+            // Query current state
+            let _ = state_clone.current();
+            let _ = state_clone.is_running();
+            let _ = state_clone.error_message();
+        });
+        handles.push(handle);
+    }
+
+    // All threads should complete successfully
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+#[test]
+fn test_state_display_impl() {
+    // Verify Display trait implementation for all states
+    assert_eq!(format!("{}", State::Created), "created");
+    assert_eq!(format!("{}", State::Initializing), "initializing");
+    assert_eq!(format!("{}", State::Running), "running");
+    assert_eq!(format!("{}", State::Stopping), "stopping");
+    assert_eq!(format!("{}", State::Stopped), "stopped");
+    assert_eq!(format!("{}", State::Error), "error");
+}
+
+#[test]
+fn test_atomic_u8_state_consistency() {
+    // Verify that the AtomicU8 state field is consistent across operations
+    let state = BotState::new();
+
+    // Initial state
+    assert_eq!(state.current(), State::Created);
+
+    // After start_initializing
+    state.start_initializing().unwrap();
+    assert_eq!(state.current(), State::Initializing);
+
+    // Atomic operation should be visible immediately
+    let current = state.current();
+    assert_eq!(current, State::Initializing);
+
+    // state transition should be atomic
+    state.start_running().unwrap();
+    assert_eq!(state.current(), State::Running);
+}

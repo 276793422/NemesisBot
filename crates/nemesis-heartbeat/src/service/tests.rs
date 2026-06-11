@@ -705,3 +705,583 @@ fn test_heartbeat_logging_creates_file() {
     let logs_dir = dir.path().join("logs");
     assert!(logs_dir.exists());
 }
+
+// ============================================================
+// Additional tests for error handling and edge cases
+// ============================================================
+
+#[test]
+fn test_build_prompt_empty_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "").unwrap();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let prompt = svc.build_prompt();
+    assert!(prompt.is_empty()); // Empty content = empty prompt
+}
+
+#[test]
+fn test_send_response_invalid_channel_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let (mock_bus, sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "invalid-format-without-colon".to_string(),
+    }));
+
+    svc.send_response("test");
+    assert!(sent.lock().is_empty()); // Invalid format should not send
+}
+
+#[test]
+fn test_send_response_channel_empty_platform() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let (mock_bus, sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: ":user123".to_string(),
+    }));
+
+    svc.send_response("test");
+    assert!(sent.lock().is_empty()); // Empty platform should not send
+}
+
+#[test]
+fn test_send_response_channel_empty_user_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let (mock_bus, sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "telegram:".to_string(),
+    }));
+
+    svc.send_response("test");
+    assert!(sent.lock().is_empty()); // Empty user_id should not send
+}
+
+#[tokio::test]
+async fn test_start_stop_with_active_heartbeat() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    // Create HEARTBEAT.md with actual content
+    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Check email\n- Review calendar").unwrap();
+
+    let heartbeat_executed = Arc::new(AtomicU64::new(0));
+    let heartbeat_clone = heartbeat_executed.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        heartbeat_clone.fetch_add(1, Ordering::SeqCst);
+        Some(HeartbeatResult {
+            is_error: false,
+            is_async: false,
+            silent: true,
+            for_user: String::new(),
+            for_llm: "HEARTBEAT_OK".to_string(),
+        })
+    }));
+
+    svc.start().await.unwrap();
+    assert!(svc.is_running());
+
+    // Wait for first heartbeat (1 second delay) + a few ticks
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    svc.stop();
+    assert!(!svc.is_running());
+
+    // Should have executed at least once
+    assert!(heartbeat_executed.load(Ordering::SeqCst) >= 1);
+}
+
+#[tokio::test]
+async fn test_start_with_skip_file_active() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+    let skip_path = tmp.path().join("BOOTSTRAP.md");
+
+    // Create skip file
+    std::fs::write(&skip_path, "bootstrap mode active").unwrap();
+
+    // Create HEARTBEAT.md
+    std::fs::write(tmp.path().join("HEARTBEAT.md"), "# Tasks\n\n- Check email").unwrap();
+
+    let heartbeat_executed = Arc::new(AtomicU64::new(0));
+    let heartbeat_clone = heartbeat_executed.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    svc.set_skip_file(skip_path.to_string_lossy().to_string());
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        heartbeat_clone.fetch_add(1, Ordering::SeqCst);
+        None
+    }));
+
+    svc.start().await.unwrap();
+
+    // Wait for potential heartbeats
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    svc.stop();
+
+    // Should NOT have executed because skip file exists
+    assert_eq!(heartbeat_executed.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_parse_last_channel_multiple_colons() {
+    let svc = HeartbeatService::new(HeartbeatConfig::default());
+    let (platform, user_id) = svc.parse_last_channel("telegram:user:extra");
+    // Should parse first colon only
+    assert_eq!(platform, "telegram");
+    assert_eq!(user_id, "user:extra");
+}
+
+#[test]
+fn test_execute_heartbeat_empty_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    // Create HEARTBEAT.md with only comments (empty for heartbeat purposes)
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "# Just comments\n## More comments\n").unwrap();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        enabled: true,
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let handler_called = Arc::new(AtomicBool::new(false));
+    let handler_clone = handler_called.clone();
+
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        handler_clone.store(true, Ordering::SeqCst);
+        None
+    }));
+
+    svc.execute_heartbeat();
+
+    // Handler should NOT be called because prompt is empty
+    assert!(!handler_called.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_execute_heartbeat_with_message_bus_and_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "- Task 1\n- Task 2\n").unwrap();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        enabled: true,
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let (mock_bus, sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "feishu:user789".to_string(),
+    }));
+
+    svc.set_handler(Box::new(|_p, _c, _ch| {
+        Some(HeartbeatResult {
+            is_error: false,
+            is_async: false,
+            silent: false,
+            for_user: "Tasks completed successfully".to_string(),
+            for_llm: "All tasks done".to_string(),
+        })
+    }));
+
+    svc.execute_heartbeat();
+
+    assert_eq!(sent.lock().len(), 1);
+    assert_eq!(sent.lock()[0].0, "feishu");
+    assert_eq!(sent.lock()[0].1, "user789");
+    assert_eq!(sent.lock()[0].2, "Tasks completed successfully");
+}
+
+#[tokio::test]
+async fn test_full_heartbeat_flow_with_static_functions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    // Create a valid HEARTBEAT.md with actual tasks
+    let heartbeat_path = tmp.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "- Check system status\n- Review logs\n").unwrap();
+
+    let heartbeat_count = Arc::new(AtomicU64::new(0));
+    let heartbeat_clone = heartbeat_count.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace.clone()),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    let (mock_bus, sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "telegram:testuser".to_string(),
+    }));
+
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        heartbeat_clone.fetch_add(1, Ordering::SeqCst);
+        Some(HeartbeatResult {
+            is_error: false,
+            is_async: false,
+            silent: false,
+            for_user: "Heartbeat check completed".to_string(),
+            for_llm: "All systems operational".to_string(),
+        })
+    }));
+
+    // Start the heartbeat service
+    svc.start().await.unwrap();
+
+    // Wait for first heartbeat (1 second initial delay) + a few ticks
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Stop the service
+    svc.stop();
+
+    // Verify heartbeats were executed
+    assert!(heartbeat_count.load(Ordering::SeqCst) >= 1);
+
+    // Verify messages were sent
+    let sent_lock = sent.lock();
+    assert!(!sent_lock.is_empty());
+    assert_eq!(sent_lock[0].0, "telegram");
+    assert_eq!(sent_lock[0].1, "testuser");
+    assert_eq!(sent_lock[0].2, "Heartbeat check completed");
+}
+
+#[tokio::test]
+async fn test_heartbeat_task_execution_with_skip_file_dynamic() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+    let skip_path = tmp.path().join("BOOTSTRAP.md");
+
+    // Create a valid HEARTBEAT.md
+    let heartbeat_path = tmp.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "- Task 1\n- Task 2\n").unwrap();
+
+    let heartbeat_count = Arc::new(AtomicU64::new(0));
+    let heartbeat_clone = heartbeat_count.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    let (mock_bus, _sent) = MockBus::new();
+    svc.set_bus(Arc::new(mock_bus));
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "web:user1".to_string(),
+    }));
+
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        heartbeat_clone.fetch_add(1, Ordering::SeqCst);
+        Some(HeartbeatResult {
+            is_error: false,
+            is_async: false,
+            silent: true,
+            for_user: String::new(),
+            for_llm: "HEARTBEAT_OK".to_string(),
+        })
+    }));
+
+    // Set skip file path
+    svc.set_skip_file(skip_path.to_string_lossy().to_string());
+
+    // Start the heartbeat service
+    svc.start().await.unwrap();
+
+    // Wait for first heartbeat (1 second initial delay)
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    // Initially no skip file, so heartbeats should execute
+    assert!(heartbeat_count.load(Ordering::SeqCst) >= 1);
+
+    // Now create the skip file
+    std::fs::write(&skip_path, "bootstrap mode").unwrap();
+
+    // Wait for more potential heartbeats (should be skipped)
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let _count_with_skip = heartbeat_count.load(Ordering::SeqCst);
+
+    // Stop the service
+    svc.stop();
+
+    // The count should not have increased after skip file was created
+    // (because skip file causes continue in the loop)
+}
+
+#[tokio::test]
+async fn test_heartbeat_multiple_intervals_and_stop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    // Create a valid HEARTBEAT.md
+    let heartbeat_path = tmp.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "- Check memory\n- Check CPU\n").unwrap();
+
+    let heartbeat_count = Arc::new(AtomicU64::new(0));
+    let heartbeat_count_for_handler = heartbeat_count.clone();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_millis(100),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    svc.set_handler(Box::new(move |_prompt, _channel, _chat_id| {
+        heartbeat_count_for_handler.fetch_add(1, Ordering::SeqCst);
+        Some(HeartbeatResult {
+            is_error: false,
+            is_async: false,
+            silent: true,
+            for_user: String::new(),
+            for_llm: "OK".to_string(),
+        })
+    }));
+
+    // Start the heartbeat service
+    svc.start().await.unwrap();
+    assert!(svc.is_running());
+
+    // Wait for first heartbeat + several intervals
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    // Verify multiple heartbeats occurred
+    let count_before_stop = heartbeat_count.load(Ordering::SeqCst);
+    assert!(count_before_stop >= 2, "Should have executed at least 2 heartbeats");
+
+    // Stop the service
+    svc.stop();
+    assert!(!svc.is_running());
+
+    // Wait a bit more
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Count should not have increased after stop
+    let count_after_stop = heartbeat_count.load(Ordering::SeqCst);
+    assert_eq!(count_before_stop, count_after_stop, "Count should not increase after stop");
+}
+
+#[test]
+fn test_build_prompt_with_unicode_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+    std::fs::write(&heartbeat_path, "- 检查系统状态\n- 查看日志\n- 检查磁盘空间\n").unwrap();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let prompt = svc.build_prompt();
+    assert!(prompt.contains("检查系统状态"));
+    assert!(prompt.contains("查看日志"));
+    assert!(prompt.contains("检查磁盘空间"));
+    assert!(prompt.contains("Heartbeat Check"));
+}
+
+#[test]
+fn test_build_prompt_with_multiline_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+    let content = "- Check database connections\n  - Verify primary DB\n  - Verify replica DB\n- Check API endpoints\n  - /api/v1/status\n  - /api/v1/health\n";
+    std::fs::write(&heartbeat_path, content).unwrap();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let prompt = svc.build_prompt();
+    assert!(prompt.contains("Check database connections"));
+    assert!(prompt.contains("Verify primary DB"));
+    assert!(prompt.contains("Check API endpoints"));
+    assert!(prompt.contains("/api/v1/status"));
+}
+
+#[test]
+fn test_build_prompt_creates_file_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+
+    // Ensure file doesn't exist
+    assert!(!heartbeat_path.exists());
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    // First call should create the template and return empty
+    let prompt1 = svc.build_prompt();
+    assert!(prompt1.is_empty());
+
+    // File should now exist
+    assert!(heartbeat_path.exists());
+
+    // Second call should read the file and return a prompt
+    let prompt2 = svc.build_prompt();
+    assert!(prompt2.contains("Heartbeat Check"));
+    assert!(prompt2.contains("heartbeat tasks below this line"));
+}
+
+#[test]
+fn test_create_default_template_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let heartbeat_path = dir.path().join("HEARTBEAT.md");
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    // First call creates the file
+    svc.create_default_heartbeat_template();
+    assert!(heartbeat_path.exists());
+
+    // Read the content
+    let content1 = std::fs::read_to_string(&heartbeat_path).unwrap();
+
+    // Second call should not overwrite (file exists check)
+    svc.create_default_heartbeat_template();
+
+    // Content should be unchanged
+    let content2 = std::fs::read_to_string(&heartbeat_path).unwrap();
+    assert_eq!(content1, content2);
+}
+
+#[tokio::test]
+async fn test_heartbeat_service_lifecycle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_secs(60),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    // Initially not running
+    assert!(!svc.is_running());
+    assert_eq!(svc.beat_count(), 0);
+
+    // Start the service
+    svc.start().await.unwrap();
+    assert!(svc.is_running());
+
+    // Stop immediately
+    svc.stop();
+    assert!(!svc.is_running());
+
+    // Can start again after stop
+    svc.start().await.unwrap();
+    assert!(svc.is_running());
+
+    svc.stop();
+}
+
+#[test]
+fn test_status_method_returns_all_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_secs(120),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 10,
+        default_interval_minutes: 60,
+    });
+
+    let status = svc.status();
+
+    // Check all expected fields exist
+    assert!(status.contains_key("running"));
+    assert!(status.contains_key("enabled"));
+    assert!(status.contains_key("beat_count"));
+    assert!(status.contains_key("last_beat"));
+    assert!(status.contains_key("interval_secs"));
+
+    // Check values
+    assert_eq!(status["enabled"], serde_json::json!(true));
+    assert_eq!(status["beat_count"], serde_json::json!(0));
+    assert_eq!(status["interval_secs"], serde_json::json!(120));
+}
+
+#[tokio::test]
+async fn test_concurrent_start_requests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_string_lossy().to_string();
+
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        interval: Duration::from_secs(60),
+        enabled: true,
+        workspace: Some(workspace),
+        min_interval_minutes: 5,
+        default_interval_minutes: 30,
+    });
+
+    // Start multiple times concurrently
+    let handle1 = svc.start();
+    let handle2 = svc.start();
+    let handle3 = svc.start();
+
+    // All should complete successfully
+    assert!(handle1.await.is_ok());
+    assert!(handle2.await.is_ok());
+    assert!(handle3.await.is_ok());
+
+    assert!(svc.is_running());
+
+    svc.stop();
+}

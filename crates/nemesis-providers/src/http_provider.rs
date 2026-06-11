@@ -455,6 +455,18 @@ pub struct StreamChunk {
     pub reasoning_content: Option<String>,
 }
 
+impl Default for StreamChunk {
+    fn default() -> Self {
+        Self {
+            delta: String::new(),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+            usage: None,
+            reasoning_content: None,
+        }
+    }
+}
+
 #[async_trait]
 impl LLMProvider for HttpProvider {
     async fn chat(

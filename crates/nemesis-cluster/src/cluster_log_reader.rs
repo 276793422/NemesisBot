@@ -6,6 +6,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+#[cfg(test)]
+use chrono::Local;
+#[cfg(test)]
+use tempfile::TempDir;
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -548,11 +553,231 @@ fn short_id(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_short_id() {
         assert_eq!(short_id("12345678"), "12345678");
         assert_eq!(short_id("1234567890"), "12345678");
         assert_eq!(short_id("short"), "short");
+    }
+
+    #[test]
+    fn test_read_recent_events_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        let events = read_recent_events(log_dir, 10);
+        assert_eq!(events.len(), 0, "No events should be read from empty directory");
+    }
+
+    #[test]
+    fn test_read_recent_events_with_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create a log file with some events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"cluster_start","ts":"2024-01-01T10:00:00+00:00","node_id":"node1"}
+{"event":"node_discovered","ts":"2024-01-01T10:01:00+00:00","node_id":"node2","peer_addr":"10.0.0.1:9000"}
+{"event":"task_submitted","ts":"2024-01-01T10:02:00+00:00","task_id":"task-123","action":"peer_chat"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let events = read_recent_events(log_dir, 10);
+        assert!(!events.is_empty(), "Should read events from log file");
+    }
+
+    #[test]
+    fn test_read_recent_events_respects_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create a log file with many events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let mut log_content = String::new();
+        for i in 1..=20 {
+            log_content.push_str(&format!(r#"{{"event":"task_submitted","ts":"2024-01-01T10:00:{}+00:00","task_id":"task-{}","action":"test"}}
+"#, i, i));
+        }
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let events = read_recent_events(log_dir, 5);
+        assert_eq!(events.len(), 5, "Should respect limit parameter");
+    }
+
+    #[test]
+    fn test_aggregate_node_stats_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        let stats = aggregate_node_stats(log_dir);
+        assert_eq!(stats.len(), 0, "No stats should be aggregated from empty directory");
+    }
+
+    #[test]
+    fn test_aggregate_node_stats_with_task_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create log files with task events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"task_assigned","ts":"2024-01-01T10:00:00+00:00","task_id":"task-1","action":"node1"}
+{"event":"task_assigned","ts":"2024-01-01T10:01:00+00:00","task_id":"task-2","action":"node1"}
+{"event":"task_assigned","ts":"2024-01-01T10:02:00+00:00","task_id":"task-3","action":"node2"}
+{"event":"task_completed","ts":"2024-01-01T10:03:00+00:00","task_id":"task-1","action":"peer_chat"}
+{"event":"task_completed","ts":"2024-01-01T10:04:00+00:00","task_id":"task-2","action":"peer_chat"}
+{"event":"task_failed","ts":"2024-01-01T10:05:00+00:00","task_id":"task-3","action":"peer_chat"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let stats = aggregate_node_stats(log_dir);
+
+        assert!(stats.contains_key("node1"), "Should have stats for node1");
+        assert!(stats.contains_key("node2"), "Should have stats for node2");
+
+        let node1_stats = &stats["node1"];
+        assert_eq!(node1_stats.task_count, 2);
+        assert_eq!(node1_stats.success_count, 2);
+        assert_eq!(node1_stats.fail_count, 0);
+        assert_eq!(node1_stats.success_rate, 1.0);
+
+        let node2_stats = &stats["node2"];
+        assert_eq!(node2_stats.task_count, 1);
+        assert_eq!(node2_stats.success_count, 0);
+        assert_eq!(node2_stats.fail_count, 1);
+        assert_eq!(node2_stats.success_rate, 0.0);
+    }
+
+    #[test]
+    fn test_aggregate_task_summaries_empty_input() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        let summaries = aggregate_task_summaries(log_dir, &[]);
+        assert_eq!(summaries.len(), 0, "Empty task ID list should return empty summaries");
+    }
+
+    #[test]
+    fn test_aggregate_task_summaries_with_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create log file with task events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"task_llm_start","ts":"2024-01-01T10:00:00+00:00","task_id":"task-1"}
+{"event":"task_tool_call","ts":"2024-01-01T10:01:00+00:00","task_id":"task-1","tool":"search"}
+{"event":"task_llm_start","ts":"2024-01-01T10:02:00+00:00","task_id":"task-1"}
+{"event":"task_tool_call","ts":"2024-01-01T10:03:00+00:00","task_id":"task-1","tool":"calculate"}
+{"event":"task_tool_call","ts":"2024-01-01T10:04:00+00:00","task_id":"task-1","tool":"format"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let summaries = aggregate_task_summaries(log_dir, &["task-1".to_string()]);
+
+        assert!(summaries.contains_key("task-1"));
+        let summary = &summaries["task-1"];
+        assert_eq!(summary.rounds, 2);
+        assert_eq!(summary.tool_calls, 3);
+        assert_eq!(summary.tool_chain.len(), 3);
+    }
+
+    #[test]
+    fn test_reconstruct_traces_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        let traces = reconstruct_traces(log_dir);
+        assert_eq!(traces.len(), 0, "No traces should be reconstructed from empty directory");
+    }
+
+    #[test]
+    fn test_reconstruct_traces_with_rpc_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create log file with RPC events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","direction":"outbound","request_id":"req-1","source":"node-a","target":"node-b","action":"peer_chat"}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","direction":"inbound","request_id":"req-2","source":"node-c","target":"node-a","action":"ping"}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","direction":"outbound","request_id":"req-3","source":"node-b","target":"node-c","action":"status"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let traces = reconstruct_traces(log_dir);
+        assert_eq!(traces.len(), 2, "Should only include outbound RPC calls");
+    }
+
+    #[test]
+    fn test_read_rpc_connections_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        let connections = read_rpc_connections(log_dir);
+        assert_eq!(connections.len(), 0, "No connections should be read from empty directory");
+    }
+
+    #[test]
+    fn test_read_rpc_connections_with_events() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create log file with RPC events
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","source":"node-a","target":"node-b","action":"peer_chat","direction":"outbound"}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","source":"node-b","target":"node-c","action":"ping","direction":"outbound"}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","source":"broadcast","target":"node-a","action":"test","direction":"outbound"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let connections = read_rpc_connections(log_dir);
+        assert_eq!(connections.len(), 2, "Should exclude broadcast connections");
+    }
+
+    #[test]
+    fn test_format_event_all_event_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+
+        // Create log file with various event types
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"cluster_start","ts":"2024-01-01T10:00:00+00:00","node_id":"node1"}
+{"event":"node_discovered","ts":"2024-01-01T10:01:00+00:00","node_id":"node2","peer_addr":"10.0.0.1:9000"}
+{"event":"task_completed","ts":"2024-01-01T10:02:00+00:00","task_id":"task-123","action":"peer_chat"}
+{"event":"rpc_call","ts":"2024-01-01T10:03:00+00:00","direction":"outbound","source":"node-a","target":"node-b","action":"peer_chat","request_id":"req-1"}
+"#;
+
+        fs::write(&log_file, log_content).unwrap();
+
+        let events = read_recent_events(log_dir, 10);
+        assert!(events.len() >= 3, "Should format multiple event types");
     }
 }

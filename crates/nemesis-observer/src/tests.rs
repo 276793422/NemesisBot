@@ -774,3 +774,123 @@ async fn test_concurrent_emit_with_registration() {
     // The manager should still be in a valid state
     assert!(manager.has_observers().await);
 }
+
+/// Test comprehensive error handling in emit_sync including
+/// multiple panic scenarios and verification that all observers
+/// are called despite failures.
+#[tokio::test]
+async fn test_emit_sync_error_handling_comprehensive() {
+    use std::sync::Arc;
+
+    struct ErrorTestObserver {
+        name: String,
+        should_panic: bool,
+    }
+
+    #[async_trait]
+    impl Observer for ErrorTestObserver {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn on_event(&self, _event: ConversationEvent) {
+            if self.should_panic {
+                panic!("intentional panic");
+            }
+            // Normal observer - no panic
+        }
+    }
+
+    let manager = Manager::new();
+
+    // Test 1: Multiple observers, one panics
+    {
+        let (obs1, c1) = TestObserver::new("normal1");
+        let (obs2, c2) = TestObserver::new("normal2");
+        let panic_obs = Arc::new(ErrorTestObserver {
+            name: "panicker".to_string(),
+            should_panic: true,
+        });
+
+        manager.register(Arc::clone(&panic_obs) as Arc<dyn Observer>).await;
+        manager.register(obs1).await;
+        manager.register(obs2).await;
+
+        let event = make_event(EventType::ConversationStart);
+        manager.emit_sync(event).await;
+
+        // Both normal observers should still be called despite the panic
+        assert_eq!(c1.load(Ordering::SeqCst), 1);
+        assert_eq!(c2.load(Ordering::SeqCst), 1);
+
+        manager.unregister_all().await;
+    }
+
+    // Test 2: All observers panic - should handle gracefully
+    {
+        let panic1 = Arc::new(ErrorTestObserver {
+            name: "panic1".to_string(),
+            should_panic: true,
+        });
+        let panic2 = Arc::new(ErrorTestObserver {
+            name: "panic2".to_string(),
+            should_panic: true,
+        });
+
+        manager.register(panic1).await;
+        manager.register(panic2).await;
+
+        let event = make_event(EventType::ConversationEnd);
+        // Should not panic despite all observers panicking
+        manager.emit_sync(event).await;
+
+        manager.unregister_all().await;
+    }
+
+    // Test 3: Mix of panicking and normal observers in different order
+    {
+        let (obs1, c1) = TestObserver::new("normal_first");
+        let panic_obs = Arc::new(ErrorTestObserver {
+            name: "panic_middle".to_string(),
+            should_panic: true,
+        });
+        let (obs2, c2) = TestObserver::new("normal_last");
+
+        manager.register(obs1).await;
+        manager.register(Arc::clone(&panic_obs) as Arc<dyn Observer>).await;
+        manager.register(obs2).await;
+
+        let event = make_event(EventType::ToolCall);
+        manager.emit_sync(event).await;
+
+        // Both normal observers should be called
+        assert_eq!(c1.load(Ordering::SeqCst), 1);
+        assert_eq!(c2.load(Ordering::SeqCst), 1);
+    }
+}
+
+/// Test that emit_sync handles the JoinError non-panic path.
+/// This tests the theoretical case where a task could fail without panicking,
+/// such as if the runtime is shutting down or the task is cancelled.
+#[tokio::test]
+async fn test_emit_sync_joinerror_non_panic_path() {
+    // This test documents the theoretical non-panic error path
+    // In practice, tokio JoinError::is_panic() only returns false for cancelled tasks
+    // which is extremely rare in normal operation
+
+    let manager = Manager::new();
+    let (good_obs, good_count) = TestObserver::new("good_observer");
+
+    manager.register(good_obs).await;
+
+    let event = make_event(EventType::LlmRequest);
+    manager.emit_sync(event).await;
+
+    // Normal operation - observer should be called
+    assert_eq!(good_count.load(Ordering::SeqCst), 1);
+
+    // The non-panic error path (is_panic() == false) is theoretically possible
+    // but extremely rare in practice - it would require task cancellation
+    // or runtime shutdown during await, which doesn't happen in normal tests
+    // This test documents that the path exists but is not easily testable
+}

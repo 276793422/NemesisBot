@@ -1,4 +1,5 @@
 use super::*;
+use super::super::source::{Action, Kind};
 use std::sync::atomic::AtomicUsize;
 
 #[test]
@@ -989,4 +990,411 @@ async fn test_start_enabled_no_sources() {
     assert!(svc.is_running());
     svc.stop();
     assert!(!svc.is_running());
+}
+
+// ---- Additional tests for improved coverage ----
+
+#[test]
+fn test_register_device_with_full_metadata() {
+    let svc = DeviceService::new();
+    let mut metadata = HashMap::new();
+    metadata.insert("location".to_string(), "room1".to_string());
+    metadata.insert("firmware".to_string(), "2.0".to_string());
+    metadata.insert("last_maintenance".to_string(), "2026-01-01".to_string());
+
+    let device = Device {
+        id: "sensor-01".to_string(),
+        name: "Temperature Sensor".to_string(),
+        device_type: "temperature".to_string(),
+        status: "active".to_string(),
+        vendor_id: Some("0x1234".to_string()),
+        product_id: Some("0x5678".to_string()),
+        serial: Some("SN20240101".to_string()),
+        connected_at: Some(Local::now()),
+        metadata: metadata.clone(),
+    };
+
+    svc.register(device);
+    let retrieved = svc.get("sensor-01").unwrap();
+    assert_eq!(retrieved.metadata.len(), 3);
+    assert_eq!(retrieved.metadata.get("location").unwrap(), "room1");
+}
+
+#[test]
+fn test_list_empty_devices() {
+    let svc = DeviceService::new();
+    let devices = svc.list();
+    assert!(devices.is_empty());
+    assert_eq!(devices.len(), 0);
+}
+
+#[test]
+fn test_list_multiple_devices() {
+    let svc = DeviceService::new();
+
+    for i in 0..5 {
+        svc.register(Device {
+            id: format!("device-{}", i),
+            name: format!("Device {}", i),
+            device_type: "sensor".to_string(),
+            status: "online".to_string(),
+            vendor_id: Some(format!("0x{:04x}", i)),
+            product_id: Some(format!("0x{:04x}", i * 2)),
+            serial: Some(format!("SN{}", i)),
+            connected_at: None,
+            metadata: HashMap::new(),
+        });
+    }
+
+    let devices = svc.list();
+    assert_eq!(devices.len(), 5);
+
+    // Verify devices are in the list
+    for device in devices.iter() {
+        assert!(device.id.starts_with("device-"));
+    }
+}
+
+#[test]
+fn test_get_nonexistent_device() {
+    let svc = DeviceService::new();
+    let result = svc.get("nonexistent");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_get_device_after_unregister() {
+    let svc = DeviceService::new();
+    svc.register(Device {
+        id: "temp-device".to_string(),
+        name: "Temporary".to_string(),
+        device_type: "test".to_string(),
+        status: "online".to_string(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
+    });
+
+    assert!(svc.get("temp-device").is_some());
+    svc.unregister("temp-device");
+    assert!(svc.get("temp-device").is_none());
+}
+
+#[tokio::test]
+async fn test_stop_without_start() {
+    let svc = DeviceService::new();
+    // Stop should not panic even if service was never started
+    svc.stop();
+    assert!(!svc.is_running());
+}
+
+#[tokio::test]
+async fn test_stop_already_stopped() {
+    let config = DeviceServiceConfig {
+        enabled: true,
+        poll_interval_secs: 5,
+        monitor_usb: false,
+    };
+    let svc = DeviceService::with_config(config);
+    svc.start().await.unwrap();
+    svc.stop();
+    assert!(!svc.is_running());
+    // Stop again should not panic
+    svc.stop();
+    assert!(!svc.is_running());
+}
+
+#[test]
+fn test_status_with_running_service() {
+    let config = DeviceServiceConfig {
+        enabled: true,
+        poll_interval_secs: 10,
+        monitor_usb: false,
+    };
+    let svc = DeviceService::with_config(config);
+
+    // Before start
+    let status_before = svc.status();
+    assert_eq!(status_before["running"], false);
+
+    // Note: We can't test the running state in a unit test easily because
+    // start() is async and requires tokio runtime, but we can test
+    // that status() returns correct structure
+    assert_eq!(status_before["poll_interval_secs"], 10);
+}
+
+#[test]
+fn test_register_same_device_twice_updates() {
+    let svc = DeviceService::new();
+
+    let device_v1 = Device {
+        id: "device-upgrade".to_string(),
+        name: "Device V1".to_string(),
+        device_type: "sensor".to_string(),
+        status: "online".to_string(),
+        vendor_id: Some("v1".to_string()),
+        product_id: Some("v1".to_string()),
+        serial: None,
+        connected_at: None,
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("version".to_string(), "1.0".to_string());
+            m
+        },
+    };
+
+    let device_v2 = Device {
+        id: "device-upgrade".to_string(),
+        name: "Device V2".to_string(),
+        device_type: "sensor".to_string(),
+        status: "online".to_string(),
+        vendor_id: Some("v2".to_string()),
+        product_id: Some("v2".to_string()),
+        serial: None,
+        connected_at: None,
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("version".to_string(), "2.0".to_string());
+            m
+        },
+    };
+
+    svc.register(device_v1);
+    svc.register(device_v2);
+
+    let retrieved = svc.get("device-upgrade").unwrap();
+    assert_eq!(retrieved.name, "Device V2");
+    assert_eq!(retrieved.vendor_id, Some("v2".to_string()));
+    assert_eq!(retrieved.metadata.get("version").unwrap(), "2.0");
+    assert_eq!(svc.count(), 1);
+}
+
+#[test]
+fn test_handler_receives_correct_device_info() {
+    let svc = DeviceService::new();
+    let received_devices = Arc::new(Mutex::new(Vec::<Device>::new()));
+    let received_clone = received_devices.clone();
+
+    svc.set_handler(Box::new(move |event| {
+        match event {
+            ServiceDeviceEvent::Added { device_id, .. } => {
+                // Store the device ID that was added
+                received_clone.lock().push(Device {
+                    id: device_id,
+                    name: String::new(),
+                    device_type: String::new(),
+                    status: String::new(),
+                    vendor_id: None,
+                    product_id: None,
+                    serial: None,
+                    connected_at: None,
+                    metadata: HashMap::new(),
+                });
+            }
+            _ => {}
+        }
+    }));
+
+    svc.register(Device {
+        id: "test-handler".to_string(),
+        name: "Handler Test".to_string(),
+        device_type: "test".to_string(),
+        status: "online".to_string(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
+    });
+
+    let devices = received_devices.lock();
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].id, "test-handler");
+}
+
+#[test]
+fn test_send_notification_with_all_device_types() {
+    let svc = DeviceService::new();
+    let sent = Arc::new(Mutex::new(Vec::<(String, String, String)>::new()));
+    let sent_clone = sent.clone();
+
+    svc.set_bus_sender(Box::new(move |ch, id, content| {
+        sent_clone.lock().push((ch.to_string(), id.to_string(), content.to_string()));
+    }));
+
+    svc.set_state_manager(Arc::new(MockState {
+        last_channel: "web:tester".to_string(),
+    }));
+
+    // Test with all different device kinds
+    for kind in [Kind::Usb, Kind::Bluetooth, Kind::Pci, Kind::Generic] {
+        let ev = DeviceEvent {
+            action: Action::Add,
+            kind: kind.clone(),
+            device_id: format!("dev-{:?}", kind),
+            vendor: "TestVendor".to_string(),
+            product: "TestProduct".to_string(),
+            serial: String::new(),
+            capabilities: String::new(),
+            raw: HashMap::new(),
+        };
+
+        svc.send_notification(&ev);
+    }
+
+    let msgs = sent.lock();
+    assert_eq!(msgs.len(), 4);
+    // Verify all messages were sent
+    for msg in msgs.iter() {
+        assert_eq!(msg.0, "web");
+        assert_eq!(msg.1, "tester");
+    }
+}
+
+#[test]
+fn test_register_multiple_devices_in_sequence() {
+    let svc = DeviceService::new();
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let event_count_clone = event_count.clone();
+
+    svc.set_handler(Box::new(move |_| {
+        event_count_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Register multiple devices
+    for i in 0..10 {
+        svc.register(Device {
+            id: format!("seq-device-{}", i),
+            name: format!("Sequential Device {}", i),
+            device_type: "test".to_string(),
+            status: "online".to_string(),
+            vendor_id: None,
+            product_id: None,
+            serial: None,
+            connected_at: None,
+            metadata: HashMap::new(),
+        });
+    }
+
+    assert_eq!(event_count.load(Ordering::SeqCst), 10);
+    assert_eq!(svc.count(), 10);
+
+    // Verify all devices are accessible
+    for i in 0..10 {
+        assert!(svc.get(&format!("seq-device-{}", i)).is_some());
+    }
+}
+
+#[test]
+fn test_unregister_multiple_devices() {
+    let svc = DeviceService::new();
+    let event_count = Arc::new(AtomicUsize::new(0));
+    let event_count_clone = event_count.clone();
+
+    svc.set_handler(Box::new(move |_| {
+        event_count_clone.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    // Register devices
+    for i in 0..5 {
+        svc.register(Device {
+            id: format!("rm-device-{}", i),
+            name: format!("Remove Device {}", i),
+            device_type: "test".to_string(),
+            status: "online".to_string(),
+            vendor_id: None,
+            product_id: None,
+            serial: None,
+            connected_at: None,
+            metadata: HashMap::new(),
+        });
+    }
+
+    assert_eq!(svc.count(), 5);
+
+    // Remove all devices
+    for i in 0..5 {
+        svc.unregister(&format!("rm-device-{}", i));
+    }
+
+    assert_eq!(svc.count(), 0);
+    // 5 add events + 5 remove events = 10
+    assert_eq!(event_count.load(Ordering::SeqCst), 10);
+}
+
+#[test]
+fn test_device_with_empty_and_none_fields() {
+    let device = Device {
+        id: String::new(),
+        name: String::new(),
+        device_type: String::new(),
+        status: String::new(),
+        vendor_id: None,
+        product_id: None,
+        serial: None,
+        connected_at: None,
+        metadata: HashMap::new(),
+    };
+
+    let json = serde_json::to_string(&device).unwrap();
+    let parsed: Device = serde_json::from_str(&json).unwrap();
+
+    assert!(parsed.id.is_empty());
+    assert!(parsed.vendor_id.is_none());
+    assert!(parsed.connected_at.is_none());
+    assert!(parsed.metadata.is_empty());
+}
+
+#[test]
+fn test_parse_last_channel_edge_cases() {
+    // Test with various edge cases
+    assert_eq!(parse_last_channel("a:b"), ("a".to_string(), "b".to_string()));
+    assert_eq!(parse_last_channel("aa:bb"), ("aa".to_string(), "bb".to_string()));
+    assert_eq!(parse_last_channel("a:b:c"), ("a".to_string(), "b:c".to_string()));
+    assert_eq!(parse_last_channel("long-platform:long-user-id"), ("long-platform".to_string(), "long-user-id".to_string()));
+}
+
+#[test]
+fn test_is_internal_channel_comprehensive() {
+    // All internal channels should return true
+    for channel in ["cli", "system", "subagent"] {
+        assert!(is_internal_channel(channel));
+    }
+
+    // All external channels should return false
+    for channel in ["web", "websocket", "rpc", "telegram", "discord", "slack", "email"] {
+        assert!(!is_internal_channel(channel));
+    }
+}
+
+#[tokio::test]
+async fn test_service_config_variations() {
+    // Test with different configuration combinations
+    let configs = vec![
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            monitor_usb: false,
+        },
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 60,
+            monitor_usb: false,
+        },
+        DeviceServiceConfig {
+            enabled: false,
+            poll_interval_secs: 5,
+            monitor_usb: false,
+        },
+    ];
+
+    for config in configs {
+        let svc = DeviceService::with_config(config.clone());
+        let status = svc.status();
+        assert_eq!(status["enabled"], config.enabled);
+        assert_eq!(status["poll_interval_secs"], config.poll_interval_secs);
+        assert_eq!(status["monitor_usb"], config.monitor_usb);
+    }
 }

@@ -178,3 +178,87 @@ fn test_make_writer_file_only() {
     let content = std::fs::read_to_string(&*path_str).unwrap();
     assert!(content.contains("file-only-content"));
 }
+
+#[test]
+fn test_dual_writer_write_error_handling() {
+    // Test that write errors don't panic
+    let mut w = DualWriter { console: false, file: None };
+    // Write to discard mode should always succeed
+    let result = w.write(b"test\n");
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 5); // Returns buffer length even when discarding
+}
+
+#[test]
+fn test_dual_writer_console_error_handling() {
+    // Test console writer with stderr operations
+    let mut w = DualWriter { console: true, file: None };
+    // Console writes should succeed (stderr is always available)
+    assert!(w.write(b"console test\n").is_ok());
+    assert!(w.flush().is_ok());
+}
+
+#[test]
+fn test_dual_writer_empty_buffer() {
+    // Test writing empty buffer
+    let mut w = DualWriter { console: true, file: None };
+    let result = w.write(b"");
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 0);
+}
+
+#[test]
+fn test_dual_make_writer_clone_behavior() {
+    // Test that make_writer can be called multiple times safely
+    let mw = DualMakeWriter::console_only();
+    let mut w1 = mw.make_writer();
+    let mut w2 = mw.make_writer();
+    // Both writers should work independently
+    assert!(w1.write(b"writer1\n").is_ok());
+    assert!(w2.write(b"writer2\n").is_ok());
+}
+
+#[test]
+fn test_go_style_formatter_components() {
+    // Test various timestamp format components
+    let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+
+    // Check format components
+    assert!(ts.contains('T')); // Date/time separator
+    assert!(ts.contains('-')); // Date separators
+    assert!(ts.contains(':')); // Time separators
+    assert!(ts.contains('.')); // Microsecond separator
+
+    // Check length: YYYY-MM-DDTHH:MM:SS.mmmmmm = 26+ characters
+    assert!(ts.len() >= 26);
+}
+
+#[test]
+fn test_go_style_formatter_timestamp_uniqueness() {
+    // Test that timestamps are reasonably unique
+    let ts1 = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let ts2 = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.6f").to_string();
+
+    // Timestamps should be different (at least in microseconds)
+    assert_ne!(ts1, ts2);
+}
+
+#[test]
+fn test_dual_writer_large_buffer() {
+    // Test writing larger buffers
+    let large_data = vec![b'X'; 10000];
+    let mut w = DualWriter { console: true, file: None };
+    assert!(w.write(&large_data).is_ok());
+}
+
+#[test]
+fn test_dual_writer_partial_write() {
+    // Test partial writes (writes that might not consume entire buffer)
+    let mut w = DualWriter { console: false, file: None };
+    let buf = b"partial";
+    let result = w.write(buf);
+    assert!(result.is_ok());
+    // In discard mode, should report full buffer length
+    assert_eq!(result.unwrap(), buf.len());
+}

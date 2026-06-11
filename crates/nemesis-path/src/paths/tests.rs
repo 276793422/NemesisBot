@@ -1196,3 +1196,306 @@ fn test_is_local_mode_enabled() {
     assert!(is_local_mode());
     set_local_mode(false);
 }
+
+// ============================================================
+// Additional coverage tests for missing functions
+// ============================================================
+
+#[test]
+fn test_path_manager_sessions_log_dir() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
+    assert_eq!(pm.sessions_log_dir(), PathBuf::from("/tmp/test_home/workspace/logs/session_logs"));
+}
+
+#[test]
+fn test_path_manager_memory_vector_dir() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));
+    assert_eq!(pm.memory_vector_dir(), PathBuf::from("/tmp/test_home/workspace/memory_vector"));
+}
+
+#[test]
+fn test_expand_home_tilde_only() {
+    let result = expand_home("~");
+    // Should expand to home directory, and not start with ~
+    assert!(!result.starts_with("~"));
+}
+
+#[test]
+fn test_expand_home_tilde_slash() {
+    let result = expand_home("~/");
+    // Should expand to home directory
+    assert!(!result.starts_with("~"));
+}
+
+#[test]
+fn test_expand_home_complex_path() {
+    let result = expand_home("~/docs/../docs/file.txt");
+    assert!(!result.starts_with("~"));
+    assert!(result.to_string_lossy().contains("docs"));
+    assert!(result.to_string_lossy().contains("file.txt"));
+}
+
+#[test]
+fn test_minimal_config_workspace_path_windows_style() {
+    let json = r#"{"agents":{"defaults":{"workspace":"C:\\Users\\test\\workspace"}}}"#;
+    let cfg: MinimalConfig = serde_json::from_str(json).unwrap();
+    let ws = cfg.workspace_path();
+    assert_eq!(ws, Some(PathBuf::from("C:\\Users\\test\\workspace")));
+}
+
+#[test]
+fn test_minimal_config_workspace_path_relative() {
+    let json = r#"{"agents":{"defaults":{"workspace":"relative/workspace"}}}"#;
+    let cfg: MinimalConfig = serde_json::from_str(json).unwrap();
+    let ws = cfg.workspace_path();
+    assert_eq!(ws, Some(PathBuf::from("relative/workspace")));
+}
+
+#[test]
+fn test_resolve_home_dir_error_handling() {
+    // Test that resolve_home_dir handles errors gracefully
+    // by ensuring it always returns a path
+    let result = resolve_home_dir();
+    assert!(result.is_ok());
+    let home = result.unwrap();
+    assert!(home.to_string_lossy().contains(".nemesisbot"));
+}
+
+#[test]
+fn test_path_manager_all_directory_methods() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/comprehensive_test"));
+
+    // Test all directory methods
+    assert_eq!(pm.workspace(), PathBuf::from("/tmp/comprehensive_test/workspace"));
+    assert_eq!(pm.sessions_log_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/logs/session_logs"));
+    assert_eq!(pm.temp_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/temp"));
+    assert_eq!(pm.memory_vector_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/memory_vector"));
+    assert_eq!(pm.audit_log_dir(), PathBuf::from("/tmp/comprehensive_test/workspace/logs/security_logs"));
+    assert_eq!(pm.auth_path(), PathBuf::from("/tmp/comprehensive_test/workspace/config/auth.json"));
+}
+
+#[test]
+fn test_path_manager_config_path_priority_chain() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/priority_test"));
+
+    // Test the full priority chain: setter > env > default
+    // 1. Default (no setter, no env)
+    let _g = EnvGuard::remove(ENV_CONFIG);
+    assert_eq!(pm.config_path(), PathBuf::from("/tmp/priority_test/config.json"));
+
+    // 2. Environment variable
+    let _g = EnvGuard::set(ENV_CONFIG, "/env/config.json");
+    assert_eq!(pm.config_path(), PathBuf::from("/env/config.json"));
+
+    // 3. Setter takes priority over environment
+    pm.set_config_path(PathBuf::from("/setter/config.json"));
+    assert_eq!(pm.config_path(), PathBuf::from("/setter/config.json"));
+}
+
+#[test]
+fn test_path_manager_mcp_config_path_priority_chain() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/mcp_priority"));
+
+    // Test priority chain
+    let _g = EnvGuard::remove(ENV_MCP_CONFIG);
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/tmp/mcp_priority/workspace/config/config.mcp.json"));
+
+    let _g = EnvGuard::set(ENV_MCP_CONFIG, "/env/mcp.json");
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/env/mcp.json"));
+
+    pm.set_mcp_config_path(PathBuf::from("/setter/mcp.json"));
+    assert_eq!(pm.mcp_config_path(), PathBuf::from("/setter/mcp.json"));
+}
+
+#[test]
+fn test_path_manager_security_config_path_priority_chain() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/sec_priority"));
+
+    let _g = EnvGuard::remove(ENV_SECURITY_CONFIG);
+    assert_eq!(pm.security_config_path(), PathBuf::from("/tmp/sec_priority/workspace/config/config.security.json"));
+
+    let _g = EnvGuard::set(ENV_SECURITY_CONFIG, "/env/sec.json");
+    assert_eq!(pm.security_config_path(), PathBuf::from("/env/sec.json"));
+
+    pm.set_security_config_path(PathBuf::from("/setter/sec.json"));
+    assert_eq!(pm.security_config_path(), PathBuf::from("/setter/sec.json"));
+}
+
+#[test]
+fn test_path_manager_skills_config_path_priority_chain() {
+    let pm = PathManager::with_home(PathBuf::from("/tmp/skills_priority"));
+
+    let _g = EnvGuard::remove(ENV_SKILLS_CONFIG);
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/tmp/skills_priority/workspace/config/config.skills.json"));
+
+    let _g = EnvGuard::set(ENV_SKILLS_CONFIG, "/env/skills.json");
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/env/skills.json"));
+
+    pm.set_skills_config_path(PathBuf::from("/setter/skills.json"));
+    assert_eq!(pm.skills_config_path(), PathBuf::from("/setter/skills.json"));
+}
+
+#[test]
+fn test_resolve_mcp_config_path_fallback_behavior() {
+    // Test the fallback behavior when resolve_home_dir would theoretically fail
+    // In practice, this tests the unwrap_or_else logic
+    let _g1 = EnvGuard::remove(ENV_MCP_CONFIG);
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+
+    let result = resolve_mcp_config_path();
+    // Should always return a valid path, never panic
+    assert!(result.to_string_lossy().ends_with("config.mcp.json"));
+}
+
+#[test]
+fn test_resolve_security_config_path_fallback_behavior() {
+    let _g1 = EnvGuard::remove(ENV_SECURITY_CONFIG);
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+
+    let result = resolve_security_config_path();
+    // Should always return a valid path
+    assert!(result.to_string_lossy().ends_with("config.security.json"));
+}
+
+#[test]
+fn test_resolve_skills_config_path_fallback_behavior() {
+    let _g1 = EnvGuard::remove(ENV_SKILLS_CONFIG);
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+
+    let result = resolve_skills_config_path();
+    // Should always return a valid path
+    assert!(result.to_string_lossy().ends_with("config.skills.json"));
+}
+
+#[test]
+fn test_resolve_scanner_config_path_fallback_behavior() {
+    let _g1 = EnvGuard::remove(ENV_SCANNER_CONFIG);
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+
+    let result = resolve_scanner_config_path();
+    // Should always return a valid path
+    assert!(result.to_string_lossy().ends_with("config.scanner.json"));
+}
+
+#[test]
+fn test_resolve_config_path_fallback_behavior() {
+    let _g1 = EnvGuard::remove(ENV_CONFIG);
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+
+    let result = resolve_config_path();
+    // Should always return a valid path
+    assert!(result.to_string_lossy().ends_with("config.json"));
+}
+
+#[test]
+fn test_resolve_mcp_config_path_workspace_resolution() {
+    // Test the case where workspace is resolved from config
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join(DEFAULT_HOME_DIR);
+    std::fs::create_dir_all(&home).unwrap();
+
+    // Create a config.json with no workspace specified
+    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+
+    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g2 = EnvGuard::remove(ENV_MCP_CONFIG);
+    set_local_mode(false);
+
+    let result = resolve_mcp_config_path();
+    // Should fall back to home_dir/config.mcp.json when workspace is empty
+    assert!(result.to_string_lossy().contains("config.mcp.json"));
+}
+
+#[test]
+fn test_resolve_security_config_path_workspace_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join(DEFAULT_HOME_DIR);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+
+    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g2 = EnvGuard::remove(ENV_SECURITY_CONFIG);
+    set_local_mode(false);
+
+    let result = resolve_security_config_path();
+    assert!(result.to_string_lossy().contains("config.security.json"));
+}
+
+#[test]
+fn test_resolve_skills_config_path_workspace_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join(DEFAULT_HOME_DIR);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+
+    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g2 = EnvGuard::remove(ENV_SKILLS_CONFIG);
+    set_local_mode(false);
+
+    let result = resolve_skills_config_path();
+    assert!(result.to_string_lossy().contains("config.skills.json"));
+}
+
+#[test]
+fn test_resolve_scanner_config_path_workspace_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join(DEFAULT_HOME_DIR);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.json"), r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+
+    let _g1 = EnvGuard::set(ENV_HOME, &dir.path().to_string_lossy().to_string());
+    let _g2 = EnvGuard::remove(ENV_SCANNER_CONFIG);
+    set_local_mode(false);
+
+    let result = resolve_scanner_config_path();
+    assert!(result.to_string_lossy().contains("config.scanner.json"));
+}
+
+#[test]
+fn test_expand_home_edge_cases() {
+    // Test various edge cases for expand_home
+    let result1 = expand_home("~");
+    assert!(!result1.starts_with("~"));
+
+    let result2 = expand_home("~/");
+    assert!(!result2.starts_with("~"));
+
+    let result3 = expand_home("~/test");
+    assert!(!result3.starts_with("~"));
+    assert!(result3.to_string_lossy().contains("test"));
+
+    let result4 = expand_home("/absolute/path");
+    assert_eq!(result4, PathBuf::from("/absolute/path"));
+
+    let result5 = expand_home("relative/path");
+    assert_eq!(result5, PathBuf::from("relative/path"));
+
+    let result6 = expand_home("");
+    assert_eq!(result6, PathBuf::from(""));
+}
+
+#[test]
+fn test_minimal_config_workspace_path_edge_cases() {
+    // Test edge cases for workspace path resolution
+    let json1 = r#"{"agents":{"defaults":{"workspace":"~/"}}}"#;
+    let cfg1: MinimalConfig = serde_json::from_str(json1).unwrap();
+    let ws1 = cfg1.workspace_path();
+    assert!(ws1.is_some());
+    assert!(!ws1.unwrap().to_string_lossy().starts_with("~"));
+
+    let json2 = r#"{"agents":{"defaults":{"workspace":"~/Documents/workspace"}}}"#;
+    let cfg2: MinimalConfig = serde_json::from_str(json2).unwrap();
+    let ws2 = cfg2.workspace_path();
+    assert!(ws2.is_some());
+    assert!(ws2.unwrap().to_string_lossy().contains("Documents"));
+
+    let json3 = r#"{"agents":{"defaults":{"workspace":"/usr/local/workspace"}}}"#;
+    let cfg3: MinimalConfig = serde_json::from_str(json3).unwrap();
+    let ws3 = cfg3.workspace_path();
+    assert_eq!(ws3, Some(PathBuf::from("/usr/local/workspace")));
+}

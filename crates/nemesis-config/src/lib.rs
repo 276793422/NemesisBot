@@ -40,14 +40,14 @@ pub type Result<T> = std::result::Result<T, ConfigError>;
 /// Custom deserializer for `allow_from` fields that accepts JSON arrays
 /// containing mixed types (strings, numbers, etc.), converting all to strings.
 /// This matches Go's `FlexibleStringSlice` behavior.
-fn deserialize_flexible_string_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+pub fn deserialize_flexible_string_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     use serde::de::{SeqAccess, Visitor};
     use std::fmt;
 
-    struct FlexibleVecVisitor;
+    pub struct FlexibleVecVisitor;
 
     impl<'de> Visitor<'de> for FlexibleVecVisitor {
         type Value = Vec<String>;
@@ -236,7 +236,7 @@ impl<'de> serde::Deserialize<'de> for AgentModelConfig {
         use serde::de::{self, Visitor};
         use std::fmt;
 
-        struct AgentModelConfigVisitor;
+        pub struct AgentModelConfigVisitor;
 
         impl<'de> Visitor<'de> for AgentModelConfigVisitor {
             type Value = AgentModelConfig;
@@ -1277,7 +1277,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
 }
 
 /// Check if we're in local mode (config is in current directory's .nemesisbot).
-fn is_local_mode(config_path: &Path) -> bool {
+pub fn is_local_mode(config_path: &Path) -> bool {
     if let Ok(cwd) = std::env::current_dir() {
         let local_dir = cwd.join(".nemesisbot");
         if local_dir.exists() {
@@ -1802,7 +1802,7 @@ fn default_mcp_timeout() -> i64 { 30 }
 
 /// Expand ~ in a path to the user's home directory.
 /// Mirrors Go's `ExpandHome` function.
-fn expand_tilde(path: &str) -> PathBuf {
+pub fn expand_tilde(path: &str) -> PathBuf {
     if path.starts_with("~/") || path == "~" {
         if let Some(home) = dirs::home_dir() {
             if path == "~" {
