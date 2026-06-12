@@ -3654,6 +3654,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "dashmap",
  "futures",
@@ -3714,6 +3715,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
  "dirs 5.0.1",

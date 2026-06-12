@@ -21,4 +21,5 @@ pub mod shutdown;
 pub mod cors;
 pub mod migrate;
 pub mod voice;
+pub mod persona;
 pub mod test_cmd;

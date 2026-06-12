@@ -124,6 +124,27 @@ function scrollToBottom() {
   }
 }
 
+// Track whether user is near the bottom of the chat.
+// If user scrolled up to read history, don't auto-scroll on new messages.
+const userNearBottom = ref(true)
+
+function checkUserNearBottom() {
+  const el = chatMessages.value
+  if (!el) return
+  // Within 80px of bottom counts as "near bottom"
+  userNearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+}
+
+function scrollToBottomIfNear() {
+  if (userNearBottom.value) {
+    scrollToBottom()
+  }
+}
+
+function onChatAreaClick() {
+  chatInput.value?.focus()
+}
+
 function handleWSMessage(data: any) {
   if (data.module !== undefined) {
     if (data.type === 'message' && data.module === 'chat') {
@@ -181,9 +202,8 @@ function handleWSMessage(data: any) {
   }
 
   nextTick(() => {
-    scrollToBottom()
+    scrollToBottomIfNear()
     renderCodeBlocks()
-    if (!chatStore.streaming) chatInput.value?.focus()
   })
 }
 
@@ -261,7 +281,10 @@ function sendMessage() {
   }
 
   nextTick(() => scrollToBottom())
-  nextTick(() => chatInput.value?.focus())
+  nextTick(() => {
+    chatInput.value?.focus()
+    userNearBottom.value = true
+  })
 }
 
 function stopGeneration() {
@@ -405,6 +428,7 @@ function setupScrollListener() {
   scrollHandler = () => {
     const container = chatMessages.value
     if (!container) return
+    checkUserNearBottom()
     if (container.scrollTop <= 50 && chatStore.hasMoreHistory && !chatStore.historyLoading && chatStore.historyLoaded) {
       loadHistory()
     }
@@ -435,7 +459,7 @@ onMounted(() => {
   setupScrollListener()
 
   nextTick(() => {
-    chatInput.value?.focus()
+    scrollToBottom()
     if (chatMessages.value && scrollHandler) {
       chatMessages.value.addEventListener('scroll', scrollHandler)
     }
@@ -472,7 +496,7 @@ onUnmounted(() => {
 <template>
   <div class="page-chat">
     <!-- Messages -->
-    <div ref="chatMessages" class="chat-messages">
+    <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">
       <!-- History loading indicator -->
       <div v-if="chatStore.historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
         <span class="spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;"></span>

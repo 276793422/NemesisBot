@@ -166,6 +166,11 @@ enum Commands {
         #[command(subcommand)]
         action: commands::memory::MemoryAction,
     },
+    /// Manage AI personas
+    Persona {
+        #[command(subcommand)]
+        action: commands::persona::PersonaAction,
+    },
     /// Graceful shutdown
     Shutdown,
     /// Migrate from OpenClaw
@@ -548,6 +553,12 @@ async fn main() -> Result<()> {
         Commands::Memory { action } => {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
+        }
+        Commands::Persona { action } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            let workspace = common::workspace_path(&home);
+            commands::persona::run(action, &home.to_string_lossy(), &workspace.to_string_lossy()).await?;
         }
         Commands::Shutdown => {
             common::ensure_default_logger();
