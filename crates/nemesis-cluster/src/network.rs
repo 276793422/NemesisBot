@@ -298,12 +298,36 @@ pub fn get_all_local_ips_filtered() -> Vec<String> {
 /// Check if an interface name matches common virtual interface patterns.
 pub fn is_virtual_interface(name: &str) -> bool {
     let lower = name.to_lowercase();
-    let patterns = [
-        "veth", "docker", "br-", "virbr", "tun", "tap",
-        "vbox", "vmnet", "utun", "awdl", "llw", "anpi",
-        "ipsec", "gif", "stf", "p2p", "lo", "loopback",
+
+    // Patterns safe for substring matching (long enough to avoid false positives)
+    let contains_patterns = [
+        "docker", "br-", "virbr", "vbox", "vmnet",
+        "awdl", "anpi", "ipsec", "loopback",
     ];
-    patterns.iter().any(|p| lower.contains(p))
+    if contains_patterns.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+
+    // Short patterns: use starts_with to reduce false positives.
+    // "veth" matches Linux container veth (veth0, veth1abc) but NOT
+    // Windows Hyper-V "vethernet" which is a real virtual switch.
+    let starts_with_patterns = ["tun", "tap", "utun", "llw", "gif", "stf", "p2p"];
+    if starts_with_patterns.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+
+    // Linux veth interfaces: "veth" followed by digits/hex (e.g. veth0, veth2f3a)
+    // but NOT "vethernet" (Windows Hyper-V virtual switch)
+    if lower.starts_with("veth") && !lower.starts_with("vethernet") {
+        return true;
+    }
+
+    // Linux loopback: exact name "lo" or "lo"+digit (lo0, lo1)
+    if lower == "lo" || lower.starts_with("lo0") {
+        return true;
+    }
+
+    false
 }
 
 /// Get the priority score for an interface name (lower = higher priority).

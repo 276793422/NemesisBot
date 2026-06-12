@@ -241,39 +241,37 @@ pub fn get_broadcast_addresses() -> Vec<Ipv4Addr> {
 
 /// Get local IPv4 addresses with their subnet masks.
 ///
-/// Uses platform-specific APIs. On failure returns an empty list.
+/// Uses `get_local_network_interfaces()` which properly enumerates ALL
+/// network interfaces via `if_addrs`, including multi-homed hosts.
+/// Falls back to the UDP connect trick if interface enumeration fails.
 fn local_ip_addresses() -> io::Result<Vec<(Ipv4Addr, [u8; 4])>> {
-    // Platform-specific: use `ipconfig` or `ifconfig` equivalent.
-    // We'll use the `std::net` approach: enumerate by binding test sockets.
-    // For a proper implementation we'd use `if-addrs` or `windows-sys` crate,
-    // but to avoid adding new dependencies, we use a heuristic:
-    // - Get local IPs by connecting a UDP socket to a public address
-    // - Assume /24 mask for private ranges
-
-    let mut results = Vec::new();
-
-    // Try to find all local IPs by binding to 0.0.0.0 and checking
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-
-    // Try connecting to several "known" addresses to discover local IPs.
-    // This is a common trick - doesn't actually send data.
-    let probes = ["8.8.8.8:53", "1.1.1.1:53", "192.168.1.1:80"];
-    for probe in &probes {
-        if socket.connect(probe).is_ok() {
-            if let Ok(local) = socket.local_addr() {
-                if let std::net::IpAddr::V4(ip) = local.ip() {
-                    if !ip.is_loopback() && !ip.is_unspecified() {
-                        // Assume /24 for private ranges
-                        let mask = [255, 255, 255, 0];
-                        if !results.iter().any(|(existing, _)| *existing == ip) {
-                            results.push((ip, mask));
-                        }
+    let interfaces = crate::network::get_local_network_interfaces();
+    if !interfaces.is_empty() {
+        let mut results = Vec::new();
+        for iface in &interfaces {
+            if let Ok(ip) = iface.ip.parse::<Ipv4Addr>() {
+                if let Ok(mask) = iface.mask.parse::<Ipv4Addr>() {
+                    if !results.iter().any(|(existing, _)| *existing == ip) {
+                        results.push((ip, mask.octets()));
                     }
                 }
             }
         }
+        return Ok(results);
     }
 
+    // Fallback: single IP via UDP connect trick with /24 assumption
+    let mut results = Vec::new();
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
+    if socket.connect("8.8.8.8:53").is_ok() {
+        if let Ok(local) = socket.local_addr() {
+            if let std::net::IpAddr::V4(ip) = local.ip() {
+                if !ip.is_loopback() && !ip.is_unspecified() {
+                    results.push((ip, [255, 255, 255, 0]));
+                }
+            }
+        }
+    }
     Ok(results)
 }
 
