@@ -87,8 +87,12 @@ impl DataStore {
             .map_err(|e| format!("query_summary: {e}"))?;
 
         // Compute cache hit rate
-        let cacheable = summary.total_input_tokens
-            + summary.total_cache_creation_tokens
+        // DeepSeek/OpenAI: cache_creation = miss tokens, cache_read = hit tokens
+        //   correct formula: cache_read / (cache_creation + cache_read)
+        // Anthropic: cache_creation = write tokens, cache_read = read tokens
+        //   correct formula: cache_read / (cache_creation + cache_read)
+        // Both simplify to: hits / (hits + misses)
+        let cacheable = summary.total_cache_creation_tokens
             + summary.total_cache_read_tokens;
         let cache_hit_rate = if cacheable > 0 {
             summary.total_cache_read_tokens as f64 / cacheable as f64

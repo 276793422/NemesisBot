@@ -281,17 +281,16 @@ impl ContextBuilder {
     /// Build the complete system prompt.
     ///
     /// The prompt is assembled from:
-    /// 1. Core identity section (time, environment, workspace)
-    /// 2. Bootstrap files (IDENTITY.md, SOUL.md, USER.md, etc.)
-    /// 3. Tools section
+    /// 1. Bootstrap files (IDENTITY.md, SOUL.md, USER.md, etc.) — stable prefix for caching
+    /// 2. Tools section — stable
+    /// 3. Skills section — stable
+    /// 4. Memory context — may change
+    /// 5. Core identity section (time, environment, workspace) — dynamic, at end for caching
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
         info!("[ContextBuilder] Building system prompt from workspace: {:?}", self.workspace);
         let mut parts = Vec::new();
 
-        // Core identity section
-        parts.push(self.build_identity());
-
-        // Bootstrap content
+        // Bootstrap content (IDENTITY.md, SOUL.md, AGENT.md, TOOLS.md, USER.md, etc.)
         let bootstrap_content = self.load_bootstrap_files(skip_bootstrap);
         if !bootstrap_content.is_empty() {
             parts.push(bootstrap_content);
@@ -315,6 +314,9 @@ impl ContextBuilder {
                 parts.push(format!("## Memory Context\n\n{}", memory));
             }
         }
+
+        // Core identity section (time, environment, workspace) — dynamic, placed last
+        parts.push(self.build_identity());
 
         // Join with "---" separator
         let result = parts.join("\n\n---\n\n");

@@ -10,20 +10,45 @@ use std::collections::HashMap;
 
 /// Extract UsageInfo from a usage JSON value, including cached token metrics.
 fn extract_usage(u: &serde_json::Value) -> UsageInfo {
-    let cached = u.get("prompt_cache_hit_tokens")
-        .and_then(|v| v.as_i64())
-        .or_else(|| {
-            u.get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_i64())
-        });
+    // DeepSeek: prompt_cache_hit_tokens + prompt_cache_miss_tokens
+    let ds_hit = u.get("prompt_cache_hit_tokens").and_then(|v| v.as_i64());
+    let ds_miss = u.get("prompt_cache_miss_tokens").and_then(|v| v.as_i64());
+
+    // OpenAI: usage.prompt_tokens_details.cached_tokens
+    let oai_cached = u.get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_i64());
+
+    // Anthropic: cache_creation_input_tokens + cache_read_input_tokens
+    let ant_creation = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64());
+    let ant_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64());
+
+    let (cached, creation, read) = if let (Some(hit), Some(miss)) = (ds_hit, ds_miss) {
+        // DeepSeek: hit → cache_read, miss → cache_creation
+        (Some(hit), Some(miss), Some(hit))
+    } else if let Some(c) = oai_cached {
+        // OpenAI: cached_tokens in prompt_tokens_details
+        // miss = prompt_tokens - cached_tokens
+        let prompt = u["prompt_tokens"].as_i64().unwrap_or(0);
+        let miss = (prompt - c).max(0);
+        (Some(c), Some(miss), Some(c))
+    } else if ant_creation.is_some() || ant_read.is_some() {
+        // Anthropic: separate creation and read
+        (None, ant_creation, ant_read)
+    } else if let Some(hit) = ds_hit {
+        // DeepSeek without miss field (fallback)
+        (Some(hit), None, Some(hit))
+    } else {
+        (None, None, None)
+    };
+
     UsageInfo {
         prompt_tokens: u["prompt_tokens"].as_i64().unwrap_or(0),
         completion_tokens: u["completion_tokens"].as_i64().unwrap_or(0),
         total_tokens: u["total_tokens"].as_i64().unwrap_or(0),
         cached_tokens: cached,
-        cache_creation_tokens: None,
-        cache_read_tokens: cached,
+        cache_creation_tokens: creation,
+        cache_read_tokens: read,
     }
 }
 

@@ -13,7 +13,7 @@
 //!
 //! - **Standalone mode**: Direct calls via `run()`, `process_direct()`, etc.
 //! - **Bus-integrated mode**: Continuous consumption from a message bus via
-//!   `run_bus_owned()`.
+//!   `run_bus_arc()`.
 //!
 //! In bus-integrated mode, the loop connects to an `mpsc` inbound/outbound
 //! channel pair and handles the full Go `AgentLoop` lifecycle including
@@ -491,7 +491,7 @@ impl AgentLoop {
     // -----------------------------------------------------------------------
 
     /// Dispatch a cluster continuation: inline (permits=0) or spawned (permits>0).
-    /// Called from both `run_bus_owned` and `run_bus_arc`.
+    /// Called from both `run_bus_owned` (test) and `run_bus_arc` (production).
     async fn dispatch_continuation(
         &self,
         task_id: String,
@@ -854,6 +854,9 @@ impl AgentLoop {
     /// Mirrors Go's `AgentLoop.Run(ctx)`. Continuously consumes inbound
     /// messages, processes them, and publishes outbound responses.
     /// Stops when `stop()` is called or the inbound channel closes.
+    ///
+    /// Test-only variant; production code uses `run_bus_arc`.
+    #[cfg(test)]
     pub async fn run_bus_owned(
         self,
         mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
@@ -908,6 +911,11 @@ impl AgentLoop {
                             } else {
                                 response
                             };
+
+                            info!(
+                                "[AgentLoop] Response message     to {}:{}: {}",
+                                msg.channel, msg.chat_id, truncate(&final_content, 80)
+                            );
 
                             let outbound = nemesis_types::channel::OutboundMessage {
                                 channel: msg.channel.clone(),
@@ -983,6 +991,11 @@ impl AgentLoop {
                             } else {
                                 response
                             };
+
+                            info!(
+                                "[AgentLoop] Response message     to {}:{}: {}",
+                                msg.channel, msg.chat_id, truncate(&final_content, 80)
+                            );
 
                             let outbound = nemesis_types::channel::OutboundMessage {
                                 channel: msg.channel.clone(),
