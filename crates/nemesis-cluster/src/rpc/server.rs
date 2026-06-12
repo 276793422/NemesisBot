@@ -74,6 +74,8 @@ pub struct RpcServer {
     listener_port: RwLock<u16>,
     shutdown_tx: broadcast::Sender<()>,
     conn_count: Arc<AtomicUsize>,
+    /// Handle to the accept loop task — aborted on stop() to release the TCP port immediately.
+    accept_handle: RwLock<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RpcServer {
@@ -88,6 +90,7 @@ impl RpcServer {
             listener_port: RwLock::new(0),
             shutdown_tx,
             conn_count: Arc::new(AtomicUsize::new(0)),
+            accept_handle: RwLock::new(None),
         };
         // Register defaults in constructor, not in start().
         // On first start: basic_handlers overwrite defaults → custom handlers overwrite defaults.
@@ -131,10 +134,17 @@ impl RpcServer {
             }
         }
 
-        // Bind TCP listener
-        let listener = TcpListener::bind(&self.config.bind_address)
-            .await
+        // Bind TCP listener with SO_REUSEADDR to allow quick restarts.
+        let socket = tokio::net::TcpSocket::new_v4()
+            .map_err(|e| format!("failed to create socket: {}", e))?;
+        socket.set_reuseaddr(true)
+            .map_err(|e| format!("failed to set SO_REUSEADDR: {}", e))?;
+        let addr: std::net::SocketAddr = self.config.bind_address.parse()
+            .map_err(|e| format!("invalid bind address '{}': {}", self.config.bind_address, e))?;
+        socket.bind(addr)
             .map_err(|e| format!("failed to bind {}: {}", self.config.bind_address, e))?;
+        let listener = socket.listen(128)
+            .map_err(|e| format!("failed to listen on {}: {}", self.config.bind_address, e))?;
 
         let actual_port = listener.local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?
@@ -150,8 +160,6 @@ impl RpcServer {
         );
 
         // Start accept loop
-
-        // Start accept loop
         let shutdown_rx = self.shutdown_tx.subscribe();
         // Clone the Arc to share the live handler map with the accept loop.
         // Dynamic registration via `register_handler` is immediately visible.
@@ -161,7 +169,7 @@ impl RpcServer {
         let conn_count = Arc::clone(&self.conn_count);
         let idle_timeout = self.config.idle_timeout;
 
-        tokio::spawn(Self::accept_loop(
+        let handle = tokio::spawn(Self::accept_loop(
             listener,
             shutdown_rx,
             handlers,
@@ -170,11 +178,15 @@ impl RpcServer {
             conn_count,
             idle_timeout,
         ));
+        *self.accept_handle.write() = Some(handle);
 
         Ok(())
     }
 
     /// Stop the RPC server.
+    ///
+    /// Sends a shutdown signal and aborts the accept loop task to release
+    /// the TCP port immediately (critical for clean restart).
     pub fn stop(&self) -> Result<(), String> {
         {
             let running = self.running.read();
@@ -184,6 +196,12 @@ impl RpcServer {
         }
         *self.running.write() = false;
         let _ = self.shutdown_tx.send(());
+        // Abort the accept loop task — this immediately drops the TcpListener,
+        // releasing the port. Without this, the async task may not have processed
+        // the shutdown signal yet when start() tries to rebind.
+        if let Some(handle) = self.accept_handle.write().take() {
+            handle.abort();
+        }
         tracing::info!("[RpcServer] RPC server stopped");
         Ok(())
     }

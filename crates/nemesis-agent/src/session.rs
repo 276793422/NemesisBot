@@ -499,6 +499,7 @@ pub fn estimate_tokens_for_turns(turns: &[ConversationTurn]) -> usize {
 }
 
 /// Estimate tokens for stored messages.
+#[cfg(test)]
 pub fn estimate_tokens_for_messages(messages: &[StoredMessage]) -> usize {
     messages.iter().map(|m| estimate_tokens(&m.content)).sum()
 }

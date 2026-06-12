@@ -3331,6 +3331,7 @@ where
 /// Extract the task ID from a cluster continuation sender ID.
 ///
 /// The format is `cluster_continuation:{taskID}`.
+#[cfg(test)]
 pub fn extract_continuation_task_id(sender_id: &str) -> Option<&str> {
     sender_id
         .strip_prefix(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
@@ -3362,6 +3363,7 @@ pub fn extract_peer(msg: &nemesis_types::channel::InboundMessage) -> String {
 ///
 /// Used for routing in nested or forwarded messages.
 /// Mirrors Go's `extractParentPeer`.
+#[cfg(test)]
 pub fn extract_parent_peer(msg: &nemesis_types::channel::InboundMessage) -> Option<String> {
     let parent_kind = msg.metadata.get("parent_peer_kind")?;
     let parent_id = msg.metadata.get("parent_peer_id")?;
@@ -3375,6 +3377,7 @@ pub fn extract_parent_peer(msg: &nemesis_types::channel::InboundMessage) -> Opti
 ///
 /// This is a legacy compatibility type. For new code, use
 /// [`nemesis_routing::RouteInput`] directly with [`RouteResolver`].
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct RouteInput {
     pub channel: String,
@@ -3389,6 +3392,7 @@ pub struct RouteInput {
 ///
 /// This is a legacy compatibility type. For new code, use
 /// [`nemesis_routing::ResolvedRoute`] directly.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct RouteOutput {
     pub agent_id: String,
@@ -3401,6 +3405,7 @@ pub struct RouteOutput {
 /// Uses the full `RouteResolver` with a default single-agent configuration.
 /// The peer field is parsed from the format "kind:id" to extract peer_kind and peer_id.
 /// Mirrors Go's `al.registry.ResolveRoute(routing.RouteInput{...})`.
+#[cfg(test)]
 pub fn resolve_route(input: &RouteInput) -> RouteOutput {
     // Parse peer from "kind:id" format (as produced by extract_peer).
     let (peer_kind, peer_id) = if let Some(colon_pos) = input.peer.find(':') {
@@ -3467,6 +3472,7 @@ pub fn build_agent_main_session_key(agent_id: &str) -> String {
 ///
 /// Returns a human-readable multi-line representation of the message list
 /// suitable for debug logging.
+#[cfg(test)]
 pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
     if messages.is_empty() {
         return "[]".to_string();
@@ -3504,6 +3510,7 @@ pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
 }
 
 /// Format tools for log output.
+#[cfg(test)]
 pub fn format_tools_for_log(tools: &[ToolCallInfo]) -> String {
     if tools.is_empty() {
         return "[]".to_string();

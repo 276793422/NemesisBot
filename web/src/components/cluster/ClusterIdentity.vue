@@ -21,17 +21,9 @@ const capabilities = ref<string[]>([])
 // Tag input
 const tagInput = ref('')
 
-// Personality files
-const identityContent = ref('')
-const soulContent = ref('')
-const activeFile = ref('IDENTITY.md')
-
 async function loadIdentity() {
   try {
-    const [config, files] = await Promise.all([
-      request('cluster', 'config.get'),
-      request('cluster', 'identity.get_files'),
-    ])
+    const config = await request('cluster', 'config.get')
     if (config) {
       nodeId.value = config.node_id ?? ''
       nodeName.value = config.name ?? ''
@@ -40,10 +32,6 @@ async function loadIdentity() {
       nodeType.value = config.node_type ?? ''
       tags.value = config.tags ?? []
       capabilities.value = config.capabilities ?? []
-    }
-    if (files) {
-      identityContent.value = files.identity ?? ''
-      soulContent.value = files.soul ?? ''
     }
   } catch { /* ignore */ }
 }
@@ -97,7 +85,7 @@ onMounted(async () => {
   </div>
 
   <div v-if="!loading">
-    <div class="card" style="margin-bottom:var(--space-4)">
+    <div class="card">
       <div class="card-header"><h3>节点身份</h3></div>
       <div class="card-body">
         <div class="form-group">
@@ -159,26 +147,6 @@ onMounted(async () => {
           <button class="btn btn-primary" :disabled="saving" @click="saveIdentity">
             {{ saving ? '保存中...' : '更新身份' }}
           </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">
-        <h3>人格文件</h3>
-        <div style="display:flex;gap:var(--space-1)">
-          <button class="btn btn-sm" :class="{ 'btn-primary': activeFile === 'IDENTITY.md' }" @click="activeFile = 'IDENTITY.md'">集群身份</button>
-          <button class="btn btn-sm" :class="{ 'btn-primary': activeFile === 'SOUL.md' }" @click="activeFile = 'SOUL.md'">集群行为准则</button>
-        </div>
-      </div>
-      <div class="card-body">
-        <div v-if="activeFile === 'IDENTITY.md'" style="background:var(--surface-alt);border-radius:var(--radius-md);padding:var(--space-4);max-height:400px;overflow:auto">
-          <pre v-if="identityContent" style="white-space:pre-wrap;word-break:break-word;margin:0;font-size:var(--text-sm);font-family:var(--font-mono)">{{ identityContent }}</pre>
-          <div v-else class="empty-state"><p>暂无 IDENTITY.md 文件</p></div>
-        </div>
-        <div v-else style="background:var(--surface-alt);border-radius:var(--radius-md);padding:var(--space-4);max-height:400px;overflow:auto">
-          <pre v-if="soulContent" style="white-space:pre-wrap;word-break:break-word;margin:0;font-size:var(--text-sm);font-family:var(--font-mono)">{{ soulContent }}</pre>
-          <div v-else class="empty-state"><p>暂无 SOUL.md 文件</p></div>
         </div>
       </div>
     </div>

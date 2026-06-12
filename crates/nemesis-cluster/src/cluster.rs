@@ -269,11 +269,16 @@ impl Cluster {
             self.address.clone()
         };
 
+        let role_str = self.role.read().clone();
+        let role = match role_str.as_str() {
+            "master" | "manager" => nemesis_types::cluster::NodeRole::Master,
+            _ => nemesis_types::cluster::NodeRole::Worker,
+        };
         let local_node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
                 id: self.node_id.clone(),
                 name: self.node_name.read().clone(),
-                role: nemesis_types::cluster::NodeRole::Master,
+                role,
                 address: display_address,
                 category: self.category.read().clone(),
                 last_seen: chrono::Local::now().to_rfc3339(),
@@ -1135,6 +1140,7 @@ impl Cluster {
     /// or from Dashboard via node.update_identity command.
     pub fn set_node_name(&self, name: impl Into<String>) {
         *self.node_name.write() = name.into();
+        self.sync_local_node_to_registry();
     }
 
     /// Get the node type ("agent" or "node").
@@ -1150,16 +1156,19 @@ impl Cluster {
     /// Set the node role ("master" or "worker").
     pub fn set_role(&self, role: impl Into<String>) {
         *self.role.write() = role.into();
+        self.sync_local_node_to_registry();
     }
 
     /// Set the node category (e.g. "general", "development").
     pub fn set_category(&self, category: impl Into<String>) {
         *self.category.write() = category.into();
+        self.sync_local_node_to_registry();
     }
 
     /// Set the node tags.
     pub fn set_tags(&self, tags: Vec<String>) {
         *self.tags.write() = tags;
+        self.sync_local_node_to_registry();
     }
 
     /// Set the dynamic capabilities for this node (tool names from AgentLoop).
@@ -1170,11 +1179,46 @@ impl Cluster {
         if let Ok(mut guard) = self.capabilities.lock() {
             *guard = caps;
         }
+        self.sync_local_node_to_registry();
     }
 
     /// Get the stop channel receiver.
     pub fn stop_receiver(&self) -> broadcast::Receiver<()> {
         self.stop_tx.subscribe()
+    }
+
+    /// Rebuild the local node's registry entry from current identity fields
+    /// and upsert it into the registry so list_nodes() reflects live state.
+    fn sync_local_node_to_registry(&self) {
+        // Preserve the resolved address from the existing registry entry,
+        // since self.address may still be 0.0.0.0 before start() resolves it.
+        let existing_address = self.registry.get(&self.node_id)
+            .map(|e| e.base.address.clone())
+            .unwrap_or_else(|| self.address.clone());
+
+        let role_str = self.role.read().clone();
+        let role = match role_str.as_str() {
+            "master" | "manager" => nemesis_types::cluster::NodeRole::Master,
+            _ => nemesis_types::cluster::NodeRole::Worker,
+        };
+        let caps = self.capabilities.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let info = ExtendedNodeInfo {
+            base: nemesis_types::cluster::NodeInfo {
+                id: self.node_id.clone(),
+                name: self.node_name.read().clone(),
+                role,
+                address: existing_address,
+                category: self.category.read().clone(),
+                last_seen: chrono::Local::now().to_rfc3339(),
+            },
+            status: NodeStatus::Online,
+            capabilities: caps,
+            addresses: vec![],
+            node_type: self.node_type.clone(),
+        };
+        self.registry.upsert(info);
     }
 
     /// Sync state to disk.

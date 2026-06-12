@@ -119,6 +119,10 @@ impl ModuleHandler for ClusterHandler {
                 self.node_update_identity(&data, ctx)
             }
             "identity.get_files" => self.identity_get_files(ctx),
+            "identity.save_file" => {
+                let data = data.ok_or("missing data")?;
+                self.identity_save_file(&data, ctx)
+            }
             "peers" => self.peers(ctx),
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
@@ -1276,7 +1280,7 @@ impl ClusterHandler {
         })))
     }
 
-    /// Read IDENTITY.md and SOUL.md from workspace for read-only preview.
+    /// Read cluster persona files from workspace.
     fn identity_get_files(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
         let identity = crate::handlers::read_workspace_file(workspace, "cluster/IDENTITY.md")
@@ -1287,6 +1291,31 @@ impl ClusterHandler {
             "identity": identity,
             "soul": soul,
         })))
+    }
+
+    /// Save a cluster persona file.
+    fn identity_save_file(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        let file = data.get("file").and_then(|v| v.as_str())
+            .ok_or("missing 'file' field")?;
+        let allowed = ["IDENTITY.md", "SOUL.md"];
+        if !allowed.contains(&file) {
+            return Err(format!("file '{}' not allowed, must be one of: {}", file, allowed.join(", ")));
+        }
+        let content = data.get("content").and_then(|v| v.as_str())
+            .ok_or("missing 'content' field")?;
+        let path = crate::handlers::resolve_path(workspace, &format!("cluster/{}", file))?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, content)
+            .map_err(|e| format!("failed to write {}: {}", file, e))?;
+        tracing::info!(file = %file, "[Cluster] Persona file saved");
+        Ok(Some(serde_json::json!({"saved": true, "file": file})))
     }
 }
 
