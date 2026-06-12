@@ -20,6 +20,20 @@ const authToken = ref('')
 const snapshots = ref<any[]>([])
 const snapshotsLoading = ref(false)
 
+// Firewall diagnostics
+const checking = ref(false)
+const addingRules = ref(false)
+const firewallResults = ref<any>(null)
+const ruleResult = ref<any>(null)
+
+const testNames: Record<string, string> = {
+  udp_bind: 'UDP 端口绑定',
+  broadcast_flag: '广播标志',
+  broadcast_loopback: '广播回环',
+  tcp_bind: 'TCP 端口绑定',
+  firewall_status: '防火墙状态',
+}
+
 async function loadConfig() {
   try {
     const data = await request('cluster', 'config.get')
@@ -86,6 +100,48 @@ async function cleanupSnapshots() {
   }
 }
 
+async function checkFirewall() {
+  checking.value = true
+  firewallResults.value = null
+  ruleResult.value = null
+  try {
+    const data = await request('cluster', 'firewall.check')
+    firewallResults.value = data
+    if (!data.all_pass) {
+      toast.warn('网络检测发现问题，请查看详情')
+    } else {
+      toast.success('网络检测通过')
+    }
+  } catch (e: any) {
+    toast.error('检测失败: ' + (e || '未知错误'))
+  }
+  checking.value = false
+}
+
+async function addFirewallRules() {
+  addingRules.value = true
+  ruleResult.value = null
+  try {
+    const data = await request('cluster', 'firewall.add_rules', {
+      udp_port: port.value,
+      tcp_port: rpcPort.value,
+    })
+    ruleResult.value = data
+    if (data.success) {
+      toast.success('防火墙规则已添加')
+    } else if (data.uac_triggered) {
+      toast.info('请确认 UAC 弹窗以添加防火墙规则')
+    } else if (data.permission_denied) {
+      toast.warn('权限不足，请查看手动命令')
+    } else {
+      toast.error(data.message || '添加失败')
+    }
+  } catch (e: any) {
+    toast.error('添加失败: ' + (e || '未知错误'))
+  }
+  addingRules.value = false
+}
+
 onMounted(async () => {
   await Promise.all([loadConfig(), loadSnapshots()])
   loading.value = false
@@ -98,54 +154,113 @@ onMounted(async () => {
   </div>
 
   <div v-if="!loading">
-    <div class="card" style="margin-bottom:var(--space-4)">
-      <div class="card-header"><h3>基础设置</h3></div>
-      <div class="card-body">
-        <div class="form-group">
-          <label class="form-label">
-            启用集群
-            <span class="form-hint" title="总开关：启用后，集群功能可在概览页启动。重启 Gateway 后也会自动生效。">ⓘ</span>
-          </label>
-          <div
-            class="toggle"
-            :class="{ active: masterEnabled }"
-            @click="toggleMasterEnabled"
-            title="总开关：启用后，集群功能可在概览页启动。重启 Gateway 后也会自动生效。"
-            style="cursor:pointer"
-          ></div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">发现端口</label>
-          <input class="form-input" type="number" v-model.number="port" style="width:120px" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">RPC 端口</label>
-          <input class="form-input" type="number" v-model.number="rpcPort" style="width:120px" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">广播间隔 (秒)</label>
-          <input class="form-input" type="number" v-model.number="broadcastInterval" style="width:120px" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">LLM 超时 (秒)</label>
-          <input class="form-input" type="number" v-model.number="llmTimeout" style="width:120px" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">认证 Token</label>
-          <div style="display:flex;gap:var(--space-2);align-items:center">
-            <input class="form-input" type="password" :value="authToken" readonly style="width:240px" />
-            <button class="btn btn-sm" @click="authToken = crypto.randomUUID()">重新生成</button>
+    <div class="settings-two-col">
+      <!-- Left: Basic Settings -->
+      <div class="card">
+        <div class="card-header"><h3>基础设置</h3></div>
+        <div class="card-body">
+          <div class="form-group">
+            <label class="form-label">
+              启用集群
+              <span class="form-hint" title="总开关：启用后，集群功能可在概览页启动。重启 Gateway 后也会自动生效。">ⓘ</span>
+            </label>
+            <div
+              class="toggle"
+              :class="{ active: masterEnabled }"
+              @click="toggleMasterEnabled"
+              title="总开关：启用后，集群功能可在概览页启动。重启 Gateway 后也会自动生效。"
+              style="cursor:pointer"
+            ></div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">发现端口</label>
+            <input class="form-input" type="number" v-model.number="port" style="width:120px" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">RPC 端口</label>
+            <input class="form-input" type="number" v-model.number="rpcPort" style="width:120px" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">广播间隔 (秒)</label>
+            <input class="form-input" type="number" v-model.number="broadcastInterval" style="width:120px" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">LLM 超时 (秒)</label>
+            <input class="form-input" type="number" v-model.number="llmTimeout" style="width:120px" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">认证 Token</label>
+            <div style="display:flex;gap:var(--space-2);align-items:center">
+              <input class="form-input" type="password" :value="authToken" readonly style="width:240px" />
+              <button class="btn btn-sm" @click="authToken = crypto.randomUUID()">重新生成</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:var(--space-2);margin-top:var(--space-4)">
+            <button class="btn btn-primary" :disabled="saving" @click="saveConfig">
+              {{ saving ? '保存中...' : '保存' }}
+            </button>
+            <button class="btn" @click="resetConfig">重置</button>
           </div>
         </div>
-        <div style="display:flex;gap:var(--space-2);margin-top:var(--space-4)">
-          <button class="btn btn-primary" :disabled="saving" @click="saveConfig">
-            {{ saving ? '保存中...' : '保存' }}
-          </button>
-          <button class="btn" @click="resetConfig">重置</button>
+      </div>
+
+      <!-- Right: Network Diagnostics -->
+      <div class="card">
+        <div class="card-header"><h3>网络诊断</h3></div>
+        <div class="card-body">
+          <div class="form-group">
+            <label class="form-label">发现端口 (UDP)</label>
+            <span style="font-family:var(--font-mono);font-size:var(--text-sm)">{{ port }}</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">RPC 端口 (TCP)</label>
+            <span style="font-family:var(--font-mono);font-size:var(--text-sm)">{{ rpcPort }}</span>
+          </div>
+          <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3)">
+            <button class="btn btn-primary btn-sm" :disabled="checking" @click="checkFirewall">
+              {{ checking ? '检测中...' : '检测网络' }}
+            </button>
+            <button class="btn btn-sm" :disabled="addingRules" @click="addFirewallRules">
+              {{ addingRules ? '添加中...' : '添加防火墙规则' }}
+            </button>
+          </div>
+
+          <!-- Test results -->
+          <div v-if="firewallResults" class="fw-results">
+            <div v-for="test in firewallResults.tests" :key="test.name" class="fw-test-row">
+              <span class="fw-icon" :class="test.pass ? 'pass' : 'fail'">{{ test.pass ? '✓' : '✗' }}</span>
+              <span class="fw-label">{{ testNames[test.name] || test.name }}</span>
+              <span class="fw-detail">{{ test.detail }}</span>
+            </div>
+            <div class="fw-summary" :class="firewallResults.all_pass ? 'pass' : 'fail'">
+              {{ firewallResults.all_pass ? '网络正常，集群通信就绪' : '存在问题，可能影响集群通信' }}
+            </div>
+          </div>
+
+          <!-- Rule add result -->
+          <div v-if="ruleResult" class="fw-results" style="margin-top:var(--space-2)">
+            <div v-if="ruleResult.success" class="fw-summary pass">{{ ruleResult.message }}</div>
+            <template v-else-if="ruleResult.uac_triggered">
+              <div class="fw-summary uac">{{ ruleResult.message }}</div>
+              <div style="margin-top:var(--space-2)">
+                <div style="font-size:var(--text-sm);color:var(--text-muted);margin-bottom:var(--space-1)">如果未看到 UAC 弹窗，手动执行：</div>
+                <pre v-for="cmd in ruleResult.manual_commands" :key="cmd" class="fw-cmd">{{ cmd }}</pre>
+              </div>
+            </template>
+            <template v-else>
+              <div class="fw-summary fail">{{ ruleResult.message }}</div>
+              <div v-if="ruleResult.permission_denied" style="margin-top:var(--space-2)">
+                <div style="font-size:var(--text-sm);color:var(--text-muted);margin-bottom:var(--space-1)">{{ ruleResult.platform_hint }}</div>
+                <div style="font-size:var(--text-sm);color:var(--text-muted);margin-bottom:var(--space-1)">手动执行：</div>
+                <pre v-for="cmd in ruleResult.manual_commands" :key="cmd" class="fw-cmd">{{ cmd }}</pre>
+              </div>
+            </template>
+          </div>
         </div>
       </div>
     </div>
 
+    <!-- Full-width snapshots card -->
     <div class="card">
       <div class="card-header">
         <h3>续行快照管理</h3>
@@ -176,3 +291,86 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.settings-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+@media (max-width: 900px) {
+  .settings-two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.fw-results {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-3);
+}
+
+.fw-test-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+}
+
+.fw-icon {
+  font-weight: 700;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.fw-icon.pass { color: var(--success); }
+.fw-icon.fail { color: var(--error); }
+
+.fw-label {
+  font-weight: 500;
+  white-space: nowrap;
+  min-width: 100px;
+}
+
+.fw-detail {
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fw-summary {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  text-align: center;
+}
+.fw-summary.pass {
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--success);
+}
+.fw-summary.fail {
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+}
+
+.fw-summary.uac {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+}
+
+.fw-cmd {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-x: auto;
+  margin-bottom: var(--space-1);
+}
+</style>

@@ -98,6 +98,11 @@ pub enum ClusterAction {
         #[command(subcommand)]
         action: IdentityAction,
     },
+    /// Manage firewall rules for cluster ports
+    Firewall {
+        #[command(subcommand)]
+        action: FirewallAction,
+    },
     /// Start a lightweight cluster node (discovery + RPC, no LLM)
     Node {
         /// UDP discovery port (overrides config)
@@ -208,6 +213,28 @@ pub enum IdentityAction {
     Edit,
     /// Reset identity to default (贾维斯 / 专家开发工程师)
     Reset,
+}
+
+#[derive(clap::Subcommand)]
+pub enum FirewallAction {
+    /// Add firewall rules for cluster discovery and RPC ports
+    Add {
+        /// UDP discovery port
+        #[arg(long, default_value = "11949")]
+        udp_port: u16,
+        /// TCP RPC port
+        #[arg(long, default_value = "21949")]
+        tcp_port: u16,
+    },
+    /// Remove firewall rules for cluster ports
+    Remove {
+        /// UDP discovery port
+        #[arg(long, default_value = "11949")]
+        udp_port: u16,
+        /// TCP RPC port
+        #[arg(long, default_value = "21949")]
+        tcp_port: u16,
+    },
 }
 
 pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
@@ -741,8 +768,192 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
         ClusterAction::Node { udp_port, rpc_port, name, broadcast_interval } => {
             run_node(&home, udp_port, rpc_port, name, broadcast_interval).await?;
         }
+        ClusterAction::Firewall { action } => {
+            run_firewall(action)?;
+        }
     }
     Ok(())
+}
+
+/// Manage firewall rules for cluster ports.
+fn run_firewall(action: FirewallAction) -> Result<()> {
+    match action {
+        FirewallAction::Add { udp_port, tcp_port } => {
+            println!("Adding firewall rules for cluster...");
+            println!("  UDP port: {}", udp_port);
+            println!("  TCP port: {}", tcp_port);
+
+            firewall_add_rules(udp_port, tcp_port)?;
+            println!("Firewall rules added successfully.");
+        }
+        FirewallAction::Remove { udp_port, tcp_port } => {
+            println!("Removing firewall rules for cluster...");
+            println!("  UDP port: {}", udp_port);
+            println!("  TCP port: {}", tcp_port);
+
+            firewall_remove_rules(udp_port, tcp_port)?;
+            println!("Firewall rules removed successfully.");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
+    let udp_result = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "add", "rule",
+            "name=NemesisBot Discovery",
+            "dir=in", "action=allow", "protocol=UDP",
+            &format!("localport={}", udp_port),
+            "profile=any",
+        ])
+        .output()?;
+    if !udp_result.status.success() {
+        anyhow::bail!("UDP rule failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+    }
+    println!("  UDP rule added: NemesisBot Discovery (port {})", udp_port);
+
+    let tcp_result = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "add", "rule",
+            "name=NemesisBot RPC",
+            "dir=in", "action=allow", "protocol=TCP",
+            &format!("localport={}", tcp_port),
+            "profile=any",
+        ])
+        .output()?;
+    if !tcp_result.status.success() {
+        anyhow::bail!("TCP rule failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+    }
+    println!("  TCP rule added: NemesisBot RPC (port {})", tcp_port);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
+    let udp_result = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "delete", "rule",
+            "name=NemesisBot Discovery",
+        ])
+        .output()?;
+    if udp_result.status.success() {
+        println!("  UDP rule removed: NemesisBot Discovery");
+    } else {
+        println!("  UDP rule not found or already removed");
+    }
+
+    let tcp_result = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "delete", "rule",
+            "name=NemesisBot RPC",
+        ])
+        .output()?;
+    if tcp_result.status.success() {
+        println!("  TCP rule removed: NemesisBot RPC");
+    } else {
+        println!("  TCP rule not found or already removed");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn firewall_add_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
+    let ufw_exists = std::process::Command::new("which")
+        .arg("ufw")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if ufw_exists {
+        let udp_result = std::process::Command::new("ufw")
+            .args(&["allow", &format!("{}/udp", udp_port)])
+            .output()?;
+        if udp_result.status.success() {
+            println!("  UFW UDP rule added: port {}", udp_port);
+        } else {
+            anyhow::bail!("UFW UDP failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+        }
+        let tcp_result = std::process::Command::new("ufw")
+            .args(&["allow", &format!("{}/tcp", tcp_port)])
+            .output()?;
+        if tcp_result.status.success() {
+            println!("  UFW TCP rule added: port {}", tcp_port);
+        } else {
+            anyhow::bail!("UFW TCP failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+        }
+    } else {
+        let udp_result = std::process::Command::new("iptables")
+            .args(&["-I", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+            .output()?;
+        if !udp_result.status.success() {
+            anyhow::bail!("iptables UDP failed: {}", String::from_utf8_lossy(&udp_result.stderr));
+        }
+        println!("  iptables UDP rule added: port {}", udp_port);
+
+        let tcp_result = std::process::Command::new("iptables")
+            .args(&["-I", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+            .output()?;
+        if !tcp_result.status.success() {
+            anyhow::bail!("iptables TCP failed: {}", String::from_utf8_lossy(&tcp_result.stderr));
+        }
+        println!("  iptables TCP rule added: port {}", tcp_port);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
+    let ufw_exists = std::process::Command::new("which")
+        .arg("ufw")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if ufw_exists {
+        let _ = std::process::Command::new("ufw")
+            .args(&["delete", "allow", &format!("{}/udp", udp_port)])
+            .output();
+        println!("  UFW UDP rule removed: port {}", udp_port);
+        let _ = std::process::Command::new("ufw")
+            .args(&["delete", "allow", &format!("{}/tcp", tcp_port)])
+            .output();
+        println!("  UFW TCP rule removed: port {}", tcp_port);
+    } else {
+        let _ = std::process::Command::new("iptables")
+            .args(&["-D", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+            .output();
+        println!("  iptables UDP rule removed: port {}", udp_port);
+        let _ = std::process::Command::new("iptables")
+            .args(&["-D", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+            .output();
+        println!("  iptables TCP rule removed: port {}", tcp_port);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn firewall_add_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
+    println!("  macOS pf 通常不阻止局域网流量，无需手动添加规则。");
+    println!("  如需配置，请编辑 /etc/pf.conf");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
+    println!("  macOS 不需要移除规则。");
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn firewall_add_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
+    anyhow::bail!("当前平台不支持防火墙规则管理");
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
+    anyhow::bail!("当前平台不支持防火墙规则管理");
 }
 
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.

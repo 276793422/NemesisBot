@@ -124,6 +124,11 @@ impl ModuleHandler for ClusterHandler {
                 self.identity_save_file(&data, ctx)
             }
             "peers" => self.peers(ctx),
+            "firewall.check" => self.firewall_check(ctx),
+            "firewall.add_rules" => {
+                let data = data.ok_or("missing data")?;
+                self.firewall_add_rules(&data, ctx)
+            }
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
     }
@@ -674,6 +679,33 @@ impl ClusterHandler {
             }
             nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
                 .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+
+            // Also sync identity fields to config.cluster.json so gateway.rs
+            // picks up the updated name on restart (cluster init writes name there).
+            let ccfg_path = cluster_config_path(workspace);
+            if ccfg_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&ccfg_path) {
+                    if let Ok(mut ccfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = ccfg.as_object_mut() {
+                            if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
+                                obj.insert("name".into(), serde_json::json!(name.trim()));
+                            }
+                            if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
+                                obj.insert("role".into(), serde_json::json!(role.trim()));
+                            }
+                            if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
+                                obj.insert("category".into(), serde_json::json!(category.trim()));
+                            }
+                            if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
+                                obj.insert("tags".into(), serde_json::json!(tags_arr));
+                            }
+                        }
+                        if let Ok(json) = serde_json::to_string_pretty(&ccfg) {
+                            let _ = std::fs::write(&ccfg_path, json);
+                        }
+                    }
+                }
+            }
         }
 
         // Return current values
@@ -1369,4 +1401,665 @@ fn format_ago(d: std::time::Duration) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Firewall diagnostics
+// ---------------------------------------------------------------------------
+
+impl ClusterHandler {
+    /// Check network readiness for cluster discovery and RPC.
+    fn firewall_check(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let (udp_port, tcp_port) = Self::read_cluster_ports(ctx);
+        let mut tests = Vec::new();
+
+        // Test 1: UDP bind
+        let udp_bind_result = test_udp_bind(udp_port);
+        tests.push(udp_bind_result.clone());
+
+        // Test 2: SO_BROADCAST flag
+        let broadcast_result = if udp_bind_result["pass"].as_bool().unwrap_or(false) {
+            test_broadcast_flag()
+        } else {
+            serde_json::json!({ "name": "broadcast_flag", "pass": false, "detail": "跳过（UDP 绑定失败）" })
+        };
+        tests.push(broadcast_result.clone());
+
+        // Test 3: Broadcast loopback (send to 255.255.255.255, receive back)
+        let loopback_result = if broadcast_result["pass"].as_bool().unwrap_or(false) {
+            test_broadcast_loopback()
+        } else {
+            serde_json::json!({ "name": "broadcast_loopback", "pass": false, "detail": "跳过（广播标志不可用）" })
+        };
+        tests.push(loopback_result);
+
+        // Test 4: TCP bind
+        let tcp_result = test_tcp_bind(tcp_port);
+        tests.push(tcp_result);
+
+        // Test 5: Platform firewall status
+        let fw_result = check_platform_firewall(udp_port, tcp_port);
+        tests.push(fw_result);
+
+        let all_pass = tests.iter().all(|t| t["pass"].as_bool().unwrap_or(false));
+
+        let platform = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "other"
+        };
+
+        Ok(Some(serde_json::json!({
+            "udp_port": udp_port,
+            "tcp_port": tcp_port,
+            "platform": platform,
+            "tests": tests,
+            "all_pass": all_pass,
+        })))
+    }
+
+    /// Add firewall rules for cluster ports.
+    fn firewall_add_rules(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let (default_udp, default_tcp) = Self::read_cluster_ports(ctx);
+        let udp_port = data.get("udp_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_udp as u64) as u16;
+        let tcp_port = data.get("tcp_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_tcp as u64) as u16;
+
+        if udp_port == 0 || tcp_port == 0 {
+            return Err("端口范围无效 (1-65535)".to_string());
+        }
+
+        add_platform_firewall_rules(udp_port, tcp_port)
+    }
+
+    /// Read cluster ports from config file, fallback to defaults.
+    fn read_cluster_ports(ctx: &RequestContext) -> (u16, u16) {
+        let default_udp = 11949u16;
+        let default_tcp = 21949u16;
+
+        let Ok(workspace) = require_workspace(ctx) else {
+            return (default_udp, default_tcp);
+        };
+        let path = cluster_config_path(workspace);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return (default_udp, default_tcp);
+        };
+        let cfg: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => return (default_udp, default_tcp),
+        };
+
+        let udp = cfg.get("port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_udp as u64) as u16;
+        let tcp = cfg.get("rpc_port")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_tcp as u64) as u16;
+        (udp, tcp)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Individual test functions
+// ---------------------------------------------------------------------------
+
+fn test_udp_bind(port: u16) -> serde_json::Value {
+    match std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+        Ok(_) => serde_json::json!({
+            "name": "udp_bind",
+            "pass": true,
+            "detail": format!("UDP {} 端口绑定成功", port)
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            serde_json::json!({
+                "name": "udp_bind",
+                "pass": true,
+                "detail": format!("UDP {} 端口已被集群占用", port)
+            })
+        }
+        Err(e) => serde_json::json!({
+            "name": "udp_bind",
+            "pass": false,
+            "detail": format!("UDP {} 绑定失败: {}", port, e)
+        }),
+    }
+}
+
+fn test_broadcast_flag() -> serde_json::Value {
+    match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(socket) => match socket.set_broadcast(true) {
+            Ok(_) => serde_json::json!({
+                "name": "broadcast_flag",
+                "pass": true,
+                "detail": "SO_BROADCAST 设置成功"
+            }),
+            Err(e) => serde_json::json!({
+                "name": "broadcast_flag",
+                "pass": false,
+                "detail": format!("设置广播标志失败: {}", e)
+            }),
+        },
+        Err(e) => serde_json::json!({
+            "name": "broadcast_flag",
+            "pass": false,
+            "detail": format!("创建测试套接字失败: {}", e)
+        }),
+    }
+}
+
+fn test_broadcast_loopback() -> serde_json::Value {
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    // Bind receiver on a random port
+    let receiver = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            return serde_json::json!({
+                "name": "broadcast_loopback",
+                "pass": false,
+                "detail": format!("绑定接收套接字失败: {}", e)
+            })
+        }
+    };
+    receiver.set_broadcast(true).ok();
+    let recv_port = match receiver.local_addr() {
+        Ok(a) => a.port(),
+        Err(e) => {
+            return serde_json::json!({
+                "name": "broadcast_loopback",
+                "pass": false,
+                "detail": format!("获取接收端口失败: {}", e)
+            })
+        }
+    };
+    receiver
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .ok();
+
+    // Bind sender on a different random port
+    let sender = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            return serde_json::json!({
+                "name": "broadcast_loopback",
+                "pass": false,
+                "detail": format!("绑定发送套接字失败: {}", e)
+            })
+        }
+    };
+    sender.set_broadcast(true).ok();
+
+    let test_payload = b"NEMESIS_FIREWALL_TEST";
+    let broadcast_addr = format!("255.255.255.255:{}", recv_port);
+
+    if let Err(e) = sender.send_to(test_payload, &broadcast_addr) {
+        return serde_json::json!({
+            "name": "broadcast_loopback",
+            "pass": false,
+            "detail": format!("广播发送失败: {}", e)
+        });
+    }
+
+    let mut buf = [0u8; 64];
+    match receiver.recv_from(&mut buf) {
+        Ok((n, _)) if &buf[..n] == test_payload => serde_json::json!({
+            "name": "broadcast_loopback",
+            "pass": true,
+            "detail": "广播回环成功"
+        }),
+        Ok(_) => serde_json::json!({
+            "name": "broadcast_loopback",
+            "pass": false,
+            "detail": "收到数据但不匹配"
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut
+            || e.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            serde_json::json!({
+                "name": "broadcast_loopback",
+                "pass": false,
+                "detail": "广播回环超时（可能被防火墙阻止）"
+            })
+        }
+        Err(e) => serde_json::json!({
+            "name": "broadcast_loopback",
+            "pass": false,
+            "detail": format!("接收失败: {}", e)
+        }),
+    }
+}
+
+fn test_tcp_bind(port: u16) -> serde_json::Value {
+    match std::net::TcpListener::bind(format!("0.0.0.0:{}", port)) {
+        Ok(_) => serde_json::json!({
+            "name": "tcp_bind",
+            "pass": true,
+            "detail": format!("TCP {} 端口绑定成功", port)
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            serde_json::json!({
+                "name": "tcp_bind",
+                "pass": true,
+                "detail": format!("TCP {} 端口已被集群占用", port)
+            })
+        }
+        Err(e) => serde_json::json!({
+            "name": "tcp_bind",
+            "pass": false,
+            "detail": format!("TCP {} 绑定失败: {}", port, e)
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Platform-specific firewall check
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
+    // Check if Windows Firewall is enabled
+    let fw_enabled = std::process::Command::new("netsh")
+        .args(&["advfirewall", "show", "currentprofile", "state"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .map(|s| s.contains("ON"))
+        .unwrap_or(false);
+
+    // Check if rules already exist
+    let udp_rule_exists = std::process::Command::new("netsh")
+        .args(&["advfirewall", "firewall", "show", "rule", "name=NemesisBot Discovery"])
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let tcp_rule_exists = std::process::Command::new("netsh")
+        .args(&["advfirewall", "firewall", "show", "rule", "name=NemesisBot RPC"])
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !fw_enabled {
+        return serde_json::json!({
+            "name": "firewall_status",
+            "pass": true,
+            "detail": "Windows 防火墙未启用，不阻止流量"
+        });
+    }
+
+    if udp_rule_exists && tcp_rule_exists {
+        serde_json::json!({
+            "name": "firewall_status",
+            "pass": true,
+            "detail": format!("Windows 防火墙已启用，NemesisBot 规则已存在 (UDP {} + TCP {})", udp_port, tcp_port)
+        })
+    } else {
+        let missing = match (udp_rule_exists, tcp_rule_exists) {
+            (false, false) => "UDP 和 TCP 规则均缺失",
+            (false, true) => "UDP 规则缺失",
+            (true, false) => "TCP 规则缺失",
+            _ => unreachable!(),
+        };
+        serde_json::json!({
+            "name": "firewall_status",
+            "pass": false,
+            "detail": format!("Windows 防火墙已启用，{}", missing)
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
+    // Try ufw first
+    let ufw_output = std::process::Command::new("ufw")
+        .arg("status")
+        .output()
+        .ok();
+
+    if let Some(output) = ufw_output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("inactive") {
+                return serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": "UFW 防火墙未启用，不阻止流量"
+                });
+            }
+            // UFW is active — check if ports are allowed
+            let udp_ok = stdout.contains(&format!("{}/udp", udp_port))
+                || stdout.contains("Anywhere");
+            let tcp_ok = stdout.contains(&format!("{}/tcp", tcp_port))
+                || stdout.contains("Anywhere");
+            if udp_ok && tcp_ok {
+                return serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": format!("UFW 已启用，端口 UDP {} 和 TCP {} 已放行", udp_port, tcp_port)
+                });
+            } else {
+                return serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": false,
+                    "detail": format!("UFW 已启用，但端口 UDP {} 或 TCP {} 未放行", udp_port, tcp_port)
+                });
+            }
+        }
+    }
+
+    // Fallback: check iptables
+    let ipt_output = std::process::Command::new("iptables")
+        .args(&["-L", "INPUT", "-n"])
+        .output()
+        .ok();
+
+    if let Some(output) = ipt_output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let policy_accept = stdout.contains("Chain INPUT (policy ACCEPT)");
+            let udp_ok = stdout.contains(&format!("dpt:{}", udp_port));
+            let tcp_ok = stdout.contains(&format!("dpt:{}", tcp_port));
+            if policy_accept && !stdout.contains("REJECT") && !stdout.contains("DROP") {
+                return serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": "iptables 默认策略 ACCEPT，不阻止流量"
+                });
+            }
+            if udp_ok && tcp_ok {
+                return serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": format!("iptables 已放行端口 UDP {} 和 TCP {}", udp_port, tcp_port)
+                });
+            }
+            return serde_json::json!({
+                "name": "firewall_status",
+                "pass": false,
+                "detail": format!("iptables 可能阻止端口 UDP {} 或 TCP {}", udp_port, tcp_port)
+            });
+        }
+    }
+
+    serde_json::json!({
+        "name": "firewall_status",
+        "pass": true,
+        "detail": "未检测到防火墙（ufw/iptables 不可用）"
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn check_platform_firewall(_udp_port: u16, _tcp_port: u16) -> serde_json::Value {
+    let output = std::process::Command::new("pfctl")
+        .args(&["-s", "info"])
+        .output()
+        .ok();
+
+    match output {
+        Some(o) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if stdout.contains("Enabled") {
+                serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": "macOS pf 已启用，但通常不阻止局域网流量"
+                })
+            } else {
+                serde_json::json!({
+                    "name": "firewall_status",
+                    "pass": true,
+                    "detail": "macOS pf 未启用"
+                })
+            }
+        }
+        _ => serde_json::json!({
+            "name": "firewall_status",
+            "pass": true,
+            "detail": "macOS pf 状态未知（可能需要 sudo）"
+        }),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn check_platform_firewall(_udp_port: u16, _tcp_port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "name": "firewall_status",
+        "pass": true,
+        "detail": "当前平台不支持防火墙检测"
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Platform-specific firewall rule addition
+// ---------------------------------------------------------------------------
+
+/// Windows: UAC elevation via ShellExecuteW with "runas" verb.
+/// Fire-and-forget — returns immediately after triggering the UAC prompt.
+#[cfg(target_os = "windows")]
+fn spawn_elevated(exe: &str, args: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let verb: Vec<u16> = OsStr::new("runas").encode_wide().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = OsStr::new(exe).encode_wide().chain(std::iter::once(0)).collect();
+    let params: Vec<u16> = OsStr::new(args).encode_wide().chain(std::iter::once(0)).collect();
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            lpverb: *const u16,
+            lpfile: *const u16,
+            lpparameters: *const u16,
+            lpdirectory: *const u16,
+            nshowcmd: i32,
+        ) -> isize;
+    }
+    const SW_SHOWNORMAL: i32 = 1;
+
+    unsafe {
+        let ret = ShellExecuteW(
+            0,
+            verb.as_ptr(),
+            file.as_ptr(),
+            params.as_ptr(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        // ShellExecuteW returns > 32 on success
+        if ret <= 32 {
+            return Err(format!("ShellExecuteW runas 失败 (code: {})", ret));
+        }
+    }
+    Ok(())
+}
+
+
+#[cfg(target_os = "windows")]
+fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+    let manual_udp = format!(
+        "netsh advfirewall firewall add rule name=\"NemesisBot Discovery\" dir=in action=allow protocol=UDP localport={} profile=any",
+        udp_port
+    );
+    let manual_tcp = format!(
+        "netsh advfirewall firewall add rule name=\"NemesisBot RPC\" dir=in action=allow protocol=TCP localport={} profile=any",
+        tcp_port
+    );
+
+    // Step 1: Try direct execution (succeeds if already running as admin)
+    let udp_ok = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "add", "rule",
+            "name=NemesisBot Discovery",
+            "dir=in", "action=allow", "protocol=UDP",
+            &format!("localport={}", udp_port),
+            "profile=any",
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let tcp_ok = std::process::Command::new("netsh")
+        .args(&[
+            "advfirewall", "firewall", "add", "rule",
+            "name=NemesisBot RPC",
+            "dir=in", "action=allow", "protocol=TCP",
+            &format!("localport={}", tcp_port),
+            "profile=any",
+        ])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if udp_ok && tcp_ok {
+        return Ok(Some(serde_json::json!({
+            "success": true,
+            "udp_rule_added": true,
+            "tcp_rule_added": true,
+            "message": format!("防火墙规则已添加：UDP {} + TCP {}", udp_port, tcp_port),
+            "permission_denied": false,
+        })));
+    }
+
+    // Step 2: Direct execution failed — elevate via ShellExecuteW "runas".
+    // netsh outputs errors to stdout, not stderr, so keyword detection is unreliable.
+    // Always try UAC elevation as fallback.
+    let exe_path = std::env::current_exe().map_err(|e| format!("无法获取当前程序路径: {}", e))?;
+    let exe_str = exe_path.to_str().ok_or("程序路径包含非法字符")?;
+    let args = format!("cluster firewall add --udp-port {} --tcp-port {}", udp_port, tcp_port);
+
+    match spawn_elevated(exe_str, &args) {
+        Ok(()) => {
+            Ok(Some(serde_json::json!({
+                "success": false,
+                "udp_rule_added": false,
+                "tcp_rule_added": false,
+                "message": "已弹出 UAC 提权请求，请在弹窗中确认。添加完成后请重新检测网络。".to_string(),
+                "permission_denied": false,
+                "uac_triggered": true,
+                "manual_commands": [manual_udp, manual_tcp],
+                "platform_hint": "如果未看到 UAC 弹窗，请手动执行以下命令",
+            })))
+        }
+        Err(e) => {
+            Ok(Some(serde_json::json!({
+                "success": false,
+                "udp_rule_added": false,
+                "tcp_rule_added": false,
+                "message": format!("无法启动 UAC 提权: {}", e),
+                "permission_denied": true,
+                "manual_commands": [manual_udp, manual_tcp],
+                "platform_hint": "以管理员身份手动执行以下命令",
+            })))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn add_platform_firewall_rules(udp_port: u16, tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+    // Try ufw first
+    let ufw_exists = std::process::Command::new("which")
+        .arg("ufw")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if ufw_exists {
+        let udp_result = std::process::Command::new("ufw")
+            .arg("allow")
+            .arg(format!("{}/udp", udp_port))
+            .output();
+        let tcp_result = std::process::Command::new("ufw")
+            .arg("allow")
+            .arg(format!("{}/tcp", tcp_port))
+            .output();
+
+        let udp_ok = udp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+        let tcp_ok = tcp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+
+        if udp_ok && tcp_ok {
+            return Ok(Some(serde_json::json!({
+                "success": true,
+                "udp_rule_added": true,
+                "tcp_rule_added": true,
+                "message": format!("UFW 规则已添加：UDP {} + TCP {}", udp_port, tcp_port),
+                "permission_denied": false,
+            })));
+        }
+    }
+
+    // Fallback: iptables
+    let udp_result = std::process::Command::new("iptables")
+        .args(&["-I", "INPUT", "-p", "udp", "--dport", &udp_port.to_string(), "-j", "ACCEPT"])
+        .output();
+    let tcp_result = std::process::Command::new("iptables")
+        .args(&["-I", "INPUT", "-p", "tcp", "--dport", &tcp_port.to_string(), "-j", "ACCEPT"])
+        .output();
+
+    let udp_ok = udp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+    let tcp_ok = tcp_result.as_ref().map(|o| o.status.success()).unwrap_or(false);
+
+    if udp_ok && tcp_ok {
+        return Ok(Some(serde_json::json!({
+            "success": true,
+            "udp_rule_added": true,
+            "tcp_rule_added": true,
+            "message": format!("iptables 规则已添加：UDP {} + TCP {}", udp_port, tcp_port),
+            "permission_denied": false,
+        })));
+    }
+
+    // Both failed — return manual commands
+    let manual_udp = if ufw_exists {
+        format!("sudo ufw allow {}/udp", udp_port)
+    } else {
+        format!("sudo iptables -I INPUT -p udp --dport {} -j ACCEPT", udp_port)
+    };
+    let manual_tcp = if ufw_exists {
+        format!("sudo ufw allow {}/tcp", tcp_port)
+    } else {
+        format!("sudo iptables -I INPUT -p tcp --dport {} -j ACCEPT", tcp_port)
+    };
+
+    Ok(Some(serde_json::json!({
+        "success": false,
+        "udp_rule_added": false,
+        "tcp_rule_added": false,
+        "message": "权限不足，无法添加防火墙规则".to_string(),
+        "permission_denied": true,
+        "manual_commands": [manual_udp, manual_tcp],
+        "platform_hint": "使用 sudo 运行 NemesisBot",
+    })))
+}
+
+#[cfg(target_os = "macos")]
+fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+    Ok(Some(serde_json::json!({
+        "success": false,
+        "udp_rule_added": false,
+        "tcp_rule_added": false,
+        "message": "macOS pf 通常不阻止局域网流量，无需手动添加规则",
+        "permission_denied": false,
+        "manual_commands": [] as Vec<&str>,
+        "platform_hint": "如需配置，请编辑 /etc/pf.conf",
+    })))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<serde_json::Value>, String> {
+    Err("当前平台不支持防火墙规则管理".to_string())
 }
