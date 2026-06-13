@@ -20,6 +20,46 @@ impl ClusterHandler {
     pub fn new() -> Self {
         Self { _priv: () }
     }
+
+    async fn diagnostics_run(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let node_id = data["node_id"]
+            .as_str()
+            .ok_or("missing node_id")?;
+        let action = data["action"]
+            .as_str()
+            .ok_or("missing action")?;
+
+        // Use RPC client directly for async call with 10s timeout
+        let rpc_client = cluster.rpc_client_arc()
+            .ok_or("RPC client not available")?;
+
+        let request = nemesis_cluster::rpc_types::RPCRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            action: nemesis_cluster::rpc_types::ActionType::Custom(action.to_string()),
+            payload: serde_json::json!({}),
+            source: cluster.node_id().to_string(),
+            target: Some(node_id.to_string()),
+        };
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            rpc_client.call_with_timeout(node_id, request, std::time::Duration::from_secs(10)),
+        )
+        .await
+        .map_err(|_| "diagnostics timeout (10s)".to_string())?
+        .map_err(|e| format!("RPC call failed: {}", e))?;
+
+        if let Some(err) = response.error {
+            return Err(err);
+        }
+
+        Ok(response.result)
+    }
 }
 
 #[async_trait::async_trait]
@@ -128,6 +168,10 @@ impl ModuleHandler for ClusterHandler {
             "firewall.add_rules" => {
                 let data = data.ok_or("missing data")?;
                 self.firewall_add_rules(&data, ctx)
+            }
+            "diagnostics.run" => {
+                let data = data.ok_or("missing data")?;
+                self.diagnostics_run(&data, ctx).await
             }
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }

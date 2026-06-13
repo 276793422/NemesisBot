@@ -451,13 +451,27 @@ impl RpcClient {
         request: &RPCRequest,
     ) -> Result<RPCResponse, RpcClientError> {
         // Dial TCP with 10-second timeout (matching Go's net.DialTimeout)
-        let stream = time::timeout(
+        let mut stream = time::timeout(
             Duration::from_secs(10),
             TcpStream::connect(addr),
         )
         .await
         .map_err(|_| RpcClientError::Connection(format!("dial timeout to {}", addr)))?
         .map_err(|e| RpcClientError::Connection(format!("connect to {}: {}", addr, e)))?;
+
+        // Send auth token on async thread BEFORE converting to std stream.
+        // Server expects: "token\n" as the first line before framed data.
+        let auth_token = self.auth_token.lock().clone();
+        if let Some(ref token) = auth_token {
+            if !token.is_empty() {
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(format!("{}\n", token).as_bytes()).await
+                    .map_err(|e| RpcClientError::Connection(format!("auth send to {}: {}", addr, e)))?;
+                stream.flush().await
+                    .map_err(|e| RpcClientError::Connection(format!("auth flush to {}: {}", addr, e)))?;
+                tracing::info!(addr = addr, "[RpcClient] Auth token sent");
+            }
+        }
 
         // Convert to std::net::TcpStream for sync frame I/O
         let std_stream = stream.into_std().map_err(|e| {

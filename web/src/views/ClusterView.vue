@@ -8,6 +8,7 @@ import ClusterTopology from '../components/cluster/ClusterTopology.vue'
 import ClusterIdentity from '../components/cluster/ClusterIdentity.vue'
 import ClusterPersona from '../components/cluster/ClusterPersona.vue'
 import ClusterSettings from '../components/cluster/ClusterSettings.vue'
+import ClusterDiagnostics from '../components/cluster/ClusterDiagnostics.vue'
 
 const activeTab = ref('overview')
 
@@ -19,6 +20,7 @@ const tabMap: Record<string, any> = {
   identity: ClusterIdentity,
   persona: ClusterPersona,
   settings: ClusterSettings,
+  diagnostics: ClusterDiagnostics,
 }
 </script>
 

@@ -15,6 +15,7 @@ const tabs = [
   { id: 'identity', label: '身份' },
   { id: 'persona', label: '人格' },
   { id: 'settings', label: '配置' },
+  { id: 'diagnostics', label: '诊断' },
 ]
 </script>
 

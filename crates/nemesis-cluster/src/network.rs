@@ -62,7 +62,7 @@ pub fn build_bind_address(bind: Option<&str>, default_port: u16) -> String {
 // ---------------------------------------------------------------------------
 
 /// A local network interface with its subnet information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NetworkInterface {
     pub ip: String,
     pub mask: String,

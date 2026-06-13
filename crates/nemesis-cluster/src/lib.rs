@@ -16,6 +16,7 @@ pub mod cluster_log_reader;
 pub mod logger;
 pub mod network;
 pub mod registry;
+pub mod diagnostics;
 pub mod task_result_store;
 
 pub mod discovery;

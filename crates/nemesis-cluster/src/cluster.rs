@@ -290,9 +290,6 @@ impl Cluster {
         };
         self.registry.upsert(local_node);
 
-        // Load RPC auth token from config.cluster.json and apply to server/client.
-        self.load_rpc_auth_token();
-
         // Initialize RPC client with peer resolver backed by our registry.
         // If a client was already set via set_rpc_client(), this is a no-op.
         if self.rpc_client.lock().is_none() {
@@ -308,6 +305,10 @@ impl Cluster {
             );
             *self.rpc_client.lock() = Some(client);
         }
+
+        // Load RPC auth token from config.cluster.json and apply to server/client.
+        // MUST be after RPC client creation so token is set on both server and client.
+        self.load_rpc_auth_token();
 
         // Start the recovery loop
         self.start_recovery_loop();
@@ -1488,6 +1489,51 @@ impl Cluster {
                 "node_id": node_id,
                 "status": "online",
                 "message": "hello from cluster node",
+            }))
+        }))?;
+
+        // diagnostics.system — OS, memory, uptime
+        self.register_rpc_handler("diagnostics.system", Box::new(move |_payload| {
+            let os = std::env::consts::OS.to_string();
+            let arch = std::env::consts::ARCH.to_string();
+            let hostname = crate::diagnostics::get_hostname();
+            let (mem_total, mem_used, uptime_secs) = crate::diagnostics::collect_system_metrics();
+            let os_version = crate::diagnostics::collect_os_version();
+            Ok(serde_json::json!({
+                "os": os, "os_version": os_version, "arch": arch,
+                "hostname": hostname, "uptime_secs": uptime_secs,
+                "memory_total_bytes": mem_total, "memory_used_bytes": mem_used,
+            }))
+        }))?;
+
+        // diagnostics.network — network interfaces and IPs
+        self.register_rpc_handler("diagnostics.network", Box::new(move |_payload| {
+            let interfaces = network::get_local_network_interfaces();
+            let all_ips = network::get_all_local_ips();
+            Ok(serde_json::json!({
+                "interfaces": interfaces,
+                "all_ips": all_ips,
+            }))
+        }))?;
+
+        // diagnostics.cluster_state — peers this node sees
+        let registry_arc = self.registry.clone();
+        self.register_rpc_handler("diagnostics.cluster_state", Box::new(move |_payload| {
+            let all_nodes = registry_arc.list_peers();
+            let online: Vec<_> = all_nodes.iter()
+                .filter(|n| n.is_online())
+                .map(|n| serde_json::json!({
+                    "id": n.base.id,
+                    "name": n.base.name,
+                    "address": n.base.address,
+                    "role": n.base.role,
+                    "last_seen": n.base.last_seen,
+                }))
+                .collect();
+            Ok(serde_json::json!({
+                "node_count": all_nodes.len(),
+                "online_count": online.len(),
+                "nodes": online,
             }))
         }))?;
 
