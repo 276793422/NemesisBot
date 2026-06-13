@@ -110,10 +110,12 @@ async function sendCommand() {
       try {
         const detail = await request('cluster', 'tasks.detail', { task_id: taskId })
         if (detail.status === 'completed') {
-          commandResult.value = detail.result || '(无输出)'
+          const r = detail.result
+          commandResult.value = typeof r === 'string' ? r : (r?.response || r?.error || JSON.stringify(r) || '(无输出)')
           break
         } else if (detail.status === 'failed') {
-          commandResult.value = `任务失败: ${detail.result || '未知错误'}`
+          const r = detail.result
+          commandResult.value = `任务失败: ${typeof r === 'string' ? r : (r?.error || r?.response || JSON.stringify(r) || '未知错误')}`
           break
         }
         commandResult.value = `等待中... (${(i + 1) * 2}s)`

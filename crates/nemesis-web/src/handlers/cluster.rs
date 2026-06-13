@@ -135,7 +135,7 @@ impl ModuleHandler for ClusterHandler {
             }
             "tasks.submit" => {
                 let data = data.ok_or("missing data")?;
-                self.tasks_submit(&data, ctx)
+                self.tasks_submit(&data, ctx).await
             }
             "topology" => self.topology(ctx),
             "traces" => self.traces(ctx),
@@ -963,7 +963,7 @@ impl ClusterHandler {
     }
 
     /// Phase 2: Submit a new task or peer_chat.
-    fn tasks_submit(
+    async fn tasks_submit(
         &self,
         data: &serde_json::Value,
         ctx: &RequestContext,
@@ -977,16 +977,68 @@ impl ClusterHandler {
 
         let task_id = if let Some(target) = target_node_id {
             // Submit peer_chat to a specific node
-            let payload = serde_json::json!({
+            let source_node_id = cluster.node_id().to_string();
+            let payload_for_task = serde_json::json!({
                 "content": content,
+                "_source": {
+                    "node_id": source_node_id,
+                    "channel": "dashboard",
+                    "chat_id": "dashboard_session",
+                },
             });
-            cluster.submit_peer_chat(
+
+            // 1. Create local task record
+            let task_id = cluster.submit_peer_chat(
                 target,
-                "dashboard_test",
-                payload,
+                "peer_chat",
+                payload_for_task,
                 "dashboard",
                 "dashboard_session",
-            )?
+            )?;
+
+            // 2. Build RPC payload with task_id so B-side uses the same ID
+            let rpc_payload = serde_json::json!({
+                "content": content,
+                "task_id": task_id,
+                "_source": {
+                    "node_id": source_node_id,
+                    "channel": "dashboard",
+                    "chat_id": "dashboard_session",
+                },
+            });
+
+            // 3. Send peer_chat RPC to target node (fire-and-forget style)
+            //    The target will ACK immediately, then process async via agent.
+            //    Results come back via peer_chat_callback.
+            let rpc_client = cluster.rpc_client_arc()
+                .ok_or("RPC client not available")?;
+
+            let request = nemesis_cluster::rpc_types::RPCRequest {
+                id: task_id.clone(),
+                action: nemesis_cluster::rpc_types::ActionType::Known(
+                    nemesis_cluster::rpc_types::KnownAction::PeerChat
+                ),
+                payload: rpc_payload,
+                source: cluster.node_id().to_string(),
+                target: Some(target.to_string()),
+            };
+            let target_owned = target.to_string();
+
+            // Send in background — don't block the WS response.
+            // The task status will be updated when the callback arrives.
+            let timeout = std::time::Duration::from_secs(30);
+            let _ = tokio::spawn(async move {
+                match rpc_client.call_with_timeout(&target_owned, request, timeout).await {
+                    Ok(_ack) => {
+                        tracing::info!("[Cluster] peer_chat RPC ACK received");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "[Cluster] peer_chat RPC send failed");
+                    }
+                }
+            });
+
+            task_id
         } else {
             // Submit a regular task
             let payload = serde_json::json!({

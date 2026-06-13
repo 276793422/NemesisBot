@@ -1260,10 +1260,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 1. If the callback matches a ClusterAgent child task (nested cluster_rpc),
         //    inject it back into the ClusterAgent's work queue.
         // 2. Otherwise, publish to bus as cluster_continuation for the main AgentLoop.
+        // 3. Update TaskManager task status (for dashboard-initiated peer_chat).
         {
             let bus_for_cb = bus.clone();
             let task_list_for_cb = cluster_task_list.clone();
             let work_queue_for_cb = cluster_work_queue.clone();
+            let cluster_for_cb = cluster.clone();
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
                 let task_id = payload
                     .get("task_id")
@@ -1324,6 +1326,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     };
                     bus_for_cb.publish_inbound(inbound);
                     info!("[Gateway] Published cluster_continuation for task_id={}", task_id);
+                }
+
+                // Route 3: Update TaskManager task status (for dashboard-initiated peer_chat).
+                if !task_id.is_empty() {
+                    let result_value = serde_json::json!({
+                        "status": status,
+                        "response": response,
+                        "source_node": source_node,
+                    });
+                    if status == "error" {
+                        cluster_for_cb.fail_task(task_id, response);
+                    } else {
+                        cluster_for_cb.complete_task(task_id, result_value);
+                    }
                 }
 
                 Ok(serde_json::json!({"status": "received", "task_id": task_id}))
