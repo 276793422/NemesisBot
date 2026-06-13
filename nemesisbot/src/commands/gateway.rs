@@ -1115,6 +1115,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
         cluster.start();
+
+        // Refresh local node_id / node_name from the authoritative cluster state.
+        // The values captured above came from config.cluster.json (which typically has
+        // no node_id field), so they defaulted to "unknown" / "unnamed". The cluster
+        // itself loads the real identity from peers.toml during with_workspace() —
+        // query it back here so downstream consumers (ClusterRpcConfig.local_node_id,
+        // Forge-Cluster bridge, startup log) get the true ID.
+        let node_id = cluster.node_id().to_string();
+        let node_name = cluster.node_name();
         info!("[Gateway] Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",
             node_id, node_name, cluster_app_cfg.port, cluster_app_cfg.rpc_port);
 

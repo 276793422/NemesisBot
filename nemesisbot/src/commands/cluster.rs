@@ -1058,6 +1058,12 @@ async fn run_node(
 
     // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
     cluster.start();
+
+    // Refresh local node_id from the authoritative cluster state.
+    // The value captured above may have defaulted to "unknown" if config.cluster.json
+    // had no node_id field. Cluster::with_workspace loads the real identity from
+    // peers.toml, so query it back here for accurate display.
+    let node_id = cluster.node_id().to_string();
     info!("[Node] Cluster started (node_id={}, name={}, udp={}, rpc={})", node_id, node_name, udp_port, rpc_port);
 
     // Register basic RPC handlers (ping, get_info, get_capabilities)
