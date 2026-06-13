@@ -576,8 +576,16 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     let cont_data = match manager.load_continuation(task_id).await {
         Some(data) => data,
         None => {
-            warn!(
-                "[Continuation] Continuation data not found for task_id={}",
+            // This branch is hit by dashboard-initiated peer_chat tasks:
+            // the web handler tasks_submit sends PeerChat RPC directly
+            // without going through the cluster_rpc tool, so no
+            // continuation snapshot was ever saved. The result is
+            // delivered through the TaskManager path (gateway Route 3),
+            // so silently skip. Real cluster_rpc continuations survive
+            // crashes via disk fallback (try_load_from_disk), so a miss
+            // here means there genuinely was nothing to resume.
+            debug!(
+                "[Continuation] No continuation for task_id={} (likely dashboard-initiated peer_chat, skipping)",
                 task_id
             );
             return;

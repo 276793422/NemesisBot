@@ -451,27 +451,13 @@ impl RpcClient {
         request: &RPCRequest,
     ) -> Result<RPCResponse, RpcClientError> {
         // Dial TCP with 10-second timeout (matching Go's net.DialTimeout)
-        let mut stream = time::timeout(
+        let stream = time::timeout(
             Duration::from_secs(10),
             TcpStream::connect(addr),
         )
         .await
         .map_err(|_| RpcClientError::Connection(format!("dial timeout to {}", addr)))?
         .map_err(|e| RpcClientError::Connection(format!("connect to {}: {}", addr, e)))?;
-
-        // Send auth token on async thread BEFORE converting to std stream.
-        // Server expects: "token\n" as the first line before framed data.
-        let auth_token = self.auth_token.lock().clone();
-        if let Some(ref token) = auth_token {
-            if !token.is_empty() {
-                use tokio::io::AsyncWriteExt;
-                stream.write_all(format!("{}\n", token).as_bytes()).await
-                    .map_err(|e| RpcClientError::Connection(format!("auth send to {}: {}", addr, e)))?;
-                stream.flush().await
-                    .map_err(|e| RpcClientError::Connection(format!("auth flush to {}: {}", addr, e)))?;
-                tracing::info!(addr = addr, "[RpcClient] Auth token sent");
-            }
-        }
 
         // Convert to std::net::TcpStream for sync frame I/O
         let std_stream = stream.into_std().map_err(|e| {
@@ -487,30 +473,48 @@ impl RpcClient {
             addr,
         );
 
+        // Derive AES-256 key from auth_token if set. Both sides of the
+        // connection derive the same key from the shared token; the server's
+        // TcpConn decrypts inbound frames and encrypts outbound responses
+        // using this key. Empty token → plaintext frames.
+        let cipher_key = self
+            .auth_token
+            .lock()
+            .clone()
+            .filter(|t| !t.is_empty())
+            .map(|t| crate::transport::frame::derive_key(&t));
+
         // Clone request data for the blocking closure
         let request_clone = request.clone();
         let addr_owned = addr.to_string();
 
         // Run synchronous frame I/O on the blocking thread pool
         tokio::task::spawn_blocking(move || {
-            Self::sync_send_and_recv(std_stream, &request_clone, &addr_owned)
+            Self::sync_send_and_recv(std_stream, &request_clone, &addr_owned, cipher_key)
         })
         .await
         .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
     }
 
     /// Synchronous send-and-receive on a blocking thread.
+    ///
+    /// If `cipher_key` is set, the outgoing JSON frame is AEAD-encrypted and
+    /// the incoming response frame is decrypted. Plaintext path is used when
+    /// no auth token is configured (preserves the legacy no-auth mode).
     fn sync_send_and_recv(
         std_stream: std::net::TcpStream,
         request: &RPCRequest,
         addr: &str,
+        cipher_key: Option<[u8; crate::transport::frame::AES_KEY_SIZE]>,
     ) -> Result<RPCResponse, RpcClientError> {
+        use crate::transport::frame::{decrypt_frame, encrypt_frame};
+
         let mut conn = Connection::new(std_stream);
 
         // Encode request as WireMessage JSON and send with single length prefix.
         // Connection::send adds [4-byte length][data] framing.
-        // We send the raw JSON bytes so the server's AsyncFrameReader reads
-        // [4-byte length][JSON WireMessage] — single framing only.
+        // We send the (possibly encrypted) JSON bytes so the server's
+        // AsyncFrameReader reads [4-byte length][payload] — single framing only.
         let wire = crate::transport::conn::WireMessage {
             version: "1.0".into(),
             id: request.id.clone(),
@@ -534,7 +538,14 @@ impl RpcClient {
         let json_bytes = serde_json::to_vec(&wire).map_err(|e| {
             RpcClientError::Serialization(e.to_string())
         })?;
-        conn.send(&json_bytes).map_err(|e| {
+        let wire_bytes = if let Some(ref key) = cipher_key {
+            encrypt_frame(&json_bytes, key).map_err(|e| {
+                RpcClientError::Serialization(format!("encrypt request: {}", e))
+            })?
+        } else {
+            json_bytes
+        };
+        conn.send(&wire_bytes).map_err(|e| {
             RpcClientError::Connection(format!("send to {}: {}", addr, e))
         })?;
 
@@ -544,12 +555,19 @@ impl RpcClient {
             "[RpcClient] RPC request sent, waiting for response"
         );
 
-        // Receive response frame: [4-byte length][JSON WireMessage]
+        // Receive response frame: [4-byte length][payload]
         let resp_data = conn.recv().map_err(|e| {
             RpcClientError::Connection(format!("recv from {}: {}", addr, e))
         })?;
+        let resp_plaintext = if let Some(ref key) = cipher_key {
+            decrypt_frame(&resp_data, key).map_err(|e| {
+                RpcClientError::Connection(format!("decrypt response from {}: {}", addr, e))
+            })?
+        } else {
+            resp_data
+        };
 
-        let response: RPCResponse = Frame::decode_response(&resp_data).map_err(|e| {
+        let response: RPCResponse = Frame::decode_response(&resp_plaintext).map_err(|e| {
             RpcClientError::Serialization(format!("decode response: {}", e))
         })?;
 

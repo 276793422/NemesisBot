@@ -19,7 +19,10 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
 
-use super::frame::{write_frame_async, AsyncFrameReader, MAX_FRAME_SIZE};
+use super::frame::{
+    decrypt_frame, derive_key, encrypt_frame, write_frame_async, AsyncFrameReader, AES_KEY_SIZE,
+    MAX_FRAME_SIZE,
+};
 
 // ===========================================================================
 // Synchronous Connection (backward-compatible)
@@ -376,8 +379,11 @@ impl TcpConn {
 
     /// Start the read/write/idle loops.
     ///
-    /// If `auth_token` is configured, it is sent as the first frame before
-    /// the loops begin.
+    /// If `auth_token` is configured, frames are AEAD-encrypted with
+    /// AES-256-GCM using a key derived from the token (SHA-256). Both ends
+    /// of the connection must use the same token; an authenticating peer
+    /// produces ciphertext that fails GCM tag verification on the reader
+    /// side, surfacing as a clean read error rather than a desync.
     pub async fn start(&mut self) -> Result<(), String> {
         if self.started.load(Ordering::SeqCst) {
             return Err("already started".into());
@@ -386,25 +392,19 @@ impl TcpConn {
             return Err("connection is closed".into());
         }
 
-        let mut conn = self._conn.take().ok_or("no connection (already started)")?;
+        let conn = self._conn.take().ok_or("no connection (already started)")?;
         let mut send_rx = self._send_rx.take().ok_or("send_rx already taken")?;
         let recv_tx = self.recv_tx_holder.take().ok_or("recv_tx already taken")?;
 
-        // Send auth token if configured — as a plain text line matching Go's
-        // `conn.Write([]byte(tc.authToken + "\n"))` protocol.  The server
-        // reads this with `read_line('\n')` *before* switching to framed mode.
-        if let Some(ref token) = self.config.auth_token {
-            use tokio::io::AsyncWriteExt;
-            // Write token + newline directly (not framed)
-            let auth_bytes = format!("{}\n", token);
-            conn.write_all(auth_bytes.as_bytes())
-                .await
-                .map_err(|e| format!("auth token send failed: {}", e))?;
-            conn.flush()
-                .await
-                .map_err(|e| format!("auth token flush failed: {}", e))?;
-            trace!("[Transport] Auth token sent to {}", self.address);
-        }
+        // Derive an AES-256 key from the auth_token (if any). Both the read
+        // and write loops use this key to decrypt/encrypt every frame payload.
+        // Empty token → None → plaintext frames (same as legacy no-auth mode).
+        let cipher_key: Option<[u8; AES_KEY_SIZE]> = self
+            .config
+            .auth_token
+            .as_ref()
+            .filter(|t| !t.is_empty())
+            .map(|t| derive_key(t));
 
         // Save addresses before splitting
         let local = self.local_addr.clone();
@@ -412,9 +412,6 @@ impl TcpConn {
 
         // Split the TCP stream
         let (read_half, mut write_half) = tokio::io::split(conn);
-
-        // Send auth token again through the write half if needed
-        // (Already sent above before split)
 
         // Shared state for tasks
         let closed_r = self.closed.clone();
@@ -434,6 +431,10 @@ impl TcpConn {
         let address_i = address.clone();
 
         // --- Read loop ---
+        // If a cipher key is configured, every frame payload is decrypted
+        // before being parsed as a WireMessage JSON. A wrong key (failed
+        // authentication) surfaces as a decrypt error and closes the loop.
+        let key_r = cipher_key;
         let read_task = tokio::spawn(async move {
             let mut reader = AsyncFrameReader::with_capacity(read_half, 4096);
             loop {
@@ -441,8 +442,24 @@ impl TcpConn {
                     break;
                 }
                 match reader.read_frame().await {
-                    Ok(data) => {
-                        match WireMessage::from_bytes(&data) {
+                    Ok(ciphertext) => {
+                        let plaintext = if let Some(ref key) = key_r {
+                            match decrypt_frame(&ciphertext, key) {
+                                Ok(pt) => pt,
+                                Err(e) => {
+                                    warn!(
+                                        node_id = %node_id,
+                                        address = %address,
+                                        error = %e,
+                                        "[Transport] Frame decrypt failed, closing connection"
+                                    );
+                                    break;
+                                }
+                            }
+                        } else {
+                            ciphertext
+                        };
+                        match WireMessage::from_bytes(&plaintext) {
                             Ok(msg) => {
                                 trace!("[Transport] Received message: id={}, type={}", msg.id, msg.msg_type);
                                 *last_used_r.write() = Instant::now();
@@ -468,12 +485,29 @@ impl TcpConn {
                     }
                     Err(e) => {
                         if !closed_r.load(Ordering::SeqCst) {
-                            warn!(
-                                node_id = %node_id,
-                                address = %address,
-                                error = %e,
-                                "[Transport] Read error, closing connection"
-                            );
+                            // RPC clients use short-lived connections: each call
+                            // opens a TCP stream, sends one request, reads one
+                            // response, then closes. When the peer closes after
+                            // a successful round-trip, read_frame surfaces this
+                            // as UnexpectedEof. That's the normal happy path —
+                            // log at debug so it doesn't pollute the log.
+                            // Any other error kind (frame too large, network
+                            // reset, decrypt mismatch surfaced as io error) is
+                            // still a real problem worth a warn.
+                            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                                debug!(
+                                    node_id = %node_id,
+                                    address = %address,
+                                    "[Transport] Connection closed by peer"
+                                );
+                            } else {
+                                warn!(
+                                    node_id = %node_id,
+                                    address = %address,
+                                    error = %e,
+                                    "[Transport] Read error, closing connection"
+                                );
+                            }
                         }
                         break;
                     }
@@ -482,12 +516,31 @@ impl TcpConn {
         });
 
         // --- Write loop ---
+        // If a cipher key is configured, every frame payload is encrypted
+        // before being written to the TCP stream. This must mirror the read
+        // loop's key decision (both derive from the same auth_token).
+        let key_w = cipher_key;
         let write_task = tokio::spawn(async move {
             while let Some(data) = send_rx.recv().await {
                 if closed_w.load(Ordering::SeqCst) {
                     break;
                 }
-                match write_frame_async(&mut write_half, &data).await {
+                let wire_bytes = if let Some(ref key) = key_w {
+                    match encrypt_frame(&data, key) {
+                        Ok(ct) => ct,
+                        Err(e) => {
+                            warn!(
+                                address = %address_w,
+                                error = %e,
+                                "[Transport] Frame encrypt failed, closing connection"
+                            );
+                            break;
+                        }
+                    }
+                } else {
+                    data
+                };
+                match write_frame_async(&mut write_half, &wire_bytes).await {
                     Ok(()) => {
                         *last_used_w.write() = Instant::now();
                     }

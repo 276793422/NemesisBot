@@ -2,6 +2,15 @@
 //!
 //! Provides both synchronous and asynchronous frame encoding/decoding.
 //! Frames use a 4-byte big-endian length header followed by the payload.
+//!
+//! # AEAD encryption
+//!
+//! When an auth token is configured, frame payloads are encrypted with
+//! AES-256-GCM. The auth token is hashed with SHA-256 to derive a 32-byte
+//! key. Each encrypted frame carries a 12-byte random nonce prepended to
+//! the ciphertext (which includes the 16-byte GCM tag). This replaces the
+//! legacy plaintext `token\n` first-line auth and eliminates the transport
+//! desync bug caused by BufReader consuming frame bytes during auth read.
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -150,6 +159,74 @@ pub async fn write_frame_async<W: AsyncWrite + Unpin>(
     writer.write_all(data).await?;
     writer.flush().await?;
     Ok(())
+}
+
+// ===========================================================================
+// AEAD encryption (AES-256-GCM)
+// ===========================================================================
+
+/// Size of the AES-256 key in bytes.
+pub const AES_KEY_SIZE: usize = 32;
+/// Size of the GCM nonce in bytes.
+pub const NONCE_SIZE: usize = 12;
+/// Size of the GCM authentication tag in bytes.
+pub const TAG_SIZE: usize = 16;
+
+/// Derive a 32-byte AES-256 key from an auth token string using SHA-256.
+///
+/// The token is hashed once; the digest serves as the symmetric key shared
+/// by both ends of the connection (pre-shared key model).
+pub fn derive_key(auth_token: &str) -> [u8; AES_KEY_SIZE] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(auth_token.as_bytes());
+    let mut key = [0u8; AES_KEY_SIZE];
+    key.copy_from_slice(&digest);
+    key
+}
+
+/// Encrypt a plaintext payload with AES-256-GCM.
+///
+/// Returns a byte vector laid out as `[nonce (12 bytes)][ciphertext + tag]`.
+/// A fresh random nonce is generated for each call; the tag is appended to
+/// the ciphertext by the `aes-gcm` crate.
+pub fn encrypt_frame(payload: &[u8], key: &[u8; AES_KEY_SIZE]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit, OsRng};
+    use aes_gcm::{AeadCore, Aes256Gcm, Key};
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, payload)
+        .map_err(|e| format!("AES-GCM encrypt failed: {}", e))?;
+
+    let mut out = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Decrypt data produced by [`encrypt_frame`].
+///
+/// Input layout: `[nonce (12 bytes)][ciphertext + tag]`. Returns the
+/// original plaintext payload. Fails if the data is too short or the GCM
+/// authentication tag does not verify (wrong key or tampered data).
+pub fn decrypt_frame(data: &[u8], key: &[u8; AES_KEY_SIZE]) -> Result<Vec<u8>, String> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+
+    if data.len() < NONCE_SIZE + TAG_SIZE {
+        return Err(format!(
+            "encrypted frame too short: {} bytes (need at least {})",
+            data.len(),
+            NONCE_SIZE + TAG_SIZE
+        ));
+    }
+
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    cipher
+        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .map_err(|e| format!("AES-GCM decrypt failed (auth error or corrupted): {}", e))
 }
 
 #[cfg(test)]

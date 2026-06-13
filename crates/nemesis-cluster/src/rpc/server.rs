@@ -297,113 +297,32 @@ impl RpcServer {
         auth_token: String,
         _idle_timeout: std::time::Duration,
     ) {
-        // Auth phase: if token is set, read the first line as the token
-        if !auth_token.is_empty() {
-            use tokio::io::AsyncBufReadExt;
-            use tokio::io::BufReader;
-
-            let mut reader = BufReader::new(stream);
-            let mut token_line = String::new();
-
-            // Read with timeout
-            let read_result = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                reader.read_line(&mut token_line),
-            ).await;
-
-            match read_result {
-                Ok(Ok(0)) => {
-                    tracing::warn!(remote = %remote_addr, "[RpcServer] Connection closed during auth");
-                    return;
-                }
-                Ok(Ok(_)) => {
-                    let token = token_line.trim();
-                    if token != auth_token {
-                        tracing::warn!(remote = %remote_addr, "[RpcServer] Unauthorized connection (invalid token)");
-                        return;
-                    }
-                    tracing::info!(remote = %remote_addr, "[RpcServer] Authenticated RPC connection");
-
-                    // Recover the TCP stream from the BufReader so we can
-                    // continue with framed communication.
-                    // IMPORTANT: BufReader may have buffered bytes beyond the
-                    // '\n' delimiter (i.e. the first frame data).  We must
-                    // extract those buffered bytes and handle them as a frame
-                    // before TcpConn starts reading, otherwise the data is lost.
-                    let buffered = reader.buffer().to_vec();
-                    let stream = reader.into_inner();
-
-                    // Wrap in TcpConn for framed communication
-                    let config = TcpConnConfig {
-                        address: remote_addr.clone(),
-                        ..Default::default()
-                    };
-                    let mut conn = TcpConn::new(stream, config);
-
-                    if let Err(e) = conn.start().await {
-                        tracing::error!(remote = %remote_addr, error = %e, "[RpcServer] Failed to start TcpConn");
-                        return;
-                    }
-
-                    // If BufReader had buffered frame data, decode and handle it.
-                    if !buffered.is_empty() {
-                        // The buffered bytes are a length-prefixed frame:
-                        // [4-byte big-endian length][JSON payload]
-                        if buffered.len() >= 4 {
-                            let len = u32::from_be_bytes([
-                                buffered[0], buffered[1], buffered[2], buffered[3],
-                            ]) as usize;
-                            if buffered.len() >= 4 + len {
-                                let frame_data = &buffered[4..4 + len];
-                                if let Ok(wire_msg) = WireMessage::from_bytes(frame_data) {
-                                    if wire_msg.msg_type == "request" {
-                                        Self::handle_request(&conn, &wire_msg, &handlers).await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Process incoming messages (same as non-auth path below)
-                    loop {
-                        match conn.receive().await {
-                            Some(wire_msg) => {
-                                if wire_msg.msg_type == "request" {
-                                    Self::handle_request(&conn, &wire_msg, &handlers).await;
-                                }
-                            }
-                            None => {
-                                tracing::debug!(remote = %remote_addr, "[RpcServer] Connection closed");
-                                break;
-                            }
-                        }
-                    }
-                    conn.close();
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(remote = %remote_addr, error = %e, "[RpcServer] Failed to read auth token");
-                }
-                Err(_) => {
-                    tracing::warn!(remote = %remote_addr, "[RpcServer] Auth timeout");
-                }
-            }
-            return;
-        }
-
-        // No auth: wrap in TcpConn for framed communication
+        // Auth is enforced via AEAD frame encryption: when `auth_token` is
+        // non-empty, TcpConn derives an AES-256-GCM key from it and decrypts
+        // every inbound frame. A peer that does not share the token cannot
+        // produce frames with a valid GCM tag, so its first byte stream is
+        // rejected as a decrypt error in the read loop. No text-line auth
+        // handshake is performed, eliminating the BufReader desync bug where
+        // `read_line('\n')` could consume frame bytes past the newline.
         let config = TcpConnConfig {
             address: remote_addr.clone(),
+            auth_token: if !auth_token.is_empty() {
+                Some(auth_token)
+            } else {
+                None
+            },
             ..Default::default()
         };
 
         let mut conn = TcpConn::new(stream, config);
 
         if let Err(e) = conn.start().await {
-            tracing::error!(remote = %remote_addr, error = %e, "[RpcServer] Failed to start TcpConn (no auth)");
+            tracing::error!(remote = %remote_addr, error = %e, "[RpcServer] Failed to start TcpConn");
             return;
         }
 
-        // Process incoming messages
+        // Process incoming messages — frames are already decrypted by TcpConn's
+        // read loop, so `wire_msg` is the plaintext WireMessage.
         loop {
             match conn.receive().await {
                 Some(wire_msg) => {

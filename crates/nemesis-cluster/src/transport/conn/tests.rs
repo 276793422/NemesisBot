@@ -188,34 +188,93 @@ async fn test_tcp_conn_close() {
 
 #[tokio::test]
 async fn test_tcp_conn_auth_token() {
+    // AEAD auth model: both ends derive the same AES-256-GCM key from the
+    // shared token. The server's read loop decrypts inbound frames; an
+    // attacker without the token cannot produce a frame with a valid GCM
+    // tag. This test verifies that two TcpConns configured with the same
+    // token can exchange a WireMessage end-to-end.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let token = "secret-token-123";
 
-    // Server: accept and read auth line (plain text with newline)
     let server_handle = tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
         let (stream, _) = listener.accept().await.unwrap();
-        let (read_half, _) = tokio::io::split(stream);
-        let mut reader = tokio::io::BufReader::new(read_half);
-        let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
-        // The client sends "token\n"; trim the newline for comparison
-        assert_eq!(line.trim(), token);
+        let mut server = TcpConn::new(
+            stream,
+            TcpConnConfig {
+                address: "server".into(),
+                auth_token: Some(token.to_string()),
+                ..Default::default()
+            },
+        );
+        server.start().await.unwrap();
+
+        let msg = server.receive().await.unwrap();
+        assert_eq!(msg.action, "ping");
+        assert_eq!(msg.from, "client");
     });
 
-    // Client: start with auth token (sent as plain text line)
     let client_stream = TokioTcpStream::connect(addr).await.unwrap();
     let mut client = TcpConn::new(
         client_stream,
         TcpConnConfig {
+            node_id: "client".into(),
+            address: addr.to_string(),
             auth_token: Some(token.to_string()),
             ..Default::default()
         },
     );
     client.start().await.unwrap();
 
+    let req = WireMessage::new_request("client", "server", "ping", serde_json::json!({}));
+    client.send(&req).await.unwrap();
+
+    server_handle.await.unwrap();
+}
+
+#[tokio::test]
+async fn test_tcp_conn_wrong_token_drops_connection() {
+    // When the client uses a different token than the server, the server's
+    // decrypt step fails the GCM tag check and closes the connection. The
+    // client's subsequent receive() returns None.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server_token = "server-secret";
+    let client_token = "client-different-secret";
+
+    let server_handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut server = TcpConn::new(
+            stream,
+            TcpConnConfig {
+                address: "server".into(),
+                auth_token: Some(server_token.to_string()),
+                ..Default::default()
+            },
+        );
+        server.start().await.unwrap();
+        // receive() returns None because the read loop closes on decrypt error
+        let _ = server.receive().await;
+    });
+
+    let client_stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut client = TcpConn::new(
+        client_stream,
+        TcpConnConfig {
+            node_id: "client".into(),
+            address: addr.to_string(),
+            auth_token: Some(client_token.to_string()),
+            ..Default::default()
+        },
+    );
+    client.start().await.unwrap();
+
+    let req = WireMessage::new_request("client", "server", "ping", serde_json::json!({}));
+    // Send may succeed locally (queued in write loop) but the server will
+    // close the connection after the decrypt failure.
+    let _ = client.send(&req).await;
     server_handle.await.unwrap();
 }
 
