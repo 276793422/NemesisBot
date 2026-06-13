@@ -157,6 +157,22 @@ impl PeerRegistry {
             .collect()
     }
 
+    /// List online peers excluding the specified node (typically the local node).
+    ///
+    /// Use this when building "RPC target candidates" lists for tools (cluster_rpc)
+    /// to prevent the LLM from selecting the local node as a target, which would
+    /// cause a self-invocation loop.
+    pub fn list_online_excluding(&self, exclude_node_id: &str) -> Vec<ExtendedNodeInfo> {
+        self.peers
+            .lock()
+            .values()
+            .filter(|e| {
+                e.info.status == NodeStatus::Online && e.info.base.id != exclude_node_id
+            })
+            .map(|e| e.info.clone())
+            .collect()
+    }
+
     /// Return the number of registered peers.
     pub fn len(&self) -> usize {
         self.peers.lock().len()

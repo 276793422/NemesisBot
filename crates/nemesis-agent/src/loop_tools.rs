@@ -1700,17 +1700,36 @@ impl ClusterRpcTool {
 #[async_trait]
 impl Tool for ClusterRpcTool {
     fn description(&self) -> String {
-        "Send a message to another bot in the cluster".to_string()
+        "Send a message to ANOTHER bot in the cluster (never yourself)".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
         // Dynamically inject online peer list with capabilities into the target description.
+        // The peers_fn list already excludes the local node (filtered at the
+        // cluster level via get_online_peers_excluding_self), so the LLM should
+        // never see itself as a candidate. We also explicitly annotate the
+        // local node_id in the description as belt-and-suspenders.
+        let self_id_note = if self.config.local_node_id.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nNote: your own node_id is '{}'. Do NOT select it — this tool is for calling OTHER nodes only.\n",
+                self.config.local_node_id
+            )
+        };
+
         let target_desc = if let Some(ref peers_fn) = self.peers_fn {
             let peers = peers_fn();
             if peers.is_empty() {
-                "Target bot ID (no peers currently online)".to_string()
+                format!(
+                    "Target bot ID (no other peers currently online).{}",
+                    self_id_note
+                )
             } else {
-                let mut desc = "Target bot ID. Available online peers:\n".to_string();
+                let mut desc = format!(
+                    "Target bot ID. Available online peers (excluding yourself):\n{}",
+                    self_id_note
+                );
                 for (id, name, caps) in &peers {
                     let caps_str = if caps.is_empty() {
                         "unknown capabilities".to_string()
@@ -1722,7 +1741,7 @@ impl Tool for ClusterRpcTool {
                 desc
             }
         } else {
-            "Target bot ID".to_string()
+            format!("Target bot ID{}", self_id_note)
         };
 
         serde_json::json!({
@@ -1762,6 +1781,21 @@ impl Tool for ClusterRpcTool {
             .or_else(|| val.get("peer_id"))
             .and_then(|v| v.as_str())
             .ok_or("Missing 'target_node' field")?;
+
+        // Guard: reject self-invocation. The LLM should never target the local
+        // node via cluster_rpc — doing so creates a nested child task that loops
+        // back to this same node, which serves no purpose and corrupts the
+        // continuation history. The peers list passed to the LLM already
+        // excludes self, but this is the hard backstop in case of cache lag,
+        // stale tool definitions, or unexpected LLM behavior.
+        if !self.config.local_node_id.is_empty() && target_node == self.config.local_node_id {
+            return Err(format!(
+                "不能通过 cluster_rpc 调用本节点（{}）。这个工具用于和其他节点通信；\
+                 如果需要在本地执行操作，请直接使用本地工具（exec/filesystem/etc），\
+                 不要重试 cluster_rpc。",
+                target_node
+            ));
+        }
 
         // Extract message content: check "message" first, then "data.content" (testai-3.0 format)
         let message = val

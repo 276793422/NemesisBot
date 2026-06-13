@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 
@@ -17,13 +17,17 @@ const runningDiag = ref<string | null>(null)
 const diagCollapsed = ref(false)
 const cmdCollapsed = ref(false)
 
-const expandedSections = ref<Record<string, boolean>>({
-  get_info: true,
-  'diagnostics.system': true,
-  'diagnostics.network': true,
-  'diagnostics.cluster_state': true,
-  ping: true,
-})
+function makeInitialExpandedSections(): Record<string, boolean> {
+  return {
+    get_info: true,
+    'diagnostics.system': true,
+    'diagnostics.network': true,
+    'diagnostics.cluster_state': true,
+    ping: true,
+  }
+}
+
+const expandedSections = ref<Record<string, boolean>>(makeInitialExpandedSections())
 
 const commandInput = ref('')
 const commandResult = ref('')
@@ -62,12 +66,25 @@ function selectNode(id: string) {
   selectedNodeId.value = id
 }
 
+// Clear all diagnostic state when the selected node changes —
+// otherwise stale results from the previous node bleed into the
+// new node's view (button colors, result panels, command output).
+watch(selectedNodeId, () => {
+  diagResults.value = {}
+  diagStates.value = {}
+  commandResult.value = ''
+  commandRunning.value = false
+  runningDiag.value = null
+  expandedSections.value = makeInitialExpandedSections()
+})
+
 function setDiagState(action: string, state: DiagState) {
   diagStates.value[action] = state
 }
 
 async function runDiagnostic(action: string) {
   if (!selectedNodeId.value) return
+  const startNode = selectedNodeId.value
   runningDiag.value = action
   setDiagState(action, 'running')
   try {
@@ -80,20 +97,27 @@ async function runDiagnostic(action: string) {
         setTimeout(() => reject(new Error('__TIMEOUT__')), DIAG_TIMEOUT_MS)
       ),
     ])
+    // User switched nodes while the RPC was in flight — discard the
+    // result so it doesn't leak into the new node's view.
+    if (selectedNodeId.value !== startNode) return
     diagResults.value[action] = data
     expandedSections.value[action] = true
     setDiagState(action, 'success')
   } catch (e: any) {
+    if (selectedNodeId.value !== startNode) return
     const msg = String(e?.message ?? e)
     diagResults.value[action] = { error: msg }
     expandedSections.value[action] = true
     setDiagState(action, msg.includes('__TIMEOUT__') ? 'timeout' : 'error')
   }
-  runningDiag.value = null
+  if (selectedNodeId.value === startNode) {
+    runningDiag.value = null
+  }
 }
 
 async function runPing() {
   if (!selectedNodeId.value) return
+  const startNode = selectedNodeId.value
   runningDiag.value = 'ping'
   setDiagState('ping', 'running')
   try {
@@ -103,16 +127,20 @@ async function runPing() {
         setTimeout(() => reject(new Error('__TIMEOUT__')), DIAG_TIMEOUT_MS)
       ),
     ])
+    if (selectedNodeId.value !== startNode) return
     diagResults.value['ping'] = data
     expandedSections.value['ping'] = true
     setDiagState('ping', 'success')
   } catch (e: any) {
+    if (selectedNodeId.value !== startNode) return
     const msg = String(e?.message ?? e)
     diagResults.value['ping'] = { error: msg }
     expandedSections.value['ping'] = true
     setDiagState('ping', msg.includes('__TIMEOUT__') ? 'timeout' : 'error')
   }
-  runningDiag.value = null
+  if (selectedNodeId.value === startNode) {
+    runningDiag.value = null
+  }
 }
 
 async function runAllDiagnostics() {
@@ -126,6 +154,7 @@ async function runAllDiagnostics() {
 
 async function sendCommand() {
   if (!selectedNodeId.value || !commandInput.value.trim()) return
+  const startNode = selectedNodeId.value
   commandRunning.value = true
   const input = commandInput.value
   commandInput.value = ''
@@ -136,14 +165,19 @@ async function sendCommand() {
       target_node_id: selectedNodeId.value,
       content: input,
     })
+    if (selectedNodeId.value !== startNode) return
     const taskId = data.task_id
     commandResult.value = `用户 > ${input}\n任务已提交 (${taskId})，等待远程节点响应...`
 
     const maxAttempts = 60
     for (let i = 0; i < maxAttempts; i++) {
       await new Promise(r => setTimeout(r, 2000))
+      // User switched nodes — stop polling. The remote task keeps
+      // running on the target node; result is visible on the Tasks page.
+      if (selectedNodeId.value !== startNode) return
       try {
         const detail: any = await request('cluster', 'tasks.detail', { task_id: taskId })
+        if (selectedNodeId.value !== startNode) return
         if (detail.status === 'completed') {
           const r = detail.result
           const resp = typeof r === 'string' ? r : (r?.response || r?.error || JSON.stringify(r) || '(无输出)')
@@ -162,9 +196,12 @@ async function sendCommand() {
       commandResult.value = `用户 > ${input}\n任务超时（120s），请到「任务」页查看`
     }
   } catch (e: any) {
+    if (selectedNodeId.value !== startNode) return
     commandResult.value = `用户 > ${input}\n错误: ${e || '未知'}`
   }
-  commandRunning.value = false
+  if (selectedNodeId.value === startNode) {
+    commandRunning.value = false
+  }
 }
 
 function toggleSection(key: string) {

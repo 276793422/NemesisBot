@@ -1415,12 +1415,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] cluster_rpc tool created (node: {}, peers loaded from peers.toml)", node_name);
 
             // Build peers_fn: closure that returns online peers with capabilities
-            // from the Cluster registry. Used by ClusterRpcTool's dynamic tool description.
+            // from the Cluster registry, EXCLUDING the local node. Used by
+            // ClusterRpcTool's dynamic tool description so the LLM never sees
+            // itself as a valid cluster_rpc target (prevents self-invocation loops).
             {
                 let cluster_weak_for_peers = Arc::downgrade(&cluster);
                 cluster_peers_fn = Some(Arc::new(move || {
                     match cluster_weak_for_peers.upgrade() {
-                        Some(c) => c.get_online_peers()
+                        Some(c) => c.get_online_peers_excluding_self()
                             .into_iter()
                             .map(|p| (p.base.id, p.base.name, p.capabilities))
                             .collect(),

@@ -1882,7 +1882,27 @@ async fn test_spi_tool_invalid_json() {
 }
 
 #[tokio::test]
-async fn test_cluster_rpc_tool_no_rpc_fn_self_node() {
+async fn test_cluster_rpc_tool_no_rpc_fn_other_node() {
+    // Without rpc_call_fn configured, calling any non-self node returns "not available".
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let tool = ClusterRpcTool::new(config);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let result = tool.execute(
+        r#"{"target_node": "node-2", "message": "hello"}"#,
+        &ctx,
+    ).await;
+    assert!(result.is_err());
+    assert!(result.err().unwrap().contains("not available"));
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_tool_rejects_self_invocation() {
+    // Self-invocation guard: targeting the local node_id must be rejected
+    // before any network call, regardless of whether rpc_call_fn is set.
     let config = ClusterRpcConfig {
         local_node_id: "node-1".to_string(),
         timeout_secs: 60,
@@ -1895,7 +1915,12 @@ async fn test_cluster_rpc_tool_no_rpc_fn_self_node() {
         &ctx,
     ).await;
     assert!(result.is_err());
-    assert!(result.err().unwrap().contains("not available"));
+    let err = result.err().unwrap();
+    assert!(
+        err.contains("不能通过 cluster_rpc 调用本节点"),
+        "expected self-invocation rejection, got: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -3155,7 +3180,8 @@ fn test_shared_tools_include_cli_reference() {
 
 #[test]
 fn test_cluster_rpc_params_no_peers_fn() {
-    // Without peers_fn, the "target" description should be the basic "Target bot ID"
+    // Without peers_fn, the "target" description should start with "Target bot ID"
+    // and include the self_id_note warning (since local_node_id is set).
     let config = ClusterRpcConfig {
         local_node_id: "node-1".to_string(),
         timeout_secs: 60,
@@ -3164,7 +3190,8 @@ fn test_cluster_rpc_params_no_peers_fn() {
     let tool = ClusterRpcTool::new(config);
     let params = tool.parameters();
     let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
-    assert_eq!(target_desc, "Target bot ID");
+    assert!(target_desc.starts_with("Target bot ID"), "got: {}", target_desc);
+    assert!(target_desc.contains("your own node_id is 'node-1'"), "got: {}", target_desc);
 }
 
 #[test]
@@ -3192,7 +3219,7 @@ fn test_cluster_rpc_params_with_peers() {
 
 #[test]
 fn test_cluster_rpc_params_empty_peers() {
-    // With peers_fn returning empty vec, description should mention "no peers currently online"
+    // With peers_fn returning empty vec, description should mention "no other peers currently online"
     let config = ClusterRpcConfig {
         local_node_id: "node-1".to_string(),
         timeout_secs: 60,
@@ -3204,8 +3231,8 @@ fn test_cluster_rpc_params_empty_peers() {
     let params = tool.parameters();
     let target_desc = params["properties"]["target"]["description"].as_str().unwrap();
     assert!(
-        target_desc.contains("no peers currently online"),
-        "expected 'no peers currently online', got: {}",
+        target_desc.contains("no other peers currently online"),
+        "expected 'no other peers currently online', got: {}",
         target_desc
     );
 }
@@ -3327,7 +3354,7 @@ fn test_cluster_rpc_description() {
         local_rpc_port: 21949,
     };
     let tool = ClusterRpcTool::new(config);
-    assert_eq!(tool.description(), "Send a message to another bot in the cluster");
+    assert_eq!(tool.description(), "Send a message to ANOTHER bot in the cluster (never yourself)");
 }
 
 #[test]

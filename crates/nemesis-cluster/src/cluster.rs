@@ -1130,6 +1130,15 @@ impl Cluster {
         self.registry.list_online()
     }
 
+    /// Get online peers excluding the local node.
+    ///
+    /// Use this when building "RPC target candidates" lists for tools (cluster_rpc)
+    /// to prevent the LLM from selecting the local node as its target. Self-invocation
+    /// creates nested child tasks that loop back to the same node.
+    pub fn get_online_peers_excluding_self(&self) -> Vec<ExtendedNodeInfo> {
+        self.registry.list_online_excluding(&self.node_id)
+    }
+
     /// Set ports.
     pub fn set_ports(&mut self, udp: u16, rpc: u16) {
         self.udp_port = udp;
