@@ -190,6 +190,54 @@ impl AgentInstance {
         self.push_turn(turn);
     }
 
+    /// Replace the content of an existing tool result with matching tool_call_id.
+    ///
+    /// Semantics:
+    /// - If exactly one tool message with this ID exists, replace its content in place.
+    /// - If multiple tool messages with this ID exist (abnormal — e.g., an async
+    ///   placeholder left in the snapshot plus a freshly injected result), replace
+    ///   the last one and drop earlier duplicates.
+    /// - If no matching tool message exists, push a new one (fallback to add).
+    ///
+    /// This is the correct way to inject a cluster_rpc callback result on resume:
+    /// the async placeholder saved in the snapshot must be overwritten, not appended
+    /// (appending produces two tool messages with the same tool_call_id, which LLM
+    /// APIs reject with HTTP 400 "Messages with role 'tool' must be a response to a
+    /// preceding message with 'tool_calls'").
+    pub fn replace_tool_result(&self, tool_call_id: &str, content: &str) {
+        let mut history = self.history.lock().unwrap();
+
+        let matching: Vec<usize> = history
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if matching.is_empty() {
+            let turn = ConversationTurn {
+                role: "tool".to_string(),
+                content: content.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(tool_call_id.to_string()),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                reasoning_content: None,
+            };
+            history.push(turn);
+            return;
+        }
+
+        let last_idx = *matching.last().unwrap();
+        history[last_idx].content = content.to_string();
+        history[last_idx].timestamp = chrono::Local::now().to_rfc3339();
+
+        for &idx in matching.iter().rev().skip(1) {
+            history.remove(idx);
+        }
+    }
+
     /// Get a clone of the full conversation history.
     pub fn get_history(&self) -> Vec<ConversationTurn> {
         self.history.lock().unwrap().clone()

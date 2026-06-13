@@ -449,3 +449,49 @@ fn repair_tool_pairs_system_message_preserved() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].role, "system");
 }
+
+// --- duplicate tool_call_id dedup tests (Pass 0) ---
+// Reproduces the cluster_rpc continuation bug: async placeholder + injected result
+// both carry the same tool_call_id and must collapse to one before sending to the LLM.
+
+#[test]
+fn repair_tool_pairs_dedupes_duplicate_tool_call_id_keeps_last() {
+    let mut msgs = vec![
+        make_turn("user", "check"),
+        make_assistant_with_tc("", &["call_X"]),
+        make_tool_response("placeholder __ASYNC__", "call_X"),
+        make_tool_response("real callback result", "call_X"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 1, "duplicate must collapse to one");
+    assert_eq!(tool_msgs[0].content, "real callback result", "must keep the last");
+}
+
+#[test]
+fn repair_tool_pairs_dedupes_across_other_messages() {
+    let mut msgs = vec![
+        make_turn("user", "go"),
+        make_assistant_with_tc("", &["call_X"]),
+        make_tool_response("placeholder", "call_X"),
+        make_turn("assistant", "thinking..."),
+        make_tool_response("real result", "call_X"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 1);
+    assert_eq!(tool_msgs[0].content, "real result");
+}
+
+#[test]
+fn repair_tool_pairs_keeps_distinct_tool_call_ids() {
+    let mut msgs = vec![
+        make_turn("user", "go"),
+        make_assistant_with_tc("", &["call_A", "call_B"]),
+        make_tool_response("res A", "call_A"),
+        make_tool_response("res B", "call_B"),
+    ];
+    repair_tool_message_pairs(&mut msgs);
+    let tool_msgs: Vec<_> = msgs.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 2, "distinct ids must both survive");
+}

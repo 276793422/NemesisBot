@@ -186,16 +186,39 @@ pub enum AgentEvent {
 
 /// Fix orphaned tool message pairs in-place.
 ///
-/// Guarantees two invariants:
-/// 1. Every role="tool" message has a preceding role="assistant" with matching tool_call id
-/// 2. Every assistant tool_call id has a corresponding tool response after it
+/// Guarantees three invariants:
+/// 1. No two role="tool" messages share the same tool_call_id (keep the last)
+/// 2. Every role="tool" message has a preceding role="assistant" with matching tool_call id
+/// 3. Every assistant tool_call id has a corresponding tool response after it
 ///
 /// When violated:
+/// - Duplicate tool messages (same tool_call_id) collapse to the last one
 /// - Orphaned tool messages are removed
 /// - Assistant tool_calls without responses are cleared
 pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
     if messages.is_empty() {
         return;
+    }
+
+    // Pass 0: deduplicate tool messages by tool_call_id (keep the last occurrence).
+    // This handles the case where an async placeholder and a real callback result
+    // both exist with the same tool_call_id — LLM APIs reject duplicates.
+    {
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut to_remove: Vec<usize> = Vec::new();
+        for (idx, msg) in messages.iter().enumerate().rev() {
+            if msg.role == "tool" {
+                if let Some(ref id) = msg.tool_call_id {
+                    if !seen.insert(id.clone()) {
+                        to_remove.push(idx);
+                    }
+                }
+            }
+        }
+        for idx in to_remove {
+            debug!("[repair_tool_message_pairs] Removing duplicate tool message at {}", idx);
+            messages.remove(idx);
+        }
     }
 
     // Pass 1: remove orphaned tool messages via retain.

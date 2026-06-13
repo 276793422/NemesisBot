@@ -453,3 +453,116 @@ fn instance_assistant_with_multiple_tool_calls() {
     assert_eq!(assistant_msg.tool_calls[0].name, "search");
     assert_eq!(assistant_msg.tool_calls[1].name, "calculator");
 }
+
+// --- replace_tool_result tests (cluster_rpc continuation resume path) ---
+
+fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
+    vec![
+        ConversationTurn {
+            role: "system".to_string(),
+            content: "sys".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        },
+        ConversationTurn {
+            role: "user".to_string(),
+            content: "check cluster".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        },
+        ConversationTurn {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_X".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            tool_call_id: None,
+            timestamp: String::new(),
+            reasoning_content: None,
+        },
+        ConversationTurn {
+            role: "tool".to_string(),
+            content: "Request accepted. __CLUSTER_ASYNC__{\"task_id\":\"t1\"}".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some("tc_X".to_string()),
+            timestamp: String::new(),
+            reasoning_content: None,
+        },
+    ]
+}
+
+#[test]
+fn replace_tool_result_overwrites_async_placeholder() {
+    let config = AgentConfig {
+        model: "test".to_string(),
+        system_prompt: None,
+        max_turns: 5,
+        tools: vec![],
+    };
+    let instance = AgentInstance::new(config);
+    instance.set_history(make_history_with_async_placeholder());
+
+    instance.replace_tool_result("tc_X", "real callback result");
+
+    let history = instance.get_history();
+    assert_eq!(history.len(), 4, "should remain 4 messages, no append");
+    let tool_msgs: Vec<_> = history.iter().filter(|t| t.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 1, "exactly one tool message");
+    assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("tc_X"));
+    assert_eq!(tool_msgs[0].content, "real callback result");
+}
+
+#[test]
+fn replace_tool_result_falls_back_to_push_when_no_match() {
+    let config = AgentConfig {
+        model: "test".to_string(),
+        system_prompt: None,
+        max_turns: 5,
+        tools: vec![],
+    };
+    let instance = AgentInstance::new(config);
+    instance.set_history(make_history_with_async_placeholder());
+
+    instance.replace_tool_result("tc_OTHER", "result for other id");
+
+    let history = instance.get_history();
+    assert_eq!(history.len(), 5, "should append when no match");
+    let tool_msgs: Vec<_> = history.iter().filter(|t| t.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 2);
+    assert!(tool_msgs.iter().any(|t| t.tool_call_id.as_deref() == Some("tc_X")));
+    assert!(tool_msgs.iter().any(|t| t.tool_call_id.as_deref() == Some("tc_OTHER")));
+}
+
+#[test]
+fn replace_tool_result_dedupes_multiple_matches() {
+    let config = AgentConfig {
+        model: "test".to_string(),
+        system_prompt: None,
+        max_turns: 5,
+        tools: vec![],
+    };
+    let instance = AgentInstance::new(config);
+    instance.set_history(make_history_with_async_placeholder());
+    instance.add_tool_result("tc_X", "second result (duplicate id)");
+
+    let history = instance.get_history();
+    assert_eq!(
+        history.iter().filter(|t| t.role == "tool").count(),
+        2,
+        "precondition: two tool messages with same id"
+    );
+
+    instance.replace_tool_result("tc_X", "final replace");
+
+    let history = instance.get_history();
+    let tool_msgs: Vec<_> = history.iter().filter(|t| t.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 1, "dedup to one");
+    assert_eq!(tool_msgs[0].content, "final replace");
+    assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("tc_X"));
+}

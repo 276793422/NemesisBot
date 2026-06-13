@@ -195,6 +195,9 @@ async fn resume_task(
     instance.set_history(conversation);
 
     // Inject the callback result as a tool result.
+    // Use replace (not add): the snapshot already contains an async placeholder
+    // tool message with the same tool_call_id. Appending would create duplicate
+    // tool_call_ids and LLM APIs reject that with HTTP 400.
     let tool_call_id = task
         .waiting_tool_call_id
         .as_deref()
@@ -203,7 +206,7 @@ async fn resume_task(
         .callback_result
         .as_deref()
         .ok_or("No callback_result")?;
-    instance.add_tool_result(tool_call_id, callback_result);
+    instance.replace_tool_result(tool_call_id, callback_result);
 
     let context = build_context(task);
     let trace_id = format!("cluster-resume-{}", &task.task_id);
