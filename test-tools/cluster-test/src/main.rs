@@ -5,14 +5,13 @@
 //!
 //! Uses real TCP + UDP connections between P2P nodes.
 
-use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nemesis_cluster::rpc::{RpcServer, RpcServerConfig};
 use nemesis_cluster::task_manager::TaskManager;
-use nemesis_cluster::transport::conn::{Connection, WireMessage};
+use nemesis_cluster::transport::conn::{Connection, TcpConn, TcpConnConfig, WireMessage};
 use nemesis_cluster::transport::frame::{read_frame, write_frame};
 use nemesis_cluster::discovery::{
     derive_key, encrypt_data, DiscoveryConfig, DiscoveryMessage, DiscoveryService,
@@ -110,32 +109,47 @@ fn tcp_send_recv(addr: &str, msg: &WireMessage) -> Result<WireMessage, String> {
     WireMessage::from_bytes(&resp_data).map_err(|e| e.to_string())
 }
 
-/// Send a WireMessage over a raw TCP connection with auth token.
+/// Send a WireMessage over a TCP connection with AEAD encryption.
+///
+/// RpcServer enforces auth by deriving an AES-256-GCM key from the token via
+/// `TcpConn` (see `crates/nemesis-cluster/src/rpc/server.rs:300-315`). A client
+/// that wants to talk to an authenticated server must use the same `TcpConn`
+/// machinery — sending a plaintext token line + plaintext frame (the legacy
+/// protocol this test used to use) makes the server's GCM tag verification
+/// fail and the connection is closed, surfacing as
+/// `read frame: failed to fill whole buffer`.
+///
+/// This helper builds a `TcpConn` with the same token, lets it run its
+/// read/write loops on a fresh one-shot tokio runtime, sends one request and
+/// reads the matching response.
 fn tcp_send_recv_auth(addr: &str, msg: &WireMessage, token: &str) -> Result<WireMessage, String> {
-    let mut stream =
-        TcpStream::connect(addr).map_err(|e| format!("connect: {}", e))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("rt: {}", e))?;
+    rt.block_on(async {
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .map_err(|e| format!("connect: {}", e))?;
+        let config = TcpConnConfig {
+            node_id: "test-client".into(),
+            address: addr.into(),
+            auth_token: if !token.is_empty() {
+                Some(token.to_string())
+            } else {
+                None
+            },
+            idle_timeout: Duration::from_secs(30),
+            ..Default::default()
+        };
+        let mut conn = TcpConn::new(stream, config);
+        conn.start().await.map_err(|e| format!("start: {}", e))?;
+        conn.send(msg).await.map_err(|e| format!("send: {}", e))?;
 
-    // Send auth token line first
-    if !token.is_empty() {
-        stream
-            .write_all(format!("{}\n", token).as_bytes())
-            .map_err(|e| format!("send token: {}", e))?;
-        stream.flush().unwrap();
-    }
-
-    // Send framed message
-    let data = msg.to_bytes().map_err(|e| e.to_string())?;
-    write_frame(&mut stream, &data).map_err(|e| format!("send frame: {}", e))?;
-
-    // Read response frame
-    let resp_data = read_frame(&mut stream).map_err(|e| format!("read frame: {}", e))?;
-    WireMessage::from_bytes(&resp_data).map_err(|e| e.to_string())
+        let resp = tokio::time::timeout(Duration::from_secs(10), conn.receive())
+            .await
+            .map_err(|_| "recv: timeout".to_string())?
+            .ok_or_else(|| "recv: connection closed".to_string())?;
+        conn.close();
+        Ok(resp)
+    })
 }
 
 /// Allocate a free UDP port.

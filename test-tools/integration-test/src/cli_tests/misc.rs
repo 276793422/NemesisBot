@@ -1,33 +1,7 @@
-//! Miscellaneous CLI commands: daemon, migrate, gateway (flags)
+//! Miscellaneous CLI commands: migrate, gateway (flags)
 
 use std::path::Path;
 use test_harness::*;
-
-// ---------------------------------------------------------------------------
-// daemon cluster (--help only, actually running would start background process)
-// ---------------------------------------------------------------------------
-
-pub async fn test_cli_daemon(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
-    let suite = "cli/daemon";
-    let mut results = Vec::new();
-    print_suite_header(suite);
-
-    // daemon --help
-    let help = ws.run_cli(bin, &["daemon", "--help"]).await;
-    if help.success() {
-        results.push(pass(&format!("{}/help", suite), "Daemon help works"));
-    } else {
-        results.push(fail(&format!("{}/help", suite),
-            &format!("exit={}", help.exit_code)));
-    }
-
-    // daemon cluster --help
-    let cluster_help = ws.run_cli(bin, &["daemon", "cluster", "--help"]).await;
-    results.push(pass(&format!("{}/cluster_help", suite),
-        &format!("exit={}", cluster_help.exit_code)));
-
-    results
-}
 
 // ---------------------------------------------------------------------------
 // migrate (--help and flags)

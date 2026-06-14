@@ -238,21 +238,6 @@ impl ClusterCallbacks for RegistryCallbacks {
             .collect();
 
         let state = crate::cluster_config::DynamicState {
-            cluster: crate::cluster_config::ClusterMeta {
-                id: "auto-discovered".into(),
-                auto_discovery: true,
-                last_updated: chrono::Local::now().to_rfc3339(),
-                rpc_auth_token: String::new(),
-            },
-            local_node: crate::cluster_config::NodeInfo {
-                id: self.node_id.clone(),
-                name: self.node_id.clone(),
-                address: self.address.clone(),
-                role: self.role.clone(),
-                category: self.category.clone(),
-                tags: Vec::new(),
-                capabilities: Vec::new(),
-            },
             discovered,
             last_sync: chrono::Local::now().to_rfc3339(),
         };

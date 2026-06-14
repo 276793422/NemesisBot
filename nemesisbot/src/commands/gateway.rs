@@ -1021,35 +1021,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
     {
-        let cluster_cfg_path = common::cluster_config_path(&home);
-        let cluster_json = std::fs::read_to_string(&cluster_cfg_path).unwrap_or_default();
-        let cluster_data: serde_json::Value = serde_json::from_str(&cluster_json).unwrap_or_default();
-
-        let node_id = cluster_data
-            .get("node_id")
-            .or_else(|| cluster_data.get("id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let node_name = cluster_data
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unnamed")
-            .to_string();
-        let _role = cluster_data
-            .get("role")
-            .and_then(|v| v.as_str())
-            .unwrap_or("worker")
-            .to_string();
-        let _category = cluster_data
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("development")
-            .to_string();
-
-        // Build ClusterConfig
+        // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份
         let cluster_config = nemesis_cluster::types::ClusterConfig {
-            node_id: node_id.clone(),
+            node_id: String::new(),
             bind_address: format!("0.0.0.0:{}", cluster_app_cfg.rpc_port),
             peers: vec![],
         };
@@ -1061,11 +1035,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
-        // Only override node_name if config.cluster.json has an explicit name.
-        // Otherwise keep the name loaded from peers.toml in with_workspace().
-        if node_name != "unnamed" {
-            cluster.set_node_name(&node_name);
-        }
         cluster.set_node_type("agent");
 
         // Load static peers from peers.toml into the registry
@@ -1116,12 +1085,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
         cluster.start();
 
-        // Refresh local node_id / node_name from the authoritative cluster state.
-        // The values captured above came from config.cluster.json (which typically has
-        // no node_id field), so they defaulted to "unknown" / "unnamed". The cluster
-        // itself loads the real identity from peers.toml during with_workspace() —
-        // query it back here so downstream consumers (ClusterRpcConfig.local_node_id,
-        // Forge-Cluster bridge, startup log) get the true ID.
+        // 节点身份（node_id / node_name）由 with_workspace() 从 peers.toml [node] 段加载，
+        // 这里直接从 cluster 拿真值供下游消费（ClusterRpcConfig.local_node_id、Forge 桥、日志）。
         let node_id = cluster.node_id().to_string();
         let node_name = cluster.node_name();
         info!("[Gateway] Cluster started (node_id: {}, name: {}, udp: {}, rpc: {})",

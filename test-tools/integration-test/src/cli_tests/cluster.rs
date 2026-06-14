@@ -37,7 +37,7 @@ pub async fn test_cli_cluster_init(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         // Create manually
         let _ = std::fs::create_dir_all(cluster_cfg.parent().unwrap());
         let config = serde_json::json!({
-            "enabled": false, "name": "test-bot", "role": "worker",
+            "enabled": false,
             "port": 11949, "rpc_port": 21949, "token": "test-token-123"
         });
         let _ = std::fs::write(&cluster_cfg, serde_json::to_string_pretty(&config).unwrap());

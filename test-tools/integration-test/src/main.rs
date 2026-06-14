@@ -418,9 +418,8 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_agent_set_concurrent(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_agent_message(&ws, &cfg.gateway_bin).await);
 
-    // --- Misc commands: daemon, migrate, gateway flags ---
-    println!("  [1.16] Daemon / Migrate / Gateway flags...");
-    all_results.extend(cli_tests::test_cli_daemon(&ws, &cfg.gateway_bin).await);
+    // --- Misc commands: migrate, gateway flags ---
+    println!("  [1.16] Migrate / Gateway flags...");
     all_results.extend(cli_tests::test_cli_migrate(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_gateway_flags(&ws, &cfg.gateway_bin).await);
 
@@ -459,6 +458,10 @@ async fn main() -> Result<()> {
     all_results.extend(subsystem_tests::test_cron_crud(&ws, &cfg.gateway_bin).await);
     all_results.extend(subsystem_tests::test_cron_scheduled_execution(&ws, &cfg.gateway_bin).await);
     all_results.extend(subsystem_tests::test_mcp_crud(&ws, &cfg.gateway_bin).await);
+
+    // ---- Phase 1 interim summary (printed before gateway-dependent tests so CLI results are visible) ----
+    println!("\n[Phase 1 Summary] CLI tests completed. Results so far:");
+    let _ = print_results(&all_results);
 
     // ---- Restore clean config for gateway-dependent tests ----
     // CLI tests may have modified config in incompatible ways (e.g., string "true" instead of bool)

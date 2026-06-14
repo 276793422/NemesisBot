@@ -1,17 +1,2 @@
 discovered = []
-last_sync = "2026-06-13T20:19:56.922734300+08:00"
-
-[cluster]
-id = "auto-discovered"
-auto_discovery = true
-last_updated = "2026-06-13T20:19:56.922726800+08:00"
-rpc_auth_token = ""
-
-[local_node]
-id = "local-node-001"
-name = "Bot local-no"
-address = "127.0.0.1:9000"
-role = "worker"
-category = "general"
-tags = []
-capabilities = []
+last_sync = "2026-06-14T03:56:54.826601100+08:00"

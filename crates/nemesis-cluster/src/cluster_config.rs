@@ -20,35 +20,14 @@ use crate::config_loader::ConfigError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticConfig {
     #[serde(default)]
-    pub cluster: ClusterMeta,
-    #[serde(default)]
     pub node: NodeInfo,
-    #[serde(default)]
+    // Skip when empty: `cluster peers add` appends `[peers.X]` subtables to
+    // the file, and a top-level `peers = []` would conflict with those
+    // subtables (TOML rejects `peers` being both an array and a parent of
+    // tables). When `cluster init` writes an empty StaticConfig, omitting
+    // this field keeps the file parseable after later appends.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peers: Vec<PeerConfig>,
-}
-
-/// Cluster metadata.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterMeta {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub auto_discovery: bool,
-    #[serde(default)]
-    pub last_updated: String,
-    #[serde(default)]
-    pub rpc_auth_token: String,
-}
-
-impl Default for ClusterMeta {
-    fn default() -> Self {
-        Self {
-            id: "auto-discovered".into(),
-            auto_discovery: true,
-            last_updated: chrono::Local::now().to_rfc3339(),
-            rpc_auth_token: String::new(),
-        }
-    }
 }
 
 /// Node information in the config file.
@@ -186,10 +165,6 @@ impl Default for PeerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicState {
     #[serde(default)]
-    pub cluster: ClusterMeta,
-    #[serde(default)]
-    pub local_node: NodeInfo,
-    #[serde(default)]
     pub discovered: Vec<PeerConfig>,
     #[serde(default)]
     pub last_sync: String,
@@ -198,8 +173,6 @@ pub struct DynamicState {
 impl Default for DynamicState {
     fn default() -> Self {
         Self {
-            cluster: ClusterMeta::default(),
-            local_node: NodeInfo::default(),
             discovered: Vec::new(),
             last_sync: chrono::Local::now().to_rfc3339(),
         }
@@ -271,12 +244,6 @@ pub fn save_dynamic_state(path: &Path, state: &DynamicState) -> Result<(), Confi
 /// Create a default static config.
 pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> StaticConfig {
     StaticConfig {
-        cluster: ClusterMeta {
-            id: "manual".into(),
-            auto_discovery: true,
-            last_updated: chrono::Local::now().to_rfc3339(),
-            rpc_auth_token: String::new(),
-        },
         node: NodeInfo {
             id: node_id.into(),
             name: node_name.into(),

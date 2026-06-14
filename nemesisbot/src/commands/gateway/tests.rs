@@ -674,50 +674,6 @@ fn test_cluster_result_persister_save_format() {
 // Cluster config loading from JSON tests
 // -------------------------------------------------------------------------
 
-#[test]
-fn test_cluster_config_node_id_extraction() {
-    let cluster_data = serde_json::json!({
-        "node_id": "node-abc",
-        "name": "test-bot",
-        "role": "worker",
-        "category": "development",
-    });
-    let node_id = cluster_data
-        .get("node_id")
-        .or_else(|| cluster_data.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    assert_eq!(node_id, "node-abc");
-}
-
-#[test]
-fn test_cluster_config_node_id_fallback_to_id() {
-    let cluster_data = serde_json::json!({
-        "id": "fallback-id",
-        "name": "test-bot",
-    });
-    let node_id = cluster_data
-        .get("node_id")
-        .or_else(|| cluster_data.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    assert_eq!(node_id, "fallback-id");
-}
-
-#[test]
-fn test_cluster_config_node_id_unknown_default() {
-    let cluster_data = serde_json::json!({});
-    let node_id = cluster_data
-        .get("node_id")
-        .or_else(|| cluster_data.get("id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    assert_eq!(node_id, "unknown");
-}
-
 // -------------------------------------------------------------------------
 // Peer TOML parsing logic tests
 // -------------------------------------------------------------------------

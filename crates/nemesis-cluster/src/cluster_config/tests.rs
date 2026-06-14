@@ -6,12 +6,6 @@ fn test_static_config_roundtrip() {
     let path = dir.path().join("peers.toml");
 
     let config = StaticConfig {
-        cluster: ClusterMeta {
-            id: "test-cluster".into(),
-            auto_discovery: true,
-            last_updated: "2026-04-29T00:00:00Z".into(),
-            rpc_auth_token: "secret-token".into(),
-        },
         node: NodeInfo {
             id: "node-001".into(),
             name: "Test Bot".into(),
@@ -45,7 +39,6 @@ fn test_static_config_roundtrip() {
     assert!(path.exists());
 
     let loaded = load_static_config(&path).unwrap();
-    assert_eq!(loaded.cluster.id, "test-cluster");
     assert_eq!(loaded.node.id, "node-001");
     assert_eq!(loaded.peers.len(), 1);
     assert_eq!(loaded.peers[0].rpc_port, 21949);
@@ -57,18 +50,6 @@ fn test_dynamic_state_roundtrip() {
     let path = dir.path().join("state.toml");
 
     let state = DynamicState {
-        cluster: ClusterMeta {
-            id: "auto-discovered".into(),
-            auto_discovery: true,
-            last_updated: "2026-04-29T00:00:00Z".into(),
-            rpc_auth_token: String::new(),
-        },
-        local_node: NodeInfo {
-            id: "local-001".into(),
-            name: "Local".into(),
-            address: "0.0.0.0:21949".into(),
-            ..NodeInfo::default()
-        },
         discovered: vec![PeerConfig {
             id: "discovered-001".into(),
             name: "Found Bot".into(),
@@ -134,7 +115,8 @@ fn test_peer_status_default() {
 fn test_toml_serialization_format() {
     let config = create_static_config("node-1", "Bot 1", "0.0.0.0:21949");
     let toml_str = toml::to_string_pretty(&config).unwrap();
-    assert!(toml_str.contains("[cluster]"));
+    // peers.toml 应该只含 [node] 段（不再有 [cluster] 段）
+    assert!(!toml_str.contains("[cluster]"));
     assert!(toml_str.contains("[node]"));
 }
 
@@ -142,25 +124,15 @@ fn test_toml_serialization_format() {
 
 #[test]
 fn test_static_config_default_values() {
-    let meta = ClusterMeta::default();
     let node = NodeInfo::default();
     let config = StaticConfig {
-        cluster: meta,
         node: node.clone(),
         peers: vec![],
     };
-    assert!(config.cluster.id == "auto-discovered");
     assert!(config.peers.is_empty());
     assert!(config.node.id.is_empty());
     assert_eq!(config.node.role, "worker");
     assert_eq!(config.node.category, "general");
-}
-
-#[test]
-fn test_cluster_meta_default() {
-    let meta = ClusterMeta::default();
-    assert!(meta.auto_discovery);
-    assert!(meta.rpc_auth_token.is_empty());
 }
 
 #[test]
@@ -177,7 +149,7 @@ fn test_peer_config_default() {
 fn test_dynamic_state_default() {
     let state = DynamicState::default();
     assert!(state.discovered.is_empty());
-    assert!(state.cluster.auto_discovery);
+    assert!(!state.last_sync.is_empty());
 }
 
 #[test]
@@ -186,7 +158,6 @@ fn test_static_config_with_multiple_peers() {
     let path = dir.path().join("peers.toml");
 
     let config = StaticConfig {
-        cluster: ClusterMeta::default(),
         node: NodeInfo {
             id: "master-1".into(),
             name: "Master".into(),
@@ -240,7 +211,6 @@ fn test_peer_config_with_tags_and_capabilities() {
     let path = dir.path().join("peers.toml");
 
     let config = StaticConfig {
-        cluster: ClusterMeta::default(),
         node: NodeInfo::default(),
         peers: vec![PeerConfig {
             id: "p1".into(),
@@ -327,7 +297,6 @@ fn test_save_and_load_empty_peers() {
     let path = dir.path().join("empty_peers.toml");
 
     let config = StaticConfig {
-        cluster: ClusterMeta::default(),
         node: NodeInfo::default(),
         peers: vec![],
     };

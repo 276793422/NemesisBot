@@ -544,7 +544,6 @@ impl ClusterHandler {
             // No existing peers.toml — create a minimal config with empty fields.
             // StaticConfig does not derive Default, so we construct manually.
             nemesis_cluster::cluster_config::StaticConfig {
-                cluster: nemesis_cluster::cluster_config::ClusterMeta::default(),
                 node: nemesis_cluster::cluster_config::NodeInfo::default(),
                 peers: Vec::new(),
             }
@@ -697,7 +696,6 @@ impl ClusterHandler {
                     .map_err(|e| format!("failed to load peers.toml: {}", e))?
             } else {
                 nemesis_cluster::cluster_config::StaticConfig {
-                    cluster: nemesis_cluster::cluster_config::ClusterMeta::default(),
                     node: nemesis_cluster::cluster_config::NodeInfo::default(),
                     peers: Vec::new(),
                 }
@@ -723,33 +721,6 @@ impl ClusterHandler {
             }
             nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
                 .map_err(|e| format!("failed to save peers.toml: {}", e))?;
-
-            // Also sync identity fields to config.cluster.json so gateway.rs
-            // picks up the updated name on restart (cluster init writes name there).
-            let ccfg_path = cluster_config_path(workspace);
-            if ccfg_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&ccfg_path) {
-                    if let Ok(mut ccfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(obj) = ccfg.as_object_mut() {
-                            if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
-                                obj.insert("name".into(), serde_json::json!(name.trim()));
-                            }
-                            if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
-                                obj.insert("role".into(), serde_json::json!(role.trim()));
-                            }
-                            if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
-                                obj.insert("category".into(), serde_json::json!(category.trim()));
-                            }
-                            if let Some(tags_arr) = data.get("tags").and_then(|v| v.as_array()) {
-                                obj.insert("tags".into(), serde_json::json!(tags_arr));
-                            }
-                        }
-                        if let Ok(json) = serde_json::to_string_pretty(&ccfg) {
-                            let _ = std::fs::write(&ccfg_path, json);
-                        }
-                    }
-                }
-            }
         }
 
         // Return current values

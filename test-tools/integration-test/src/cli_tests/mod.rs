@@ -106,6 +106,5 @@ pub use agent::test_cli_agent_set_llm;
 pub use agent::test_cli_agent_set_concurrent;
 pub use agent::test_cli_agent_message;
 
-pub use misc::test_cli_daemon;
 pub use misc::test_cli_migrate;
 pub use misc::test_cli_gateway_flags;

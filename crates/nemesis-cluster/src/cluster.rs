@@ -17,7 +17,7 @@ use tokio::sync::broadcast;
 use nemesis_types::cluster::Task;
 
 use crate::cluster_config::{
-    ClusterMeta, DynamicState, NodeInfo as ConfigNodeInfo, PeerConfig, PeerStatus,
+    DynamicState, PeerConfig, PeerStatus,
 };
 use crate::config_loader::ConfigError;
 use crate::continuation_store::ContinuationStore;
@@ -534,8 +534,6 @@ impl Cluster {
                         // Sync state to disk
                         let state_path = workspace.join("cluster").join("state.toml");
                         let state = DynamicState {
-                            cluster: ClusterMeta::default(),
-                            local_node: ConfigNodeInfo::default(),
                             discovered: registry.list_peers().iter().map(|n| {
                                 let mut pc = n.to_peer_config();
                                 pc.status.state = n.get_status_string().into();
@@ -1268,21 +1266,6 @@ impl Cluster {
         }
 
         let state = DynamicState {
-            cluster: ClusterMeta {
-                id: "auto-discovered".into(),
-                auto_discovery: true,
-                last_updated: chrono::Local::now().to_rfc3339(),
-                rpc_auth_token: String::new(),
-            },
-            local_node: ConfigNodeInfo {
-                id: self.node_id.clone(),
-                name: self.node_name.read().clone(),
-                address: self.address.clone(),
-                role: self.role.read().clone(),
-                category: self.category.read().clone(),
-                tags: self.tags.read().clone(),
-                capabilities: Vec::new(),
-            },
             discovered,
             last_sync: chrono::Local::now().to_rfc3339(),
         };
