@@ -581,6 +581,23 @@ impl Cluster {
             self.removed_peers.write().insert(node_id.to_string());
             crate::logger::log_discovery("removed", "", Some(node_id));
         }
+        // Persist deletion to peers.toml so the node does not reappear after
+        // restart. `remove_peer_from_file` is idempotent, so calling it even
+        // when nothing was removed from the registry is safe — but we always
+        // call it to cover the case where the file has a stale entry that the
+        // registry already forgot about. The in-memory blacklist above
+        // prevents UDP from immediately re-adding the node this session; it
+        // clears on restart, allowing re-discovery (matching the "until
+        // re-discovered" semantics).
+        if let Err(e) =
+            crate::cluster_config::remove_peer_from_file(&self.static_config_path, node_id)
+        {
+            tracing::warn!(
+                node_id = node_id,
+                error = %e,
+                "[Cluster] Failed to remove peer from peers.toml"
+            );
+        }
         removed
     }
 

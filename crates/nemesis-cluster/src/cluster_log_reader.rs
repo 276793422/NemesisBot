@@ -505,29 +505,51 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
                 .get("direction")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let duration_ms = entry
+                .data
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let success = entry
+                .data
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let status_icon = if success { "" } else { " ✗" };
+            let source = entry
+                .data
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let action = entry
+                .data
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if direction == "outbound" {
+                let target = entry
+                    .data
+                    .get("target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 (
                     "rpc",
                     format!(
-                        "RPC {} → {} ({})",
-                        entry
-                            .data
-                            .get("source")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?"),
-                        entry
-                            .data
-                            .get("target")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?"),
-                        entry
-                            .data
-                            .get("action")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
+                        "RPC {} → {} ({}) · {}ms{}",
+                        source, target, action, duration_ms, status_icon
+                    ),
+                )
+            } else if direction == "inbound" {
+                (
+                    "rpc_in",
+                    format!(
+                        "RPC {} → 本机 ({}) · {}ms{}",
+                        source, action, duration_ms, status_icon
                     ),
                 )
             } else {
+                // Unknown direction (e.g. "register_handler" written by
+                // logger::log_rpc at startup) — hide from dashboard.
                 return None;
             }
         }
@@ -772,12 +794,95 @@ mod tests {
         let log_content = r#"{"event":"cluster_start","ts":"2024-01-01T10:00:00+00:00","node_id":"node1"}
 {"event":"node_discovered","ts":"2024-01-01T10:01:00+00:00","node_id":"node2","peer_addr":"10.0.0.1:9000"}
 {"event":"task_completed","ts":"2024-01-01T10:02:00+00:00","task_id":"task-123","action":"peer_chat"}
-{"event":"rpc_call","ts":"2024-01-01T10:03:00+00:00","direction":"outbound","source":"node-a","target":"node-b","action":"peer_chat","request_id":"req-1"}
+{"event":"rpc_call","ts":"2024-01-01T10:03:00+00:00","direction":"outbound","source":"node-a","target":"node-b","action":"peer_chat","request_id":"req-1","duration_ms":123,"success":true}
+{"event":"rpc_call","ts":"2024-01-01T10:04:00+00:00","direction":"inbound","source":"node-c","target":"node-a","action":"diagnostics.system","request_id":"req-2","duration_ms":5,"success":true}
+{"event":"rpc_call","ts":"2024-01-01T10:05:00+00:00","direction":"outbound","source":"node-a","target":"node-d","action":"diagnostics.network","request_id":"req-3","duration_ms":2000,"success":false,"error":"timeout"}
 "#;
 
         fs::write(&log_file, log_content).unwrap();
 
         let events = read_recent_events(log_dir, 10);
         assert!(events.len() >= 3, "Should format multiple event types");
+    }
+
+    /// Verify rpc_call formatting: outbound includes source → target with duration,
+    /// inbound renders as "→ 本机", and failures get the ✗ marker.
+    #[test]
+    fn test_format_event_rpc_call_directions_and_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","direction":"outbound","source":"node-a","target":"node-b","action":"diagnostics.system","request_id":"req-1","duration_ms":42,"success":true}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","direction":"inbound","source":"node-c","target":"node-a","action":"diagnostics.network","request_id":"req-2","duration_ms":7,"success":true}
+{"event":"rpc_call","ts":"2024-01-01T10:02:00+00:00","direction":"outbound","source":"node-a","target":"node-d","action":"diagnostics.cluster_state","request_id":"req-3","duration_ms":3000,"success":false,"error":"timeout"}
+"#;
+        fs::write(&log_file, log_content).unwrap();
+
+        let events = read_recent_events(log_dir, 10);
+        // read_recent_events returns most-recent-first; collect messages by type.
+        let messages: Vec<String> = events.into_iter().map(|e| e.message).collect();
+
+        // Outbound success: "RPC {source} → {target} ({action}) · {ms}ms"
+        let outbound_ok = messages.iter().find(|m| m.contains("node-a → node-b"));
+        assert!(
+            outbound_ok.is_some(),
+            "outbound success entry missing, got: {:?}",
+            messages
+        );
+        let outbound_ok = outbound_ok.unwrap();
+        assert!(outbound_ok.contains("diagnostics.system"), "action in: {}", outbound_ok);
+        assert!(outbound_ok.contains("42ms"), "duration in: {}", outbound_ok);
+        assert!(!outbound_ok.contains('✗'), "success should not have marker: {}", outbound_ok);
+
+        // Inbound: "RPC {source} → 本机 ({action}) · {ms}ms"
+        let inbound = messages.iter().find(|m| m.contains("node-c → 本机"));
+        assert!(
+            inbound.is_some(),
+            "inbound entry missing (was previously hidden), got: {:?}",
+            messages
+        );
+        let inbound = inbound.unwrap();
+        assert!(inbound.contains("diagnostics.network"), "action in: {}", inbound);
+        assert!(inbound.contains("7ms"), "duration in: {}", inbound);
+
+        // Outbound failure: should have ✗ marker.
+        let outbound_fail = messages.iter().find(|m| m.contains("node-a → node-d"));
+        assert!(
+            outbound_fail.is_some(),
+            "outbound failure entry missing, got: {:?}",
+            messages
+        );
+        assert!(
+            outbound_fail.unwrap().contains('✗'),
+            "failed rpc_call should have ✗ marker"
+        );
+    }
+
+    /// Startup-time entries from `logger::log_rpc("register_handler", ...)` have
+    /// direction values other than "outbound"/"inbound". These must be hidden
+    /// from the dashboard (historically they were; my reader change must not
+    /// accidentally surface them as inbound).
+    #[test]
+    fn test_format_event_rpc_call_unknown_direction_hidden() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+
+        let log_content = r#"{"event":"rpc_call","ts":"2024-01-01T10:00:00+00:00","direction":"register_handler","action":"ping","request_id":"","source":"","target":"broadcast"}
+{"event":"rpc_call","ts":"2024-01-01T10:01:00+00:00","direction":"register_peer_chat_handlers","action":"","request_id":"RPCChannel not ready","source":"","target":"broadcast"}
+"#;
+        fs::write(&log_file, log_content).unwrap();
+
+        let events = read_recent_events(log_dir, 10);
+        assert!(
+            events.is_empty(),
+            "non-outbound/inbound rpc_call entries must be hidden, got: {:?}",
+            events
+        );
     }
 }

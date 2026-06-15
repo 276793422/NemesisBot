@@ -369,6 +369,28 @@ impl RpcClient {
         }
 
         let elapsed = start.elapsed();
+
+        // Log outbound RPC call to cluster_{date}.log for Dashboard audit trail.
+        // Captures the full round-trip (network + remote handler). Even on
+        // failure (peer offline, timeout, handler error) we log so users can
+        // see "I clicked diagnostics.system on node-B but it timed out".
+        {
+            let success = result.is_ok();
+            let mut fields = serde_json::json!({
+                "direction": "outbound",
+                "action": request.action.as_str(),
+                "source": request.source,
+                "target": peer_id,
+                "request_id": request.id,
+                "duration_ms": elapsed.as_millis() as u64,
+                "success": success,
+            });
+            if let Err(e) = &result {
+                fields["error"] = serde_json::Value::String(e.to_string());
+            }
+            crate::cluster_log::write_cluster_log("rpc_call", fields);
+        }
+
         match &result {
             Ok(_) => {
                 tracing::info!(

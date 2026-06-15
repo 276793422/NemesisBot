@@ -416,7 +416,29 @@ impl RpcServer {
         }
 
         // Execute handler
+        let handler_start = std::time::Instant::now();
         let result = handler(payload);
+        let handler_duration_ms = handler_start.elapsed().as_millis() as u64;
+
+        // Log inbound RPC call to cluster_{date}.log for Dashboard audit trail.
+        // Records every request handled by this node (diagnostics.*, peer_chat, etc.)
+        // regardless of whether it goes through the cluster agent.
+        {
+            let success = result.is_ok();
+            let mut fields = serde_json::json!({
+                "direction": "inbound",
+                "action": action,
+                "source": wire_msg.from,
+                "target": wire_msg.to,
+                "request_id": wire_msg.id,
+                "duration_ms": handler_duration_ms,
+                "success": success,
+            });
+            if let Err(ref e) = result {
+                fields["error"] = serde_json::Value::String(e.clone());
+            }
+            crate::cluster_log::write_cluster_log("rpc_call", fields);
+        }
 
         // Send response
         match result {

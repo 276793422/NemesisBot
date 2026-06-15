@@ -460,3 +460,67 @@ fn test_ensure_node_id_handles_corrupt_file() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("id = \"node-host-recovery\""));
 }
+
+#[test]
+fn test_remove_peer_from_file_removes_target_preserves_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path, "node-b", "10.0.0.2:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path, "node-c", "10.0.0.3:9000", "worker", "dev").unwrap();
+
+    remove_peer_from_file(&path, "node-b").unwrap();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("node-a"));
+    assert!(!content.contains("node-b"), "removed peer must be gone");
+    assert!(content.contains("node-c"));
+}
+
+#[test]
+fn test_remove_peer_from_file_idempotent_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    // File does not exist — should be a no-op Ok.
+    remove_peer_from_file(&path, "ghost").unwrap();
+
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
+    // Removing a peer that was never added — Ok, file unchanged for that key.
+    remove_peer_from_file(&path, "ghost").unwrap();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("node-a"), "unrelated peer must remain");
+}
+
+#[test]
+fn test_remove_peer_from_file_preserves_node_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    // Seed [node] via ensure_node_id, then add a peer.
+    ensure_node_id(&path, "this-node").unwrap();
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
+
+    remove_peer_from_file(&path, "node-a").unwrap();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.contains("id = \"this-node\""),
+        "[node] section must survive peer removal"
+    );
+    assert!(!content.contains("node-a"));
+}
+
+#[test]
+fn test_remove_peer_from_file_handles_corrupt_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(&path, "this is [not valid {{{{toml").unwrap();
+
+    // Corrupt TOML → must not propagate the parse error; warn-and-return-Ok
+    // matches append_peer_to_file's behavior.
+    let result = remove_peer_from_file(&path, "node-a");
+    assert!(result.is_ok(), "corrupt peers.toml must not error");
+}

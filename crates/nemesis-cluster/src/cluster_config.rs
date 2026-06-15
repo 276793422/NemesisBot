@@ -351,6 +351,62 @@ pub fn append_peer_to_file(
     Ok(())
 }
 
+/// Remove a peer's `[peers.{sanitized_id}]` subtable from peers.toml.
+///
+/// Symmetric counterpart to `append_peer_to_file`, used by `nodes.remove`
+/// (web) and `cluster peers remove` (CLI) to persist node deletion.
+///
+/// Idempotent: returns `Ok(())` if the file does not exist, has no `peers`
+/// table, or the key is not present — caller should not need to check
+/// existence first. Preserves the `[node]` section and any other `[peers.X]`
+/// entries. If the file is corrupt, the deletion is skipped with a warn log
+/// (same fallback strategy as `append_peer_to_file`).
+pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigError> {
+    // No file → nothing to remove.
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let mut doc: toml::Value = match content.parse::<toml::Value>() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "[ClusterConfig] Skipping peers.toml removal (parse failed)"
+            );
+            return Ok(());
+        }
+    };
+
+    let table = doc.as_table_mut().ok_or_else(|| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "peers.toml root is not a table",
+        ))
+    })?;
+
+    let peers_table = match table.get_mut("peers").and_then(|v| v.as_table_mut()) {
+        Some(t) => t,
+        None => return Ok(()), // no peers table → nothing to remove
+    };
+
+    let key = sanitize_peer_key(peer_id);
+    if peers_table.remove(&key).is_none() {
+        // Key not present — nothing was removed. Avoid the atomic rewrite.
+        return Ok(());
+    }
+
+    let toml_str = toml::to_string_pretty(&doc).map_err(|e| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e.to_string(),
+        ))
+    })?;
+    atomic_write(path, toml_str.as_bytes())?;
+    Ok(())
+}
+
 /// Load existing config or create a default one.
 pub fn load_or_create_config(path: &Path, node_id: &str) -> StaticConfig {
     match load_static_config(path) {
