@@ -22,6 +22,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'ping', id: string): void
   (e: 'remove', id: string): void
+  (e: 'refresh', id: string): void
 }>()
 
 const roleLabel = computed(() => {
@@ -44,6 +45,7 @@ const roleLabel = computed(() => {
       <span class="badge" :class="node.role === 'manager' ? 'badge-info' : 'badge-neutral'">{{ roleLabel }}</span>
       <div style="flex:1" />
       <button class="btn btn-sm" @click="emit('ping', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '本节点无需 Ping' : 'Ping'">Ping</button>
+      <button class="btn btn-sm" @click="emit('refresh', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '本节点无需刷新' : 'RPC 拉取真实 ID 与最新信息'">刷新</button>
       <button class="btn btn-sm btn-danger" @click="emit('remove', node.id)" :disabled="node.isLocal" :title="node.isLocal ? '不能移除本节点' : '移除节点'">移除</button>
     </div>
     <div class="node-detail-body">

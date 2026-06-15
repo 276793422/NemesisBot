@@ -119,8 +119,6 @@ impl ExtendedNodeInfo {
                 NodeRole::Worker => "worker".into(),
             },
             category: self.base.category.clone(),
-            tags: Vec::new(),
-            capabilities: self.capabilities.clone(),
             priority: 1,
             enabled: true,
             status: PeerStatus {

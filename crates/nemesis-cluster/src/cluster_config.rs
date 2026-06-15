@@ -15,19 +15,16 @@ use crate::config_loader::ConfigError;
 // ---------------------------------------------------------------------------
 
 /// Static cluster configuration (peers.toml).
-/// Created during onboard and contains the current node's information.
-/// Users can manually edit this file to add known peers.
+///
+/// Represents the `[node]` section of peers.toml. The `[peers.X]` subtables
+/// are managed by `append_peer_to_file()` (the canonical write path) and
+/// read directly by gateway.rs as raw TOML — they are NOT represented here,
+/// because `Vec<PeerConfig>` serializes to `[[peers]]` (array-of-tables)
+/// which is incompatible with the `[peers.X]` subtable form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticConfig {
     #[serde(default)]
     pub node: NodeInfo,
-    // Skip when empty: `cluster peers add` appends `[peers.X]` subtables to
-    // the file, and a top-level `peers = []` would conflict with those
-    // subtables (TOML rejects `peers` being both an array and a parent of
-    // tables). When `cluster init` writes an empty StaticConfig, omitting
-    // this field keeps the file parseable after later appends.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub peers: Vec<PeerConfig>,
 }
 
 /// Node information in the config file.
@@ -45,8 +42,6 @@ pub struct NodeInfo {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
 }
 
 impl Default for NodeInfo {
@@ -58,7 +53,6 @@ impl Default for NodeInfo {
             role: default_role(),
             category: default_category(),
             tags: Vec::new(),
-            capabilities: Vec::new(),
         }
     }
 }
@@ -72,6 +66,11 @@ fn default_category() -> String {
 }
 
 /// Peer node configuration.
+///
+/// Note: `tags` and `capabilities` fields have been removed. The runtime
+/// capabilities of remote nodes come from UDP discovery broadcasts (set by
+/// each node's `cluster.set_capabilities(tool_names)`), NOT from this static
+/// config. Configuring them in peers.toml had no effect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerConfig {
     #[serde(default)]
@@ -88,10 +87,6 @@ pub struct PeerConfig {
     pub role: String,
     #[serde(default)]
     pub category: String,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_enabled")]
@@ -110,8 +105,6 @@ impl Default for PeerConfig {
             rpc_port: 0,
             role: String::new(),
             category: String::new(),
-            tags: Vec::new(),
-            capabilities: Vec::new(),
             priority: default_priority(),
             enabled: default_enabled(),
             status: PeerStatus::default(),
@@ -251,10 +244,111 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             role: "worker".into(),
             category: "general".into(),
             tags: Vec::new(),
-            capabilities: Vec::new(),
         },
-        peers: Vec::new(),
     }
+}
+
+/// Sanitize a peer id into a TOML-safe key.
+///
+/// Replaces only characters that are illegal or ambiguous in TOML bare keys:
+/// - `.` is the dotted-key separator in TOML, must be replaced
+/// - `:` commonly appears in `host:port` and is reserved-style, replaced for safety
+///
+/// TOML v1.0.0 explicitly allows `-` and `_` in bare keys (`A-Za-z0-9_-`), so
+/// both are preserved as-is. This makes the mapping user-input → key → peer_id
+/// an identity function for those characters (no round-trip loss).
+pub fn sanitize_peer_key(peer_id: &str) -> String {
+    peer_id.replace('.', "_").replace(':', "_")
+}
+
+/// Append a peer as a `[peers.{sanitized_id}]` subtable to peers.toml.
+///
+/// This is the **canonical write path** for peers — used by both CLI
+/// `cluster peers add` and web handler `nodes.add`. It parses the existing
+/// file as a `toml::Value`, inserts a new subtable under `peers`, and writes
+/// back atomically. This preserves any existing `[node]` section and other
+/// `[peers.X]` entries without rewriting the whole file.
+///
+/// If the file does not exist, a minimal skeleton with `[node]` defaults
+/// is created. If the file exists but `peers` is currently an array (legacy
+/// `[[peers]]` format from `save_static_config`), it is replaced with an
+/// empty table — this is considered safe because gateway.rs only reads the
+/// `[peers.X]` table form anyway.
+///
+/// If a peer with the same sanitized key already exists, a `tracing::warn!`
+/// is logged and the existing entry is overwritten. This is intentional —
+/// "add the same name twice" is the canonical update flow.
+pub fn append_peer_to_file(
+    path: &Path,
+    peer_id: &str,
+    address: &str,
+    role: &str,
+    category: &str,
+) -> Result<(), ConfigError> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Load existing content or start with an empty table
+    let mut doc: toml::Value = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        match content.parse::<toml::Value>() {
+            Ok(v) => v,
+            Err(_) => {
+                // File is corrupt — fall back to a fresh table. Better than
+                // blocking the user from adding peers; they can investigate
+                // the original file from backups if needed.
+                toml::Value::Table(toml::value::Table::new())
+            }
+        }
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc.as_table_mut().ok_or_else(|| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "peers.toml root is not a table",
+        ))
+    })?;
+
+    // Ensure `peers` is a table (replace if it was a legacy array)
+    if !table.get("peers").map_or(false, |v| v.is_table()) {
+        table.insert("peers".to_string(), toml::Value::Table(toml::value::Table::new()));
+    }
+    let peers_table = table
+        .get_mut("peers")
+        .and_then(|v| v.as_table_mut())
+        .expect("peers entry just ensured to be a table");
+
+    // Build the new peer subtable
+    let key = sanitize_peer_key(peer_id);
+
+    // Detect duplicate and warn (do not block — overwrite is intentional)
+    if peers_table.contains_key(&key) {
+        tracing::warn!(
+            peer_id = peer_id,
+            key = %key,
+            "[ClusterConfig] Peer already exists in peers.toml, overwriting"
+        );
+    }
+
+    let mut peer_entry = toml::value::Table::new();
+    peer_entry.insert("address".to_string(), toml::Value::String(address.to_string()));
+    peer_entry.insert("role".to_string(), toml::Value::String(role.to_string()));
+    peer_entry.insert("category".to_string(), toml::Value::String(category.to_string()));
+    peers_table.insert(key, toml::Value::Table(peer_entry));
+
+    // Serialize and atomic write
+    let toml_str = toml::to_string_pretty(&doc).map_err(|e| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e.to_string(),
+        ))
+    })?;
+    atomic_write(path, toml_str.as_bytes())?;
+    Ok(())
 }
 
 /// Load existing config or create a default one.
@@ -263,6 +357,72 @@ pub fn load_or_create_config(path: &Path, node_id: &str) -> StaticConfig {
         Ok(config) => config,
         Err(_) => create_static_config(node_id, &format!("Bot {}", node_id), ""),
     }
+}
+
+/// Ensure `[node].id` is set in peers.toml. If the file doesn't exist or
+/// `[node].id` is empty, write the provided `node_id` and persist. Otherwise
+/// leave the file untouched (preserves user-edited id).
+///
+/// Used by `Cluster::with_workspace` to persist runtime-generated IDs so they
+/// remain stable across restarts. Operates on raw TOML to preserve any
+/// existing `[peers.X]` subtables (which `StaticConfig` doesn't represent).
+///
+/// Returns true if the file was modified (id was missing and got written).
+pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Load existing content or start with an empty table
+    let mut doc: toml::Value = if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        match content.parse::<toml::Value>() {
+            Ok(v) => v,
+            Err(_) => toml::Value::Table(toml::value::Table::new()),
+        }
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+
+    let table = doc.as_table_mut().ok_or_else(|| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "peers.toml root is not a table",
+        ))
+    })?;
+
+    // Ensure [node] is a table
+    if !table.get("node").map_or(false, |v| v.is_table()) {
+        table.insert("node".to_string(), toml::Value::Table(toml::value::Table::new()));
+    }
+    let node_table = table
+        .get_mut("node")
+        .and_then(|v| v.as_table_mut())
+        .expect("node entry just ensured to be a table");
+
+    // Check if id is already set to the same value (no-op)
+    let current_id = node_table
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !current_id.is_empty() {
+        // User has set an id; respect it
+        return Ok(false);
+    }
+
+    // Set the id
+    node_table.insert("id".to_string(), toml::Value::String(node_id.to_string()));
+
+    // Serialize and atomic write
+    let toml_str = toml::to_string_pretty(&doc).map_err(|e| {
+        ConfigError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            e.to_string(),
+        ))
+    })?;
+    atomic_write(path, toml_str.as_bytes())?;
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------

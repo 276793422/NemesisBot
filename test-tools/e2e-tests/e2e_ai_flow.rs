@@ -49,7 +49,12 @@ async fn test_e2e_list_models() {
     let data: Value = resp.json().await.expect("Failed to parse");
     let models = data["data"].as_array().expect("No models array");
     assert!(!models.is_empty(), "No models available");
-    assert_eq!(models[0]["id"].as_str().unwrap(), "testai-1.1");
+    // TestAIServer registers models in a Go map (random iteration order),
+    // so we check membership rather than positional access.
+    let has_testai_1_1 = models
+        .iter()
+        .any(|m| m["id"].as_str() == Some("testai-1.1"));
+    assert!(has_testai_1_1, "testai-1.1 not in models list");
 }
 
 #[tokio::test]

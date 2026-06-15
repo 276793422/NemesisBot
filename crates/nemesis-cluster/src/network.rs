@@ -149,6 +149,15 @@ fn prefix_len_to_mask(prefix_len: u32) -> Ipv4Addr {
 
 /// Check if two IP addresses are in the same subnet.
 ///
+/// Checks whether two IPs are in the same subnet **according to the local
+/// network interfaces' masks**.
+///
+/// Note: this is NOT a pure function of `(ip1, ip2)` — the result depends on
+/// what network interfaces the host has. If the host has a /16 interface
+/// (common under WSL/Docker), `192.168.1.1` and `192.168.2.1` will be
+/// considered the same subnet. Callers needing deterministic behavior should
+/// use `is_same_subnet_simple` directly with an explicit `/24` assumption.
+///
 /// Uses real subnet masks from local network interfaces when available,
 /// falls back to simple /24 matching.
 pub fn is_same_subnet(ip1: &str, ip2: &str) -> bool {

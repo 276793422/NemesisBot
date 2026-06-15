@@ -98,6 +98,10 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.nodes_add(&data, ctx)
             }
+            "nodes.refresh" => {
+                let data = data.ok_or("missing data")?;
+                self.nodes_refresh(&data, ctx).await
+            }
             "nodes.detail" => {
                 let data = data.ok_or("missing data")?;
                 let node_id = data["node_id"]
@@ -535,51 +539,30 @@ impl ClusterHandler {
         let name = data["name"].as_str().unwrap_or("").to_string();
         let role = data["role"].as_str().unwrap_or("worker").to_string();
         let category = data["category"].as_str().unwrap_or("general").to_string();
+        // Optional explicit ID. If provided, use it as peer_id; otherwise fall
+        // back to name (human-readable placeholder). The placeholder will be
+        // upgraded to the remote's real ID when the remote comes online and
+        // either RPC `get_info` or UDP AnnounceMessage delivers it.
+        let explicit_id = data["id"].as_str().unwrap_or("").trim().to_string();
+        let peer_id = if !explicit_id.is_empty() {
+            explicit_id
+        } else if !name.is_empty() {
+            name.clone()
+        } else {
+            address.clone()
+        };
 
         let ppath = peers_path(workspace);
-        let mut config = if ppath.exists() {
-            nemesis_cluster::cluster_config::load_static_config(&ppath)
-                .map_err(|e| format!("failed to load peers.toml: {}", e))?
-        } else {
-            // No existing peers.toml — create a minimal config with empty fields.
-            // StaticConfig does not derive Default, so we construct manually.
-            nemesis_cluster::cluster_config::StaticConfig {
-                node: nemesis_cluster::cluster_config::NodeInfo::default(),
-                peers: Vec::new(),
-            }
-        };
-
-        // Build a new PeerConfig
-        let peer = nemesis_cluster::cluster_config::PeerConfig {
-            id: if !name.is_empty() {
-                name.clone()
-            } else {
-                format!("peer-{}", config.peers.len() + 1)
-            },
-            name: name.clone(),
-            address: address.clone(),
-            rpc_port: 0, // will be parsed from address or auto-detected
-            role: role.clone(),
-            category: category.clone(),
-            enabled: true,
-            ..Default::default()
-        };
-
-        config.peers.push(peer);
-
-        nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
-            .map_err(|e| format!("failed to save peers.toml: {}", e))?;
+        nemesis_cluster::cluster_config::append_peer_to_file(
+            &ppath, &peer_id, &address, &role, &category,
+        )
+        .map_err(|e| format!("failed to append peer to peers.toml: {}", e))?;
 
         // If cluster is running, try to register the node
         if let Ok(cluster) = require_cluster(ctx) {
-            let node_id = if !name.is_empty() {
-                name.clone()
-            } else {
-                address.clone()
-            };
             let info = nemesis_cluster::types::ExtendedNodeInfo {
                 base: nemesis_types::cluster::NodeInfo {
-                    id: node_id.clone(),
+                    id: peer_id.clone(),
                     name: name.clone(),
                     role: if role == "manager" || role == "master" {
                         NodeRole::Master
@@ -599,6 +582,144 @@ impl ClusterHandler {
         }
 
         Ok(Some(serde_json::json!({ "added": true })))
+    }
+
+    /// Phase 3: Actively fetch real node info from a peer via RPC `get_info`,
+    /// then merge it into the registry and peers.toml. Used to upgrade a
+    /// placeholder peer_id (e.g. user-supplied name or address) to the remote's
+    /// real node ID.
+    ///
+    /// Workflow:
+    ///   1. Look up the peer in the registry (by node_id placeholder).
+    ///   2. If currently Offline, flip to Online so the resolver doesn't block
+    ///      the call. The status is restored to Offline if the call fails.
+    ///   3. Call `get_info` via the cluster's RPC client (15s timeout).
+    ///   4. Parse the response and call `cluster.merge_real_node_info`.
+    ///   5. Return the merged node info.
+    async fn nodes_refresh(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let peer_id = data["node_id"]
+            .as_str()
+            .ok_or("missing node_id")?
+            .to_string();
+
+        // Snapshot the original status so we can restore on failure.
+        let original_status = cluster
+            .get_peer(&peer_id)
+            .map(|p| p.status);
+
+        // Mark online to bypass the resolver's online-check.
+        cluster.mark_peer_online_for_refresh(&peer_id);
+
+        // Call get_info via RPC. Use a 15s timeout to fail fast for unreachable
+        // peers (default RPC timeout is 60min which is far too long for a UI
+        // refresh button).
+        let timeout_secs = data["timeout_secs"]
+            .as_u64()
+            .unwrap_or(15)
+            .clamp(1, 60);
+        let call_result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            cluster.call_with_context_async(
+                &peer_id,
+                "get_info",
+                serde_json::json!({}),
+                std::time::Duration::from_secs(timeout_secs),
+            ),
+        )
+        .await;
+
+        let bytes = match call_result {
+            Ok(Ok(bytes)) => bytes,
+            Ok(Err(e)) => {
+                // Restore status before returning error.
+                if let Some(s) = original_status {
+                    cluster.set_peer_status(&peer_id, s);
+                }
+                return Err(format!("RPC get_info failed: {}", e));
+            }
+            Err(_) => {
+                if let Some(s) = original_status {
+                    cluster.set_peer_status(&peer_id, s);
+                }
+                return Err(format!(
+                    "RPC get_info timed out ({}s)",
+                    timeout_secs
+                ));
+            }
+        };
+
+        let resp: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("parse get_info response: {}", e))?;
+
+        // Extract fields. `address` is reconstructed from addresses[0]:rpc_port.
+        let real_id = resp["node_id"]
+            .as_str()
+            .ok_or("get_info missing node_id")?
+            .to_string();
+        let name = resp["name"].as_str().unwrap_or("").to_string();
+        let addresses: Vec<String> = resp["addresses"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let rpc_port = resp["rpc_port"].as_u64().unwrap_or(0) as u16;
+        let role_str = resp["role"].as_str().unwrap_or("worker");
+        let role = if role_str == "manager" || role_str == "master" {
+            NodeRole::Master
+        } else {
+            NodeRole::Worker
+        };
+        let category = resp["category"].as_str().unwrap_or("general").to_string();
+        let capabilities: Vec<String> = resp["capabilities"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
+
+        let primary_address = if !addresses.is_empty() && rpc_port > 0 {
+            format!("{}:{}", addresses[0], rpc_port)
+        } else if !addresses.is_empty() {
+            addresses[0].clone()
+        } else {
+            String::new()
+        };
+
+        let info = nemesis_cluster::cluster::RealNodeInfo {
+            id: real_id.clone(),
+            name: name.clone(),
+            address: primary_address,
+            role,
+            category,
+            capabilities,
+            node_type,
+        };
+        let canonical_id = cluster.merge_real_node_info(&info);
+
+        // Pull the freshly merged entry to return to the caller.
+        let merged = cluster.get_peer(&canonical_id);
+        Ok(Some(serde_json::json!({
+            "refreshed": true,
+            "canonical_id": canonical_id,
+            "upgraded_from_placeholder": canonical_id != peer_id,
+            "node": merged.map(|p| serde_json::json!({
+                "id": p.base.id,
+                "name": p.base.name,
+                "address": p.base.address,
+                "role": match p.base.role {
+                    NodeRole::Master => "manager",
+                    NodeRole::Worker => "worker",
+                },
+                "category": p.base.category,
+                "capabilities": p.capabilities,
+                "addresses": p.addresses,
+                "online": p.is_online(),
+                "isLocal": p.base.id == cluster.node_id(),
+            })),
+        })))
     }
 
     /// Phase 2: Get node detail enriched with log stats.
@@ -697,7 +818,6 @@ impl ClusterHandler {
             } else {
                 nemesis_cluster::cluster_config::StaticConfig {
                     node: nemesis_cluster::cluster_config::NodeInfo::default(),
-                    peers: Vec::new(),
                 }
             };
             if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
@@ -1249,7 +1369,6 @@ impl ClusterHandler {
                         obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
                         obj.insert("category".to_string(), serde_json::json!(static_cfg.node.category));
                         obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
-                        obj.insert("capabilities".to_string(), serde_json::json!(static_cfg.node.capabilities));
                     }
                 }
             }

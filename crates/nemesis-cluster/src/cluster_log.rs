@@ -352,7 +352,12 @@ mod tests {
     }
 
     // Test that init_cluster_log panics on double init
+    // Marked `serial` because CLUSTER_LOG is a process-wide OnceLock — if any
+    // other test in the same `cargo test` invocation initializes it first,
+    // this test's "first" init would itself panic (outside catch_unwind).
+    // serial_test forces this test to run alone, avoiding the race.
     #[test]
+    #[serial_test::serial]
     fn test_init_cluster_log_panics_on_double_init() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let log_dir = temp_dir.path();

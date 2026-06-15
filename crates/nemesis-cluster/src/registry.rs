@@ -120,6 +120,33 @@ impl PeerRegistry {
         self.peers.lock().get(node_id).map(|e| e.info.clone())
     }
 
+    /// Find a peer by any of its addresses.
+    ///
+    /// Used by the remote-ID merge flow: when a manually-added peer uses a
+    /// placeholder ID (name or address) instead of its real node ID, the merge
+    /// step needs to locate the existing entry by address to replace it with
+    /// the real ID. Returns the first match.
+    ///
+    /// Matches against both `info.base.address` (the primary `host:port`) and
+    /// `info.addresses` (the full list of discovered IPs). Comparison is
+    /// case-insensitive on the host portion and exact on the port when present.
+    pub fn find_by_address(&self, address: &str) -> Option<ExtendedNodeInfo> {
+        let needle = address.trim().to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+        self.peers.lock().values().find_map(|e| {
+            let info = &e.info;
+            if addr_matches(&info.base.address, &needle) {
+                return Some(info.clone());
+            }
+            if info.addresses.iter().any(|a| addr_matches(a, &needle)) {
+                return Some(info.clone());
+            }
+            None
+        })
+    }
+
     /// Record a successful health check for a peer.
     pub fn mark_healthy(&self, node_id: &str) {
         let now = chrono::Local::now().to_rfc3339();
@@ -350,3 +377,24 @@ impl PeerRegistry {
 
 #[cfg(test)]
 mod tests;
+
+/// Compare two `host:port` strings for equality, case-insensitive on host
+/// and exact on port. Also handles bare hostnames (no port) by comparing
+/// hosts only. Empty needle or haystack is never a match.
+fn addr_matches(candidate: &str, needle: &str) -> bool {
+    let cand = candidate.trim().to_lowercase();
+    let needle_lc = needle.trim().to_lowercase();
+    if cand.is_empty() || needle_lc.is_empty() {
+        return false;
+    }
+    // Split on the last ':' to keep IPv6 brackets intact.
+    let (cand_host, cand_port) = match cand.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
+        _ => (cand.as_str(), None),
+    };
+    let (needle_host, needle_port) = match needle_lc.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
+        _ => (needle_lc.as_str(), None),
+    };
+    cand_host == needle_host && (cand_port.is_none() || needle_port.is_none() || cand_port == needle_port)
+}

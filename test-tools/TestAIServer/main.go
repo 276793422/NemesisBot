@@ -13,6 +13,7 @@ import (
 func main() {
 	// 解析命令行参数
 	showHelp := flag.Bool("help", false, "显示帮助信息")
+	port := flag.Int("port", 8080, "服务监听端口")
 	flag.Parse()
 
 	// 如果请求帮助，显示分层帮助系统
@@ -86,11 +87,15 @@ func main() {
 		v1.POST("/chat/completions", handler.ChatCompletions)
 	}
 
+	// 健康检查端点（供测试工具 wait_for_http 探测）
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
 	// 启动信息
 	fmt.Println("========================================")
 	fmt.Println(" TestAIServer 正在启动...")
 	fmt.Println("========================================")
-	fmt.Println("服务地址: http://0.0.0.0:8080")
 	fmt.Println("日志目录: ./log/")
 	fmt.Println()
 	fmt.Println("💡 帮助命令:")
@@ -102,7 +107,9 @@ func main() {
 	fmt.Println("========================================")
 
 	// 启动服务器（监听所有网络接口）
-	if err := router.Run("0.0.0.0:8080"); err != nil {
+	addr := fmt.Sprintf("0.0.0.0:%d", *port)
+	fmt.Printf("服务地址: http://%s\n", addr)
+	if err := router.Run(addr); err != nil {
 		fmt.Printf("服务器启动失败: %v\n", err)
 	}
 }

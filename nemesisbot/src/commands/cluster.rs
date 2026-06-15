@@ -44,9 +44,6 @@ pub enum ClusterAction {
         /// Node address
         #[arg(short, long)]
         address: Option<String>,
-        /// Node capabilities (comma-separated)
-        #[arg(long)]
-        capabilities: Option<String>,
     },
     /// Manage configured peer nodes
     Peers {
@@ -75,9 +72,6 @@ pub enum ClusterAction {
         /// Node address
         #[arg(short, long)]
         address: Option<String>,
-        /// Node capabilities (comma-separated)
-        #[arg(long)]
-        capabilities: Option<String>,
     },
     /// Enable cluster
     Enable,
@@ -139,12 +133,6 @@ pub enum PeerAction {
         /// Peer category (default: general)
         #[arg(short, long)]
         category: Option<String>,
-        /// Tags (comma-separated)
-        #[arg(short, long)]
-        tags: Option<String>,
-        /// Capabilities (comma-separated)
-        #[arg(long)]
-        capabilities: Option<String>,
         /// Priority (default: 0)
         #[arg(short, long)]
         priority: Option<i32>,
@@ -324,7 +312,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("Config file not found. Run 'nemesisbot cluster init' first.");
             }
         }
-        ClusterAction::Info { name, role, category, tags, address, capabilities } => {
+        ClusterAction::Info { name, role, category, tags, address } => {
             let peers_path = common::cluster_dir(&home).join("peers.toml");
             if peers_path.exists() {
                 if let Ok(mut sc) = nemesis_cluster::cluster_config::load_static_config(&peers_path) {
@@ -337,10 +325,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         changed = true;
                     }
                     if let Some(a) = address { sc.node.address = a; changed = true; }
-                    if let Some(c) = capabilities {
-                        sc.node.capabilities = c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                        changed = true;
-                    }
                     if changed {
                         if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {
                             println!("  Failed to save peers.toml: {}", e);
@@ -354,8 +338,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     let tags_str = if sc.node.tags.is_empty() { "(not set)".to_string() } else { sc.node.tags.join(",") };
                     println!("  Tags: {}", tags_str);
                     println!("  Address: {}", if sc.node.address.is_empty() { "(not set)" } else { &sc.node.address });
-                    let caps_str = if sc.node.capabilities.is_empty() { "(not set)".to_string() } else { sc.node.capabilities.join(",") };
-                    println!("  Capabilities: {}", caps_str);
                     if changed {
                         println!("Configuration updated (peers.toml).");
                     }
@@ -380,33 +362,19 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         println!("  No peers configured.");
                     }
                 }
-                Some(PeerAction::Add { id, name, address, role, category, tags, capabilities, priority }) => {
+                Some(PeerAction::Add { id, name, address, role, category, priority: _ }) => {
                     let display_name = name.as_deref().unwrap_or(&id);
                     let peer_addr = address.as_deref().unwrap_or("127.0.0.1:11949");
                     let peer_role = role.as_deref().unwrap_or("worker");
                     let peer_cat = category.as_deref().unwrap_or("general");
                     println!("Adding peer: {} ({}, addr: {}, role: {}, category: {})", display_name, id, peer_addr, peer_role, peer_cat);
-                    let peers_dir = common::cluster_dir(&home);
-                    let _ = std::fs::create_dir_all(&peers_dir);
-                    let peers_path = peers_dir.join("peers.toml");
-                    let existing = if peers_path.exists() {
-                        std::fs::read_to_string(&peers_path).unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    let key_safe = id.replace('.', "_").replace(':', "_").replace('-', "_");
-                    let mut entry = format!("\n[peers.{}]\naddress = \"{}\"\nrole = \"{}\"\ncategory = \"{}\"\n", key_safe, peer_addr, peer_role, peer_cat);
-                    if let Some(t) = &tags {
-                        entry.push_str(&format!("tags = \"{}\"\n", t));
+                    let peers_path = common::cluster_dir(&home).join("peers.toml");
+                    match nemesis_cluster::cluster_config::append_peer_to_file(
+                        &peers_path, &id, peer_addr, peer_role, peer_cat,
+                    ) {
+                        Ok(()) => println!("Peer added: {} ({})", display_name, id),
+                        Err(e) => println!("  Failed to add peer: {}", e),
                     }
-                    if let Some(c) = &capabilities {
-                        entry.push_str(&format!("capabilities = \"{}\"\n", c));
-                    }
-                    if let Some(p) = priority {
-                        entry.push_str(&format!("priority = {}\n", p));
-                    }
-                    let _ = std::fs::write(&peers_path, existing + &entry);
-                    println!("Peer added: {} ({})", display_name, id);
                 }
                 Some(PeerAction::Remove { id }) => {
                     println!("Removing peer: {}", id);
@@ -580,7 +548,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 }
             }
         }
-        ClusterAction::Init { name, role, category, tags, address, capabilities } => {
+        ClusterAction::Init { name, role, category, tags, address } => {
             println!("Initializing cluster configuration...");
             let cfg_path = common::cluster_config_path(&home);
             let dir = cfg_path.parent().unwrap();
@@ -624,9 +592,6 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let tags_vec: Vec<String> = tags
                 .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default();
-            let caps_vec: Vec<String> = capabilities
-                .map(|c| c.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-                .unwrap_or_default();
             let sc = nemesis_cluster::cluster_config::StaticConfig {
                 node: nemesis_cluster::cluster_config::NodeInfo {
                     id: node_id.clone(),
@@ -635,9 +600,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     role: role.unwrap_or_else(|| "worker".to_string()),
                     category: category.unwrap_or_else(|| "development".to_string()),
                     tags: tags_vec,
-                    capabilities: caps_vec,
                 },
-                peers: Vec::new(),
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {
                 println!("  Failed to save peers.toml: {}", e);

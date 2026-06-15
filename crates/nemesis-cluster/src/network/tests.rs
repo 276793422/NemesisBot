@@ -303,8 +303,13 @@ fn test_build_bind_address_with_port() {
 
 #[test]
 fn test_is_same_subnet_different_subnets() {
-    // These are on different /24 subnets
-    assert!(!is_same_subnet("192.168.1.1", "192.168.2.1"));
+    // Use IPs from different top-level ranges (10.x vs 192.168.x) so the
+    // result is independent of the host's local interface masks. The legacy
+    // test (192.168.1.1 vs 192.168.2.1) was environment-sensitive: if the
+    // host has a /16 interface (common under WSL/Docker), the mask-based
+    // check returned `true`, masking the failure. A different A-class pair
+    // makes the assertion stable across environments.
+    assert!(!is_same_subnet("10.0.0.1", "192.168.1.1"));
 }
 
 #[test]

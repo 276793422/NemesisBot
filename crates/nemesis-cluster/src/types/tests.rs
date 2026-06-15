@@ -159,7 +159,6 @@ fn test_to_peer_config() {
     assert_eq!(config.address, "10.0.0.1:9000");
     assert_eq!(config.role, "worker");
     assert_eq!(config.category, "development");
-    assert_eq!(config.capabilities.len(), 1);
     assert_eq!(config.status.state, "online");
 }
 

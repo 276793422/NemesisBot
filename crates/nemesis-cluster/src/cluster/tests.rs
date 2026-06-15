@@ -224,8 +224,13 @@ fn test_parse_host_port() {
 #[test]
 fn test_generate_node_id() {
     let id = generate_node_id();
-    assert!(id.starts_with("bot-"));
+    assert!(id.starts_with("node-"), "id should start with 'node-': {}", id);
     assert!(id.len() > 10);
+    // Verify format: node-{hostname}-{uuid} where uuid is 36 chars (8-4-4-4-12)
+    // hostname may contain '-' (e.g. "LAPTOP-FOO"), so check by tail (uuid is last 36 chars)
+    assert!(id.len() >= 5 + 36, "id should be at least 'node-' + 36-char uuid");
+    let uuid_part = &id[id.len() - 36..];
+    assert_eq!(uuid_part.matches('-').count(), 4, "uuid should have 4 hyphens");
 }
 
 struct MockBus {
@@ -621,9 +626,9 @@ fn test_set_ports() {
 fn test_generate_node_id_uniqueness() {
     let id1 = generate_node_id();
     let id2 = generate_node_id();
-    assert!(id1.starts_with("bot-"));
-    assert!(id2.starts_with("bot-"));
-    // The timestamp portion should differ
+    assert!(id1.starts_with("node-"));
+    assert!(id2.starts_with("node-"));
+    // The uuid portion should differ
     assert_ne!(id1, id2);
 }
 
@@ -2198,7 +2203,7 @@ fn test_new_with_empty_node_id_generates_one() {
     };
     let cluster = Cluster::new(config);
     assert!(!cluster.node_id().is_empty());
-    assert!(cluster.node_id().starts_with("bot-"));
+    assert!(cluster.node_id().starts_with("node-"));
 }
 
 #[test]
@@ -2275,7 +2280,7 @@ fn test_cluster_with_empty_node_id_in_config() {
     };
     let cluster = Cluster::new(config);
     // Should auto-generate a node ID
-    assert!(cluster.node_id().starts_with("bot-"));
+    assert!(cluster.node_id().starts_with("node-"));
     assert!(!cluster.node_id().is_empty());
 }
 
@@ -3425,7 +3430,7 @@ fn test_generate_node_id_uniqueness_multiple() {
     let mut ids = std::collections::HashSet::new();
     for _ in 0..50 {
         let id = generate_node_id();
-        assert!(id.starts_with("bot-"), "ID should start with 'bot-': {}", id);
+        assert!(id.starts_with("node-"), "ID should start with 'node-': {}", id);
         assert!(ids.insert(id), "Generated duplicate node ID");
     }
     assert_eq!(ids.len(), 50);
@@ -3474,4 +3479,423 @@ fn test_rpc_client_arc_before_and_after_start() {
         "rpc_client_arc should return Some after start()"
     );
     cluster.stop();
+}
+
+// -- Phase 1: generate_node_id format + with_workspace persistence --
+
+#[test]
+fn test_with_workspace_persists_runtime_id_to_peers_toml() {
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let peers_path = workspace.join("cluster").join("peers.toml");
+
+    // Use empty node_id to trigger runtime fallback (generate_node_id path)
+    let config = ClusterConfig {
+        node_id: String::new(),
+        bind_address: "127.0.0.1:9000".into(),
+        peers: vec![],
+    };
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    // peers.toml should now exist (ensure_node_id creates it)
+    assert!(peers_path.exists(), "peers.toml should be created");
+
+    // Verify the persisted id matches cluster.node_id()
+    let loaded = crate::cluster_config::load_static_config(&peers_path).unwrap();
+    assert_eq!(
+        loaded.node.id,
+        cluster.node_id(),
+        "persisted id should match cluster.node_id()"
+    );
+    assert!(!loaded.node.id.is_empty(), "persisted id should not be empty");
+    assert!(
+        loaded.node.id.starts_with("node-"),
+        "persisted id should use 'node-' prefix, got: {}",
+        loaded.node.id
+    );
+}
+
+#[test]
+fn test_with_workspace_respects_user_set_id() {
+    use tempfile::TempDir;
+
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let peers_path = workspace.join("cluster").join("peers.toml");
+
+    // Pre-create peers.toml with user-set id
+    std::fs::create_dir_all(peers_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &peers_path,
+        "[node]\nid = \"user-custom-id\"\nname = \"MyBot\"\n",
+    )
+    .unwrap();
+
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    // Cluster should use the user-set id, NOT a generated one
+    assert_eq!(cluster.node_id(), "user-custom-id");
+
+    // File should still contain the user's id (ensure_node_id is no-op)
+    let content = std::fs::read_to_string(&peers_path).unwrap();
+    assert!(content.contains("id = \"user-custom-id\""));
+    assert!(!content.contains("node-")); // no auto-generated id
+}
+
+// -- Phase 3 tests: merge_real_node_info --
+
+fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
+    RealNodeInfo {
+        id: id.into(),
+        name: name.into(),
+        address: addr.into(),
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec!["llm".into()],
+        node_type: "agent".into(),
+    }
+}
+
+#[test]
+fn test_merge_real_node_info_inserts_brand_new_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Registry starts empty
+    assert!(cluster.get_peer("node-real-1").is_none());
+
+    let canonical = cluster.merge_real_node_info(&make_real_node_info(
+        "node-real-1",
+        "Real Node 1",
+        "10.0.0.5:9000",
+    ));
+
+    assert_eq!(canonical, "node-real-1");
+    let p = cluster.get_peer("node-real-1").unwrap();
+    assert_eq!(p.base.name, "Real Node 1");
+    assert_eq!(p.base.address, "10.0.0.5:9000");
+}
+
+#[test]
+fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Pre-populate registry with a real_id entry (e.g. from prior UDP discovery)
+    cluster.handle_discovered_node(
+        "node-real-1",
+        "OldName",
+        vec!["10.0.0.5".into()],
+        9000,
+        "worker",
+        "old_cat",
+        vec![],
+        vec!["old_cap".into()],
+        "old_type",
+    );
+
+    let canonical = cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-real-1".into(),
+        name: "NewName".into(),
+        address: "10.0.0.5:9000".into(),
+        role: nemesis_types::cluster::NodeRole::Master,
+        category: "new_cat".into(),
+        capabilities: vec!["new_cap".into()],
+        node_type: "new_type".into(),
+    });
+
+    assert_eq!(canonical, "node-real-1");
+    let p = cluster.get_peer("node-real-1").unwrap();
+    assert_eq!(p.base.name, "NewName");
+    assert_eq!(p.base.category, "new_cat");
+    assert_eq!(p.base.role, nemesis_types::cluster::NodeRole::Master);
+    assert_eq!(p.capabilities, vec!["new_cap".to_string()]);
+    assert_eq!(p.node_type, "new_type");
+}
+
+#[test]
+fn test_merge_real_node_info_upgrades_placeholder_by_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Manually-added peer with placeholder ID (uses name as ID)
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "MyNodeName".into(), // placeholder
+            name: "MyNodeName".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.5:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    assert!(cluster.get_peer("MyNodeName").is_some());
+    assert!(cluster.get_peer("node-real-1").is_none());
+
+    let canonical = cluster.merge_real_node_info(&make_real_node_info(
+        "node-real-1",
+        "Real Name",
+        "10.0.0.5:9000",
+    ));
+
+    // Real ID should now be the canonical entry
+    assert_eq!(canonical, "node-real-1");
+    assert!(cluster.get_peer("node-real-1").is_some());
+    // Placeholder should be removed
+    assert!(cluster.get_peer("MyNodeName").is_none());
+}
+
+#[test]
+fn test_merge_real_node_info_persists_to_peers_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    cluster.merge_real_node_info(&make_real_node_info(
+        "node-real-persist",
+        "Persisted",
+        "10.0.0.7:9000",
+    ));
+
+    let peers_path = workspace.join("cluster/peers.toml");
+    let content = std::fs::read_to_string(&peers_path).unwrap();
+    assert!(
+        content.contains("[peers.node-real-persist]"),
+        "expected [peers.node-real-persist] in: {}",
+        content
+    );
+    assert!(content.contains("10.0.0.7:9000"));
+}
+
+#[test]
+fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+
+    // Pre-write peers.toml with a placeholder subtable
+    let peers_path = workspace.join("cluster/peers.toml");
+    std::fs::create_dir_all(peers_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &peers_path,
+        "[node]\nid = \"node-local-1\"\n\n[peers.MyPlaceholder]\naddress = \"10.0.0.5:9000\"\nrole = \"worker\"\n",
+    )
+    .unwrap();
+
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace.clone());
+
+    // Registry also has the placeholder
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "MyPlaceholder".into(),
+            name: "MyPlaceholder".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.5:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    cluster.merge_real_node_info(&make_real_node_info(
+        "node-real-upgraded",
+        "Real Upgraded",
+        "10.0.0.5:9000",
+    ));
+
+    let content = std::fs::read_to_string(&peers_path).unwrap();
+    assert!(
+        content.contains("[peers.node-real-upgraded]"),
+        "missing real peer subtable: {}",
+        content
+    );
+    assert!(
+        !content.contains("[peers.MyPlaceholder]"),
+        "placeholder subtable should be removed: {}",
+        content
+    );
+    // Local node should be preserved
+    assert!(content.contains("[node]"));
+}
+
+// -- Phase 4 test: handle_discovered_node triggers placeholder upgrade --
+
+#[test]
+fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Register a placeholder by name
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "ManualPeer".into(),
+            name: "ManualPeer".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "192.168.137.50:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+    assert!(cluster.get_peer("ManualPeer").is_some());
+
+    // UDP discovery delivers the real ID
+    cluster.handle_discovered_node(
+        "node-real-udp-1",
+        "Real UDP Node",
+        vec!["192.168.137.50".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec!["llm".into()],
+        "agent",
+    );
+
+    // Real ID should be present
+    assert!(cluster.get_peer("node-real-udp-1").is_some());
+    // Placeholder should be removed (upgraded)
+    assert!(
+        cluster.get_peer("ManualPeer").is_none(),
+        "placeholder should have been removed by UDP-triggered upgrade"
+    );
+}
+
+// -- Peer status helper tests --
+
+#[test]
+fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Register an offline peer
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "peer-x".into(),
+            name: "Peer X".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    assert_eq!(cluster.get_peer("peer-x").unwrap().status, NodeStatus::Offline);
+    cluster.mark_peer_online_for_refresh("peer-x");
+    assert_eq!(cluster.get_peer("peer-x").unwrap().status, NodeStatus::Online);
+}
+
+#[test]
+fn test_set_peer_status_restores_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "peer-y".into(),
+            name: "Peer Y".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    cluster.set_peer_status("peer-y", NodeStatus::Offline);
+    assert_eq!(cluster.get_peer("peer-y").unwrap().status, NodeStatus::Offline);
+}
+
+#[test]
+fn test_mark_peer_online_for_refresh_no_op_for_unknown_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Unknown peer — should not panic
+    cluster.mark_peer_online_for_refresh("does-not-exist");
+    assert!(cluster.get_peer("does-not-exist").is_none());
+}
+
+#[test]
+fn test_set_peer_status_no_op_for_unknown_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    cluster.set_peer_status("ghost", NodeStatus::Online);
+    assert!(cluster.get_peer("ghost").is_none());
+}
+
+// -- addr_eq helper tests (Phase 4) --
+
+#[test]
+fn test_addr_eq_basic_equality() {
+    assert!(addr_eq("1.2.3.4:9000", "1.2.3.4:9000"));
+    assert!(!addr_eq("1.2.3.4:9000", "1.2.3.5:9000"));
+}
+
+#[test]
+fn test_addr_eq_case_insensitive() {
+    assert!(addr_eq("HOST:80", "host:80"));
+    assert!(addr_eq("host:80", "HOST:80"));
+}
+
+#[test]
+fn test_addr_eq_missing_port_one_side() {
+    assert!(addr_eq("1.2.3.4:9000", "1.2.3.4"));
+    assert!(addr_eq("1.2.3.4", "1.2.3.4:9000"));
+}
+
+#[test]
+fn test_addr_eq_port_mismatch() {
+    assert!(!addr_eq("1.2.3.4:9000", "1.2.3.4:9001"));
+}
+
+#[test]
+fn test_addr_eq_empty() {
+    assert!(!addr_eq("", "1.2.3.4"));
+    assert!(!addr_eq("1.2.3.4", ""));
+    assert!(!addr_eq("", ""));
+}
+
+#[test]
+fn test_addr_eq_whitespace_trimmed() {
+    assert!(addr_eq("  1.2.3.4:9000  ", "1.2.3.4:9000"));
 }

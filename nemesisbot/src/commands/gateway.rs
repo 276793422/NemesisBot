@@ -1035,6 +1035,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
+        cluster.set_broadcast_interval(std::time::Duration::from_secs(
+            cluster_app_cfg.broadcast_interval.max(1),
+        ));
         cluster.set_node_type("agent");
 
         // Load static peers from peers.toml into the registry
@@ -1046,7 +1049,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 if let Ok(doc) = content.parse::<toml::Value>() {
                     if let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
                         for (key, val) in peers_table {
-                            let peer_id = key.replace('_', "-"); // Reverse TOML key sanitization
+                            // sanitize_peer_key only replaces `.` and `:` now (both are valid TOML
+                            // bare key chars but ambiguous in key names). `-` and `_` are preserved
+                            // as-is per TOML v1.0.0 spec, so the key IS the peer_id — no reverse
+                            // mapping needed.
+                            let peer_id = key.clone();
                             let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
                             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
                             let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");

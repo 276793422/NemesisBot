@@ -5,7 +5,7 @@
 //! Provides the `CallWithContext`, `SubmitTask`, and `SetMessageBus` APIs
 //! consumed by the agent loop.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -185,10 +185,17 @@ impl Cluster {
         };
 
         // Try to load existing node identity from static config
-        let sc = crate::cluster_config::load_static_config(&cluster_dir.join("peers.toml")).ok();
+        let peers_path = cluster_dir.join("peers.toml");
+        let sc = crate::cluster_config::load_static_config(&peers_path).ok();
         let node_id = sc.as_ref()
             .and_then(|s| if s.node.id.is_empty() { None } else { Some(s.node.id.clone()) })
             .unwrap_or(node_id);
+
+        // Persist runtime-generated node_id to peers.toml [node].id so it
+        // remains stable across restarts. No-op if user has already set one.
+        if let Err(e) = crate::cluster_config::ensure_node_id(&peers_path, &node_id) {
+            tracing::warn!("[Cluster] Failed to persist node_id to peers.toml: {}", e);
+        }
         let node_name_default = sc.as_ref()
             .and_then(|s| if s.node.name.is_empty() { None } else { Some(s.node.name.clone()) })
             .unwrap_or_else(|| format!("Bot {}", &node_id[..8.min(node_id.len())]));
@@ -624,6 +631,51 @@ impl Cluster {
         };
         let changed = self.registry.upsert_if_changed(node);
 
+        // Phase 4: If a placeholder peer exists at the same address (i.e. a
+        // manually-added entry keyed by name/address instead of the real ID),
+        // upgrade it now. The placeholder is removed from both registry and
+        // peers.toml, leaving only the canonical real_id entry.
+        //
+        // Note: find_by_address may return the just-inserted real_id entry
+        // itself (since it also matches the address). We loop over all matches
+        // via list_peers to find any *other* entry at the same address that
+        // isn't the real_id and remove it.
+        if !primary_address.is_empty() {
+            let placeholders: Vec<String> = self
+                .registry
+                .list_peers()
+                .into_iter()
+                .filter(|p| {
+                    p.base.id != node_id
+                        && (addr_eq(&p.base.address, &primary_address)
+                            || p.addresses.iter().any(|a| addr_eq(a, &primary_address)))
+                })
+                .map(|p| p.base.id)
+                .collect();
+            for placeholder_id in placeholders {
+                tracing::info!(
+                    real_id = node_id,
+                    placeholder_id = %placeholder_id,
+                    address = %primary_address,
+                    "[Cluster] UDP discovery upgrading placeholder peer to real ID"
+                );
+                self.registry.remove(&placeholder_id);
+                self.upgrade_peer_in_peers_toml(
+                    &placeholder_id,
+                    node_id,
+                    &RealNodeInfo {
+                        id: node_id.into(),
+                        name: name.into(),
+                        address: primary_address.clone(),
+                        role: nemesis_types::cluster::NodeRole::Worker,
+                        category: category.into(),
+                        capabilities: Vec::new(),
+                        node_type: node_type.into(),
+                    },
+                );
+            }
+        }
+
         if !changed && was_known {
             tracing::trace!(
                 node_id = node_id,
@@ -648,7 +700,6 @@ impl Cluster {
 
     /// Mark a node as offline.
     pub fn handle_node_offline(&self, node_id: &str, _reason: &str) {
-        // The registry doesn't have mark_offline, so we remove or update status
         if let Some(mut info) = self.registry.get(node_id) {
             tracing::warn!(
                 node_id = node_id,
@@ -666,6 +717,195 @@ impl Cluster {
                 node_id,
             );
         }
+    }
+
+    /// Merge real node info obtained from RPC `get_info` or UDP AnnounceMessage.
+    ///
+    /// When a node is manually added (via `nodes.add` or cluster CLI) it is
+    /// stored under a placeholder peer_id (user-supplied ID, or the node name,
+    /// or the address). The real node ID is only learned when the remote comes
+    /// online and we either:
+    ///   - Phase 3: actively call `get_info` RPC, or
+    ///   - Phase 4: passively receive an AnnounceMessage via UDP discovery.
+    ///
+    /// This function performs the merge:
+    ///   1. If an entry with the real_id already exists in the registry,
+    ///      update its fields (name, role, address, category, capabilities,
+    ///      node_type) and refresh `last_seen`.
+    ///   2. Otherwise, search for a placeholder by address. If found, remove
+    ///      the placeholder and insert a new entry keyed by real_id.
+    ///   3. Otherwise, insert a brand new entry under real_id.
+    ///
+    /// The peers.toml file is updated to reflect the merge: the placeholder
+    /// subtable `[peers.{placeholder}]` is removed and a new subtable
+    /// `[peers.{real_id}]` is added (or the existing one updated).
+    ///
+    /// `addresses` and `status` are NOT overwritten from the incoming data:
+    ///   - `addresses` is a local perspective (we may know about IPs the
+    ///     remote didn't broadcast in this payload).
+    ///   - `status` is a local observation (we may have just failed a health
+    ///     check). The caller can separately mark the node online if warranted.
+    ///
+    /// Returns the canonical node_id that was written (i.e. `real_id`).
+    pub fn merge_real_node_info(&self, info: &RealNodeInfo) -> String {
+        // 1. Existing entry with real_id → update fields
+        if let Some(mut existing) = self.registry.get(&info.id) {
+            existing.base.name = info.name.clone();
+            existing.base.role = info.role;
+            existing.base.category = info.category.clone();
+            if !info.address.is_empty() {
+                existing.base.address = info.address.clone();
+            }
+            existing.base.last_seen = chrono::Local::now().to_rfc3339();
+            existing.capabilities = info.capabilities.clone();
+            existing.node_type = info.node_type.clone();
+            self.registry.upsert(existing);
+            self.persist_real_peer_to_toml(&info.id, info);
+            return info.id.clone();
+        }
+
+        // 2. Placeholder by address → remove + insert under real_id
+        let placeholder_id = self
+            .registry
+            .find_by_address(&info.address)
+            .map(|p| p.base.id.clone());
+
+        let node = ExtendedNodeInfo {
+            base: nemesis_types::cluster::NodeInfo {
+                id: info.id.clone(),
+                name: info.name.clone(),
+                role: info.role,
+                address: info.address.clone(),
+                category: info.category.clone(),
+                last_seen: chrono::Local::now().to_rfc3339(),
+            },
+            status: NodeStatus::Online,
+            capabilities: info.capabilities.clone(),
+            addresses: Vec::new(),
+            node_type: info.node_type.clone(),
+        };
+        self.registry.upsert(node);
+
+        if let Some(placeholder) = placeholder_id {
+            if placeholder != info.id {
+                tracing::info!(
+                    real_id = %info.id,
+                    placeholder_id = %placeholder,
+                    address = %info.address,
+                    "[Cluster] Upgrading placeholder peer to real ID"
+                );
+                self.registry.remove(&placeholder);
+                self.upgrade_peer_in_peers_toml(&placeholder, &info.id, info);
+            } else {
+                self.persist_real_peer_to_toml(&info.id, info);
+            }
+        } else {
+            // 3. Brand new entry — persist under real_id
+            self.persist_real_peer_to_toml(&info.id, info);
+        }
+
+        info.id.clone()
+    }
+
+    /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
+    fn persist_real_peer_to_toml(&self, real_id: &str, info: &RealNodeInfo) {
+        let path = &self.static_config_path;
+        let role_str = match info.role {
+            nemesis_types::cluster::NodeRole::Master => "master",
+            nemesis_types::cluster::NodeRole::Worker => "worker",
+        };
+        if let Err(e) = crate::cluster_config::append_peer_to_file(
+            path,
+            real_id,
+            &info.address,
+            role_str,
+            &info.category,
+        ) {
+            tracing::warn!(
+                real_id = real_id,
+                error = %e,
+                "[Cluster] Failed to persist real peer info to peers.toml"
+            );
+        }
+    }
+
+    /// Remove `[peers.{placeholder}]` and add `[peers.{real_id}]` in peers.toml.
+    ///
+    /// If both keys sanitize to the same value (i.e. the user already added the
+    /// peer with the real ID), this is a no-op aside from a content refresh via
+    /// `persist_real_peer_to_toml`. Otherwise the placeholder is deleted and the
+    /// real ID is written.
+    fn upgrade_peer_in_peers_toml(
+        &self,
+        placeholder: &str,
+        real_id: &str,
+        info: &RealNodeInfo,
+    ) {
+        let path = &self.static_config_path;
+        // Same key after sanitization → just write the real_id content.
+        if crate::cluster_config::sanitize_peer_key(placeholder)
+            == crate::cluster_config::sanitize_peer_key(real_id)
+        {
+            self.persist_real_peer_to_toml(real_id, info);
+            return;
+        }
+
+        // Load → strip placeholder → atomic write → re-add real_id.
+        let mut doc: toml::Value = match (|| -> Result<toml::Value, String> {
+            if !path.exists() {
+                return Ok(toml::Value::Table(toml::value::Table::new()));
+            }
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| format!("read peers.toml: {}", e))?;
+            content
+                .parse::<toml::Value>()
+                .or_else(|_| Ok(toml::Value::Table(toml::value::Table::new())))
+        })() {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "[Cluster] Skipping peers.toml upgrade (load failed)");
+                return;
+            }
+        };
+
+        let table = match doc.as_table_mut() {
+            Some(t) => t,
+            None => return,
+        };
+
+        let peers_table = match table.get_mut("peers").and_then(|v| v.as_table_mut()) {
+            Some(t) => t,
+            None => {
+                // No [peers] section yet → just write the real entry via append.
+                self.persist_real_peer_to_toml(real_id, info);
+                return;
+            }
+        };
+
+        let placeholder_key = crate::cluster_config::sanitize_peer_key(placeholder);
+        let removed = peers_table.remove(&placeholder_key);
+        if removed.is_some() {
+            tracing::info!(
+                placeholder_key = %placeholder_key,
+                real_id = real_id,
+                "[Cluster] Removed placeholder from peers.toml"
+            );
+        }
+
+        // Atomic write back the modified doc.
+        let toml_str = match toml::to_string_pretty(&doc) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "[Cluster] Failed to serialize peers.toml after upgrade");
+                return;
+            }
+        };
+        if let Err(e) = write_atomic(path, toml_str.as_bytes()) {
+            tracing::warn!(error = %e, "[Cluster] Failed to write peers.toml after upgrade");
+        }
+
+        // Append real_id entry (atomic).
+        self.persist_real_peer_to_toml(real_id, info);
     }
 
     // -- Task management ------------------------------------------------------
@@ -1123,6 +1363,25 @@ impl Cluster {
         self.registry.get(peer_id)
     }
 
+    /// Temporarily mark a peer as Online so the RPC resolver doesn't block
+    /// the call. Used by `nodes.refresh` to bypass the offline-check before
+    /// attempting a `get_info` RPC; the caller should restore the original
+    /// status if the call fails.
+    pub fn mark_peer_online_for_refresh(&self, peer_id: &str) {
+        if let Some(mut info) = self.registry.get(peer_id) {
+            info.status = NodeStatus::Online;
+            self.registry.upsert(info);
+        }
+    }
+
+    /// Set a peer's status (used to restore state after a refresh attempt).
+    pub fn set_peer_status(&self, peer_id: &str, status: NodeStatus) {
+        if let Some(mut info) = self.registry.get(peer_id) {
+            info.status = status;
+            self.registry.upsert(info);
+        }
+    }
+
     /// Get online peers.
     pub fn get_online_peers(&self) -> Vec<ExtendedNodeInfo> {
         self.registry.list_online()
@@ -1141,6 +1400,13 @@ impl Cluster {
     pub fn set_ports(&mut self, udp: u16, rpc: u16) {
         self.udp_port = udp;
         self.rpc_port = rpc;
+    }
+
+    /// Set broadcast interval (UDP announce + sync_loop tick rate).
+    /// If not called, defaults to DEFAULT_BROADCAST_INTERVAL (30s).
+    /// Must be called BEFORE `start()` for the value to take effect.
+    pub fn set_broadcast_interval(&mut self, interval: std::time::Duration) {
+        self.broadcast_interval = interval;
     }
 
     /// Set the human-readable node name (e.g. "Node-A").
@@ -1245,8 +1511,6 @@ impl Cluster {
                 rpc_port: 0,
                 role: String::new(),
                 category: node.base.category.clone(),
-                tags: Vec::new(),
-                capabilities: node.capabilities.clone(),
                 priority: 1,
                 enabled: true,
                 status: PeerStatus {
@@ -2264,8 +2528,65 @@ fn generate_node_id() -> String {
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "unknown".into());
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.6f");
-    format!("bot-{}-{}", hostname, timestamp)
+    format!("node-{}-{}", hostname.to_lowercase(), uuid::Uuid::new_v4())
+}
+
+/// Atomic write helper: write to `{path}.tmp` then rename.
+///
+/// Mirrors the pattern in `cluster_config::atomic_write` (which is private
+/// there). Defined here separately because `merge_real_node_info` needs to
+/// rewrite peers.toml from a `toml::Value` doc that has had the placeholder
+/// subtable removed, before re-adding the real_id entry.
+fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp_path = path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, data)?;
+    match std::fs::rename(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(e)
+        }
+    }
+}
+
+/// Real node info obtained from RPC `get_info` or UDP AnnounceMessage.
+///
+/// Carries the authoritative identity of a remote node. Used by
+/// `Cluster::merge_real_node_info` to upgrade placeholder peer entries
+/// (created by manual `nodes.add`) to the remote's real ID, and to refresh
+/// fields whenever the remote broadcasts a new state.
+#[derive(Debug, Clone)]
+pub struct RealNodeInfo {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    pub role: nemesis_types::cluster::NodeRole,
+    pub category: String,
+    pub capabilities: Vec<String>,
+    pub node_type: String,
+}
+
+/// Address comparison used by UDP-triggered placeholder upgrade.
+///
+/// Returns true if `cand` and `needle` resolve to the same host[:port],
+/// case-insensitive on host, exact on port (with missing-port treated as
+/// wildcard). Defined here in addition to `registry::addr_matches` because
+/// the latter is private to the registry module.
+fn addr_eq(cand: &str, needle: &str) -> bool {
+    let cand_lc = cand.trim().to_lowercase();
+    let needle_lc = needle.trim().to_lowercase();
+    if cand_lc.is_empty() || needle_lc.is_empty() {
+        return false;
+    }
+    let (ch, cp) = match cand_lc.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
+        _ => (cand_lc.as_str(), None),
+    };
+    let (nh, np) = match needle_lc.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
+        _ => (needle_lc.as_str(), None),
+    };
+    ch == nh && (cp.is_none() || np.is_none() || cp == np)
 }
 
 // ---------------------------------------------------------------------------

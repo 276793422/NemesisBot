@@ -819,3 +819,114 @@ fn test_upsert_if_changed_resets_consecutive_failures() {
     let node = registry.get("a").unwrap();
     assert_eq!(node.status, NodeStatus::Online);
 }
+
+// -- find_by_address tests (used by merge_real_node_info to upgrade placeholders) --
+
+#[test]
+fn test_find_by_address_matches_primary_address() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let mut node = make_node("a");
+    node.base.address = "192.168.1.10:9000".into();
+    registry.upsert(node);
+
+    let found = registry.find_by_address("192.168.1.10:9000").unwrap();
+    assert_eq!(found.base.id, "a");
+}
+
+#[test]
+fn test_find_by_address_matches_addresses_list() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let mut node = make_node("a");
+    node.base.address = "10.0.0.1:9000".into();
+    node.addresses = vec!["192.168.1.10".into(), "10.0.0.1".into()];
+    registry.upsert(node);
+
+    // Find via the secondary list
+    let found = registry.find_by_address("192.168.1.10").unwrap();
+    assert_eq!(found.base.id, "a");
+}
+
+#[test]
+fn test_find_by_address_case_insensitive_host() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let mut node = make_node("a");
+    node.base.address = "Host.Example.COM:9000".into();
+    registry.upsert(node);
+
+    let found = registry.find_by_address("host.example.com:9000").unwrap();
+    assert_eq!(found.base.id, "a");
+}
+
+#[test]
+fn test_find_by_address_returns_none_for_empty() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    assert!(registry.find_by_address("").is_none());
+}
+
+#[test]
+fn test_find_by_address_returns_none_when_no_match() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("a"));
+
+    assert!(registry.find_by_address("8.8.8.8:9999").is_none());
+}
+
+#[test]
+fn test_find_by_address_port_optional() {
+    // Needle without port should still match a candidate that has a port.
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let mut node = make_node("a");
+    node.base.address = "192.168.1.10:9000".into();
+    registry.upsert(node);
+
+    let found = registry.find_by_address("192.168.1.10").unwrap();
+    assert_eq!(found.base.id, "a");
+}
+
+#[test]
+fn test_find_by_address_port_mismatch_no_match() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    let mut node = make_node("a");
+    node.base.address = "192.168.1.10:9000".into();
+    registry.upsert(node);
+
+    assert!(registry.find_by_address("192.168.1.10:9001").is_none());
+}
+
+// -- addr_matches unit tests --
+
+#[test]
+fn test_addr_matches_exact() {
+    assert!(addr_matches("192.168.1.10:9000", "192.168.1.10:9000"));
+}
+
+#[test]
+fn test_addr_matches_empty() {
+    assert!(!addr_matches("", "1.2.3.4"));
+    assert!(!addr_matches("1.2.3.4", ""));
+    assert!(!addr_matches("", ""));
+}
+
+#[test]
+fn test_addr_matches_case_insensitive() {
+    assert!(addr_matches("HOST:80", "host:80"));
+    assert!(addr_matches("host:80", "HOST:80"));
+}
+
+#[test]
+fn test_addr_matches_missing_port_one_side() {
+    assert!(addr_matches("192.168.1.10:9000", "192.168.1.10"));
+    assert!(addr_matches("192.168.1.10", "192.168.1.10:9000"));
+}
+
+#[test]
+fn test_addr_matches_port_mismatch() {
+    assert!(!addr_matches("192.168.1.10:9000", "192.168.1.10:9001"));
+}
+
+#[test]
+fn test_addr_matches_host_mismatch() {
+    assert!(!addr_matches("192.168.1.10:9000", "192.168.1.11:9000"));
+}

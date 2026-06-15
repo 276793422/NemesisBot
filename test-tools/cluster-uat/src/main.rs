@@ -735,10 +735,10 @@ async fn main() {
                     if other.name == node.name {
                         continue;
                     }
-                    // cluster peers add sanitizes the id into a TOML key
-                    // (hyphens → underscores, case preserved), so "Node-B"
-                    // becomes "[peers.Node_B]".
-                    let sanitized = other.name.replace('-', "_");
+                    // cluster peers add sanitizes the id into a TOML key.
+                    // Per TOML v1.0.0, `-` is a legal bare key char so it's
+                    // preserved as-is. Only `.` and `:` get replaced with `_`.
+                    let sanitized = other.name.replace('.', "_").replace(':', "_");
                     if !content.contains(&format!("[peers.{}]", sanitized)) {
                         return fail("T2", format!(
                             "{} peers.toml missing entry for {} (looked for [peers.{}])",
