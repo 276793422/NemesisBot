@@ -3296,7 +3296,9 @@ async fn test_cluster_rpc_execute_no_call_fn() {
 #[tokio::test]
 async fn test_cluster_rpc_execute_async_ack() {
     // rpc_call_fn returns {"status": "accepted", "task_id": "t-123"}
-    // execute should return Ok("__ASYNC__:t-123:Node-B")
+    // execute should return Ok("__ASYNC__:t-123:Node-B:Node-B")
+    // Format: __ASYNC__:{task_id}:{target_id}:{target_name}. With no
+    // peers_fn set, target_name falls back to target_id.
     let config = ClusterRpcConfig {
         local_node_id: "node-1".to_string(),
         timeout_secs: 60,
@@ -3316,7 +3318,42 @@ async fn test_cluster_rpc_execute_async_ack() {
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
-    assert_eq!(result.unwrap(), "__ASYNC__:t-123:Node-B");
+    assert_eq!(result.unwrap(), "__ASYNC__:t-123:Node-B:Node-B");
+}
+
+#[tokio::test]
+async fn test_cluster_rpc_execute_async_ack_includes_peer_name() {
+    // Plan C: when peers_fn resolves target_node to a friendly name,
+    // that name is encoded as the 4th part of the __ASYNC__ marker so
+    // loop.rs can show "找 Alex 帮个忙" instead of the raw node ID.
+    let config = ClusterRpcConfig {
+        local_node_id: "node-1".to_string(),
+        timeout_secs: 60,
+        local_rpc_port: 21949,
+    };
+    let mut tool = ClusterRpcTool::new(config);
+    tool.set_rpc_call_fn(Arc::new(
+        |_node: &str, _action: &str, _payload: serde_json::Value| {
+            Box::pin(async {
+                Ok(serde_json::json!({"status": "accepted", "task_id": "t-456"}))
+            })
+        },
+    ));
+    tool.set_peers_fn(Arc::new(move || {
+        vec![(
+            "node-node-abcdef".to_string(),
+            "Alex".to_string(),
+            vec!["code-review".to_string()],
+        )]
+    }));
+
+    let ctx = RequestContext::new("web", "chat-1", "user-1", "session-1");
+    let args = serde_json::json!({"target": "node-node-abcdef", "message": "hi"}).to_string();
+
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
+    // task_id : target_id : target_name (resolved via peers_fn)
+    assert_eq!(result.unwrap(), "__ASYNC__:t-456:node-node-abcdef:Alex");
 }
 
 #[tokio::test]

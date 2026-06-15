@@ -514,6 +514,7 @@ impl Cluster {
 
         let mut stop_rx = self.stop_tx.subscribe();
         let registry = self.registry.clone();
+        let local_node_id = self.node_id.clone();
         let workspace = self.workspace.clone();
 
         // Interval matches Go's broadcastInterval
@@ -527,23 +528,24 @@ impl Cluster {
                         return;
                     }
                     _ = interval.tick() => {
+                        // Refresh self first. The sync loop cannot call
+                        // sync_local_node_to_registry (it's &self and the
+                        // spawned task is 'static), so without this the local
+                        // node's last_health_check would age out and check_health
+                        // would flip self to Offline.
+                        registry.mark_healthy(&local_node_id);
+
                         // Mark Online peers as Offline if last_health_check is
                         // older than stale_timeout_secs (default 90s = 3×
                         // broadcast_interval, tolerates 2 consecutive dropped
-                        // UDP announces).
+                        // UDP announces). Offline peers STAY in the registry
+                        // — users expect the node list to retain known
+                        // peers (including self) even when they're offline,
+                        // and removing them would cause "select a peer"
+                        // lookups to degrade into self-calls.
                         let expired = registry.check_health();
                         for node_id in &expired {
                             logger::log_discovery_info(&format!("Node expired: {}", node_id));
-                        }
-
-                        // Drop peers that have been Offline longer than
-                        // eviction_timeout_secs (default 5min). They will
-                        // re-enter the registry if/when the remote resumes
-                        // broadcasting. peers.toml is untouched so static
-                        // entries reload on next start.
-                        let evicted = registry.evict_stale();
-                        for node_id in &evicted {
-                            logger::log_discovery_info(&format!("Node evicted: {}", node_id));
                         }
 
                         // Sync state to disk

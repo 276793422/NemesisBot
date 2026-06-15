@@ -3,30 +3,47 @@ use nemesis_agent::types::{AgentEvent, ConversationTurn, ToolCallInfo};
 use nemesis_cluster::cluster_task::{ClusterTask, TaskSource, TaskStatus};
 
 // -- is_async_done -------------------------------------------------------
+//
+// Detection now keys off the `__CLUSTER_ASYNC__` marker in tool messages
+// rather than the user-facing wording, so the message template can change
+// freely without breaking multi-hop chain call detection.
 
 #[test]
 fn test_is_async_done_true() {
-    let events = vec![
-        AgentEvent::Message("thinking".to_string()),
-        AgentEvent::ToolCall(vec![]),
-        AgentEvent::Done("已发送请求到远程节点，等待响应".to_string()),
+    let convo = vec![
+        make_turn("user", "请帮我联系 Alex", vec![]),
+        make_turn(
+            "assistant",
+            "",
+            vec![ToolCallInfo {
+                id: "tc_1".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }],
+        ),
+        make_turn(
+            "tool",
+            "Request accepted by node-X. Task ID: auto-abc | __CLUSTER_ASYNC__{\"task_id\":\"auto-abc\",\"target\":\"node-X\"}",
+            vec![],
+        ),
     ];
-    assert!(is_async_done(&events));
+    assert!(is_async_done(&convo));
 }
 
 #[test]
 fn test_is_async_done_false_normal_done() {
-    let events = vec![
-        AgentEvent::Message("intermediate".to_string()),
-        AgentEvent::Done("最终回复内容".to_string()),
+    let convo = vec![
+        make_turn("user", "你好", vec![]),
+        make_turn("assistant", "你好呀", vec![]),
+        make_turn("tool", "some regular tool output with no marker", vec![]),
     ];
-    assert!(!is_async_done(&events));
+    assert!(!is_async_done(&convo));
 }
 
 #[test]
 fn test_is_async_done_empty() {
-    let events: Vec<AgentEvent> = vec![];
-    assert!(!is_async_done(&events));
+    let convo: Vec<ConversationTurn> = vec![];
+    assert!(!is_async_done(&convo));
 }
 
 // -- extract_async_info --------------------------------------------------

@@ -163,8 +163,8 @@ async fn execute_new_task(
         obs.clear_task_context();
     }
 
-    if is_async_done(&events) {
-        let conversation = instance.get_history();
+    let conversation = instance.get_history();
+    if is_async_done(&conversation) {
         let conversation_json = serde_json::to_value(&conversation)
             .map_err(|e| format!("Failed to serialize conversation: {}", e))?;
         let (child_task_id, tool_call_id) =
@@ -254,8 +254,8 @@ async fn resume_task(
         obs.clear_task_context();
     }
 
-    if is_async_done(&events) {
-        let conversation = instance.get_history();
+    let conversation = instance.get_history();
+    if is_async_done(&conversation) {
         let conversation_json = serde_json::to_value(&conversation)
             .map_err(|e| format!("Failed to serialize conversation: {}", e))?;
         let (child_task_id, new_tool_call_id) =
@@ -314,11 +314,18 @@ fn build_context(task: &nemesis_cluster::cluster_task::ClusterTask) -> RequestCo
     )
 }
 
-/// Check if the last event indicates an async (__ASYNC__) result.
-fn is_async_done(events: &[AgentEvent]) -> bool {
-    events.iter().rev().any(|e| match e {
-        AgentEvent::Done(msg) => msg.contains("已发送请求到远程节点"),
-        _ => false,
+/// Check if the last execution ended in an async cluster_rpc by inspecting
+/// the conversation history for the `__CLUSTER_ASYNC__` marker.
+///
+/// Prior implementation matched the user-facing message text
+/// ("已发送请求到远程节点"), which coupled detection to a specific wording.
+/// After Plan C changed that template to "老爷，去找 X 帮个忙了，稍等哈~",
+/// the detection broke. We replaced it with a structured check on the
+/// tool_result marker — the marker is the load-bearing signal and is
+/// independent of how the message is phrased for the user.
+fn is_async_done(conversation: &[nemesis_agent::types::ConversationTurn]) -> bool {
+    conversation.iter().rev().any(|t| {
+        t.role == "tool" && t.content.contains("__CLUSTER_ASYNC__")
     })
 }
 

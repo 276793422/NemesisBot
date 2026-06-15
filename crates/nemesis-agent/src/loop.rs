@@ -2551,15 +2551,30 @@ impl AgentLoop {
                 }).await;
 
                 // Check for async cluster_rpc result — save continuation snapshot.
-                // The cluster_rpc tool returns "__ASYNC__:task_id:target" when
-                // the remote node accepts the request asynchronously.
+                //
+                // Plan C (template-based UX): the cluster_rpc tool encodes the
+                // peer's display name as the 4th part of the marker so we can
+                // render a human-friendly "waiting" message here without an
+                // extra cluster lookup (this crate can't depend on
+                // nemesis-cluster). The full LLM-generated persona response
+                // was deferred — it would double cross-node latency and
+                // complicate the continuation snapshot. See loop_tools.rs
+                // for the encoding site.
+                //
+                // Format: `__ASYNC__:{task_id}:{target_id}:{target_name}`
+                // Older senders may omit the name part (3-segment format),
+                // in which case we fall back to the bare target_id.
                 if result.starts_with("__ASYNC__:") {
-                    let parts: Vec<String> = result.splitn(3, ':')
+                    let parts: Vec<String> = result.splitn(4, ':')
                         .map(|s| s.to_string())
                         .collect();
                     if parts.len() >= 3 {
                         let task_id = parts[1].clone();
-                        let target = parts[2].clone();
+                        let target_id = parts[2].clone();
+                        let target_name = parts.get(3)
+                            .cloned()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| target_id.clone());
                         if let Some(ref mgr) = self.continuation_manager {
                             // Get messages up to this point (including the assistant's tool_call).
                             // We use build_messages() to convert history → LlmMessage format.
@@ -2590,13 +2605,25 @@ impl AgentLoop {
 
                         // Return an intermediate message to the user and stop processing.
                         // The continuation will resume when the callback arrives.
+                        //
+                        // NOTE: `is_async_done` in nemesisbot/src/cluster_agent.rs detects
+                        // this async path via the `__CLUSTER_ASYNC__` marker in conversation
+                        // history, NOT by matching this message text. So the wording here
+                        // is free to change without breaking multi-hop (A→B→C) detection.
+                        //
+                        // The template is deliberately persona-agnostic — this code has
+                        // no knowledge of which AI identity is currently loaded (IDENTITY.md
+                        // is applied at the LLM layer, not here). Address terms like "老爷"
+                        // belong in the persona file, not in hardcoded system messages.
+                        // The task_id is omitted from user-visible copy — it's an internal
+                        // correlation ID with no meaning to the user.
                         let intermediate = format!(
-                            "已发送请求到远程节点 {}，等待响应中... (task_id: {})",
-                            target, task_id
+                            "已经联系 {} 了，稍等~",
+                            target_name
                         );
                         instance.add_tool_result(&tc.id, &format!(
                             "Request accepted by {}. Task ID: {} | __CLUSTER_ASYNC__{{\"task_id\":\"{}\",\"target\":\"{}\"}}",
-                            target, task_id, task_id, target
+                            target_id, task_id, task_id, target_id
                         ));
 
                         let formatted = context.format_rpc_message(&intermediate);

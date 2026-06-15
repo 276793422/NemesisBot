@@ -1857,7 +1857,27 @@ impl Tool for ClusterRpcTool {
                 target = %target_node,
                 "[ClusterRPC] Peer chat ACK received, returning async marker"
             );
-            return Ok(format!("__ASYNC__:{}:{}", task_id, target_node));
+
+            // Plan C (template-based UX): resolve the peer's display name
+            // (e.g. "Alex") here and pass it through the `__ASYNC__` marker
+            // so loop.rs can render a human-friendly "waiting" message
+            // without a cluster registry lookup (nemesis-agent deliberately
+            // does not depend on nemesis-cluster).
+            //
+            // Falls back to the bare node ID if the peer is not in the
+            // online list (just went offline, or peers_fn unset in tests).
+            // Colons in the name are stripped because the marker is
+            // `:`-delimited and splitn would otherwise mis-parse.
+            let target_name = self
+                .peers_fn
+                .as_ref()
+                .and_then(|f| f().into_iter().find(|(id, _, _)| id == target_node))
+                .map(|(_, name, _)| name)
+                .filter(|n| !n.is_empty())
+                .map(|n| n.replace(':', ""))
+                .unwrap_or_else(|| target_node.to_string());
+
+            return Ok(format!("__ASYNC__:{}:{}:{}", task_id, target_node, target_name));
         }
 
         // Synchronous response — extract content field
