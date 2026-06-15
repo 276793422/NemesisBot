@@ -508,10 +508,26 @@ impl ClusterHandler {
         {
             Ok(Ok(_)) => {
                 let latency = start.elapsed().as_millis() as u64;
+                // Probe succeeded → peer is reachable. Refresh health state so
+                // the dashboard reflects reality even when UDP discovery is
+                // silent (different subnet, asymmetric routes, etc.).
+                cluster.mark_peer_healthy(node_id);
                 Ok(Some(serde_json::json!({ "latency": latency })))
             }
-            Ok(Err(e)) => Err(format!("ping failed: {}", e)),
-            Err(_) => Err("ping timeout (5s)".to_string()),
+            Ok(Err(e)) => {
+                // TCP connect explicitly failed (RST, refused, unreachable).
+                // User-initiated probe observing failure → flip to Offline
+                // immediately rather than waiting for check_timeouts.
+                let reason = format!("ping failed: {}", e);
+                cluster.mark_peer_offline(node_id, &reason);
+                Err(reason)
+            }
+            Err(_) => {
+                // 5s timeout — host is silent, likely down or firewalled.
+                let reason = "ping timeout (5s)".to_string();
+                cluster.mark_peer_offline(node_id, &reason);
+                Err(reason)
+            }
         }
     }
 

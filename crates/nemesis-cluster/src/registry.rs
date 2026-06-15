@@ -272,34 +272,6 @@ impl PeerRegistry {
         }
     }
 
-    /// Check all online nodes and mark those as offline whose last health check
-    /// is older than the given timeout duration.
-    ///
-    /// Returns the list of expired node IDs.
-    /// Mirrors Go's `Registry.CheckTimeouts(timeout)`.
-    pub fn check_timeouts(&self, timeout: std::time::Duration) -> Vec<String> {
-        let now = chrono::Local::now();
-        let threshold = now - chrono::Duration::from_std(timeout).unwrap_or(chrono::Duration::seconds(90));
-
-        let mut peers = self.peers.lock();
-        let mut expired = Vec::new();
-
-        for (id, entry) in peers.iter_mut() {
-            if entry.info.status != NodeStatus::Online {
-                continue;
-            }
-            if let Ok(last_check) = chrono::DateTime::parse_from_rfc3339(&entry.last_health_check) {
-                let last_check_utc = last_check.with_timezone(&chrono::Local);
-                if last_check_utc < threshold {
-                    entry.info.status = NodeStatus::Offline;
-                    expired.push(id.clone());
-                }
-            }
-        }
-
-        expired
-    }
-
     /// Return the count of online peers.
     ///
     /// Mirrors Go's `Registry.OnlineCount()`.

@@ -549,22 +549,6 @@ fn test_mark_offline_nonexistent_does_not_panic() {
 }
 
 #[test]
-fn test_check_timeouts_marks_old_online_peers() {
-    let registry = PeerRegistry::new(HealthConfig::default());
-
-    // Insert peer with old health check timestamp
-    let old_ts = (chrono::Local::now() - chrono::Duration::seconds(200)).to_rfc3339();
-    insert_peer_with_timestamp(&registry, "old", NodeStatus::Online, &old_ts, vec!["llm"]);
-
-    let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
-    assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0], "old");
-
-    let node = registry.get("old").unwrap();
-    assert_eq!(node.status, NodeStatus::Offline);
-}
-
-#[test]
 fn test_list_peers_includes_offline() {
     let registry = PeerRegistry::new(HealthConfig::default());
     registry.upsert(make_node("a"));
@@ -581,28 +565,6 @@ fn test_list_peers_includes_offline() {
 }
 
 // -- Additional tests: invalid timestamp handling --
-
-#[test]
-fn test_check_timeouts_invalid_timestamp() {
-    let registry = PeerRegistry::new(HealthConfig::default());
-
-    // Insert a peer with an invalid RFC3339 timestamp and Online status
-    insert_peer_with_timestamp(
-        &registry,
-        "bad-ts",
-        NodeStatus::Online,
-        "not-a-valid-timestamp",
-        vec!["llm"],
-    );
-
-    // Should not panic; the invalid timestamp is silently skipped
-    let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
-    assert!(expired.is_empty(), "invalid timestamp should be skipped, not expired");
-
-    // Node should still be Online (unchanged)
-    let node = registry.get("bad-ts").unwrap();
-    assert_eq!(node.status, NodeStatus::Online);
-}
 
 #[test]
 fn test_evict_stale_invalid_timestamp() {
@@ -630,10 +592,10 @@ fn test_evict_stale_invalid_timestamp() {
 }
 
 #[test]
-fn test_check_timeouts_mixed_valid_and_invalid_timestamps() {
+fn test_check_health_mixed_valid_and_invalid_timestamps() {
     let registry = PeerRegistry::new(HealthConfig::default());
 
-    // Valid old timestamp - should be expired
+    // Valid old timestamp - should be marked stale
     let old_ts = (chrono::Local::now() - chrono::Duration::seconds(200)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "old-valid", NodeStatus::Online, &old_ts, vec!["llm"]);
 
@@ -646,13 +608,13 @@ fn test_check_timeouts_mixed_valid_and_invalid_timestamps() {
         vec!["llm"],
     );
 
-    // Valid recent timestamp - should not be expired
+    // Valid recent timestamp - should not be stale
     let recent_ts = (chrono::Local::now() - chrono::Duration::seconds(10)).to_rfc3339();
     insert_peer_with_timestamp(&registry, "recent", NodeStatus::Online, &recent_ts, vec!["llm"]);
 
-    let expired = registry.check_timeouts(std::time::Duration::from_secs(90));
-    assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0], "old-valid");
+    let stale = registry.check_health();
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0], "old-valid");
 
     // Verify the invalid-timestamp node is still Online
     let invalid_node = registry.get("invalid").unwrap();

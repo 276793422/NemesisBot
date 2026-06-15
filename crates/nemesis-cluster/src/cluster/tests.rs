@@ -660,7 +660,6 @@ fn test_default_constants() {
     assert_eq!(DEFAULT_UDP_PORT, 11949);
     assert_eq!(DEFAULT_RPC_PORT, 21949);
     assert_eq!(DEFAULT_BROADCAST_INTERVAL, Duration::from_secs(30));
-    assert_eq!(DEFAULT_TIMEOUT, Duration::from_secs(3600));
 }
 
 #[test]

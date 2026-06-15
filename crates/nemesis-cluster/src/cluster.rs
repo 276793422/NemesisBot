@@ -56,7 +56,6 @@ pub trait MessageBus: Send + Sync {
 pub const DEFAULT_UDP_PORT: u16 = 11949;
 pub const DEFAULT_RPC_PORT: u16 = 21949;
 pub const DEFAULT_BROADCAST_INTERVAL: Duration = Duration::from_secs(30);
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// The cluster manages a set of nodes and distributes tasks.
 pub struct Cluster {
@@ -94,7 +93,6 @@ pub struct Cluster {
     udp_port: u16,
     rpc_port: u16,
     broadcast_interval: Duration,
-    timeout: Duration,
 
     // -- State --
     running: RwLock<bool>,
@@ -150,7 +148,6 @@ impl Cluster {
             udp_port: DEFAULT_UDP_PORT,
             rpc_port: DEFAULT_RPC_PORT,
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
-            timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
             discovery: Mutex::new(None),
@@ -231,7 +228,6 @@ impl Cluster {
             udp_port: DEFAULT_UDP_PORT,
             rpc_port: DEFAULT_RPC_PORT,
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
-            timeout: DEFAULT_TIMEOUT,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
             discovery: Mutex::new(None),
@@ -518,7 +514,6 @@ impl Cluster {
 
         let mut stop_rx = self.stop_tx.subscribe();
         let registry = self.registry.clone();
-        let timeout = self.timeout;
         let workspace = self.workspace.clone();
 
         // Interval matches Go's broadcastInterval
@@ -532,10 +527,23 @@ impl Cluster {
                         return;
                     }
                     _ = interval.tick() => {
-                        // Check for timed-out nodes
-                        let expired = registry.check_timeouts(timeout);
+                        // Mark Online peers as Offline if last_health_check is
+                        // older than stale_timeout_secs (default 90s = 3×
+                        // broadcast_interval, tolerates 2 consecutive dropped
+                        // UDP announces).
+                        let expired = registry.check_health();
                         for node_id in &expired {
                             logger::log_discovery_info(&format!("Node expired: {}", node_id));
+                        }
+
+                        // Drop peers that have been Offline longer than
+                        // eviction_timeout_secs (default 5min). They will
+                        // re-enter the registry if/when the remote resumes
+                        // broadcasting. peers.toml is untouched so static
+                        // entries reload on next start.
+                        let evicted = registry.evict_stale();
+                        for node_id in &evicted {
+                            logger::log_discovery_info(&format!("Node evicted: {}", node_id));
                         }
 
                         // Sync state to disk
@@ -1397,6 +1405,24 @@ impl Cluster {
             info.status = status;
             self.registry.upsert(info);
         }
+    }
+
+    /// Record a successful connectivity probe (e.g. `nodes_ping` TCP connect
+    /// succeeded). Refreshes `last_health_check` to now and ensures the peer
+    /// is marked Online. Use this whenever an external reachability check
+    /// confirms the peer is alive — independent of the UDP discovery loop.
+    pub fn mark_peer_healthy(&self, node_id: &str) {
+        self.registry.mark_healthy(node_id);
+    }
+
+    /// Record a failed connectivity probe (e.g. `nodes_ping` timed out or
+    /// TCP RST). Immediately flips the peer to Offline — does NOT go through
+    /// the `consecutive_failures` accumulator because the user explicitly
+    /// probed and observed failure. Also emits a discovery log entry so the
+    /// event surfaces in cluster_{date}.log.
+    pub fn mark_peer_offline(&self, node_id: &str, reason: &str) {
+        self.registry.mark_offline(node_id, reason);
+        crate::logger::log_discovery("offline", reason, Some(node_id));
     }
 
     /// Get online peers.
