@@ -1898,6 +1898,22 @@ impl Cluster {
     // -- RPC handler builders (extracted for testability) ----------------------
 
     /// Build the peer_chat handler (B-side: receive message, ACK, process async).
+    ///
+    /// **⚠️ 这是 ACK 桩，生产环境会被覆盖，不要在这里加业务逻辑。**
+    ///
+    /// 注册链路（后注册者覆盖先注册者）：
+    ///   1. `register_default_handlers()`（rpc/server.rs:494）注册最初的 ACK 桩
+    ///   2. `register_peer_chat_handlers()`（cluster.rs:1630）调用本函数注册此桩，覆盖 #1
+    ///   3. **gateway.rs:1189 用真正的 PeerChatHandler 覆盖此桩**（生产路径）
+    ///
+    /// 真 handler（gateway.rs:1189）做的事情：从 `payload._rpc.from` 提取 source_node_id、
+    /// 通过 RpcMeta 传给 PeerChatHandler（PeerChatHandler 从 rpc_meta.from 取 source_node_id、
+    /// 从 `_source.chat_id` 取 chat_id，组合成 session_key 用于 LLM 会话隔离）、
+    /// 自动注册未知节点到 registry、调用 PeerChatHandler 入队 ClusterTaskList 异步处理、
+    /// callback 通过 peer_chat_callback 回 A 端。
+    ///
+    /// 此桩仅在非 gateway 场景（如独立 cluster daemon、轻量节点）下生效。
+    /// **修改 peer_chat 行为的正确位置是 gateway.rs:1189，不是这里。**
     fn build_peer_chat_handler(&self) -> crate::rpc::server::RpcHandlerFn {
         let node_id = self.node_id.clone();
         Box::new(move |payload| {

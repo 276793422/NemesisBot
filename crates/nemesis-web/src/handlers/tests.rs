@@ -43,6 +43,7 @@ use super::*;
         });
         RequestContext {
             session_id: "test-session".to_string(),
+            chat_id: "test-chat".to_string(),
             workspace: Some(ws.clone()),
             home: Some(ws),
             state,
@@ -79,6 +80,7 @@ use super::*;
         });
         RequestContext {
             session_id: "test-session".to_string(),
+            chat_id: "test-chat".to_string(),
             workspace: None,
             home: None,
             state,

@@ -43,6 +43,10 @@ pub trait ModuleHandler: Send + Sync {
 pub struct RequestContext {
     /// The WebSocket session ID.
     pub session_id: String,
+    /// Chat ID derived from the WebSocket session (e.g. "web:{uuid}").
+    /// Used by handlers that need to propagate chat identity to peer_chat
+    /// or other downstream tasks that require per-conversation isolation.
+    pub chat_id: String,
     /// Optional workspace path.
     pub workspace: Option<String>,
     /// Home directory where config.json resides.

@@ -92,6 +92,7 @@ async fn test_dispatch_unknown_module() {
     let state = make_test_state();
     let ctx = RequestContext {
         session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
         workspace: None,
         home: None,
         state,
@@ -118,6 +119,7 @@ async fn test_dispatch_success() {
     let state = make_test_state();
     let ctx = RequestContext {
         session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
         workspace: None,
         home: None,
         state,
@@ -145,6 +147,7 @@ async fn test_dispatch_handler_error() {
     let state = make_test_state();
     let ctx = RequestContext {
         session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
         workspace: None,
         home: None,
         state,
@@ -171,6 +174,7 @@ async fn test_dispatch_no_data_response() {
     let state = make_test_state();
     let ctx = RequestContext {
         session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
         workspace: None,
         home: None,
         state,
@@ -196,6 +200,7 @@ async fn test_dispatch_req_id_roundtrip() {
     let state = make_test_state();
     let ctx = RequestContext {
         session_id: "s1".to_string(),
+        chat_id: "test-chat".to_string(),
         workspace: None,
         home: None,
         state,

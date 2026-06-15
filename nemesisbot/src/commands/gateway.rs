@@ -1186,7 +1186,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         {
             let handler_ref = handler_arc.clone();
             let cluster_ref = cluster.clone();
-            let _ = cluster.register_rpc_handler("peer_chat", Box::new(move |mut payload| {
+            let _ = cluster.register_rpc_handler("peer_chat", Box::new(move |payload| {
                 // Extract source node ID from RPC metadata injected by the server.
                 let source_node_id = payload
                     .get("_rpc")
@@ -1196,14 +1196,6 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     .to_string();
 
                 if !source_node_id.is_empty() {
-                    // Bridge: PeerChatHandler reads source_node_id from `_source.node_id`
-                    if let Some(obj) = payload.as_object_mut() {
-                        obj.insert(
-                            "_source".to_string(),
-                            serde_json::json!({"node_id": source_node_id.clone()}),
-                        );
-                    }
-
                     // Register the remote node in our registry so we can callback later.
                     // The remote node may not be known via UDP discovery yet (static peers
                     // use peer names, not node_ids). We use the RPC port from the payload
@@ -1228,8 +1220,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     }
                 }
 
+                // Pass RpcMeta to PeerChatHandler so it can read source_node_id from
+                // `rpc_meta.from` (authoritative wire-level sender ID) and chat_id from
+                // `payload._source.chat_id` (filled by the originating node's tasks_submit).
+                // Together these form the composite session_key `cluster_rpc:{node_id}/{chat_id}`
+                // for LLM conversation isolation.
+                let rpc_meta = nemesis_cluster::rpc::peer_chat_handler::RpcMeta {
+                    from: if source_node_id.is_empty() {
+                        None
+                    } else {
+                        Some(source_node_id.clone())
+                    },
+                };
                 let h = handler_ref.clone();
-                let ack = h.handle(payload, None);
+                let ack = h.handle(payload, Some(rpc_meta));
                 Ok(serde_json::to_value(&ack)
                     .unwrap_or_else(|_| serde_json::json!({"status": "error"})))
             }));

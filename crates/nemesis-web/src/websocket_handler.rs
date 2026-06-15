@@ -213,6 +213,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                 if let Some(ref router) = state.ws_router {
                                     let ctx = crate::ws_router::RequestContext {
                                         session_id: session_id.clone(),
+                                        chat_id: chat_id.clone(),
                                         workspace: state.workspace.clone(),
                                         home: state.home.clone(),
                                         state: state.clone(),

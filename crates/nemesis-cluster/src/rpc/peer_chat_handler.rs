@@ -237,13 +237,27 @@ impl PeerChatHandler {
             task_id
         };
 
-        // 4. Extract source info
+        // 4. Extract source info.
+        //
+        // `source_node_id` is taken from `rpc_meta.from` (injected by the RPC server
+        // from the wire message's `from` field — authoritative source of the sender's
+        // node ID). The `_source` payload field is preserved untouched for downstream
+        // consumers (chat_id, channel, etc.).
+        //
+        // `chat_id` is taken from `_source.chat_id` (filled by the originating node).
+        // Falls back to "default" when missing — all such requests share a single
+        // session, which is acceptable degradation for legacy/non-dashboard paths.
         let source_info = payload.get("_source").cloned();
-        let source_node_id = source_info
+        let source_node_id = rpc_meta
             .as_ref()
-            .and_then(|s| s.get("node_id"))
-            .and_then(|v| v.as_str())
+            .and_then(|m| m.from.as_deref())
             .unwrap_or("")
+            .to_string();
+        let chat_id = source_info
+            .as_ref()
+            .and_then(|s| s.get("chat_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("default")
             .to_string();
 
         // 5. Mark running in result persister
@@ -253,17 +267,24 @@ impl PeerChatHandler {
             }
         }
 
-        // 6. Determine sender ID
-        let sender_id = rpc_meta
-            .as_ref()
-            .and_then(|m| m.from.as_deref())
-            .unwrap_or_else(|| {
-                req.context
-                    .get("sender_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("remote-peer")
-            })
-            .to_string();
+        // 6. Determine session key suffix.
+        //
+        // The session_key (used for LLM conversation isolation) combines source_node_id
+        // and chat_id with `/` as separator (not `:`, since chat_id like "web:abc123"
+        // already contains colons and would muddy log readability).
+        //
+        // Isolation granularity:
+        //   - Different source nodes → different sessions
+        //   - Same node, different dashboard conversations → different sessions
+        //   - Same node + same chat_id (multi-turn) → same session (intended)
+        //
+        // When source_node_id is empty (rpc_meta.from absent), fall back to chat_id
+        // alone. When chat_id is also missing, it's already "default" from step 4.
+        let sender_id = if source_node_id.is_empty() {
+            chat_id.clone()
+        } else {
+            format!("{}/{}", source_node_id, chat_id)
+        };
 
         // 7. Enqueue to cluster agent or fall back to legacy LLM channel
         let cluster_task_list = self.cluster_task_list.clone();

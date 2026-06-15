@@ -578,22 +578,30 @@ async fn test_async_processing_no_source_node() {
 }
 
 #[tokio::test]
-async fn test_handle_extracts_source_from_payload() {
+async fn test_handle_extracts_source_from_rpc_meta() {
+    // After the session_key refactor, source_node_id is taken from rpc_meta.from
+    // (injected by the RPC server from the wire `from` field), NOT from
+    // payload._source.node_id. The `_source` field is preserved for chat_id and
+    // other downstream consumers.
     let handler = PeerChatHandler::new("node-b".into());
     let payload = serde_json::json!({
         "content": "Hello",
-        "_source": {"node_id": "source-node-1"},
+        "_source": {"node_id": "should-be-ignored"},
     });
-    let ack = handler.handle(payload, None);
+    let meta = RpcMeta { from: Some("source-node-1".into()) };
+    let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 }
 
 #[tokio::test]
-async fn test_handle_with_source_sender_id_fallback() {
+async fn test_handle_no_rpc_meta_uses_empty_source() {
+    // When rpc_meta is None (e.g., lightweight non-gateway nodes), source_node_id
+    // is empty. session_key falls back to chat_id alone (or "default" if chat_id
+    // is also missing). The handler should still ACK normally.
     let handler = PeerChatHandler::new("node-b".into());
     let payload = serde_json::json!({
         "content": "Hello",
-        "context": {"sender_id": "fallback-sender"},
+        "_source": {"chat_id": "web:abc"},
     });
     let ack = handler.handle(payload, None);
     assert_eq!(ack.status, "accepted");
@@ -754,7 +762,10 @@ async fn test_handle_with_rpc_meta_with_from() {
 }
 
 #[tokio::test]
-async fn test_handle_with_context_sender_id_no_rpc_meta() {
+async fn test_handle_context_sender_id_no_longer_used() {
+    // After the session_key refactor, context.sender_id is no longer consulted
+    // for session_key derivation. session_key is built from rpc_meta.from +
+    // _source.chat_id only. The handler should still ACK normally.
     let handler = PeerChatHandler::new("node-b".into());
     let payload = serde_json::json!({
         "content": "Hello",
@@ -864,12 +875,14 @@ async fn test_handle_with_persister_set_running_called() {
     let mut handler = PeerChatHandler::new("node-b".into());
     handler.set_result_persister(Arc::new(MockPersister { tx: std::sync::Mutex::new(tx) }));
 
+    // Source node ID is now taken from rpc_meta.from (not from payload._source.node_id).
     let payload = serde_json::json!({
         "content": "Hello",
         "task_id": "task-with-source",
-        "_source": {"node_id": "source-node-1"},
+        "_source": {"node_id": "should-be-ignored", "chat_id": "web:abc"},
     });
-    let ack = handler.handle(payload, None);
+    let meta = RpcMeta { from: Some("source-node-1".into()) };
+    let ack = handler.handle(payload, Some(meta));
     assert_eq!(ack.status, "accepted");
 
     let (task_id, source) = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
@@ -1011,4 +1024,119 @@ fn test_peer_chat_handler_setters() {
     let handler2 = PeerChatHandler::with_timeout("node-c".into(), Duration::from_secs(300));
     assert_eq!(handler2.node_id(), "node-c");
     assert_eq!(handler2.timeout_secs(), 300);
+}
+
+// ============================================================
+// Composite session_key tests (cluster_rpc:{node_id}/{chat_id})
+// ============================================================
+
+/// Verify the full composite session_key path: rpc_meta.from + _source.chat_id.
+///
+/// After the session_key isolation refactor:
+///   - source_node_id ← rpc_meta.from (NOT payload._source.node_id)
+///   - chat_id        ← payload._source.chat_id (fallback "default")
+///   - session_key    ← "cluster_rpc:{source_node_id}/{chat_id}"
+#[tokio::test]
+async fn test_session_key_composite_with_node_id_and_chat_id() {
+    let task_list = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
+    let work_queue = Arc::new(ClusterWorkQueue::new(64));
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_cluster_queue(task_list.clone(), work_queue.clone());
+
+    let payload = serde_json::json!({
+        "content": "Hello",
+        "task_id": "test-composite-1",
+        "_source": {
+            "node_id": "should-be-ignored",
+            "chat_id": "web:abc123",
+        },
+    });
+    let meta = RpcMeta { from: Some("node-A".into()) };
+    let ack = handler.handle(payload, Some(meta));
+    assert_eq!(ack.status, "accepted");
+
+    let task = task_list.get_task("test-composite-1").expect("task should be enqueued");
+    assert_eq!(task.source.node_id, "node-A");
+    assert_eq!(task.source.session_key, "cluster_rpc:node-A/web:abc123");
+}
+
+/// Verify chat_id fallback to "default" when _source.chat_id is missing.
+#[tokio::test]
+async fn test_session_key_default_chat_id_when_missing() {
+    let task_list = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
+    let work_queue = Arc::new(ClusterWorkQueue::new(64));
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_cluster_queue(task_list.clone(), work_queue.clone());
+
+    let payload = serde_json::json!({
+        "content": "Hello",
+        "task_id": "test-composite-2",
+        "_source": {
+            "node_id": "should-be-ignored",
+            // chat_id intentionally missing
+        },
+    });
+    let meta = RpcMeta { from: Some("node-A".into()) };
+    let ack = handler.handle(payload, Some(meta));
+    assert_eq!(ack.status, "accepted");
+
+    let task = task_list.get_task("test-composite-2").expect("task should be enqueued");
+    assert_eq!(task.source.node_id, "node-A");
+    assert_eq!(task.source.session_key, "cluster_rpc:node-A/default");
+}
+
+/// Verify source_node_id is taken from rpc_meta.from and payload._source.node_id
+/// is ignored. This guards against accidental regression to the old behavior.
+#[tokio::test]
+async fn test_source_node_id_from_rpc_meta_ignores_payload_source() {
+    let task_list = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
+    let work_queue = Arc::new(ClusterWorkQueue::new(64));
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_cluster_queue(task_list.clone(), work_queue.clone());
+
+    let payload = serde_json::json!({
+        "content": "Hello",
+        "task_id": "test-composite-3",
+        "_source": {
+            "node_id": "payload-source-id",  // must be ignored
+            "chat_id": "web:xyz",
+        },
+    });
+    let meta = RpcMeta { from: Some("real-node-id".into()) };
+    let ack = handler.handle(payload, Some(meta));
+    assert_eq!(ack.status, "accepted");
+
+    let task = task_list.get_task("test-composite-3").expect("task should be enqueued");
+    assert_eq!(
+        task.source.node_id, "real-node-id",
+        "source_node_id must come from rpc_meta.from, not payload._source.node_id"
+    );
+    assert_eq!(task.source.session_key, "cluster_rpc:real-node-id/web:xyz");
+}
+
+/// Verify session_key when rpc_meta.from is None (degraded path).
+///
+/// When rpc_meta.from is absent, source_node_id is empty. session_key falls back
+/// to chat_id alone (no node_id prefix). This is the degradation path for
+/// lightweight non-gateway nodes that don't inject rpc_meta.
+#[tokio::test]
+async fn test_session_key_no_rpc_meta_falls_back_to_chat_id() {
+    let task_list = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
+    let work_queue = Arc::new(ClusterWorkQueue::new(64));
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_cluster_queue(task_list.clone(), work_queue.clone());
+
+    let payload = serde_json::json!({
+        "content": "Hello",
+        "task_id": "test-composite-4",
+        "_source": {
+            "chat_id": "web:degraded",
+        },
+    });
+    let ack = handler.handle(payload, None);
+    assert_eq!(ack.status, "accepted");
+
+    let task = task_list.get_task("test-composite-4").expect("task should be enqueued");
+    assert_eq!(task.source.node_id, "");
+    assert_eq!(task.source.session_key, "cluster_rpc:web:degraded");
 }

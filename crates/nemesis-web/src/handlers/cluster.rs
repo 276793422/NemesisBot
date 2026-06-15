@@ -1069,12 +1069,13 @@ impl ClusterHandler {
         let task_id = if let Some(target) = target_node_id {
             // Submit peer_chat to a specific node
             let source_node_id = cluster.node_id().to_string();
+            let chat_id = ctx.chat_id.clone();
             let payload_for_task = serde_json::json!({
                 "content": content,
                 "_source": {
                     "node_id": source_node_id,
                     "channel": "dashboard",
-                    "chat_id": "dashboard_session",
+                    "chat_id": chat_id,
                 },
             });
 
@@ -1094,7 +1095,7 @@ impl ClusterHandler {
                 "_source": {
                     "node_id": source_node_id,
                     "channel": "dashboard",
-                    "chat_id": "dashboard_session",
+                    "chat_id": chat_id,
                 },
             });
 

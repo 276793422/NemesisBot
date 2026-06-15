@@ -486,10 +486,16 @@ impl RpcServer {
 
         // peer_chat default handler — placeholder that returns an ACK.
         //
-        // **这不是遗漏。** Production 路径中，gateway.rs 启动时会调用
-        // `rpc_server.register_handler("peer_chat", ...)` 用真正的 PeerChatHandler
-        // （包含 LLM 通道 + RPC 回调客户端）覆盖此默认 handler。此默认 handler 仅在
-        // 没有 gateway 的轻量节点（cluster node）场景下生效，用于确认收到请求。
+        // **这不是遗漏。** 此默认桩会被两层覆盖：
+        //   1. Cluster 启动时 `register_peer_chat_handlers()`（cluster.rs:1630）调用
+        //      `build_peer_chat_handler()` 注册 ACK 桩，覆盖此默认桩。
+        //   2. **gateway.rs:1189 用真正的 PeerChatHandler 再次覆盖**，做完整工作：
+        //      提取 `payload._rpc.from`、自动注册未知节点、入队 ClusterTaskList 异步处理。
+        //
+        // gateway 通过 `cluster.register_rpc_handler("peer_chat", ...)` 注册（不是直接
+        // 调 `rpc_server.register_handler`），cluster 内部转发到 server。此默认桩仅在
+        // 非 gateway 场景（轻量 cluster node）下生效。
+        // **修改 peer_chat 行为的正确位置是 gateway.rs:1189，不是这里。**
         // 对应 Go 版本的 `registerPeerChatHandlers`，由 `SetRPCChannel` 在就绪后注册。
         self.register_handler("peer_chat", Box::new(|payload| {
             let task_id = payload
@@ -505,9 +511,15 @@ impl RpcServer {
 
         // peer_chat_callback default handler — placeholder that acknowledges receipt.
         //
-        // **这不是遗漏。** Production 路径中，gateway.rs 启动时会用真正的
-        // TaskManager 回调处理器覆盖此默认 handler，将结果写入续行快照并触发
-        // AgentLoop 续行。此默认 handler 仅在轻量节点场景下生效。
+        // **这不是遗漏。** 此默认桩会被两层覆盖：
+        //   1. Cluster 启动时 `register_peer_chat_handlers()`（cluster.rs:1635）调用
+        //      `build_callback_handler()` 注册桩，覆盖此默认桩。
+        //   2. **gateway.rs:1250 用真正的 callback 路由 handler 再次覆盖**：路由到
+        //      ClusterAgent（嵌套 cluster_rpc）、续行快照（cluster_continuation bus
+        //      消息触发 AgentLoop 续行）、TaskManager（dashboard 发起的 peer_chat）。
+        //
+        // 此默认桩仅在非 gateway 场景（轻量 cluster node）下生效。
+        // **修改 peer_chat_callback 行为的正确位置是 gateway.rs:1250，不是这里。**
         // 对应 Go 版本中 `SetRPCChannel` 注册的 callback handler。
         self.register_handler("peer_chat_callback", Box::new(|payload| {
             let task_id = payload
