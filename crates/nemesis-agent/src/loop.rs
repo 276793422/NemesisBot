@@ -1068,23 +1068,6 @@ impl AgentLoop {
         }
     }
 
-    /// Emit an observer event asynchronously (for LLM request/response/tool).
-    ///
-    /// Non-blocking: each observer runs in its own tokio task.
-    fn emit_observer_async(&self, event: crate::loop_executor::ObserverEvent) {
-        if let Some(ref mgr) = self.observer_manager {
-            let conv_event = event.to_conversation_event();
-            let mgr = Arc::clone(mgr);
-            tokio::spawn(async move {
-                mgr.emit(conv_event).await;
-            });
-        }
-        if let Some(ref cb) = self.observer_callback {
-            let (event_type, data) = event.to_callback_json();
-            cb(event_type, &data);
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Cluster continuation handling
     // -----------------------------------------------------------------------
@@ -2325,10 +2308,12 @@ impl AgentLoop {
             let tool_values: Vec<serde_json::Value> = tool_defs.iter()
                 .filter_map(|t| serde_json::to_value(t).ok())
                 .collect();
-            self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmRequest {
+            // Extract model string before emit so RwLockReadGuard doesn't span the await.
+            let active_model = self.active_model.read().clone();
+            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmRequest {
                 trace_id: trace_id.to_string(),
                 round: turns_used + 1,
-                model: self.active_model.read().clone(),
+                model: active_model.clone(),
                 messages_count: messages.len(),
                 tools_count: tool_defs.len(),
                 messages: msg_values,
@@ -2336,14 +2321,13 @@ impl AgentLoop {
                 provider_name: String::new(),
                 api_key: String::new(),
                 api_base: String::new(),
-            });
+            }).await;
 
             // Call LLM.
             instance.set_state(crate::types::AgentState::Thinking);
             let round_start = std::time::Instant::now();
-            // Clone provider Arc and model string so RwLock guards are dropped before .await.
+            // Clone provider Arc so RwLock guard is dropped before .await.
             let active_provider = self.provider.read().clone();
-            let active_model = self.active_model.read().clone();
 
             // Use tokio::select! to allow cancellation during the LLM call.
             let chat_result = tokio::select! {
@@ -2429,7 +2413,7 @@ impl AgentLoop {
                                 warn!("[AgentLoop] All LLM retries exhausted: {}", retry_err);
                                 let error_round = turns_used + 1;
                                 let error_duration = round_start.elapsed();
-                                self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+                                self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
                                     trace_id: trace_id.to_string(),
                                     round: error_round,
                                     duration_ms: error_duration.as_millis() as u64,
@@ -2441,7 +2425,7 @@ impl AgentLoop {
                                     usage: None,
                                     raw_request_body: None,
                                     raw_response_body: None,
-                                });
+                                }).await;
                                 instance.add_assistant_message(
                                     &format!("Error: {}", retry_err),
                                     Vec::new(),
@@ -2456,7 +2440,7 @@ impl AgentLoop {
                         warn!("[AgentLoop] LLM call failed: {}", err);
                         let error_round = turns_used + 1;
                         let error_duration = round_start.elapsed();
-                        self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+                        self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
                             trace_id: trace_id.to_string(),
                             round: error_round,
                             duration_ms: error_duration.as_millis() as u64,
@@ -2468,7 +2452,7 @@ impl AgentLoop {
                             usage: None,
                             raw_request_body: None,
                             raw_response_body: None,
-                        });
+                        }).await;
                         instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
                         let formatted = context.format_rpc_message(&format!("Error: {}", err));
                         events.push(AgentEvent::Error(formatted));
@@ -2484,7 +2468,7 @@ impl AgentLoop {
                 .filter_map(|tc| serde_json::to_value(tc).ok())
                 .collect();
             let tc_count = response.tool_calls.len();
-            self.emit_observer_async(crate::loop_executor::ObserverEvent::LlmResponse {
+            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
                 trace_id: trace_id.to_string(),
                 round: turns_used,
                 duration_ms: round_duration.as_millis() as u64,
@@ -2496,7 +2480,7 @@ impl AgentLoop {
                 usage: response.usage.clone(),
                 raw_request_body: response.raw_request_body.take(),
                 raw_response_body: response.raw_response_body.take(),
-            });
+            }).await;
 
             // Record usage statistics if data store is available.
             if let Some(ref ds) = self.data_store {
@@ -2556,7 +2540,7 @@ impl AgentLoop {
                 let tool_duration = tool_start.elapsed();
 
                 // Emit tool call observer event.
-                self.emit_observer_async(crate::loop_executor::ObserverEvent::ToolCall {
+                self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {
                     trace_id: trace_id.to_string(),
                     tool_name: tc.name.clone(),
                     success: !result.starts_with("Error:") && !result.starts_with("Tool error:"),
@@ -2564,7 +2548,7 @@ impl AgentLoop {
                     round: turns_used,
                     arguments: tc.arguments.clone(),
                     result: result.clone(),
-                });
+                }).await;
 
                 // Check for async cluster_rpc result — save continuation snapshot.
                 // The cluster_rpc tool returns "__ASYNC__:task_id:target" when

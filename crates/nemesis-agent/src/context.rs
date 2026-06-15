@@ -324,9 +324,14 @@ impl ContextBuilder {
         result
     }
 
-    /// Build the core identity section with time, environment, and workspace info.
+    /// Build the core identity section with environment and workspace info.
+    ///
+    /// Time is intentionally NOT included here — the system prompt is built once
+    /// at agent startup and cached. Time is injected per-request by
+    /// `AgentLoopExecutor::build_messages()` as an ephemeral system message
+    /// inserted before the latest user message, which preserves prompt cache
+    /// hits on the historical prefix.
     fn build_identity(&self) -> String {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
         let workspace_display = self.workspace.display();
         let memory_path = self.workspace.join("memory");
         let memory_display = if memory_path.exists() {
@@ -342,9 +347,7 @@ impl ContextBuilder {
         };
 
         format!(
-            "# Current Time\n\
-             {}\n\n\
-             ## Environment\n\
+            "## Environment\n\
              - **Runtime**: NemesisBot (Rust)\n\
              - **Workspace**: {}\n\
              - **Memory Path**: {}\n\
@@ -355,7 +358,7 @@ impl ContextBuilder {
              1. **Always use tools** - When you need to perform an action, you must call the appropriate tool.\n\
              2. **Be helpful and accurate** - When using tools, briefly explain what you are doing.\n\
              3. **Memory** - When you need to remember something, write it to the memory file.",
-            now, workspace_display, memory_display, skills_display, workspace_display
+            workspace_display, memory_display, skills_display, workspace_display
         )
     }
 

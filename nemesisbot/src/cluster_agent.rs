@@ -15,6 +15,8 @@ use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatu
 use nemesis_cluster::rpc::client::RpcClient;
 use nemesis_cluster::rpc::peer_chat_handler::send_callback;
 
+use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
+
 /// Run the cluster agent event loop.
 ///
 /// This is the main entry point for the cluster agent. It loops forever,
@@ -32,6 +34,7 @@ pub async fn cluster_agent_loop(
     work_queue: Arc<ClusterWorkQueue>,
     task_list: Arc<ClusterTaskList>,
     rpc_client: Option<Arc<RpcClient>>,
+    cluster_observer: Option<Arc<ClusterRequestLoggerObserver>>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     tracing::info!("[ClusterAgent] Event loop started");
@@ -78,6 +81,7 @@ pub async fn cluster_agent_loop(
                 &config,
                 &task_list,
                 rpc_client.as_deref(),
+                cluster_observer.as_deref(),
                 &task,
             )
             .await
@@ -100,6 +104,7 @@ pub async fn cluster_agent_loop(
                 &config,
                 &task_list,
                 rpc_client.as_deref(),
+                cluster_observer.as_deref(),
                 &task,
             )
             .await
@@ -125,6 +130,7 @@ async fn execute_new_task(
     config: &AgentConfig,
     task_list: &ClusterTaskList,
     rpc_client: Option<&RpcClient>,
+    cluster_observer: Option<&ClusterRequestLoggerObserver>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
     let content_preview = truncate_str(&task.content, 200);
@@ -137,9 +143,25 @@ async fn execute_new_task(
     let instance = AgentInstance::new(config.clone());
 
     let token = tokio_util::sync::CancellationToken::new();
+    if let Some(ref obs) = cluster_observer {
+        obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
+        obs.emit_conversation_start(
+            &trace_id,
+            "cluster",
+            &task.task_id,
+            &task.source.node_id,
+            &task.content,
+        );
+    }
     let events = agent_loop
         .run_with_trace(&instance, &task.content, &context, &trace_id, false, &token)
         .await;
+    if let Some(ref obs) = cluster_observer {
+        let final_msg = extract_final_message(&events);
+        let rounds = count_llm_rounds(&events);
+        obs.emit_conversation_end(&trace_id, "cluster", &task.task_id, rounds, &final_msg, false);
+        obs.clear_task_context();
+    }
 
     if is_async_done(&events) {
         let conversation = instance.get_history();
@@ -178,6 +200,7 @@ async fn resume_task(
     config: &AgentConfig,
     task_list: &ClusterTaskList,
     rpc_client: Option<&RpcClient>,
+    cluster_observer: Option<&ClusterRequestLoggerObserver>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
     nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
@@ -211,9 +234,25 @@ async fn resume_task(
     let context = build_context(task);
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
+    if let Some(ref obs) = cluster_observer {
+        obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
+        obs.emit_conversation_start(
+            &trace_id,
+            "cluster",
+            &task.task_id,
+            &task.source.node_id,
+            "(resume)",
+        );
+    }
     let events = agent_loop
         .resume_execution(&instance, &context, &trace_id)
         .await;
+    if let Some(ref obs) = cluster_observer {
+        let final_msg = extract_final_message(&events);
+        let rounds = count_llm_rounds(&events);
+        obs.emit_conversation_end(&trace_id, "cluster", &task.task_id, rounds, &final_msg, false);
+        obs.clear_task_context();
+    }
 
     if is_async_done(&events) {
         let conversation = instance.get_history();
@@ -347,6 +386,15 @@ fn extract_final_message(events: &[AgentEvent]) -> String {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// Count LLM rounds from agent events (mirrors main agent's formula in loop.rs).
+fn count_llm_rounds(events: &[AgentEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+        .count()
+        + 1
 }
 
 /// Send a callback for a completed task.

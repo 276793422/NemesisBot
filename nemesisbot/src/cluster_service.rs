@@ -107,7 +107,7 @@ impl ClusterServiceAdapter {
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();
         let handle = match crate::agent_factory::build_cluster_agent_loop(&self.shared, cluster_arc) {
-            Ok((cluster_agent, cluster_config)) => {
+            Ok((cluster_agent, cluster_config, cluster_observer)) => {
                 let shutdown_rx = self.shutdown_tx.subscribe();
                 let work_queue = self.cluster_work_queue.clone();
                 let task_list = self.cluster_task_list.clone();
@@ -118,6 +118,7 @@ impl ClusterServiceAdapter {
                         work_queue,
                         task_list,
                         rpc_client,
+                        cluster_observer,
                         shutdown_rx,
                     )
                     .await;
@@ -246,7 +247,7 @@ async fn start_cluster_components(
     let rpc_client = cluster.rpc_client_arc();
     let cluster_arc = cluster.clone();
     match crate::agent_factory::build_cluster_agent_loop(shared, cluster_arc) {
-        Ok((cluster_agent, cluster_config)) => {
+        Ok((cluster_agent, cluster_config, cluster_observer)) => {
             let shutdown_rx = shutdown_tx.subscribe();
             let work_queue = cluster_work_queue.clone();
             let task_list = cluster_task_list.clone();
@@ -257,6 +258,7 @@ async fn start_cluster_components(
                     work_queue,
                     task_list,
                     rpc_client,
+                    cluster_observer,
                     shutdown_rx,
                 )
                 .await;

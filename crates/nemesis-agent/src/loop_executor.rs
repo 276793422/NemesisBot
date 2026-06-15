@@ -1650,22 +1650,55 @@ impl AgentLoopExecutor {
     }
 
     /// Build the LLM message list from the instance conversation history.
+    ///
+    /// Injects an ephemeral "Current Time" system message immediately before
+    /// the latest user message. The historical prefix (system prompt + earlier
+    /// turns) stays byte-identical across requests, preserving prompt cache
+    /// hits; only the trailing user message and the time marker are billed
+    /// at the cache-miss rate.
     fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
-        instance
-            .get_history()
-            .into_iter()
-            .map(|turn| LlmMessage {
-                role: turn.role,
-                content: turn.content,
-                tool_calls: if turn.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(turn.tool_calls)
-                },
-                tool_call_id: turn.tool_call_id,
-                reasoning_content: turn.reasoning_content,
-            })
-            .collect()
+        let history = instance.get_history();
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
+        let time_msg = LlmMessage {
+            role: "system".to_string(),
+            content: format!("# Current Time\n{}", now),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+
+        let turn_to_msg = |turn: crate::types::ConversationTurn| LlmMessage {
+            role: turn.role,
+            content: turn.content,
+            tool_calls: if turn.tool_calls.is_empty() {
+                None
+            } else {
+                Some(turn.tool_calls)
+            },
+            tool_call_id: turn.tool_call_id,
+            reasoning_content: turn.reasoning_content,
+        };
+
+        // Find the last user message index and inject time_msg just before it.
+        // Only inject when there is a system prompt at history[0] to protect
+        // (otherwise there's no cached prefix to preserve).
+        let last_user_idx = history
+            .iter()
+            .rposition(|t| t.role == "user")
+            .filter(|&i| i > 0)
+            .filter(|_| history.first().map_or(false, |t| t.role == "system"));
+
+        match last_user_idx {
+            Some(idx) => {
+                let mut messages: Vec<LlmMessage> =
+                    Vec::with_capacity(history.len() + 1);
+                messages.extend(history[..idx].into_iter().cloned().map(turn_to_msg));
+                messages.push(time_msg);
+                messages.extend(history[idx..].into_iter().cloned().map(turn_to_msg));
+                messages
+            }
+            None => history.into_iter().map(turn_to_msg).collect(),
+        }
     }
 
     /// Format response with RPC correlation ID prefix if needed.

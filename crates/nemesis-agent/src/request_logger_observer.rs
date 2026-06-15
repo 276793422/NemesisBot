@@ -378,7 +378,10 @@ impl nemesis_observer::Observer for RequestLoggerObserver {
 
 /// Convert a `nemesis_observer::ConversationEvent` into the internal
 /// `ConversationEvent` used by `RequestLoggerObserver`.
-fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<ConversationEvent> {
+///
+/// Exposed as pub so that other observers (e.g. `ClusterRequestLoggerObserver`
+/// in nemesisbot) can reuse the same conversion logic without duplicating it.
+pub fn convert_event(src: &nemesis_observer::ConversationEvent) -> Option<ConversationEvent> {
     match &src.data {
         nemesis_observer::EventData::ConversationStart(d) => Some(ConversationEvent {
             event_type: EventType::ConversationStart,

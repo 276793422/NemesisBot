@@ -54,7 +54,10 @@ fn context_builder_empty_workspace() {
     let builder = ContextBuilder::new(tmp.path());
     let prompt = builder.build_system_prompt(false);
 
-    assert!(prompt.contains("Current Time"));
+    // Time is intentionally not in the cached system prompt; it's injected
+    // per-request by AgentLoopExecutor::build_messages().
+    assert!(!prompt.contains("Current Time"));
+    assert!(prompt.contains("Environment"));
     assert!(prompt.contains("Workspace"));
 }
 

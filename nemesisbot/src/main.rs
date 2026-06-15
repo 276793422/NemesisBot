@@ -9,6 +9,7 @@ mod adapters;
 mod agent_factory;
 mod cluster_agent;
 mod cluster_service;
+mod cluster_request_logger_observer;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;

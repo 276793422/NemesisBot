@@ -341,13 +341,19 @@ fn register_tools_and_mcp(
 /// Differences from the main agent:
 /// - Standalone mode (`AgentLoop::new` instead of `new_bus`)
 /// - No session store, state manager, continuation manager
-/// - No security plugin, observer, data store, channel manager
+/// - No security plugin, data store, channel manager
+/// - Has its own observer_manager with ClusterRequestLoggerObserver
+///   (writes LLM details to cluster_logs/{device_id}/{task_id}/)
 /// - Has cluster reference (for cluster_rpc tool to work)
 /// - System prompt loaded from `workspace/cluster/IDENTITY.md` + `SOUL.md`
 pub fn build_cluster_agent_loop(
     shared: &Arc<SharedResources>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
-) -> Result<(Arc<nemesis_agent::r#loop::AgentLoop>, nemesis_agent::types::AgentConfig)> {
+) -> Result<(
+    Arc<nemesis_agent::r#loop::AgentLoop>,
+    nemesis_agent::types::AgentConfig,
+    Option<Arc<crate::cluster_request_logger_observer::ClusterRequestLoggerObserver>>,
+)> {
     use nemesis_agent::r#loop::AgentLoop;
 
     // 1. Re-read config.json from disk.
@@ -462,6 +468,71 @@ pub fn build_cluster_agent_loop(
         agent_loop.set_observer_callback(log_cb);
     }
 
+    // 5c. Create dedicated observer_manager + ClusterRequestLoggerObserver.
+    //
+    // Independent from main agent's observer_manager — completely isolates
+    // event dispatch. Observer writes LLM details to
+    // `cluster_logs/{device_id}/{ts_ms}_{task_id}/` per task.
+    //
+    // Task context (task_id + device_id) is set/cleared by cluster_agent_loop
+    // around each task execution.
+    let cluster_observer: Option<
+        Arc<crate::cluster_request_logger_observer::ClusterRequestLoggerObserver>,
+    > = {
+        let llm_cfg = cfg
+            .logging
+            .as_ref()
+            .and_then(|l| l.llm.as_ref())
+            .filter(|l| l.enabled);
+
+        match llm_cfg {
+            Some(llm_cfg) => {
+                let logging_config = nemesis_agent::request_logger::LoggingConfig {
+                    enabled: true,
+                    detail_level: match llm_cfg.detail_level.as_str() {
+                        "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
+                        _ => nemesis_agent::request_logger::DetailLevel::Full,
+                    },
+                    log_dir: if llm_cfg.log_dir.is_empty() {
+                        "logs/cluster_logs".to_string()
+                    } else {
+                        llm_cfg.log_dir.clone()
+                    },
+                    save_raw: llm_cfg.save_raw,
+                };
+                let workspace_path = shared.home.join("workspace");
+                let observer = Arc::new(
+                    crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
+                        logging_config,
+                        &workspace_path,
+                    ),
+                );
+
+                // Create dedicated observer_manager and register the observer.
+                let mgr = Arc::new(nemesis_observer::Manager::new());
+                let mgr_clone = mgr.clone();
+                let observer_clone = observer.clone();
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        mgr_clone.register(observer_clone as Arc<dyn nemesis_observer::Observer>).await;
+                    })
+                });
+                agent_loop.set_observer_manager(mgr);
+
+                info!(
+                    "[AgentFactory] ClusterRequestLoggerObserver registered (writes to logs/cluster_logs/{{device_id}}/{{task_id}}/)"
+                );
+                Some(observer)
+            }
+            None => {
+                info!(
+                    "[AgentFactory] ClusterRequestLoggerObserver disabled (logging.llm.enabled = false)"
+                );
+                None
+            }
+        }
+    };
+
     // 6. Build tool config + register all tools + enable MCP.
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
@@ -487,7 +558,7 @@ pub fn build_cluster_agent_loop(
         "[AgentFactory] Cluster AgentLoop built successfully"
     );
 
-    Ok((Arc::new(agent_loop), config))
+    Ok((Arc::new(agent_loop), config, cluster_observer))
 }
 
 /// Load cluster system prompt from `workspace/cluster/IDENTITY.md` + `SOUL.md`.

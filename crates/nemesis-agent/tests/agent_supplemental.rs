@@ -671,7 +671,8 @@ fn test_context_builder_empty_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     let builder = ContextBuilder::new(tmp.path());
     let prompt = builder.build_system_prompt(false);
-    assert!(prompt.contains("Current Time"));
+    // Time is injected per-request, not in the cached system prompt.
+    assert!(!prompt.contains("Current Time"));
     assert!(prompt.contains("Workspace"));
     assert!(prompt.contains("NemesisBot (Rust)"));
 }

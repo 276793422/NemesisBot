@@ -214,6 +214,10 @@ pub struct FinalResponseInfo {
 pub struct RequestLogger {
     config: LoggingConfig,
     base_dir: PathBuf,
+    /// Optional override for the session directory name. When None, the
+    /// default `{timestamp}_{rand_hex}` scheme is used. When Some(name),
+    /// `create_session()` uses `name` directly (after sanitization).
+    session_name_override: Option<String>,
     session_dir: Mutex<Option<PathBuf>>,
     file_index: AtomicI32,
     enabled: bool,
@@ -228,6 +232,7 @@ impl RequestLogger {
             return Self {
                 config,
                 base_dir: PathBuf::new(),
+                session_name_override: None,
                 session_dir: Mutex::new(None),
                 file_index: AtomicI32::new(0),
                 enabled: false,
@@ -240,6 +245,45 @@ impl RequestLogger {
         Self {
             config,
             base_dir,
+            session_name_override: None,
+            session_dir: Mutex::new(None),
+            file_index: AtomicI32::new(0),
+            enabled: true,
+            start_time: Local::now(),
+        }
+    }
+
+    /// Create a new request logger with explicit base_dir and optional session name.
+    ///
+    /// Used by `ClusterRequestLoggerObserver` to write logs under
+    /// `cluster_logs/{device_id}/{ts_ms}_{task_id}/` instead of the default
+    /// `request_logs/{ts}_{rand}/` location.
+    ///
+    /// - `base_dir`: absolute or workspace-relative path to the parent directory.
+    /// - `session_name`: when `Some(name)`, the session subdirectory uses this
+    ///   name (after sanitization). When `None`, falls back to the default
+    ///   `{timestamp}_{rand_hex}` scheme.
+    pub fn new_with_paths(
+        config: LoggingConfig,
+        base_dir: PathBuf,
+        session_name: Option<String>,
+    ) -> Self {
+        if !config.enabled {
+            return Self {
+                config,
+                base_dir: PathBuf::new(),
+                session_name_override: None,
+                session_dir: Mutex::new(None),
+                file_index: AtomicI32::new(0),
+                enabled: false,
+                start_time: Local::now(),
+            };
+        }
+
+        Self {
+            config,
+            base_dir,
+            session_name_override: session_name,
             session_dir: Mutex::new(None),
             file_index: AtomicI32::new(0),
             enabled: true,
@@ -250,6 +294,20 @@ impl RequestLogger {
     /// Returns whether the logger is enabled.
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Sanitize a string for safe use as a filename component.
+    ///
+    /// Replaces path separators and shell metacharacters with `_`. Used by
+    /// cluster logger to handle potentially untrusted task_id values from
+    /// remote peers (A side can pass arbitrary strings).
+    pub fn sanitize_filename(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+                _ => c,
+            })
+            .collect()
     }
 
     /// Create a new logging session directory.
@@ -264,10 +322,18 @@ impl RequestLogger {
             return Ok(()); // Silent failure
         }
 
-        // Create timestamped session directory
-        let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        let suffix = format!("_{:03x}", rand_u16());
-        let session_dir = self.base_dir.join(format!("{}{}", timestamp, suffix));
+        // Determine session directory name. When session_name_override is set
+        // (cluster logger case), use it directly after sanitization. Otherwise
+        // fall back to the default timestamped scheme.
+        let session_dir_name = match self.session_name_override.as_ref() {
+            Some(name) => Self::sanitize_filename(name),
+            None => {
+                let timestamp = Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
+                let suffix = format!("_{:03x}", rand_u16());
+                format!("{}{}", timestamp, suffix)
+            }
+        };
+        let session_dir = self.base_dir.join(session_dir_name);
 
         if let Err(e) = fs::create_dir_all(&session_dir) {
             warn!("[RequestLogger] Failed to create session directory: {}", e);
