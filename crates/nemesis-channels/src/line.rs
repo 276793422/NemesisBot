@@ -97,7 +97,7 @@ pub struct LineChannel {
     config: LineConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    reply_tokens: dashmap::DashMap<String, String>,
+    reply_tokens: Arc<dashmap::DashMap<String, String>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -115,7 +115,7 @@ impl LineChannel {
             config,
             http: reqwest::Client::new(),
             running: Arc::new(parking_lot::RwLock::new(false)),
-            reply_tokens: dashmap::DashMap::new(),
+            reply_tokens: Arc::new(dashmap::DashMap::new()),
             bus_sender,
         })
     }
@@ -216,7 +216,7 @@ impl LineChannel {
         stream: tokio::net::TcpStream,
         bus: &broadcast::Sender<InboundMessage>,
         channel_secret: &str,
-        reply_tokens: &dashmap::DashMap<String, String>,
+        reply_tokens: &Arc<dashmap::DashMap<String, String>>,
         running: &Arc<parking_lot::RwLock<bool>>,
     ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

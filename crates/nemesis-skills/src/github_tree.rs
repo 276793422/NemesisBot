@@ -252,3 +252,6 @@ struct TreeEntry {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod github_tree_extra_tests;

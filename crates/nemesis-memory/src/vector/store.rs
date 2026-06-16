@@ -389,4 +389,7 @@ impl VectorStore {
 }
 
 #[cfg(test)]
+mod extra_tests;
+
+#[cfg(test)]
 mod tests;

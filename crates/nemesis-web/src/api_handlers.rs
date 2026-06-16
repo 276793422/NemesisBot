@@ -771,3 +771,6 @@ pub fn write_json_error(message: &str, _code: u16) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod extra_tests;

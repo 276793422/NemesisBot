@@ -623,3 +623,6 @@ impl SkillRegistry for ModelScopeRegistry {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod registry_extra_tests;

@@ -17,5 +17,6 @@ base64 = "0.22"
 rand = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio = { workspace = true, features = ["test-util", "macros", "io-util", "net"] }
 tempfile = "3"
+wiremock = "0.6"

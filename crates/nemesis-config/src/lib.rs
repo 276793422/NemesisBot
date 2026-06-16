@@ -1945,3 +1945,6 @@ pub fn get_platform_info() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod extra_tests;

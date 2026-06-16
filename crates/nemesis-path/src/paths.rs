@@ -34,11 +34,7 @@ pub struct PathManager {
 impl PathManager {
     /// Create a new path manager.
     pub fn new() -> Self {
-        let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-            dirs::home_dir()
-                .map(|h| h.join(DEFAULT_HOME_DIR))
-                .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-        });
+        let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
         Self {
             home_dir: RwLock::new(home_dir),
             config_path: RwLock::new(None),
@@ -341,13 +337,17 @@ pub fn resolve_config_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
 
-    let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(DEFAULT_HOME_DIR))
-            .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-    });
+    let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     home_dir.join("config.json")
+}
+
+/// Fallback home directory when `resolve_home_dir()` fails.
+/// Exposed for testability.
+pub(crate) fn fallback_home_dir(_: String) -> PathBuf {
+    dirs::home_dir()
+        .map(|h| h.join(DEFAULT_HOME_DIR))
+        .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
 }
 
 /// Resolve the MCP configuration file path.
@@ -357,11 +357,7 @@ pub fn resolve_mcp_config_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
 
-    let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(DEFAULT_HOME_DIR))
-            .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-    });
+    let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
     if let Some(cfg) = load_config_for_workspace(&config_path) {
@@ -380,11 +376,7 @@ pub fn resolve_security_config_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
 
-    let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(DEFAULT_HOME_DIR))
-            .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-    });
+    let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
     if let Some(cfg) = load_config_for_workspace(&config_path) {
@@ -403,11 +395,7 @@ pub fn resolve_skills_config_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
 
-    let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(DEFAULT_HOME_DIR))
-            .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-    });
+    let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
     if let Some(cfg) = load_config_for_workspace(&config_path) {
@@ -426,11 +414,7 @@ pub fn resolve_scanner_config_path() -> PathBuf {
         return PathBuf::from(env_path);
     }
 
-    let home_dir = resolve_home_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .map(|h| h.join(DEFAULT_HOME_DIR))
-            .unwrap_or_else(|| PathBuf::from(".nemesisbot"))
-    });
+    let home_dir = resolve_home_dir().unwrap_or_else(fallback_home_dir);
 
     let config_path = home_dir.join("config.json");
     if let Some(cfg) = load_config_for_workspace(&config_path) {

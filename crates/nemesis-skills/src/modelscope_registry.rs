@@ -322,3 +322,6 @@ mod tests {
         assert!(ModelScopeRegistry::source_url_to_raw("https://github.com/owner/repo").is_none());
     }
 }
+
+#[cfg(test)]
+mod modelscope_extra_tests;

@@ -1676,3 +1676,6 @@ impl<'a> SecureHardwareWrapper<'a> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod middleware_extra_tests;

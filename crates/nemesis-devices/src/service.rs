@@ -148,6 +148,26 @@ impl DeviceService {
         }
     }
 
+    /// Test-only constructor that injects custom event sources.
+    /// Allows tests to exercise source iteration in `start()`/`stop()` without
+    /// relying on platform-specific `UsbEventSource` behavior.
+    #[cfg(test)]
+    pub fn with_sources_for_test(
+        config: DeviceServiceConfig,
+        sources: Vec<Box<dyn EventSource>>,
+    ) -> Self {
+        Self {
+            config,
+            devices: Arc::new(Mutex::new(HashMap::new())),
+            handler: Mutex::new(None),
+            running: AtomicBool::new(false),
+            bus_sender: Mutex::new(None),
+            state: Mutex::new(None),
+            sources,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Set the outbound message sender (bus integration).
     /// Mirrors Go `Service.SetBus(msgBus)`.
     pub fn set_bus_sender(&self, sender: OutboundSender) {
@@ -375,3 +395,6 @@ impl Default for DeviceService {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod service_extra_tests;

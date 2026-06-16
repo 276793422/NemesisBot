@@ -589,3 +589,7 @@ impl RpcServer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod server_extra_tests;
+// trailing newline prevents the auto-formatter from collapsing the two mods

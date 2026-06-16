@@ -707,3 +707,7 @@ fn is_same_subnet(ip1: &str, ip2: &str, mask: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod client_extra_tests;
+// trailing newline prevents the auto-formatter from collapsing the two mods
