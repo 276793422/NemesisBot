@@ -251,39 +251,23 @@ nemesisbot cluster disable
 
 ## 集群通信示例（双端实测）
 
-下面是一组真实捕获的双设备集群通话与应答过程。场景：本机 **Zoo**（Manager 角色）通过 Dashboard 与远端 **Alex**（Worker 角色，另一台设备）对话，多次调用 `cluster_rpc` 工具完成异步往返通信。
+下面是一组真实捕获的双设备集群通话与应答过程。场景：
 
-> 截图按时间顺序排列，对应 A 端发起 → B 端处理 → A 端续行 的完整 `cluster_rpc` 续行快照流程（详见 `CLAUDE.md` 的"续行快照模式"）。
-
-### 图 1 — 集群发现与节点列表
 
 ![集群节点列表](test-tools/resource/cluster/1.png)
 
-A 端（Zoo）通过加密 UDP 自动发现扫描到 B 端（Alex）。Dashboard 集群页显示两台设备的角色、IP、状态与最后活跃时间。Zoo 是 Master，Alex 是 Worker，两台均在线。
-
-### 图 2 — A 端发起 cluster_rpc，进入续行等待
 
 ![A 端发起请求](test-tools/resource/cluster/2.png)
 
-用户在 Web UI 输入"跟 Alex 再打个招呼，问问他在不在"。老贾（A 端 AI）调用 `cluster_rpc` 工具发起异步任务，AgentLoop 立即把续行快照保存到 `cluster/rpc_cache/{task_id}.json`，并回复"已经联系 Alex 了，稍等~"。此时 TCP 连接已解除，A 端不阻塞。
-
-### 图 3 — B 端处理并通过回调返回结果
 
 ![B 端响应](test-tools/resource/cluster/3.png)
 
-B 端（Alex）通过 RPC 接收任务后立即 ACK，异步启动自己的 LLM 处理。生成完成后通过 `peer_chat_callback` 把回复送回 A 端。A 端 `CallbackHandler` 触发 `cluster_continuation:{task_id}` 内部事件，AgentLoop 加载快照、追加真实工具结果、续行 LLM 生成最终回复展示给用户。
-
-### 图 4 — 多轮集群对话与代码回传
 
 ![多轮对话](test-tools/resource/cluster/4.png)
 
-连续多轮集群对话：用户依次问"能干啥"、"写个哈喽沃德"、"发过来看看"。每轮都走完整的 A→B→A 续行流程，Alex 把 Rust 代码作为回调内容回传，老贾在 A 端续行 LLM 中整合后输出，代码块、表情、排版都完整保留。
-
-### 图 5 — 任务详情视图
 
 ![任务详情](test-tools/resource/cluster/5.png)
 
-Dashboard 集群"任务"Tab 展开单个 cluster_rpc 任务详情：方向（inbound/outbound）、对端节点、时间戳、状态、迭代记录。每次 `cluster_rpc` 调用都会在 `workspace/logs/cluster_logs/{device_id}/{ts}_{task_id}/` 下生成完整的请求/响应日志，支持双向视角查看（self 视角 vs peer 视角）。
 
 ### 关键点回顾
 
