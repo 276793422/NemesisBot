@@ -1645,7 +1645,30 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Keep a reference to the auditor so we can wire up the approval manager later.
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     let security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>> = if security_enabled {
-        let security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
+        // Read audit_chain_enabled from `config.security.json`. The file is read raw (since the
+        // gateway already loads rules from it dynamically in `load_security_rules`); we read it
+        // once more here to avoid reordering init (the SecurityPlugin must be constructed before
+        // rules can be loaded onto it).
+        let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
+        let sec_config_path = common::security_config_path(&home);
+        let audit_chain_enabled = if sec_config_path.exists() {
+            std::fs::read_to_string(&sec_config_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("audit_chain_enabled")
+                        .and_then(|f| f.as_bool())
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        if audit_chain_enabled {
+            security_config.audit_chain_enabled = true;
+            let chain_path = format!("{}/workspace/logs/security_logs/audit_chain.jsonl", home.display());
+            security_config.audit_chain_path = Some(chain_path.clone());
+            info!("[Gateway] Audit chain enabled at {}", chain_path);
+        }
         let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(security_config));
 
         // Load security rules from config.security.json (mirrors Go's config loading)
@@ -2117,6 +2140,32 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // L3: Bridge logger → SSE EventHub for real-time log streaming to Dashboard.
     // Mirrors Go's bot_service.go:674-688: logger.SetLogHook() → eventHub.
+    //
+    // Two paths:
+    //   1. GlobalSseLogLayer installed in `init_logger_from_config` intercepts every
+    //      `tracing::info!` / `tracing::warn!` / etc. across the codebase (~680 sites).
+    //      This is the main path — most production logging goes through tracing macros.
+    //   2. Legacy `NemesisLogger::set_hook` captures the rare `logger.log()` call (mostly tests
+    //      these days). Kept for backwards compatibility.
+    {
+        let event_hub = web_server.event_hub().clone();
+        nemesis_logger::set_global_log_callback(move |ev: nemesis_logger::SseLogEvent| {
+            let data = serde_json::json!({
+                "seq": ev.seq,
+                "level": ev.level,
+                "timestamp": ev.timestamp,
+                "component": ev.component,
+                "target": ev.target,
+                "source": ev.source,
+                "message": ev.message,
+                "fields": ev.fields,
+                "file": ev.file,
+                "line": ev.line,
+            });
+            event_hub.publish(nemesis_web::events::EVENT_LOG, data);
+        });
+        info!("[Gateway] Tracing → SSE EventHub bridge connected (GlobalSseLogLayer)");
+    }
     if let Some(logger) = nemesis_logger::global() {
         let event_hub = web_server.event_hub().clone();
         logger.set_hook(Box::new(move |entry: nemesis_logger::logger::LogEntry| {

@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 use crate::context::RequestContext;
 use crate::instance::AgentInstance;
 use crate::r#loop::{LlmMessage, LlmProvider, Tool};
+use crate::session::SessionStore;
 use crate::types::{AgentConfig, AgentState, ToolCallInfo, ToolCallResult};
 
 // ===========================================================================
@@ -791,6 +792,9 @@ pub struct AgentLoopExecutor {
     context_window: usize,
     /// Optional continuation manager for async cluster RPC.
     continuation_manager: Option<Arc<crate::loop_continuation::ContinuationManager>>,
+    /// Optional session store for persisting continuation replies to
+    /// sessions/ files alongside session_logs/.
+    session_store: Option<Arc<SessionStore>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
 }
@@ -833,6 +837,7 @@ impl AgentLoopExecutor {
             session_persistence: SessionPersistence::new_in_memory(),
             context_window: 128_000,
             continuation_manager: None,
+            session_store: None,
             data_store: None,
         }
     }
@@ -899,6 +904,11 @@ impl AgentLoopExecutor {
         manager: Arc<crate::loop_continuation::ContinuationManager>,
     ) {
         self.continuation_manager = Some(manager);
+    }
+
+    /// Set the session store for persisting continuation replies.
+    pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
+        self.session_store = Some(store);
     }
 
     /// Generate a trace ID for a conversation.
@@ -1033,6 +1043,7 @@ impl AgentLoopExecutor {
                     &self.tools,
                     &self.outbound_tx,
                     self.observer_manager.clone(),
+                    self.session_store.as_ref().map(|v| v.as_ref()),
                 )
                 .await;
             } else {
@@ -1361,6 +1372,7 @@ impl AgentLoopExecutor {
                                 &tc.id,
                                 &context.channel,
                                 &context.chat_id,
+                                &context.session_key,
                             )
                             .await;
                         info!(

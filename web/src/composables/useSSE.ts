@@ -13,7 +13,15 @@ function dispatch(eventType: string, data: any) {
 }
 
 export function connectEvents() {
-  if (eventSource) return
+  if (eventSource) {
+    // 已有连接 — 但如果之前出错被浏览器关闭过，需要重置
+    if (eventSource.readyState === EventSource.CLOSED) {
+      try { eventSource.close() } catch {}
+      eventSource = null
+    } else {
+      return
+    }
+  }
 
   try {
     eventSource = new EventSource('/api/events/stream')
@@ -22,8 +30,9 @@ export function connectEvents() {
       console.log('[NemesisAPI] SSE connected')
     }
 
-    eventSource.onerror = () => {
-      console.log('[NemesisAPI] SSE error, will auto-reconnect')
+    eventSource.onerror = (e) => {
+      console.warn('[NemesisAPI] SSE error (readyState=' +
+        (eventSource ? eventSource.readyState : 'null') + '), browser will auto-reconnect', e)
     }
 
     EVENT_TYPES.forEach(type => {
@@ -32,7 +41,7 @@ export function connectEvents() {
           const data = JSON.parse(e.data)
           dispatch(type, data)
         } catch (err) {
-          console.error('[NemesisAPI] SSE parse error:', err)
+          console.error('[NemesisAPI] SSE parse error:', err, 'raw:', e.data)
         }
       })
     })
@@ -46,6 +55,13 @@ export function disconnectEvents() {
     eventSource.close()
     eventSource = null
   }
+}
+
+/// 返回当前 SSE 连接状态：
+/// - `null` — 从未调用 connectEvents
+/// - 0 (CONNECTING)、1 (OPEN)、2 (CLOSED) — EventSource.readyState
+export function sseReadyState(): number | null {
+  return eventSource ? eventSource.readyState : null
 }
 
 export function on(eventType: string, handler: EventHandler) {
@@ -71,5 +87,5 @@ export function useSSE() {
     // Don't disconnect SSE on component unmount - it's shared
   })
 
-  return { connectEvents, disconnectEvents, on, off }
+  return { connectEvents, disconnectEvents, on, off, sseReadyState }
 }

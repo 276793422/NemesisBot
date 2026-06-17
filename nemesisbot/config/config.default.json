@@ -162,7 +162,7 @@
       "enabled": true,
       "enable_console": true,
       "level": "INFO",
-      "file": ""
+      "file": "logs/nemesisbot.log"
     }
   },
   "security": {

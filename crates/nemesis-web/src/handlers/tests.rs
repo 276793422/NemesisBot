@@ -619,8 +619,10 @@ use super::*;
         assert_eq!(page.len(), 3);
         // Should be sorted by timestamp desc
         assert_eq!(page[0]["risk_level"], "HIGH");
-        assert_eq!(page[0]["action"], "ProcessExec");
-        assert_eq!(page[0]["result"], "denied");
+        assert_eq!(page[0]["operation"], "ProcessExec");
+        // result is normalized to allow|deny; raw decision preserved separately
+        assert_eq!(page[0]["result"], "deny");
+        assert_eq!(page[0]["decision"], "denied");
 
         // Stats
         let result = handler.handle_cmd("stats", None, &ctx).await.unwrap().unwrap();
@@ -1065,20 +1067,18 @@ use super::*;
         let log_dir = ws.join("logs/request_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
 
-        let entries = vec![
-            serde_json::json!({ "timestamp": "2026-01-01T10:00:00Z", "session_id": "s1", "model": "gpt-4" }),
-            serde_json::json!({ "timestamp": "2026-01-01T11:00:00Z", "session_id": "s2", "model": "gpt-3.5" }),
-        ];
-        let jsonl: String = entries.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-        std::fs::write(log_dir.join("2026-01.jsonl"), jsonl).unwrap();
+        // Two request dirs — different timestamps so newest-first sort is observable.
+        write_request_log_dir(&log_dir, "2026-01-01_10-00-00_aaa", "glm-4.7", "hi");
+        write_request_log_dir(&log_dir, "2026-01-01_11-00-00_bbb", "glm-4.6", "hi");
 
         let ctx = make_ctx(&dir);
         let result = handler.handle_cmd("requests", None, &ctx).await.unwrap().unwrap();
         assert_eq!(result["total"], 2);
         let page = result["entries"].as_array().unwrap();
         assert_eq!(page.len(), 2);
-        // Sorted desc by timestamp
-        assert_eq!(page[0]["session_id"], "s2");
+        // Sorted desc by directory name (newest timestamp first).
+        assert_eq!(page[0]["id"], "2026-01-01_11-00-00_bbb");
+        assert_eq!(page[1]["id"], "2026-01-01_10-00-00_aaa");
     }
 
     #[tokio::test]
@@ -1089,12 +1089,10 @@ use super::*;
         let log_dir = ws.join("logs/request_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
 
-        // Create 5 entries
-        let entries: Vec<_> = (0..5).map(|i| {
-            serde_json::json!({ "timestamp": format!("2026-01-{:02}T00:00:00Z", i + 1), "session_id": format!("s{}", i) })
-        }).collect();
-        let jsonl: String = entries.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-        std::fs::write(log_dir.join("2026-01.jsonl"), jsonl).unwrap();
+        for i in 0..5 {
+            let dirname = format!("2026-01-{:02}_00-00-00_s{}", i + 1, i);
+            write_request_log_dir(&log_dir, &dirname, "glm-4.7", &format!("m{}", i));
+        }
 
         let ctx = make_ctx(&dir);
         let data = serde_json::json!({ "limit": 2, "offset": 1 });
@@ -1112,14 +1110,19 @@ use super::*;
         let log_dir = ws.join("logs/request_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
 
-        let entry = serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "session_id": "target-session", "model": "gpt-4" });
-        std::fs::write(log_dir.join("2026-01.jsonl"), entry.to_string()).unwrap();
+        // Use a directory name; the "id" parameter is the dir name.
+        let id = "2026-01-01_00-00-00_target";
+        write_request_log_dir(&log_dir, id, "glm-4.7", "hi");
 
         let ctx = make_ctx(&dir);
-        let data = serde_json::json!({ "session": "target-session" });
+        let data = serde_json::json!({ "id": id });
         let result = handler.handle_cmd("request_detail", Some(data), &ctx).await.unwrap().unwrap();
-        assert_eq!(result["session_id"], "target-session");
-        assert_eq!(result["model"], "gpt-4");
+        assert_eq!(result["id"], id);
+        assert_eq!(result["model"], "glm-4.7");
+        // Iterations array should contain one entry built from 01.AI.Request.raw.json + 02.AI.Response.raw.json.
+        let iters = result["iterations"].as_array().unwrap();
+        assert_eq!(iters.len(), 1);
+        assert_eq!(iters[0]["request"]["model"], "glm-4.7");
     }
 
     #[tokio::test]
@@ -1128,7 +1131,7 @@ use super::*;
         let dir = tempfile::tempdir().unwrap();
         let ctx = make_ctx(&dir);
 
-        let data = serde_json::json!({ "session": "ghost" });
+        let data = serde_json::json!({ "id": "ghost" });
         let result = handler.handle_cmd("request_detail", Some(data), &ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
@@ -1994,15 +1997,21 @@ address = "192.168.1.11:5000"
     }
 
     #[tokio::test]
-    async fn test_logs_requests_malformed_jsonl() {
+    async fn test_logs_requests_ignores_invalid_dir_names() {
+        // Directory names that don't match {ts}_{suffix} format should be skipped silently.
         let handler = logs::LogsHandler;
         let dir = tempfile::tempdir().unwrap();
         let log_dir = dir.path().join("logs/request_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::create_dir_all(log_dir.join("garbage_dir_name")).unwrap();
+        // And one valid dir to ensure we still pick it up.
+        let valid = log_dir.join("2026-01-01_00-00-00_x");
+        std::fs::create_dir_all(&valid).unwrap();
         std::fs::write(
-            log_dir.join("test.jsonl"),
-            "bad line\n{\"timestamp\":\"2026-01-01\",\"session_id\":\"s1\"}\n",
+            valid.join("00.request.md"),
+            "# User Request\n\n**Timestamp**: 2026-01-01T00:00:00Z\n\n## Message\n\nhi\n",
         ).unwrap();
+
         let ctx = make_ctx(&dir);
         let result = handler.handle_cmd("requests", None, &ctx).await.unwrap().unwrap();
         assert_eq!(result["total"], 1);
@@ -2416,18 +2425,14 @@ address = "192.168.1.11:5000"
     #[tokio::test]
     async fn hicon_50_parallel_logs_reads() {
         let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
         let log_dir = dir.path().join("logs/request_logs");
         std::fs::create_dir_all(&log_dir).unwrap();
-        // Create 100 log entries
-        let entries: Vec<_> = (0..100).map(|i| {
-            serde_json::json!({
-                "timestamp": format!("2026-01-{:02}T{:02}:00:00Z", (i % 28) + 1, i),
-                "session_id": format!("s{}", i),
-                "model": "gpt-4"
-            })
-        }).collect();
-        let jsonl: String = entries.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-        std::fs::write(log_dir.join("2026-01.jsonl"), jsonl).unwrap();
+        // Create 100 request log directories (new markdown-dir format)
+        for i in 0..100 {
+            let dirname = format!("2026-01-{:02}_{:02}-00-00_r{:03}", (i % 28) + 1, i % 24, i);
+            write_request_log_dir(&log_dir, &dirname, "gpt-4", &format!("msg {}", i));
+        }
         let ctx = Arc::new(make_ctx(&dir));
 
         let mut handles: Vec<tokio::task::JoinHandle<_>> = Vec::new();
@@ -3103,14 +3108,36 @@ address = "192.168.1.11:5000"
     async fn test_logs_security_with_filter() {
         let handler = logs::LogsHandler;
         let dir = tempfile::tempdir().unwrap();
-        let log_dir = dir.path().join("logs/security_logs");
-        std::fs::create_dir_all(&log_dir).unwrap();
-        std::fs::write(
-            log_dir.join("test.jsonl"),
-            r#"{"timestamp":"2026-01-01T00:00:00Z","risk_level":"HIGH","action":"test"}
-{"timestamp":"2026-01-02T00:00:00Z","risk_level":"LOW","action":"test"}
-"#,
-        ).unwrap();
+        write_config(dir.path());
+        write_security_audit_log(
+            dir.path(),
+            &[
+                (
+                    "2026-01-01 00:00:00.000",
+                    "e1",
+                    "allowed",
+                    "file_read",
+                    "",
+                    "test",
+                    "/x",
+                    "HIGH",
+                    "ok",
+                    "p",
+                ),
+                (
+                    "2026-01-02 00:00:00.000",
+                    "e2",
+                    "allowed",
+                    "file_read",
+                    "",
+                    "test",
+                    "/y",
+                    "LOW",
+                    "ok",
+                    "p",
+                ),
+            ],
+        );
         let ctx = make_ctx(&dir);
 
         let data = serde_json::json!({ "risk_level": "LOW" });
@@ -3642,4 +3669,589 @@ address = "192.168.1.11:5000"
 
         // Performance assertion: should handle at least 50 ops/sec
         assert!(ops_per_sec > 50.0, "too slow: {:.0} ops/sec", ops_per_sec);
+    }
+
+    // -----------------------------------------------------------------------
+    // Logs handler tests (Phase C/D/E coverage)
+    // -----------------------------------------------------------------------
+
+    use crate::handlers::logs::LogsHandler;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// Write a fake request_logs/{ts}_{rand}/ dir using the real on-disk format:
+    /// `00.request.md` + `01.AI.Request.raw.json` + `02.AI.Response.raw.json` + `03.response.md`.
+    fn write_request_log_dir(parent: &Path, dirname: &str, model: &str, msg: &str) -> PathBuf {
+        let dir = parent.join(dirname);
+        fs::create_dir_all(&dir).unwrap();
+
+        let request_md = format!(
+            "# User Request\n\n\
+             **Timestamp**: 2026-06-17T10:00:00+08:00\n\
+             **Channel**: web\n\
+             **Sender ID**: u1\n\
+             **Chat ID**: c1\n\n\
+             ## Message\n\n{}\n",
+            msg
+        );
+        fs::write(dir.join("00.request.md"), request_md).unwrap();
+
+        // 01.AI.Request.raw.json — envelope {timestamp, round, body:{model, messages}}
+        let req_envelope = serde_json::json!({
+            "timestamp": "2026-06-17T10:00:01+08:00",
+            "round": 1,
+            "body": {
+                "model": model,
+                "messages": [
+                    { "role": "system", "content": "you are a bot" },
+                    { "role": "user", "content": msg },
+                ],
+            },
+        });
+        fs::write(
+            dir.join("01.AI.Request.raw.json"),
+            serde_json::to_string_pretty(&req_envelope).unwrap(),
+        )
+        .unwrap();
+
+        // 02.AI.Response.raw.json — envelope {timestamp, round, duration_ms, body:{choices,usage}}
+        let resp_envelope = serde_json::json!({
+            "timestamp": "2026-06-17T10:00:02+08:00",
+            "round": 1,
+            "duration_ms": 1500,
+            "body": {
+                "model": model,
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "Hello back",
+                        "tool_calls": [
+                            { "id": "call_1", "function": { "name": "read_file", "arguments": "{\"path\":\"/a\"}" } },
+                            { "id": "call_2", "function": { "name": "write_file", "arguments": "{\"path\":\"/b\"}" } },
+                        ],
+                    },
+                }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 },
+            },
+        });
+        fs::write(
+            dir.join("02.AI.Response.raw.json"),
+            serde_json::to_string_pretty(&resp_envelope).unwrap(),
+        )
+        .unwrap();
+
+        // 03.response.md — final agent response summary
+        let resp_md = "# Agent Response\n\n\
+             **Timestamp**: 2026-06-17T10:00:03+08:00\n\
+             **Total Duration**: 1.5s\n\
+             **LLM Rounds**: 1\n\n\
+             ## Response Content\n\nHello back\n";
+        fs::write(dir.join("03.response.md"), resp_md).unwrap();
+
+        dir
+    }
+
+    /// Write a `security_audit_YYYY-MM-DD.log` file with the real pipe-delimited format.
+    /// Each entry: `TIMESTAMP | EVENT_ID | DECISION | OPERATION | USER | SOURCE | TARGET | DANGER | REASON | POLICY`
+    fn write_security_audit_log(
+        workspace: &Path,
+        lines: &[(/* timestamp */ &str, /* event_id */ &str, /* decision */ &str,
+                  /* operation */ &str, /* user */ &str, /* source */ &str,
+                  /* target */ &str, /* danger */ &str, /* reason */ &str,
+                  /* policy */ &str)],
+    ) {
+        let sec_dir = workspace.join("logs/security_logs");
+        fs::create_dir_all(&sec_dir).unwrap();
+        let mut content = String::from(
+            "# NemesisBot Security Audit Log\n\
+             # Format: TIMESTAMP | EVENT_ID | DECISION | OPERATION | USER | SOURCE | TARGET | DANGER | REASON | POLICY\n\
+             # ==============================================================================================================\n",
+        );
+        for l in lines {
+            content.push_str(&format!(
+                "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
+                l.0, l.1, l.2, l.3, l.4, l.5, l.6, l.7, l.8, l.9,
+            ));
+        }
+        fs::write(sec_dir.join("security_audit_2026-06-17.log"), content).unwrap();
+    }
+
+    /// Write audit_chain.jsonl with N events. (Separate from the audit log; this is the integrity chain.)
+    fn write_security_logs(workspace: &Path, chain_events: &[nemesis_security::integrity::AuditEvent]) {
+        let sec_dir = workspace.join("logs/security_logs");
+        fs::create_dir_all(&sec_dir).unwrap();
+
+        // Chain: compute prev_hash and hash using the same algorithm as AuditChain.
+        let mut chain = String::new();
+        let mut prev = "0".repeat(64);
+        use sha2::{Digest, Sha256};
+        for ev in chain_events {
+            let mut ev = ev.clone();
+            ev.prev_hash = prev.clone();
+            let mut hasher = Sha256::new();
+            hasher.update(ev.prev_hash.as_bytes());
+            hasher.update(ev.timestamp.as_bytes());
+            hasher.update(ev.operation.as_bytes());
+            hasher.update(ev.tool_name.as_bytes());
+            hasher.update(ev.user.as_bytes());
+            hasher.update(ev.target.as_bytes());
+            hasher.update(ev.decision.as_bytes());
+            ev.hash = format!("{:x}", hasher.finalize());
+            prev = ev.hash.clone();
+            chain.push_str(&serde_json::to_string(&ev).unwrap());
+            chain.push('\n');
+        }
+        fs::write(sec_dir.join("audit_chain.jsonl"), chain).unwrap();
+    }
+
+    fn make_audit_event(op: &str, target: &str, decision: &str) -> nemesis_security::integrity::AuditEvent {
+        nemesis_security::integrity::AuditEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: chrono::Local::now().to_rfc3339(),
+            operation: op.to_string(),
+            tool_name: "file_write".to_string(),
+            user: "u1".to_string(),
+            source: "test".to_string(),
+            target: target.to_string(),
+            decision: decision.to_string(),
+            reason: String::new(),
+            hash: String::new(),
+            prev_hash: String::new(),
+            sign: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_logs_security_uses_new_field_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        write_security_audit_log(
+            dir.path(),
+            &[
+                (
+                    "2026-06-17 10:00:00.000",
+                    "evt-001",
+                    "allowed",
+                    "file_write",
+                    "u1",
+                    "web",
+                    "/etc/passwd",
+                    "MEDIUM",
+                    "ok",
+                    "default-allow",
+                ),
+            ],
+        );
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler
+            .handle_cmd("security", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        // Frontend AuditEntry shape: id (not event_id), operation (not action),
+        // result normalized to "allow"/"deny", raw carries original line.
+        assert_eq!(e["id"], "evt-001");
+        assert_eq!(e["operation"], "file_write");
+        assert_eq!(e["result"], "allow");
+        assert_eq!(e["decision"], "allowed");
+        assert_eq!(e["risk_level"], "MEDIUM");
+        assert!(e["raw"].is_object());
+        // No legacy field names leak through.
+        assert!(e.get("event_id").is_none());
+        assert!(e.get("action").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_logs_security_deny_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        write_security_audit_log(
+            dir.path(),
+            &[(
+                "2026-06-17 10:00:00.000",
+                "evt-deny",
+                "denied",
+                "process_exec",
+                "",
+                "web",
+                "rm -rf /",
+                "CRITICAL",
+                "dangerous",
+                "policy-block",
+            )],
+        );
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("security", None, &ctx).await.unwrap().unwrap();
+        let e = &res["entries"][0];
+        assert_eq!(e["result"], "deny");
+        assert_eq!(e["decision"], "denied");
+        assert_eq!(e["risk_level"], "CRITICAL");
+    }
+
+    #[tokio::test]
+    async fn test_logs_chain_list_three_valid_events() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let events = vec![
+            make_audit_event("file_write", "/a", "allow"),
+            make_audit_event("file_write", "/b", "allow"),
+            make_audit_event("file_write", "/c", "allow"),
+        ];
+        write_security_logs(dir.path(), &events);
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("chain_list", Some(serde_json::json!({})), &ctx)
+            .await.unwrap().unwrap();
+        let segs = res["segments"].as_array().unwrap();
+        assert_eq!(segs.len(), 3);
+        for s in segs {
+            assert_eq!(s["valid"], true, "expected valid, got: {}", s);
+            assert!(s["breakReason"].is_null());
+        }
+        assert_eq!(res["total"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_logs_chain_list_detects_broken_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let sec_dir = dir.path().join("logs/security_logs");
+        fs::create_dir_all(&sec_dir).unwrap();
+
+        // Hand-craft 2 events: first OK, second has a corrupted hash.
+        let ev1 = make_audit_event("file_write", "/a", "allow");
+        let mut ev1 = ev1;
+        ev1.prev_hash = "0".repeat(64);
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(ev1.prev_hash.as_bytes());
+        h.update(ev1.timestamp.as_bytes());
+        h.update(ev1.operation.as_bytes());
+        h.update(ev1.tool_name.as_bytes());
+        h.update(ev1.user.as_bytes());
+        h.update(ev1.target.as_bytes());
+        h.update(ev1.decision.as_bytes());
+        ev1.hash = format!("{:x}", h.finalize());
+
+        let mut ev2 = make_audit_event("file_write", "/b", "deny");
+        ev2.prev_hash = ev1.hash.clone();
+        ev2.hash = "deadbeef".to_string(); // wrong hash
+
+        let chain = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&ev1).unwrap(),
+            serde_json::to_string(&ev2).unwrap()
+        );
+        fs::write(sec_dir.join("audit_chain.jsonl"), chain).unwrap();
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("chain_list", None, &ctx).await.unwrap().unwrap();
+        let segs = res["segments"].as_array().unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0]["valid"], true);
+        assert_eq!(segs[1]["valid"], false);
+        assert_eq!(segs[1]["breakReason"], "hash mismatch");
+    }
+
+    #[tokio::test]
+    async fn test_logs_chain_verify_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let events = vec![
+            make_audit_event("a", "t1", "allow"),
+            make_audit_event("b", "t2", "deny"),
+        ];
+        write_security_logs(dir.path(), &events);
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("chain_verify", None, &ctx).await.unwrap().unwrap();
+        assert_eq!(res["valid"], true);
+        assert_eq!(res["broken_count"], 0);
+        assert!(res["first_broken_index"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_logs_chain_verify_finds_first_broken() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let sec_dir = dir.path().join("logs/security_logs");
+        fs::create_dir_all(&sec_dir).unwrap();
+        // 3 events; the second has a broken hash.
+        let ev1 = make_audit_event("a", "t1", "allow");
+        let mut ev1 = ev1;
+        ev1.prev_hash = "0".repeat(64);
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(ev1.prev_hash.as_bytes());
+        h.update(ev1.timestamp.as_bytes());
+        h.update(ev1.operation.as_bytes());
+        h.update(ev1.tool_name.as_bytes());
+        h.update(ev1.user.as_bytes());
+        h.update(ev1.target.as_bytes());
+        h.update(ev1.decision.as_bytes());
+        ev1.hash = format!("{:x}", h.finalize());
+
+        let mut ev2 = make_audit_event("b", "t2", "deny");
+        ev2.prev_hash = ev1.hash.clone();
+        ev2.hash = "broken".to_string();
+
+        let mut ev3 = make_audit_event("c", "t3", "allow");
+        ev3.prev_hash = ev2.hash.clone(); // will not match ev2's true hash anyway
+        ev3.hash = "broken3".to_string();
+
+        let chain = format!(
+            "{}\n{}\n{}\n",
+            serde_json::to_string(&ev1).unwrap(),
+            serde_json::to_string(&ev2).unwrap(),
+            serde_json::to_string(&ev3).unwrap()
+        );
+        fs::write(sec_dir.join("audit_chain.jsonl"), chain).unwrap();
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("chain_verify", None, &ctx).await.unwrap().unwrap();
+        assert_eq!(res["valid"], false);
+        assert_eq!(res["broken_count"], 2);
+        assert_eq!(res["first_broken_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_logs_requests_empty_when_no_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("requests", None, &ctx).await.unwrap().unwrap();
+        assert_eq!(res["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(res["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_logs_requests_parses_dir_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let logs_dir = dir.path().join("logs/request_logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        write_request_log_dir(&logs_dir, "2026-06-17_10-00-00_abc", "glm-4.7", "hello world");
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("requests", None, &ctx).await.unwrap().unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e["id"], "2026-06-17_10-00-00_abc");
+        assert_eq!(e["model"], "glm-4.7");
+        assert_eq!(e["firstMessage"], "hello world");
+        assert_eq!(e["duration_ms"], 1500);
+        assert_eq!(e["toolCallCount"], 2);
+        assert_eq!(e["messageCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_logs_requests_sorted_descending_by_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let logs_dir = dir.path().join("logs/request_logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        write_request_log_dir(&logs_dir, "2026-06-15_10-00-00_abc", "glm-old", "old");
+        write_request_log_dir(&logs_dir, "2026-06-17_10-00-00_def", "glm-new", "new");
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("requests", None, &ctx).await.unwrap().unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "2026-06-17_10-00-00_def");
+        assert_eq!(entries[1]["id"], "2026-06-15_10-00-00_abc");
+    }
+
+    #[tokio::test]
+    async fn test_logs_request_detail_returns_iterations() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let logs_dir = dir.path().join("logs/request_logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        write_request_log_dir(&logs_dir, "2026-06-17_10-00-00_abc", "glm-4.7", "hello");
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler
+            .handle_cmd(
+                "request_detail",
+                Some(serde_json::json!({ "id": "2026-06-17_10-00-00_abc" })),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let iters = res["iterations"].as_array().unwrap();
+        assert_eq!(iters.len(), 1);
+        assert_eq!(iters[0]["index"], 0);
+        assert_eq!(iters[0]["request"]["model"], "glm-4.7");
+        assert_eq!(iters[0]["response"]["duration_ms"], 1500);
+    }
+
+    #[tokio::test]
+    async fn test_logs_request_detail_missing_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let result = handler
+            .handle_cmd("request_detail", Some(serde_json::json!({ "id": "nope" })), &ctx)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_logs_session_list_empty_when_no_memory_manager() {
+        // make_ctx sets memory_manager to None.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("session_list", None, &ctx).await.unwrap().unwrap();
+        assert_eq!(res["sessions"].as_array().unwrap().len(), 0);
+        assert_eq!(res["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_logs_session_detail_empty_when_no_memory_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler
+            .handle_cmd("session_detail", Some(serde_json::json!({ "session": "web:abc" })), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(res["session"], "web:abc");
+        assert_eq!(res["messages"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_logs_cluster_task_list_empty_when_no_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("cluster_task_list", None, &ctx).await.unwrap().unwrap();
+        assert_eq!(res["entries"].as_array().unwrap().len(), 0);
+        assert_eq!(res["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_logs_cluster_task_list_parses_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let root = dir.path().join("logs/cluster_logs");
+        let dev_dir = root.join("node-abc");
+        // Build a fake cluster task dir for an inbound task from node-abc.
+        write_request_log_dir(
+            &dev_dir,
+            "2026-06-17_10-00-00-123_t8x7a3f9",
+            "glm-4.7",
+            "peer hi",
+        );
+
+        let ctx = make_ctx(&dir);
+        // ctx has cluster=None, so direction is "unknown".
+        let handler = LogsHandler;
+        let res = handler.handle_cmd("cluster_task_list", None, &ctx).await.unwrap().unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e["id"], "t8x7a3f9");
+        assert_eq!(e["direction"], "unknown");
+        assert_eq!(e["firstMessage"], "peer hi");
+        // Cluster tasks have no model field — only action/peerNode/direction.
+        assert_eq!(e.get("model"), None);
+        // Without a cluster, peer_node is empty (direction != inbound).
+        assert_eq!(e["peerNode"], "");
+    }
+
+    #[tokio::test]
+    async fn test_logs_unknown_command_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let result = handler.handle_cmd("bogus", None, &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown command"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Logs helper unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_md_header_basic() {
+        let content = "# X\n\n**Model**: glm-4.7\n**Round**: 1\n";
+        assert_eq!(
+            crate::handlers::logs::extract_md_header(content, "Model"),
+            Some("glm-4.7".to_string())
+        );
+        assert_eq!(
+            crate::handlers::logs::extract_md_header(content, "Round"),
+            Some("1".to_string())
+        );
+        assert_eq!(
+            crate::handlers::logs::extract_md_header(content, "Missing"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_md_header_tolerates_spacing() {
+        // Variant: no space after colon
+        let content = "**Model**:glm-4.7\n";
+        assert_eq!(
+            crate::handlers::logs::extract_md_header(content, "Model"),
+            Some("glm-4.7".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_request_dir_name_valid() {
+        let (ts, suffix) =
+            crate::handlers::logs::parse_request_dir_name("2026-06-17_14-23-45_abc").unwrap();
+        assert_eq!(ts, "2026-06-17_14-23-45");
+        assert_eq!(suffix, "abc");
+    }
+
+    #[test]
+    fn test_parse_request_dir_name_invalid() {
+        assert!(crate::handlers::logs::parse_request_dir_name("not-a-date_abc").is_none());
+        assert!(crate::handlers::logs::parse_request_dir_name("no_separator").is_none());
+    }
+
+    #[test]
+    fn test_parse_cluster_dir_name_with_ms() {
+        let (ts, task) = crate::handlers::logs::parse_cluster_dir_name(
+            "2026-06-17_14-23-45-123_taskABC",
+        )
+        .unwrap();
+        assert_eq!(ts, "2026-06-17_14-23-45-123");
+        assert_eq!(task, "taskABC");
+    }
+
+    #[test]
+    fn test_parse_cluster_dir_name_without_ms() {
+        let (ts, task) =
+            crate::handlers::logs::parse_cluster_dir_name("2026-06-17_14-23-45_taskABC").unwrap();
+        assert_eq!(ts, "2026-06-17_14-23-45");
+        assert_eq!(task, "taskABC");
     }

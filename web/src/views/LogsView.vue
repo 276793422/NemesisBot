@@ -1,253 +1,171 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { httpGet } from '../composables/useWebSocket'
+import { ref, computed, watch } from 'vue'
+import LogsTabs from '../components/logs/LogsTabs.vue'
+import EventStream from '../components/logs/EventStream.vue'
+import SessionExplorer from '../components/logs/SessionExplorer.vue'
+import SecurityAudit from '../components/logs/SecurityAudit.vue'
+import IntegrityChain from '../components/logs/IntegrityChain.vue'
 import { useWSAPI } from '../composables/useWSAPI'
-import { on as sseOn, off as sseOff } from '../composables/useSSE'
+import type {
+  SessionEntry, LlmRequestEntry, ClusterTaskEntry,
+  AuditEntry, ChainSegment,
+} from '../components/logs/mockData'
 
 const { request } = useWSAPI()
 
-interface LogEntry {
-  source?: string
-  level?: string
-  timestamp?: string
-  component?: string
-  message?: string
-}
+const activeTab = ref('events')
 
-const activeMainTab = ref('system')
-const entries = ref<LogEntry[]>([])
-const source = ref('general')
-const level = ref('')
-const filter = ref('')
-const autoScroll = ref(true)
-const loading = ref(false)
-const logsList = ref<HTMLDivElement | null>(null)
+// Per-tab data, loaded lazily on first tab activation.
+const sessions = ref<SessionEntry[]>([])
+const requests = ref<LlmRequestEntry[]>([])
+const tasks = ref<ClusterTaskEntry[]>([])
+const auditEntries = ref<AuditEntry[]>([])
+const chainSegments = ref<ChainSegment[]>([])
 
-// Request logs state
-const requestSessions = ref<any[]>([])
-const requestDetail = ref<any>(null)
-const reqLoading = ref(false)
-const selectedSession = ref('')
+const loadedTabs = new Set<string>()
+const loadingTab = ref<string | null>(null)
+const chainVerifyResult = ref<{ valid: boolean; first_broken_index: number | null; broken_count: number; total_segments: number } | null>(null)
 
-// Security logs state
-const securityEntries = ref<any[]>([])
-const secLoading = ref(false)
+const counts = computed(() => ({
+  events: 0,
+  sessions: sessions.value.length + requests.value.length + tasks.value.length,
+  audit: auditEntries.value.length,
+  chain: chainSegments.value.length,
+}))
 
-let _onLog: ((entry: LogEntry) => void) | null = null
-
-const sources = [
-  { id: 'general', label: '应用日志' },
-  { id: 'llm', label: 'AI 通信' },
-  { id: 'security', label: '安全审计' },
-  { id: 'cluster', label: '集群日志' },
-]
-
-const levels = [
-  { id: '', label: '全部' },
-  { id: 'DEBUG', label: 'DEBUG' },
-  { id: 'INFO', label: 'INFO' },
-  { id: 'WARN', label: 'WARN' },
-  { id: 'ERROR', label: 'ERROR' },
-]
-
-const filteredEntries = computed(() => {
-  let result = entries.value
-  // Filter by level if one is selected
-  if (level.value) {
-    result = result.filter(e => e.level === level.value)
+async function loadSessionsTab() {
+  loadingTab.value = 'sessions'
+  try {
+    const [sessRes, reqRes, taskRes] = await Promise.allSettled([
+      request('logs', 'session_list', { limit: 50, offset: 0 }),
+      request('logs', 'requests', { limit: 50, offset: 0 }),
+      request('logs', 'cluster_task_list', { limit: 50, offset: 0 }),
+    ])
+    if (sessRes.status === 'fulfilled') sessions.value = sessRes.value?.sessions ?? []
+    if (reqRes.status === 'fulfilled') requests.value = reqRes.value?.entries ?? []
+    if (taskRes.status === 'fulfilled') tasks.value = taskRes.value?.entries ?? []
+    loadedTabs.add('sessions')
+  } catch (e) {
+    console.error('[LogsView] loadSessionsTab failed', e)
+  } finally {
+    loadingTab.value = null
   }
-  // Filter by text
-  if (!filter.value) return result
-  const f = filter.value.toLowerCase()
-  return result.filter(e =>
-    (e.message && e.message.toLowerCase().includes(f)) ||
-    (e.component && e.component.toLowerCase().includes(f))
-  )
-})
-
-function scrollToBottom() {
-  if (logsList.value) logsList.value.scrollTop = logsList.value.scrollHeight
 }
 
-function formatTime(ts?: string): string {
-  if (!ts) return ''
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-}
-
-async function loadInitial() {
-  loading.value = true
+async function loadAuditTab() {
+  loadingTab.value = 'audit'
   try {
-    const data = await httpGet<{ entries: LogEntry[] }>(`/api/logs?source=${source.value}&n=200`)
-    entries.value = data.entries || []
-    nextTick(() => scrollToBottom())
-  } catch (err) {
-    console.error('[Logs] Failed to load:', err)
+    const res = await request('logs', 'security', { limit: 200, offset: 0 })
+    auditEntries.value = res?.entries ?? []
+    loadedTabs.add('audit')
+  } catch (e) {
+    console.error('[LogsView] loadAuditTab failed', e)
+  } finally {
+    loadingTab.value = null
   }
-  loading.value = false
 }
 
-function switchSource(src: string) {
-  source.value = src
-  entries.value = []
-  loadInitial()
-}
-
-function clearLogs() { entries.value = [] }
-
-async function loadRequestLogs() {
-  reqLoading.value = true
+async function loadChainTab() {
+  loadingTab.value = 'chain'
   try {
-    const data = await request('logs', 'requests', { limit: 50 })
-    requestSessions.value = data?.entries || []
-  } catch { /* ignore */ }
-  reqLoading.value = false
-}
-
-async function loadRequestDetail(session: string) {
-  selectedSession.value = session
-  try {
-    const data = await request('logs', 'request_detail', { session })
-    requestDetail.value = data
-  } catch { /* ignore */ }
-}
-
-async function loadSecurityLogs() {
-  secLoading.value = true
-  try {
-    const data = await request('logs', 'security', { limit: 100 })
-    securityEntries.value = data?.entries || []
-  } catch { /* ignore */ }
-  secLoading.value = false
-}
-
-function switchMainTab(tab: string) {
-  activeMainTab.value = tab
-  if (tab === 'requests' && requestSessions.value.length === 0) loadRequestLogs()
-  if (tab === 'security' && securityEntries.value.length === 0) loadSecurityLogs()
-}
-
-onMounted(() => {
-  loadInitial()
-  _onLog = (entry: LogEntry) => {
-    if (entry.source && entry.source !== source.value) return
-    entries.value.push(entry)
-    if (entries.value.length > 1000) entries.value = entries.value.slice(-500)
-    if (autoScroll.value) nextTick(() => scrollToBottom())
+    const res = await request('logs', 'chain_list', { limit: 200, offset: 0 })
+    chainSegments.value = res?.segments ?? []
+    loadedTabs.add('chain')
+  } catch (e) {
+    console.error('[LogsView] loadChainTab failed', e)
+  } finally {
+    loadingTab.value = null
   }
-  sseOn('log', _onLog)
-})
+}
 
-onUnmounted(() => {
-  if (_onLog) sseOff('log', _onLog)
-})
+async function verifyChain() {
+  loadingTab.value = 'chain-verify'
+  try {
+    const res = await request('logs', 'chain_verify', {})
+    chainVerifyResult.value = res
+    // After verify, reload chain_list so per-segment breakReason shows up consistently.
+    await loadChainTab()
+  } catch (e) {
+    console.error('[LogsView] verifyChain failed', e)
+  } finally {
+    loadingTab.value = null
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'sessions' && !loadedTabs.has('sessions')) loadSessionsTab()
+  else if (tab === 'audit' && !loadedTabs.has('audit')) loadAuditTab()
+  else if (tab === 'chain' && !loadedTabs.has('chain')) loadChainTab()
+}, { immediate: true })
+
+function onNavigate(target: { type: string; id: string }) {
+  console.log('[LogsView] navigate', target)
+}
 </script>
 
 <template>
   <div class="page-logs">
-    <div class="page-header"><h2>日志管理</h2></div>
-
-    <!-- Main tabs -->
-    <div class="tabs" style="padding: 0 var(--space-4); border-bottom: 1px solid var(--border-light);">
-      <button class="tab" :class="{ active: activeMainTab === 'system' }" @click="switchMainTab('system')">系统日志</button>
-      <button class="tab" :class="{ active: activeMainTab === 'requests' }" @click="switchMainTab('requests')">请求日志</button>
-      <button class="tab" :class="{ active: activeMainTab === 'security' }" @click="switchMainTab('security')">安全审计</button>
+    <div class="page-header">
+      <h2>日志管理</h2>
+      <span v-if="loadingTab" class="loading-hint">⟳ 加载中...</span>
     </div>
 
-    <!-- System logs -->
-    <template v-if="activeMainTab === 'system'">
-      <div class="logs-toolbar">
-        <div class="logs-tabs">
-          <button v-for="src in sources" :key="src.id" class="logs-tab" :class="{ active: source === src.id }" @click="switchSource(src.id)">{{ src.label }}</button>
-        </div>
-        <select class="form-select" style="width: auto;" v-model="level">
-          <option v-for="lv in levels" :key="lv.id" :value="lv.id">{{ lv.label }}</option>
-        </select>
-        <input class="logs-filter" type="text" placeholder="搜索关键词..." v-model="filter">
-        <label style="display: flex; align-items: center; gap: 4px; font-size: var(--text-xs); color: var(--text-muted); cursor: pointer;">
-          <input type="checkbox" v-model="autoScroll"> 自动滚动
-        </label>
-        <button class="btn btn-sm btn-ghost" @click="clearLogs()">清除</button>
-      </div>
-      <div ref="logsList" class="logs-list">
-        <div v-if="loading" style="padding: var(--space-8); text-align: center;">
-          <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
-          <p style="margin-top: var(--space-4); color: var(--text-muted);">加载日志...</p>
-        </div>
-        <div v-for="(entry, idx) in filteredEntries" :key="idx" class="log-entry">
-          <span class="log-level" :class="entry.level ? entry.level.toLowerCase() : ''">{{ entry.level || '' }}</span>
-          <span class="log-time">{{ formatTime(entry.timestamp) }}</span>
-          <span class="log-component">{{ entry.component || '' }}</span>
-          <span class="log-message">{{ entry.message || '' }}</span>
-        </div>
-        <div v-if="!loading && filteredEntries.length === 0" class="empty-state"><p>暂无日志</p></div>
-      </div>
-    </template>
+    <div class="page-body page-logs-body">
+      <LogsTabs v-model="activeTab" :counts="counts" />
 
-    <!-- Request logs -->
-    <template v-if="activeMainTab === 'requests'">
-      <div class="page-body">
-        <div v-if="reqLoading" style="text-align: center; padding: var(--space-8);">
-          <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
-        </div>
-        <div v-if="!reqLoading && requestSessions.length === 0" class="empty-state">
-          <h3>暂无请求日志</h3>
-          <p>请求日志将在对话过程中自动记录</p>
-        </div>
-        <div v-if="!reqLoading && requestSessions.length > 0" style="display: grid; grid-template-columns: 300px 1fr; gap: var(--space-4);">
-          <div class="card" style="overflow-y: auto; max-height: 500px;">
-            <div style="padding: var(--space-2);">
-              <div v-for="s in requestSessions" :key="s.session || s.id"
-                style="padding: var(--space-2) var(--space-3); cursor: pointer; border-radius: var(--radius-md); font-size: var(--text-sm);"
-                :style="{ background: selectedSession === (s.session || s.id) ? 'var(--accent-muted)' : '' }"
-                @click="loadRequestDetail(s.session || s.id)">
-                <div style="font-weight: 500;">{{ s.session || s.id }}</div>
-                <div style="font-size: var(--text-xs); color: var(--text-muted);">{{ s.timestamp || '' }}</div>
-              </div>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-header"><h3>请求详情</h3></div>
-            <div class="card-body">
-              <div v-if="!requestDetail" class="empty-state" style="padding: var(--space-4);"><p>选择一个会话查看详情</p></div>
-              <pre v-else style="white-space: pre-wrap; font-size: var(--text-xs); max-height: 60vh; overflow-y: auto;">{{ JSON.stringify(requestDetail, null, 2) }}</pre>
-            </div>
-          </div>
-        </div>
+      <div class="logs-content">
+        <EventStream v-if="activeTab === 'events'" />
+        <SessionExplorer
+          v-else-if="activeTab === 'sessions'"
+          :sessions="sessions"
+          :requests="requests"
+          :tasks="tasks"
+          @navigate="onNavigate"
+          @reload="loadSessionsTab"
+        />
+        <SecurityAudit
+          v-else-if="activeTab === 'audit'"
+          :entries="auditEntries"
+        />
+        <IntegrityChain
+          v-else-if="activeTab === 'chain'"
+          :segments="chainSegments"
+          :verify-result="chainVerifyResult"
+          @verify="verifyChain"
+          @reload="loadChainTab"
+        />
       </div>
-    </template>
-
-    <!-- Security logs -->
-    <template v-if="activeMainTab === 'security'">
-      <div class="page-body">
-        <div v-if="secLoading" style="text-align: center; padding: var(--space-8);">
-          <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
-        </div>
-        <div v-if="!secLoading && securityEntries.length === 0" class="empty-state">
-          <h3>暂无安全事件</h3>
-          <p>安全事件将自动记录</p>
-        </div>
-        <div v-if="!secLoading && securityEntries.length > 0" class="table-wrap">
-          <table>
-            <thead><tr><th>时间</th><th>操作</th><th>风险级别</th><th>目标</th><th>结果</th></tr></thead>
-            <tbody>
-              <tr v-for="(e, idx) in securityEntries" :key="idx">
-                <td style="font-size: var(--text-xs);">{{ e.timestamp || '--' }}</td>
-                <td>{{ e.action || e.operation || '--' }}</td>
-                <td>
-                  <span class="badge" :class="{
-                    'badge-error': e.risk_level === 'CRITICAL',
-                    'badge-warning': e.risk_level === 'HIGH',
-                    'badge-info': e.risk_level === 'MEDIUM',
-                    'badge-neutral': e.risk_level === 'LOW',
-                  }">{{ e.risk_level || '--' }}</span>
-                </td>
-                <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">{{ e.target || '--' }}</td>
-                <td>{{ e.result || '--' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </template>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.page-logs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.loading-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.page-logs-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.logs-content {
+  flex: 1;
+  overflow: hidden;
+}
+</style>

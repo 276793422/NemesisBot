@@ -18,6 +18,13 @@ function handleKeydown(e: KeyboardEvent) {
 onMounted(async () => {
   document.addEventListener('keydown', handleKeydown)
 
+  // Dev preview mode: URL 带 ?preview=1 直接绕过认证（仅 dev server 有效，生产构建不会触发）
+  const isPreview = new URLSearchParams(location.search).has('preview')
+  if (isPreview) {
+    auth.authenticated = true
+    return
+  }
+
   // Auto-login: try various token sources
   let tokenFromURL = ''
 

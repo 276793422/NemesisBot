@@ -30,10 +30,19 @@ description: Scanner 杀毒引擎端到端自动化测试。验证 ClamAV 从配
 |------|------|
 | Rust 工具链 | 系统已安装（rustc + cargo） |
 | Go 编译器 | TestAIServer 仍为 Go 项目，需要 Go 编译 |
+| jq | 解析 JSONL 日志（新版 nemesisbot 日志为 JSONL 格式，需 jq 提取 `.message` 字段） |
 | 网络 | 需能访问 `database.clamav.net`（下载病毒库）；官网下载失败时回退本地 |
 | 本地安装包（回退用） | `Skills/scanner-e2e-test/clamav-1.5.2.win.x64.zip` |
 
 **端口**: 8080（测试 AI）、49000（Bot Web + WebSocket）、3310（ClamAV）、9999（本地 HTTP 回退，按需）
+
+**jq 检查**: Phase 4 / 5 开始前必须执行：
+
+```bash
+command -v jq >/dev/null 2>&1 || { echo "需要 jq 工具来解析 JSONL 日志"; exit 1; }
+```
+
+**日志路径约定**: Bot 日志写入 `.nemesisbot/workspace/logs/nemesisbot.YYYY-MM-DD`（JSONL 格式，每行一条 SseLogEvent JSON）。Skill 在 `test-tools/autotest/` 下运行，路径为 `.nemesisbot/workspace/logs/nemesisbot.[0-9]*`。
 
 ---
 
@@ -187,7 +196,7 @@ netstat -ano | grep ":3310 " | grep LISTEN
 
 **验证日志**:
 ```bash
-grep -i "clamav\|scanner\|daemon" nemesisbot.log
+jq -r '.message' .nemesisbot/workspace/logs/nemesisbot.[0-9]* 2>/dev/null | grep -i "clamav\|scanner\|daemon"
 ```
 
 ---
@@ -199,7 +208,7 @@ grep -i "clamav\|scanner\|daemon" nemesisbot.log
 ### 前置: 获取 Auth Token
 
 ```bash
-grep -oP 'Auth Token: \K\d+' nemesisbot.log || grep -o 'access key: [0-9]*' nemesisbot.log
+jq -r '.message' .nemesisbot/workspace/logs/nemesisbot.[0-9]* 2>/dev/null | grep -oP 'Auth Token: \K\d+' | head -1
 ```
 
 记下 Token 值（如 `276793422`），以下命令中用 `TOKEN` 代替。
@@ -222,7 +231,7 @@ pwd
 cat C:/Zoo/Temp/test/clean.txt
 # 预期: hello world
 
-grep "virus detected" nemesisbot.log
+grep "virus detected" <(jq -r '.message' .nemesisbot/workspace/logs/nemesisbot.[0-9]* 2>/dev/null)
 # 预期: 无输出
 ```
 
@@ -244,14 +253,14 @@ ENDMSG
 ```bash
 ls C:/Zoo/Temp/test/eicar.exe 2>/dev/null || echo "PASS: file not created"
 
-grep -i "eicar\|virus" nemesisbot.log
+grep -i "eicar\|virus" <(jq -r '.message' .nemesisbot/workspace/logs/nemesisbot.[0-9]* 2>/dev/null)
 # 预期: 包含 Eicar-Test-Signature
 ```
 
 ### Step 15: 验证拦截反馈
 
 ```bash
-grep "instream" nemesisbot.log
+grep "instream" <(jq -r '.message' .nemesisbot/workspace/logs/nemesisbot.[0-9]* 2>/dev/null)
 # 预期: instream(...): Eicar-Test-Signature FOUND
 ```
 

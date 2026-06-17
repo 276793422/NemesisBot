@@ -5,6 +5,7 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use tracing_subscriber::prelude::*;
 
 /// Ensure the directory containing the current executable is in PATH.
 ///
@@ -370,10 +371,22 @@ pub fn init_logger_from_config(
                             _ => tracing::Level::INFO,
                         };
                     }
-                    // File path
+                    // File path — resolve relative paths against the workspace directory
+                    // (config_path's parent is the home dir; workspace is home/workspace).
+                    // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
                     if let Some(fp) = logging.get("file").and_then(|v| v.as_str()) {
                         if !fp.is_empty() {
-                            file_path = Some(fp.to_string());
+                            let p = std::path::Path::new(fp);
+                            let resolved = if p.is_absolute() {
+                                p.to_path_buf()
+                            } else {
+                                config_path
+                                    .parent()
+                                    .unwrap_or_else(|| std::path::Path::new("."))
+                                    .join("workspace")
+                                    .join(p)
+                            };
+                            file_path = Some(resolved.to_string_lossy().into_owned());
                         }
                     }
                 }
@@ -408,68 +421,96 @@ pub fn init_logger_from_config(
         return override_flags;
     }
 
-    // Build the appropriate writer
-    let writer = if !enable_console {
-        // No console: if file path is set, write to file only (not stderr)
-        match &file_path {
-            Some(fp) => {
-                match nemesis_logger::DualMakeWriter::file_only(fp) {
-                    Ok(mw) => {
-                        eprintln!("[Logger] Logging to file only: {}", fp);
-                        mw
-                    }
-                    Err(e) => {
-                        eprintln!("[Logger] Warning: failed to open log file '{}': {}", fp, e);
-                        // Fallback: discard all output (no console, no file)
-                        nemesis_logger::DualMakeWriter::console_only()
-                    }
-                }
-            }
-            None => {
-                // No console and no file — discard all output
-                nemesis_logger::DualMakeWriter::console_only()
-            }
-        }
-    } else if let Some(fp) = &file_path {
-        // Console + file
-        match nemesis_logger::DualMakeWriter::with_file(fp) {
-            Ok(mw) => {
-                eprintln!("[Logger] Logging to console + file: {}", fp);
-                mw
-            }
-            Err(e) => {
-                eprintln!("[Logger] Warning: failed to open log file '{}': {}", fp, e);
-                nemesis_logger::DualMakeWriter::console_only()
-            }
-        }
-    } else {
-        // Console only
-        nemesis_logger::DualMakeWriter::console_only()
-    };
+    // Build the layered subscriber.
+    //
+    // Architecture:
+    //   - GlobalSseLogLayer: always on, forwards every event to the SSE EventHub callback
+    //     (installed later by the gateway once the EventHub exists).
+    //   - Console layer: stderr + GoStyleFormatter (human-readable text). Enabled when
+    //     `enable_console` is true.
+    //   - File layer: RollingFileAppender (daily rotation) + JsonLinesFormatter. Produces
+    //     `nemesisbot.YYYY-MM-DD.log` files where each line is a JSON-serialized SseLogEvent,
+    //     byte-identical to what SSE pushes to the dashboard. This is what enables history
+    //     loading + seq-based dedup.
+    //
+    // Layers are collected into a Vec<Box<dyn Layer<Registry>>> so the if/else combinations
+    // above don't produce incompatible types.
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::Layer;
+
+    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync + 'static>> =
+        vec![Box::new(nemesis_logger::GlobalSseLogLayer)];
 
     if enable_console {
-        if tracing_subscriber::fmt()
-            .event_format(nemesis_logger::GoStyleFormatter)
-            .with_max_level(level)
-            .with_writer(writer)
-            .try_init()
-            .is_err()
-        {
-            // Global subscriber already set (e.g. by a previous call or default logger).
-            // This is non-fatal: the existing subscriber will handle logs at whatever
-            // level it was configured with.
-            eprintln!("[Logger] Warning: global subscriber already set, config-based init skipped");
+        layers.push(Box::new(
+            tracing_subscriber::fmt::layer()
+                .event_format(nemesis_logger::GoStyleFormatter)
+                .with_writer(std::io::stderr),
+        ));
+    }
+
+    if let Some(fp) = &file_path {
+        let path = std::path::Path::new(fp);
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        // tracing-appender 0.2 only supports (rotation, dir, prefix) — no suffix.
+        // Use the file stem as prefix; resulting files are `{stem}.YYYY-MM-DD` (no `.log`
+        // extension). Dashboard matches via regex `^{stem}\.\d{4}-\d{2}-\d{2}$` to avoid
+        // colliding with any legacy unrotated file.
+        let prefix = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("nemesisbot");
+
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!(
+                "[Logger] Warning: failed to create log directory '{}': {}",
+                dir.display(),
+                e
+            );
+        } else {
+            eprintln!(
+                "[Logger] Logging to file (daily rotation): {}/{}<YYYY-MM-DD>",
+                dir.display(),
+                prefix
+            );
         }
-    } else {
-        // No console mode: init with the dual writer (file only or discard)
-        let _ = tracing_subscriber::fmt()
-            .event_format(nemesis_logger::GoStyleFormatter)
-            .with_max_level(level)
-            .with_writer(writer)
-            .try_init();
+
+        let appender = nemesis_logger::RollingFileAppender::new(
+            nemesis_logger::Rotation::DAILY,
+            dir,
+            prefix,
+        );
+
+        layers.push(Box::new(
+            tracing_subscriber::fmt::layer()
+                .event_format(nemesis_logger::JsonLinesFormatter)
+                .with_writer(appender),
+        ));
+    }
+
+    let layered = tracing_subscriber::registry()
+        .with(layers)
+        .with(max_level_filter(level));
+    if tracing::subscriber::set_global_default(layered).is_err() {
+        // Global subscriber already set (e.g. by a previous call or default logger).
+        // This is non-fatal: the existing subscriber will handle logs at whatever
+        // level it was configured with.
+        eprintln!("[Logger] Warning: global subscriber already set, config-based init skipped");
     }
 
     override_flags
+}
+
+/// Map a `tracing::Level` to its `LevelFilter` equivalent for layered subscriber setup.
+fn max_level_filter(level: tracing::Level) -> tracing_subscriber::filter::LevelFilter {
+    use tracing_subscriber::filter::LevelFilter;
+    match level {
+        tracing::Level::TRACE => LevelFilter::TRACE,
+        tracing::Level::DEBUG => LevelFilter::DEBUG,
+        tracing::Level::INFO => LevelFilter::INFO,
+        tracing::Level::WARN => LevelFilter::WARN,
+        tracing::Level::ERROR => LevelFilter::ERROR,
+    }
 }
 
 // =========================================================================

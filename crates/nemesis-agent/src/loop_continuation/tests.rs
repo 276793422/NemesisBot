@@ -22,7 +22,7 @@ async fn test_save_and_load_continuation() {
     ];
 
     manager
-        .save_continuation("task-1", messages.clone(), "tc_1", "web", "chat1")
+        .save_continuation("task-1", messages.clone(), "tc_1", "web", "chat1", "test_session")
         .await;
 
     let loaded = manager.load_continuation("task-1").await;
@@ -46,7 +46,7 @@ async fn test_remove_continuation() {
     let manager = ContinuationManager::new();
 
     manager
-        .save_continuation("task-2", vec![make_message("user", "test")], "tc_2", "web", "chat1")
+        .save_continuation("task-2", vec![make_message("user", "test")], "tc_2", "web", "chat1", "test_session")
         .await;
 
     assert!(manager.has_continuation("task-2").await);
@@ -65,7 +65,7 @@ async fn test_disk_persistence_and_recovery() {
     ];
 
     manager
-        .save_continuation("task-disk", messages.clone(), "tc_d", "rpc", "chat2")
+        .save_continuation("task-disk", messages.clone(), "tc_d", "rpc", "chat2", "test_session")
         .await;
 
     // Verify it can be loaded while still in memory.
@@ -100,6 +100,7 @@ fn test_disk_recovery_on_startup() {
         channel: "rpc".to_string(),
         chat_id: "chat_r".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -121,6 +122,7 @@ async fn test_disk_store_save_and_load() {
         channel: "web".to_string(),
         chat_id: "chat100".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -141,6 +143,7 @@ async fn test_disk_store_delete() {
         channel: "web".to_string(),
         chat_id: "chat-del".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -166,6 +169,7 @@ async fn test_save_barrier_pattern() {
                 "tc_b",
                 "web",
                 "chat_b",
+                "test_session",
             )
             .await;
     });
@@ -192,6 +196,7 @@ async fn test_overwrite_continuation() {
             "tc_1",
             "web",
             "chat1",
+            "test_session",
         )
         .await;
 
@@ -202,6 +207,7 @@ async fn test_overwrite_continuation() {
             "tc_2",
             "web",
             "chat1",
+            "test_session",
         )
         .await;
 
@@ -222,6 +228,7 @@ fn test_continuation_snapshot_serialization() {
         channel: "web".to_string(),
         chat_id: "chat_ser".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -238,6 +245,7 @@ fn test_continuation_data_debug() {
         tool_call_id: "tc_1".to_string(),
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
+        session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
@@ -275,6 +283,7 @@ fn test_manager_has_continuation_sync() {
         tool_call_id: "tc_s".to_string(),
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
+        session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
@@ -295,6 +304,7 @@ async fn test_manager_multiple_continuations() {
                 &format!("tc_{}", i),
                 "web",
                 &format!("chat_{}", i),
+                "test_session",
             )
             .await;
     }
@@ -329,6 +339,7 @@ fn test_continuation_store_list_pending_with_snapshots() {
             channel: "web".to_string(),
             chat_id: format!("chat_{}", i),
             created_at: "2026-04-29T12:00:00Z".to_string(),
+            session_key: String::new(),
         };
         store.save(&snapshot).unwrap();
     }
@@ -350,6 +361,7 @@ fn test_continuation_snapshot_clone() {
         channel: "web".to_string(),
         chat_id: "chat_c".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     let cloned = snapshot.clone();
     assert_eq!(cloned.task_id, "task-clone");
@@ -374,6 +386,7 @@ fn test_continuation_data_with_ready_notify() {
         tool_call_id: "tc_1".to_string(),
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
+        session_key: "test_session".to_string(),
         ready: notify,
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
@@ -396,6 +409,7 @@ async fn test_concurrent_save_and_load() {
                 &format!("tc_{}", i),
                 "web",
                 &format!("chat_{}", i),
+                "test_session",
             ).await;
         }));
     }
@@ -453,6 +467,7 @@ fn test_continuation_store_save_overwrite() {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot1).unwrap();
 
@@ -463,6 +478,7 @@ fn test_continuation_store_save_overwrite() {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot2).unwrap();
 
@@ -546,6 +562,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         channel: "web".to_string(),
         chat_id: "chat_skip".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -556,6 +573,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         tool_call_id: "tc_manual".to_string(),
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
+        session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
@@ -579,6 +597,7 @@ fn test_continuation_store_recover_corrupted_messages() {
         channel: "web".to_string(),
         chat_id: "chat_bad".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -630,6 +649,7 @@ async fn test_handle_cluster_continuation_no_data() {
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
+        None,
     )
     .await;
     // No outbound should be sent
@@ -643,7 +663,7 @@ async fn test_handle_cluster_continuation_simple_response() {
     // Save a continuation snapshot
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-1", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-1", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     // Provider returns a simple text response (no tool calls)
@@ -668,6 +688,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
+        None,
     )
     .await;
 
@@ -686,7 +707,7 @@ async fn test_handle_cluster_continuation_failed_task() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-fail", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-fail", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
@@ -710,6 +731,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
+        None,
     )
     .await;
 
@@ -725,7 +747,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-tool", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-tool", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     // First response has tool call, second response is final
@@ -776,6 +798,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         &tools,
         &outbound_tx,
         None,
+        None,
     )
     .await;
 
@@ -791,7 +814,7 @@ async fn test_handle_cluster_continuation_llm_error() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-err", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-err", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     let provider = MockContinuationProvider::new_error("LLM connection failed".to_string());
@@ -806,6 +829,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         "test-model",
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
+        None,
         None,
     )
     .await;
@@ -822,7 +846,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-unknown", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-unknown", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     let provider = MockContinuationProvider::new(vec![
@@ -860,6 +884,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         "test-model",
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
+        None,
         None,
     )
     .await;
@@ -937,6 +962,7 @@ fn test_continuation_snapshot_created_at() {
         channel: "web".to_string(),
         chat_id: "chat1".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
+        session_key: String::new(),
     };
     assert_eq!(snapshot.task_id, "t1");
     assert_eq!(snapshot.created_at, "2026-01-01T00:00:00Z");
@@ -1074,6 +1100,7 @@ fn test_disk_persistence_load_from_disk() {
         channel: "web".to_string(),
         chat_id: "chat_dl".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -1094,6 +1121,7 @@ async fn test_disk_store_remove_and_verify() {
         channel: "web".to_string(),
         chat_id: "chat_rm".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
+        session_key: String::new(),
     };
     store.save(&snapshot).unwrap();
     assert!(store.load("task-rm").is_ok());
@@ -1109,7 +1137,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-fail-no-err", messages, "tc_1", "web", "chat1")
+        .save_continuation("task-fail-no-err", messages, "tc_1", "web", "chat1", "test_session")
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
@@ -1134,10 +1162,230 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
+        None,
     )
     .await;
 
     let outbound = outbound_rx.try_recv();
     assert!(outbound.is_ok());
     assert!(outbound.unwrap().content.contains("Error handled"));
+}
+
+// --- Tests for session_log persistence in handle_cluster_continuation ---
+
+/// Unique session key so parallel tests don't trample each other's files.
+fn unique_cont_test_session_key(label: &str) -> String {
+    format!(
+        "cont_test:{}:{}",
+        label,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    )
+}
+
+/// Remove the session log file produced by `append_chat_log` for this key.
+fn cleanup_cont_session_log(session_key: &str) {
+    let safe_key = session_key.replace(':', "_");
+    let path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", safe_key));
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[tokio::test]
+async fn test_handle_cluster_continuation_writes_session_log() {
+    let session_key = unique_cont_test_session_key("log_write");
+    cleanup_cont_session_log(&session_key);
+
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello from cluster")];
+    manager
+        .save_continuation(
+            "task-log",
+            messages,
+            "tc_1",
+            "web",
+            "chat_log",
+            &session_key,
+        )
+        .await;
+
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "Cluster reply persisted to log".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &manager,
+        "task-log",
+        "peer response payload",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+    )
+    .await;
+
+    // Drain the outbound so the runtime doesn't see a dropped sender.
+    let _ = outbound_rx.try_recv();
+
+    let safe_key = session_key.replace(':', "_");
+    let log_path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", safe_key));
+    assert!(log_path.exists(), "session log file should exist at {:?}", log_path);
+
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        content.contains("Cluster reply persisted to log"),
+        "session log should contain assistant reply, got: {}",
+        content
+    );
+    assert!(
+        content.contains("\"role\":\"assistant\"") || content.contains("\"role\": \"assistant\""),
+        "session log should mark the entry as assistant role, got: {}",
+        content
+    );
+
+    cleanup_cont_session_log(&session_key);
+}
+
+#[tokio::test]
+async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
+    let session_key = unique_cont_test_session_key("store_write");
+    cleanup_cont_session_log(&session_key);
+
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello from cluster store")];
+    manager
+        .save_continuation(
+            "task-store",
+            messages,
+            "tc_1",
+            "web",
+            "chat_store",
+            &session_key,
+        )
+        .await;
+
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "Mirrored into session_store".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    let store = Arc::new(crate::session::SessionStore::new_in_memory());
+
+    handle_cluster_continuation(
+        &manager,
+        "task-store",
+        "peer response payload",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        Some(store.as_ref()),
+    )
+    .await;
+
+    let _ = outbound_rx.try_recv();
+
+    // session_store should have the assistant message in memory.
+    let messages = store.get_history(&session_key);
+    let found = messages.iter().any(|m| {
+        m.role == "assistant" && m.content.contains("Mirrored into session_store")
+    });
+    assert!(
+        found,
+        "session_store messages should contain the assistant reply, got: {:?}",
+        messages.iter().map(|m| (&m.role, &m.content)).collect::<Vec<_>>()
+    );
+
+    cleanup_cont_session_log(&session_key);
+}
+
+#[tokio::test]
+async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
+    // Simulates a legacy on-disk snapshot that has no session_key field.
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    // Save with empty session_key (mirrors a deserialized legacy snapshot).
+    let messages = vec![make_message("user", "legacy")];
+    manager
+        .save_continuation(
+            "task-legacy",
+            messages,
+            "tc_legacy",
+            "web",
+            "chat_legacy",
+            "",
+        )
+        .await;
+
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "Should not be logged".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &manager,
+        "task-legacy",
+        "peer response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+    )
+    .await;
+
+    let _ = outbound_rx.try_recv();
+
+    // No file should have been written for an empty session key (file would be "_.jsonl").
+    let empty_log = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join("_.jsonl");
+    assert!(
+        !empty_log.exists(),
+        "empty session_key should NOT produce a log file, but found {:?}",
+        empty_log
+    );
+
+    // Cleanup if some other parallel test happens to use the same path.
+    if empty_log.exists() {
+        let _ = std::fs::remove_file(&empty_log);
+    }
 }

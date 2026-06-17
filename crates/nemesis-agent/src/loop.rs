@@ -525,6 +525,7 @@ impl AgentLoop {
                         &tools,
                         tx,
                         self.observer_manager.clone(),
+                        self.session_store.as_ref().map(|v| v.as_ref()),
                     )
                     .await;
                 }
@@ -538,6 +539,7 @@ impl AgentLoop {
             let outbound_tx = self.outbound_tx.clone();
             let continuation_manager = self.continuation_manager.clone();
             let observer_manager = self.observer_manager.clone();
+            let session_store = self.session_store.clone();
             let semaphore = self.continuation_semaphore.clone().unwrap();
 
             tokio::spawn(async move {
@@ -555,6 +557,7 @@ impl AgentLoop {
                             &tools,
                             tx,
                             observer_manager,
+                            session_store.as_ref().map(|v| v.as_ref()),
                         )
                         .await;
                     }
@@ -1110,6 +1113,7 @@ impl AgentLoop {
                     &self.tools,
                     tx,
                     self.observer_manager.clone(),
+                    self.session_store.as_ref().map(|v| v.as_ref()),
                 )
                 .await;
             }
@@ -2581,6 +2585,7 @@ impl AgentLoop {
                             let messages = self.build_messages(instance);
                             let channel = context.channel.clone();
                             let chat_id = context.chat_id.clone();
+                            let session_key = context.session_key.clone();
 
                             // Save continuation snapshot (spawns a tokio task for disk write)
                             let mgr = mgr.clone();
@@ -2594,6 +2599,7 @@ impl AgentLoop {
                                     &tc_id,
                                     &channel,
                                     &chat_id,
+                                    &session_key,
                                 ).await;
                             });
 

@@ -46,32 +46,48 @@ use super::*;
         let dir = tempfile::tempdir().unwrap();
         let logs_dir = dir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
-        std::fs::write(logs_dir.join("nemesisbot.log"), "log content").unwrap();
+        // New JSONL daily format: nemesisbot.YYYY-MM-DD (no .log suffix).
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "log content").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "general").unwrap();
-        assert!(path.contains("nemesisbot.log"));
+        assert!(path.contains("nemesisbot.2026-06-17"));
     }
 
     #[test]
     fn test_resolve_log_file_path_general_fallback() {
+        // No matching file: should return None (no legacy fallback).
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().to_string_lossy().to_string();
+        assert!(resolve_log_file_path(&ws, "general").is_none());
+    }
+
+    #[test]
+    fn test_resolve_log_file_path_general_picks_latest_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs_dir = dir.path().join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-15"), "day 1").unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "day 3").unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-16"), "day 2").unwrap();
+
+        let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "general").unwrap();
-        // Should still return a default path even if file doesn't exist
-        assert!(path.contains("nemesisbot.log"));
+        // Lexicographic sort == chronological for YYYY-MM-DD, latest wins.
+        assert!(path.contains("nemesisbot.2026-06-17"));
     }
 
     #[test]
     fn test_resolve_log_file_path_llm() {
         let dir = tempfile::tempdir().unwrap();
-        let logs_dir = dir.path().join("logs").join("request_logs");
-        std::fs::create_dir_all(&logs_dir).unwrap();
-        std::fs::write(logs_dir.join("2026-04-30.jsonl"), "line1\nline2").unwrap();
+        // request_logs 下每个 LLM 调用是一个目录，内含多个 Markdown 文件
+        let session_dir = dir.path().join("logs").join("request_logs").join("2026-04-30_14-23-45_001");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("00.request.md"), "request content").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "llm").unwrap();
-        assert!(path.contains("2026-04-30.jsonl"));
+        assert!(path.contains("00.request.md"));
     }
 
     #[test]
@@ -106,15 +122,15 @@ use super::*;
 
     #[test]
     fn test_read_log_entries_mixed() {
+        // New behavior: JSON-only parsing. Non-JSON lines are dropped (no text fallback).
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("mixed.log");
         let content = "plain text line\n{\"json\":true}\n";
         std::fs::write(&file_path, content).unwrap();
 
         let entries = read_log_entries(&file_path.to_string_lossy(), 100);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["message"], "plain text line");
-        assert_eq!(entries[1]["json"], true);
+        assert_eq!(entries.len(), 1, "only the JSON line should parse");
+        assert_eq!(entries[0]["json"], true);
     }
 
     #[test]
@@ -181,34 +197,6 @@ use super::*;
         sanitize_map(&mut map);
         // Empty string should NOT be sanitized
         assert_eq!(map["password"], "");
-    }
-
-    #[test]
-    fn test_find_latest_file() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("old.jsonl"), "old").unwrap();
-
-        // Small sleep to ensure different mtime
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        std::fs::write(dir.path().join("new.jsonl"), "new").unwrap();
-
-        let result = find_latest_file(dir.path());
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("new.jsonl"));
-    }
-
-    #[test]
-    fn test_find_latest_file_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = find_latest_file(dir.path());
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_find_latest_file_nonexistent_dir() {
-        let result = find_latest_file(std::path::Path::new("/nonexistent"));
-        assert!(result.is_none());
     }
 
     #[test]
@@ -317,22 +305,23 @@ use super::*;
     #[test]
     fn test_resolve_log_file_path_security_with_files() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("security_audit_2026-01-01.log"), "entry1").unwrap();
-        std::fs::write(config_dir.join("security_audit_2026-01-02.log"), "entry2").unwrap();
+        let audit_dir = dir.path().join("logs").join("security_logs");
+        std::fs::create_dir_all(&audit_dir).unwrap();
+        std::fs::write(audit_dir.join("audit.jsonl"), "{\"audit\":\"entry\"}").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "security").unwrap();
-        // Should return the latest security audit file
-        assert!(path.contains("security_audit_"));
+        // Phase B1-1: security 路径固定指向 logs/security_logs/audit.jsonl
+        assert!(path.contains("audit.jsonl"));
+        assert!(path.contains("security_logs"));
     }
 
     #[test]
     fn test_resolve_log_file_path_security_no_files() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
+        let audit_dir = dir.path().join("logs").join("security_logs");
+        std::fs::create_dir_all(&audit_dir).unwrap();
+        // audit.jsonl 文件不存在
 
         let ws = dir.path().to_string_lossy().to_string();
         assert!(resolve_log_file_path(&ws, "security").is_none());
@@ -538,27 +527,18 @@ use super::*;
 
     #[test]
     fn test_resolve_log_file_path_general_app_log() {
+        // New behavior: only nemesisbot.YYYY-MM-DD files match. app.log must not.
         let dir = tempfile::tempdir().unwrap();
         let logs_dir = dir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
-        // Only app.log exists, not nemesisbot.log
+        // Only app.log exists, no daily nemesisbot file
         std::fs::write(logs_dir.join("app.log"), "log content").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
-        let path = resolve_log_file_path(&ws, "general").unwrap();
-        assert!(path.contains("app.log"));
-    }
-
-    #[test]
-    fn test_find_latest_file_ignores_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let subdir = dir.path().join("subdir");
-        std::fs::create_dir_all(&subdir).unwrap();
-        std::fs::write(dir.path().join("file.jsonl"), "data").unwrap();
-
-        let result = find_latest_file(dir.path());
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("file.jsonl"));
+        assert!(
+            resolve_log_file_path(&ws, "general").is_none(),
+            "app.log must not match the nemesisbot.YYYY-MM-DD pattern"
+        );
     }
 
     #[test]
@@ -622,23 +602,24 @@ use super::*;
     #[test]
     fn test_resolve_log_file_path_cluster_with_existing_files() {
         let dir = tempfile::tempdir().unwrap();
-        let cluster_dir = dir.path().join("logs").join("cluster");
+        let cluster_dir = dir.path().join("logs").join("cluster_logs");
         std::fs::create_dir_all(&cluster_dir).unwrap();
-        std::fs::write(cluster_dir.join("discovery.log"), "discovery log content").unwrap();
+        std::fs::write(cluster_dir.join("cluster_2026-01-01.log"), "cluster log content").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "cluster");
         assert!(path.is_some());
-        assert!(path.unwrap().contains("discovery.log"));
+        assert!(path.unwrap().contains("cluster_2026-01-01.log"));
     }
 
     #[test]
     fn test_resolve_log_file_path_cluster_no_log_files() {
         let dir = tempfile::tempdir().unwrap();
-        let cluster_dir = dir.path().join("logs").join("cluster");
+        let cluster_dir = dir.path().join("logs").join("cluster_logs");
         std::fs::create_dir_all(&cluster_dir).unwrap();
-        // Place a non-.log file to ensure it's not picked up
+        // Place files that don't match the cluster_*.log pattern
         std::fs::write(cluster_dir.join("notes.txt"), "not a log").unwrap();
+        std::fs::write(cluster_dir.join("random.log"), "wrong prefix").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         assert!(resolve_log_file_path(&ws, "cluster").is_none());
@@ -647,22 +628,22 @@ use super::*;
     #[test]
     fn test_resolve_log_file_path_cluster_multiple_files_returns_lexicographically_last() {
         let dir = tempfile::tempdir().unwrap();
-        let cluster_dir = dir.path().join("logs").join("cluster");
+        let cluster_dir = dir.path().join("logs").join("cluster_logs");
         std::fs::create_dir_all(&cluster_dir).unwrap();
-        std::fs::write(cluster_dir.join("discovery.log"), "discovery content").unwrap();
-        std::fs::write(cluster_dir.join("rpc.log"), "rpc content").unwrap();
+        std::fs::write(cluster_dir.join("cluster_2026-01-01.log"), "day 1").unwrap();
+        std::fs::write(cluster_dir.join("cluster_2026-12-31.log"), "last day").unwrap();
 
         let ws = dir.path().to_string_lossy().to_string();
         let path = resolve_log_file_path(&ws, "cluster");
         assert!(path.is_some());
-        // After sort+reverse, lexicographically greatest name ("rpc.log" > "discovery.log") wins
-        assert!(path.unwrap().contains("rpc.log"));
+        // After sort+reverse, lexicographically greatest name wins
+        assert!(path.unwrap().contains("cluster_2026-12-31.log"));
     }
 
     #[test]
     fn test_resolve_log_file_path_cluster_empty_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let cluster_dir = dir.path().join("logs").join("cluster");
+        let cluster_dir = dir.path().join("logs").join("cluster_logs");
         std::fs::create_dir_all(&cluster_dir).unwrap();
         // Directory exists but is completely empty
 
@@ -772,7 +753,7 @@ use super::*;
         let dir = tempfile::tempdir().unwrap();
         let logs_dir = dir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
-        std::fs::write(logs_dir.join("nemesisbot.log"), r#"{"msg":"line1"}"#).unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), r#"{"msg":"line1"}"#).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -793,7 +774,7 @@ use super::*;
         let logs_dir = dir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
         let lines: Vec<String> = (0..2000).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
-        std::fs::write(logs_dir.join("nemesisbot.log"), lines.join("\n")).unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -815,7 +796,7 @@ use super::*;
         let logs_dir = dir.path().join("logs");
         std::fs::create_dir_all(&logs_dir).unwrap();
         let lines: Vec<String> = (0..300).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
-        std::fs::write(logs_dir.join("nemesisbot.log"), lines.join("\n")).unwrap();
+        std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -1047,9 +1028,9 @@ use super::*;
     #[tokio::test]
     async fn test_api_logs_source_security() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("security_audit_2026-01-01.log"), r#"{"audit":"entry1"}"#).unwrap();
+        let sec_dir = dir.path().join("logs").join("security_logs");
+        std::fs::create_dir_all(&sec_dir).unwrap();
+        std::fs::write(sec_dir.join("audit.jsonl"), r#"{"audit":"entry1"}"#).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -1064,9 +1045,9 @@ use super::*;
     #[tokio::test]
     async fn test_api_logs_source_cluster() {
         let dir = tempfile::tempdir().unwrap();
-        let cluster_dir = dir.path().join("logs").join("cluster");
+        let cluster_dir = dir.path().join("logs").join("cluster_logs");
         std::fs::create_dir_all(&cluster_dir).unwrap();
-        std::fs::write(cluster_dir.join("discovery.log"), r#"{"cluster":"entry1"}"#).unwrap();
+        std::fs::write(cluster_dir.join("cluster_2026-01-01.log"), r#"{"cluster":"entry1"}"#).unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);
@@ -1081,9 +1062,10 @@ use super::*;
     #[tokio::test]
     async fn test_api_logs_source_llm() {
         let dir = tempfile::tempdir().unwrap();
-        let logs_dir = dir.path().join("logs").join("request_logs");
-        std::fs::create_dir_all(&logs_dir).unwrap();
-        std::fs::write(logs_dir.join("2026-01-01.jsonl"), r#"{"llm":"request1"}"#).unwrap();
+        // request_logs/{ts}_{NNN}/00.request.md — picked up by find_latest_request_summary
+        let req_dir = dir.path().join("logs").join("request_logs").join("2026-01-01_00-00-00_001");
+        std::fs::create_dir_all(&req_dir).unwrap();
+        std::fs::write(req_dir.join("00.request.md"), "# user request\nhello").unwrap();
         let ws = dir.path().to_string_lossy().to_string();
         let state = make_test_state(Some(ws), "");
         let app = make_test_router(state);

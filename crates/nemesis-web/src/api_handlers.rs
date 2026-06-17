@@ -519,39 +519,21 @@ fn load_scanner_status(workspace: &str) -> serde_json::Value {
 fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
     match source {
         "general" => {
-            let candidates = vec![
-                PathBuf::from(workspace).join("logs").join("nemesisbot.log"),
-                PathBuf::from(workspace).join("logs").join("app.log"),
-            ];
-            for c in &candidates {
-                if c.exists() {
-                    return Some(c.to_string_lossy().to_string());
-                }
-            }
-            // Return default even if it doesn't exist
-            Some(candidates[0].to_string_lossy().to_string())
-        }
-        "llm" => {
-            let dir = PathBuf::from(workspace).join("logs").join("request_logs");
-            find_latest_file(&dir)
-        }
-        "security" => {
-            let sec_dir = PathBuf::from(workspace).join("config");
-            let pattern = sec_dir.join("security_audit_*.log");
-            let _pattern_str = pattern.to_string_lossy();
-
-            // Glob for security audit logs
+            // New JSONL daily rotation: files are `nemesisbot.YYYY-MM-DD` (no `.log` extension
+            // because tracing-appender 0.2 doesn't support suffixes). Match strictly by date
+            // pattern to avoid hitting any legacy unrotated `nemesisbot.log`.
+            let logs_dir = PathBuf::from(workspace).join("logs");
             let mut matches: Vec<String> = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&sec_dir) {
+            if let Ok(entries) = std::fs::read_dir(&logs_dir) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("security_audit_") && name.ends_with(".log") {
+                    if is_daily_nemesisbot_log(&name) {
                         matches.push(entry.path().to_string_lossy().to_string());
                     }
                 }
             }
-
             if !matches.is_empty() {
+                // Lexicographic sort == chronological sort for YYYY-MM-DD.
                 matches.sort();
                 matches.reverse();
                 Some(matches[0].clone())
@@ -559,14 +541,33 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
                 None
             }
         }
+        "llm" => {
+            // Phase B1-3: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
+            // 在那之前 fallback 到 request_logs 最新目录，返回其 00.request.md（首条 user 消息）。
+            let dir = PathBuf::from(workspace).join("logs").join("request_logs");
+            find_latest_request_summary(&dir)
+        }
+        "security" => {
+            // Phase B1-1: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
+            let audit_file = PathBuf::from(workspace)
+                .join("logs")
+                .join("security_logs")
+                .join("audit.jsonl");
+            if audit_file.exists() {
+                Some(audit_file.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        }
         "cluster" => {
-            // Cluster logs are stored in {workspace}/logs/cluster/
-            let cluster_dir = PathBuf::from(workspace).join("logs").join("cluster");
+            // Phase B1-2: cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
+            // 也有 {device}/{ts}_{task}/ 子目录（LLM 详情）。这里只取平面日志文件。
+            let cluster_dir = PathBuf::from(workspace).join("logs").join("cluster_logs");
             let mut matches: Vec<String> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&cluster_dir) {
                 for entry in entries.flatten() {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.ends_with(".log") {
+                    if name.starts_with("cluster_") && name.ends_with(".log") {
                         matches.push(entry.path().to_string_lossy().to_string());
                     }
                 }
@@ -583,56 +584,123 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
     }
 }
 
-/// Find the most recently modified file in a directory.
-fn find_latest_file(dir: &std::path::Path) -> Option<String> {
+/// Find the most recently modified `.md` file inside the latest `request_logs` subdirectory.
+///
+/// Each LLM call is stored as `{ts}_{NNN}/` containing multiple Markdown files
+/// (00.request.md, 01.AI.Request.md, 02.AI.Response.md, NN.Local.md, ...).
+/// Here we pick the latest subdir by mtime, then the latest `.md` inside it.
+fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
-    let mut latest_time: std::time::SystemTime = std::time::UNIX_EPOCH;
-    let mut latest_name: Option<String> = None;
 
+    let mut latest_dir: Option<PathBuf> = None;
+    let mut latest_dir_time = std::time::UNIX_EPOCH;
     for entry in entries.flatten() {
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let metadata = entry.metadata().ok()?;
-        let modified = metadata.modified().ok();
-        if let Some(mtime) = modified {
-            if mtime > latest_time {
-                latest_time = mtime;
-                latest_name = Some(entry.path().to_string_lossy().to_string());
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(mtime) = meta.modified() {
+                if mtime > latest_dir_time {
+                    latest_dir_time = mtime;
+                    latest_dir = Some(entry.path());
+                }
             }
         }
     }
 
-    latest_name
+    let target_dir = latest_dir?;
+
+    let mut latest_file: Option<String> = None;
+    let mut latest_file_time = std::time::UNIX_EPOCH;
+    if let Ok(entries) = std::fs::read_dir(&target_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".md") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if mtime > latest_file_time {
+                        latest_file_time = mtime;
+                        latest_file = Some(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    latest_file
 }
 
-/// Read the last `n` JSON Lines entries from a file.
+/// Match `nemesisbot.YYYY-MM-DD` exactly — the JSONL daily-rotation file naming.
+/// Used to exclude legacy unrotated `nemesisbot.log` files from the dashboard.
+fn is_daily_nemesisbot_log(name: &str) -> bool {
+    const PREFIX: &str = "nemesisbot.";
+    if !name.starts_with(PREFIX) {
+        return false;
+    }
+    let date = &name[PREFIX.len()..];
+    // Strict YYYY-MM-DD (10 chars, dashes at positions 4 and 7, digits elsewhere).
+    if date.len() != 10 {
+        return false;
+    }
+    let b = date.as_bytes();
+    b[0..4].iter().all(u8::is_ascii_digit)
+        && b[4] == b'-'
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[7] == b'-'
+        && b[8..10].iter().all(u8::is_ascii_digit)
+}
+
+/// Read the last `n` JSONL entries from a file efficiently.
+///
+/// Seeks to (file_size - 64KB), reads to end, splits on newlines, drops the first
+/// partial line, parses each remaining line as JSON. Files smaller than 64KB are
+/// read in full. Lines that fail to parse as JSON are silently dropped — the new
+/// JSONL format produces one valid SseLogEvent per line, so any parse failure is
+/// either a half-written tail (which `lines()` already handles by virtue of the
+/// trailing newline) or corruption that's not worth surfacing.
 fn read_log_entries(file_path: &str, n: usize) -> Vec<serde_json::Value> {
-    let content = match std::fs::read_to_string(file_path) {
-        Ok(c) => c,
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(file_path) {
+        Ok(f) => f,
         Err(_) => return vec![],
     };
 
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file_size == 0 {
+        return vec![];
+    }
 
-    // Take last n lines
-    let start = if lines.len() > n {
-        lines.len() - n
+    let seek_back = std::cmp::min(file_size, 64 * 1024);
+    if file.seek(SeekFrom::End(-(seek_back as i64))).is_err() {
+        return vec![];
+    }
+
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return vec![];
+    }
+
+    let lines: Vec<&str> = buf.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    // If we seeked into the middle of the file, the first line is likely a truncated
+    // JSON object — drop it. (When seek_back == file_size we read from the start and
+    // don't need to drop.)
+    let lines = if seek_back < file_size && lines.len() > 1 {
+        &lines[1..]
     } else {
-        0
+        &lines[..]
     };
 
+    let start = if lines.len() > n { lines.len() - n } else { 0 };
     lines[start..]
         .iter()
-        .map(|line| {
-            match serde_json::from_str::<serde_json::Value>(line) {
-                Ok(v) => v,
-                Err(_) => {
-                    // Not JSON — create a plain text entry
-                    serde_json::json!({"message": line})
-                }
-            }
-        })
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .collect()
 }
 

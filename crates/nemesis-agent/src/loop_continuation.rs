@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::context::RequestContext;
 use crate::r#loop::{LlmMessage, LlmProvider, Tool};
+use crate::session::SessionStore;
 use crate::types::ToolCallInfo;
 
 /// Trait for looking up tools by name.
@@ -62,6 +63,9 @@ pub struct ContinuationData {
     pub channel: String,
     /// Original chat ID.
     pub chat_id: String,
+    /// Session key for persisting the continuation's final reply to chat_log
+    /// and session_store. Empty for legacy on-disk snapshots (skips logging).
+    pub session_key: String,
     /// Save barrier: notified when data is fully written.
     pub ready: Arc<Notify>,
     /// Non-blocking ready flag: set to true when data is fully written.
@@ -76,6 +80,11 @@ pub struct ContinuationSnapshot {
     pub tool_call_id: String,
     pub channel: String,
     pub chat_id: String,
+    /// Session key for restoring log persistence after restart. Defaults to
+    /// empty for snapshots written by older binaries (skips log write on
+    /// resume).
+    #[serde(default)]
+    pub session_key: String,
     pub created_at: String,
 }
 
@@ -216,6 +225,7 @@ impl ContinuationStore {
                         tool_call_id: snapshot.tool_call_id,
                         channel: snapshot.channel,
                         chat_id: snapshot.chat_id,
+                        session_key: snapshot.session_key,
                         ready,
                         ready_flag,
                     });
@@ -311,6 +321,7 @@ impl ContinuationManager {
         tool_call_id: &str,
         channel: &str,
         chat_id: &str,
+        session_key: &str,
     ) {
         let ready = Arc::new(Notify::new());
         let ready_flag = Arc::new(AtomicBool::new(false));
@@ -320,6 +331,7 @@ impl ContinuationManager {
             tool_call_id: tool_call_id.to_string(),
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
+            session_key: session_key.to_string(),
             ready: ready.clone(),
             ready_flag: ready_flag.clone(),
         });
@@ -343,6 +355,7 @@ impl ContinuationManager {
                 tool_call_id: tool_call_id.to_string(),
                 channel: channel.to_string(),
                 chat_id: chat_id.to_string(),
+                session_key: session_key.to_string(),
                 created_at: chrono::Local::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
@@ -392,6 +405,7 @@ impl ContinuationManager {
                             tool_call_id: data.tool_call_id.clone(),
                             channel: data.channel.clone(),
                             chat_id: data.chat_id.clone(),
+                            session_key: data.session_key.clone(),
                             ready: data.ready.clone(),
                             ready_flag: data.ready_flag.clone(),
                         });
@@ -410,6 +424,7 @@ impl ContinuationManager {
                                 tool_call_id: arc.tool_call_id.clone(),
                                 channel: arc.channel.clone(),
                                 chat_id: arc.chat_id.clone(),
+                                session_key: arc.session_key.clone(),
                                 ready: arc.ready.clone(),
                                 ready_flag: arc.ready_flag.clone(),
                             }
@@ -441,6 +456,7 @@ impl ContinuationManager {
                                 tool_call_id: arc.tool_call_id.clone(),
                                 channel: arc.channel.clone(),
                                 chat_id: arc.chat_id.clone(),
+                                session_key: arc.session_key.clone(),
                                 ready: arc.ready.clone(),
                                 ready_flag: arc.ready_flag.clone(),
                             }
@@ -479,6 +495,7 @@ impl ContinuationManager {
             tool_call_id: snapshot.tool_call_id,
             channel: snapshot.channel,
             chat_id: snapshot.chat_id,
+            session_key: snapshot.session_key,
             ready: Arc::new(Notify::new()),
             ready_flag,
         })
@@ -555,6 +572,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     tools: &T,
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
+    session_store: Option<&SessionStore>,
 ) {
     // Generate trace_id for observer event correlation.
     let trace_id = format!("continuation-{}-{}", task_id, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
@@ -747,6 +765,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                             &tc.id,
                             &cont_data.channel,
                             &cont_data.chat_id,
+                            &cont_data.session_key,
                         )
                         .await;
                 }
@@ -771,6 +790,29 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
     // 6. Send final response.
     if !final_content.is_empty() {
+        // Persist final reply to chat_log and session_store before sending
+        // outbound. Mirrors the normal AgentLoop path at loop.rs:2125-2148 so
+        // the user-visible history stays consistent across async continuations.
+        // Skip when session_key is empty (legacy on-disk snapshots saved before
+        // this field existed).
+        if !cont_data.session_key.is_empty() {
+            crate::chat_log::append_chat_log(
+                &cont_data.session_key,
+                "assistant",
+                &final_content,
+            );
+            if let Some(store) = session_store {
+                store.get_or_create(&cont_data.session_key);
+                store.add_message(&cont_data.session_key, "assistant", &final_content);
+                if let Err(e) = store.save(&cont_data.session_key) {
+                    warn!(
+                        "[Continuation] Failed to persist session history for {}: {}",
+                        cont_data.session_key, e
+                    );
+                }
+            }
+        }
+
         let outbound = nemesis_types::channel::OutboundMessage {
             channel: cont_data.channel.clone(),
             chat_id: cont_data.chat_id.clone(),

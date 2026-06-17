@@ -6,7 +6,7 @@
 //! - `handle_api_models` with very short api_key (≤4 chars)
 //! - `handle_api_config` with non-object root value (array, scalar)
 //! - `handle_api_logs` with default `source` and `n` defaults
-//! - Edge cases in `find_latest_file`, `read_log_entries`, `sanitize_map`
+//! - Edge cases in `read_log_entries`, `sanitize_map`
 //! - AppState `Clone` derive
 
 use super::*;
@@ -515,7 +515,7 @@ async fn test_handle_api_logs_default_source_general() {
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    std::fs::write(logs_dir.join("nemesisbot.log"), r#"{"msg":"default-source"}"#).unwrap();
+    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), r#"{"msg":"default-source"}"#).unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
 
@@ -533,7 +533,7 @@ async fn test_handle_api_logs_source_general_n_1() {
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
     let lines: Vec<String> = (0..10).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
-    std::fs::write(logs_dir.join("nemesisbot.log"), lines.join("\n")).unwrap();
+    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
     let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(1) });
@@ -548,7 +548,7 @@ async fn test_handle_api_logs_n_exactly_1000() {
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
     let lines: Vec<String> = (0..1500).map(|i| format!(r#"{{"i":{}}}"#, i)).collect();
-    std::fs::write(logs_dir.join("nemesisbot.log"), lines.join("\n")).unwrap();
+    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), lines.join("\n")).unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
     let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(1000) });
@@ -562,7 +562,7 @@ async fn test_handle_api_logs_empty_log_file_returns_empty_array() {
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    std::fs::write(logs_dir.join("nemesisbot.log"), "").unwrap();
+    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "").unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let state = make_state(Some(ws), None, "", "test", false);
     let query = Query(LogsQuery { source: Some("general".to_string()), n: Some(100) });
@@ -855,37 +855,39 @@ fn test_load_scanner_status_merges_config_fields() {
 
 #[test]
 fn test_resolve_log_file_path_general_no_logs_dir() {
+    // New behavior: no daily files = None (no legacy fallback to default nemesisbot.log path).
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_string_lossy().to_string();
-    let path = resolve_log_file_path(&ws, "general");
-    // Even without logs dir, returns default nemesisbot.log path
-    assert!(path.is_some());
-    assert!(path.unwrap().contains("nemesisbot.log"));
+    assert!(resolve_log_file_path(&ws, "general").is_none());
 }
 
 #[test]
 fn test_resolve_log_file_path_general_prefers_nemesisbot_over_app() {
+    // New behavior: only nemesisbot.YYYY-MM-DD matches; legacy nemesisbot.log and app.log are ignored.
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    std::fs::write(logs_dir.join("nemesisbot.log"), "primary").unwrap();
+    std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "primary").unwrap();
     std::fs::write(logs_dir.join("app.log"), "secondary").unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let path = resolve_log_file_path(&ws, "general").unwrap();
-    assert!(path.contains("nemesisbot.log"));
+    assert!(path.contains("nemesisbot.2026-06-17"));
 }
 
 #[test]
-fn test_resolve_log_file_path_security_multiple_files_returns_last() {
+fn test_resolve_log_file_path_security_returns_fixed_audit_file() {
+    // audit.jsonl is a fixed filename (not glob), so only its presence/absence matters.
     let dir = tempfile::tempdir().unwrap();
-    let config_dir = dir.path().join("config");
-    std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(config_dir.join("security_audit_2025-01-01.log"), "old").unwrap();
-    std::fs::write(config_dir.join("security_audit_2026-12-31.log"), "new").unwrap();
+    let sec_dir = dir.path().join("logs").join("security_logs");
+    std::fs::create_dir_all(&sec_dir).unwrap();
+    std::fs::write(sec_dir.join("audit.jsonl"), "{\"audit\":\"entry\"}").unwrap();
+    // Other .log files in the dir should be ignored
+    std::fs::write(sec_dir.join("audit_2025-01-01.log"), "stale").unwrap();
+
     let ws = dir.path().to_string_lossy().to_string();
     let path = resolve_log_file_path(&ws, "security").unwrap();
-    // After sort+reverse, lexicographically greatest wins
-    assert!(path.contains("security_audit_2026-12-31.log"));
+    assert!(path.contains("audit.jsonl"));
+    assert!(!path.contains("audit_2025"));
 }
 
 // ============================================================
@@ -918,29 +920,6 @@ fn test_read_log_entries_trailing_newline() {
     std::fs::write(&file_path, "{\"a\":1}\n{\"b\":2}\n").unwrap();
     let entries = read_log_entries(&file_path.to_string_lossy(), 100);
     assert_eq!(entries.len(), 2);
-}
-
-// ============================================================
-// find_latest_file additional cases
-// ============================================================
-
-#[test]
-fn test_find_latest_file_single_file() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("only.jsonl"), "data").unwrap();
-    let result = find_latest_file(dir.path());
-    assert!(result.is_some());
-    assert!(result.unwrap().contains("only.jsonl"));
-}
-
-#[test]
-fn test_find_latest_file_skips_directories() {
-    let dir = tempfile::tempdir().unwrap();
-    let subdir = dir.path().join("subdir");
-    std::fs::create_dir_all(&subdir).unwrap();
-    // Only directory, no files
-    let result = find_latest_file(dir.path());
-    assert!(result.is_none());
 }
 
 // ============================================================

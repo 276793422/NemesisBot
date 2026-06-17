@@ -62,20 +62,31 @@ fn security_log_dir(workspace: &str) -> PathBuf {
 
 /// Flatten a nested AuditEvent JSON into the flat format expected by the frontend.
 /// JSONL structure: {event_id, request: {op_type, danger_level, target, ...}, decision, reason, timestamp}
-/// Frontend expects: {timestamp, action, risk_level, target, result, reason, ...}
+/// Frontend expects (AuditEntry in web/src/components/logs/mockData.ts):
+///   {id, timestamp, operation, risk_level, target, result, decision, user?, reason?, policy?, raw}
+/// where `result` is normalized to "allow" or "deny", `decision` keeps the original
+/// string ("allowed"/"denied"/"approved"/...), and `raw` carries the full JSONL line
+/// for the detail panel.
 pub(crate) fn flatten_audit_entry(val: &serde_json::Value) -> serde_json::Value {
     let req = val.get("request");
+    let raw_decision = val.get("decision").and_then(|v| v.as_str()).unwrap_or("");
+    let result = if raw_decision.to_lowercase().starts_with("allow") || raw_decision.eq_ignore_ascii_case("approved") {
+        "allow"
+    } else {
+        "deny"
+    };
     serde_json::json!({
-        "event_id": val.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
+        "id": val.get("event_id").and_then(|v| v.as_str()).unwrap_or(""),
         "timestamp": val.get("timestamp").and_then(|v| v.as_str()).unwrap_or(""),
-        "action": req.and_then(|r| r.get("op_type")).and_then(|v| v.as_str()).unwrap_or(""),
+        "operation": req.and_then(|r| r.get("op_type")).and_then(|v| v.as_str()).unwrap_or(""),
         "risk_level": req.and_then(|r| r.get("danger_level")).and_then(|v| v.as_str()).unwrap_or(""),
         "target": req.and_then(|r| r.get("target")).and_then(|v| v.as_str()).unwrap_or(""),
-        "source": req.and_then(|r| r.get("source")).and_then(|v| v.as_str()).unwrap_or(""),
+        "result": result,
+        "decision": raw_decision,
         "user": req.and_then(|r| r.get("user")).and_then(|v| v.as_str()).unwrap_or(""),
-        "result": val.get("decision").and_then(|v| v.as_str()).unwrap_or(""),
         "reason": val.get("reason").and_then(|v| v.as_str()).unwrap_or(""),
-        "policy_rule": val.get("policy_rule").and_then(|v| v.as_str()).unwrap_or(""),
+        "policy": val.get("policy_rule").and_then(|v| v.as_str()).unwrap_or(""),
+        "raw": val,
     })
 }
 
