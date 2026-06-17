@@ -1389,3 +1389,190 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         let _ = std::fs::remove_file(&empty_log);
     }
 }
+
+// --- Tests verifying session_key flows through save -> load -> handle ---
+
+#[tokio::test]
+async fn test_load_continuation_preserves_session_key() {
+    // Covers the path: save_continuation(session_key=X) -> load_continuation()
+    // must return ContinuationData with session_key == X. If this breaks, the
+    // session_key field will be empty when handle_cluster_continuation runs,
+    // the empty-guard kicks in, and session_logs are silently dropped.
+    let manager = ContinuationManager::new();
+    let session_key = "agent:main:flow_check";
+
+    manager
+        .save_continuation(
+            "task-flow",
+            vec![make_message("user", "hi")],
+            "tc_flow",
+            "web",
+            "chat_flow",
+            session_key,
+        )
+        .await;
+
+    let loaded = manager.load_continuation("task-flow").await;
+    assert!(loaded.is_some(), "continuation should be loadable");
+    let data = loaded.unwrap();
+    assert_eq!(
+        data.session_key, session_key,
+        "load_continuation must preserve session_key — empty value would silently skip log writes"
+    );
+}
+
+#[test]
+fn test_legacy_snapshot_without_session_key_deserializes_to_empty() {
+    // Backward-compat: snapshots written before session_key was added must
+    // still deserialize (#[serde(default)] on the field), with session_key
+    // resolving to "". The empty-guard in handle_cluster_continuation then
+    // skips log writes for those old snapshots rather than crashing or
+    // writing to a bogus "_.jsonl" file.
+    let legacy_json = r#"{
+        "task_id": "task-legacy-v1",
+        "messages": "[{\"role\":\"user\",\"content\":\"old\"}]",
+        "tool_call_id": "tc_legacy",
+        "channel": "rpc",
+        "chat_id": "chat_legacy",
+        "created_at": "2026-01-01T00:00:00Z"
+    }"#;
+    let snapshot: ContinuationSnapshot = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(snapshot.task_id, "task-legacy-v1");
+    assert!(
+        snapshot.session_key.is_empty(),
+        "legacy snapshot must deserialize to empty session_key, got: {:?}",
+        snapshot.session_key
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_disk_recovery_preserves_session_key_for_handle() {
+    // Crash-recovery scenario: continuation is saved with a session_key,
+    // process restarts, a new ContinuationManager recovers from disk, and
+    // handle_cluster_continuation must still write the assistant reply to
+    // the session_log under the ORIGINAL session_key (not an empty one).
+    let session_key = unique_cont_test_session_key("recover");
+    cleanup_cont_session_log(&session_key);
+
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+
+    // Phase 1: write snapshot to disk via a manager that immediately drops.
+    // with_disk_store uses blocking_lock during recovery, so it must run on a
+    // background thread (multi_thread flavor + spawn_blocking).
+    {
+        let workspace = workspace.clone();
+        let session_key_phase1 = session_key.clone();
+        tokio::task::spawn_blocking(move || {
+            let mgr = ContinuationManager::with_disk_store(&workspace);
+            // save_continuation is async — run it on this blocking thread via a
+            // dedicated runtime. This mirrors how production code persists the
+            // snapshot before crashing.
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(mgr.save_continuation(
+                "task-recover-handle",
+                vec![make_message("user", "before crash")],
+                "tc_rh",
+                "web",
+                "chat_rh",
+                &session_key_phase1,
+            ));
+        })
+        .await
+        .unwrap();
+    }
+
+    // Phase 2: new manager boots, recovers from disk, handles the callback.
+    let recovered_mgr = tokio::task::spawn_blocking(move || {
+        ContinuationManager::with_disk_store(&workspace)
+    })
+    .await
+    .unwrap();
+    assert!(
+        recovered_mgr.has_continuation("task-recover-handle").await,
+        "snapshot should be recovered from disk on startup"
+    );
+
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "Recovered reply after crash".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &recovered_mgr,
+        "task-recover-handle",
+        "peer response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+    )
+    .await;
+
+    let _ = outbound_rx.try_recv();
+
+    // Verify the recovered session_key reached the chat_log file.
+    let safe_key = session_key.replace(':', "_");
+    let log_path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", safe_key));
+    assert!(
+        log_path.exists(),
+        "session_log should be written after disk-recovery path at {:?}",
+        log_path
+    );
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        content.contains("Recovered reply after crash"),
+        "recovered session_key must flow to handle_cluster_continuation, log content: {}",
+        content
+    );
+
+    cleanup_cont_session_log(&session_key);
+}
+
+#[tokio::test]
+async fn test_save_load_roundtrip_through_disk_preserves_session_key() {
+    // Cover the full save->disk->load round trip for session_key. This is
+    // narrower than the recovery test above — it doesn't go through handle
+    // — and is here to pin down where in the pipeline a regression would
+    // surface (save_continuation's snapshot write, vs the load path).
+    let tmp = TempDir::new().unwrap();
+    let mgr = ContinuationManager::with_disk_store(tmp.path());
+    let session_key = "roundtrip:session:42";
+
+    mgr.save_continuation(
+        "task-rt",
+        vec![make_message("user", "roundtrip")],
+        "tc_rt",
+        "web",
+        "chat_rt",
+        session_key,
+    )
+    .await;
+
+    // Read back the raw snapshot from disk to verify session_key was
+    // actually serialized (catches a missing #[serde(...)] or wrong field).
+    let raw_snapshot = mgr.disk_store.as_ref().unwrap().load("task-rt").unwrap();
+    assert_eq!(
+        raw_snapshot.session_key, session_key,
+        "ContinuationSnapshot on disk must carry session_key"
+    );
+
+    // Load through the normal async path.
+    let loaded = mgr.load_continuation("task-rt").await.unwrap();
+    assert_eq!(
+        loaded.session_key, session_key,
+        "load_continuation must return ContinuationData with session_key from disk"
+    );
+}

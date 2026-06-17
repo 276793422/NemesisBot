@@ -249,6 +249,60 @@ nemesisbot cluster disable
 
 ---
 
+## 集群通信示例（双端实测）
+
+下面是一组真实捕获的双设备集群通话与应答过程。场景：本机 **Zoo**（Manager 角色）通过 Dashboard 与远端 **Alex**（Worker 角色，另一台设备）对话，多次调用 `cluster_rpc` 工具完成异步往返通信。
+
+> 截图按时间顺序排列，对应 A 端发起 → B 端处理 → A 端续行 的完整 `cluster_rpc` 续行快照流程（详见 `CLAUDE.md` 的"续行快照模式"）。
+
+### 图 1 — 集群发现与节点列表
+
+![集群节点列表](test-tools/resource/cluster/1.png)
+
+A 端（Zoo）通过加密 UDP 自动发现扫描到 B 端（Alex）。Dashboard 集群页显示两台设备的角色、IP、状态与最后活跃时间。Zoo 是 Master，Alex 是 Worker，两台均在线。
+
+### 图 2 — A 端发起 cluster_rpc，进入续行等待
+
+![A 端发起请求](test-tools/resource/cluster/2.png)
+
+用户在 Web UI 输入"跟 Alex 再打个招呼，问问他在不在"。老贾（A 端 AI）调用 `cluster_rpc` 工具发起异步任务，AgentLoop 立即把续行快照保存到 `cluster/rpc_cache/{task_id}.json`，并回复"已经联系 Alex 了，稍等~"。此时 TCP 连接已解除，A 端不阻塞。
+
+### 图 3 — B 端处理并通过回调返回结果
+
+![B 端响应](test-tools/resource/cluster/3.png)
+
+B 端（Alex）通过 RPC 接收任务后立即 ACK，异步启动自己的 LLM 处理。生成完成后通过 `peer_chat_callback` 把回复送回 A 端。A 端 `CallbackHandler` 触发 `cluster_continuation:{task_id}` 内部事件，AgentLoop 加载快照、追加真实工具结果、续行 LLM 生成最终回复展示给用户。
+
+### 图 4 — 多轮集群对话与代码回传
+
+![多轮对话](test-tools/resource/cluster/4.png)
+
+连续多轮集群对话：用户依次问"能干啥"、"写个哈喽沃德"、"发过来看看"。每轮都走完整的 A→B→A 续行流程，Alex 把 Rust 代码作为回调内容回传，老贾在 A 端续行 LLM 中整合后输出，代码块、表情、排版都完整保留。
+
+### 图 5 — 任务详情视图
+
+![任务详情](test-tools/resource/cluster/5.png)
+
+Dashboard 集群"任务"Tab 展开单个 cluster_rpc 任务详情：方向（inbound/outbound）、对端节点、时间戳、状态、迭代记录。每次 `cluster_rpc` 调用都会在 `workspace/logs/cluster_logs/{device_id}/{ts}_{task_id}/` 下生成完整的请求/响应日志，支持双向视角查看（self 视角 vs peer 视角）。
+
+### 关键点回顾
+
+| 步骤 | A 端（Zoo） | B 端（Alex） |
+|------|-----------|------------|
+| 1. 发现 | UDP 广播 + AES-256-GCM 加密 | 监听 + 解密回应 |
+| 2. 发起 | `cluster_rpc` 工具调用 + 保存续行快照 | RPC Server 接收 + 立即 ACK |
+| 3. 处理 | TCP 解除、用户先看到"已发送请求" | 异步 LLM 调用 + 工具链执行 |
+| 4. 回调 | 接收 `peer_chat_callback` | 通过 RPC client 回送结果 |
+| 5. 续行 | 加载快照 + 续行 LLM + 持久化 session_log | 任务完成、状态归档 |
+
+**注意事项**：
+- A 端发起后**不阻塞**等待 B 端，先给用户一个"已发送请求"回复
+- 续行回复会**写入 session_log**（`workspace/logs/session_logs/{session_key}.jsonl`），与正常路径一致
+- 续行快照**双写**：内存（进程重启丢失）+ 磁盘 `cluster/rpc_cache/{task_id}.json`（进程重启可恢复）
+- 单一 task_id 全程贯穿：A 端发起时分配，B 端处理时引用，回调时回到 A 端续行
+
+---
+
 ## 身份系统
 
 可主动配置，也可初始化后第一次对话教AI来自己配置。
@@ -420,7 +474,7 @@ nemesisbot gateway --no-console # 仅记录到文件
 NemesisBot_Rust/
 ├── crates/                          # 核心模块（35 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
-│   ├── nemesis-tools/               # 工具系统（29+ 工具）
+│   ├── nemesis-tools/               # 工具系统（32+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
 │   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照）
 │   ├── nemesis-channels/            # 通讯渠道（21 种通道）
@@ -458,7 +512,7 @@ NemesisBot_Rust/
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（22 个）
+│   └── src/commands/                # CLI 命令（24 个）
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── agent.rs                 # Agent 管理
 │       ├── cluster.rs               # 集群管理
@@ -494,14 +548,19 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **645 个 Rust 源文件** - 清晰的 workspace crate 架构
+- **645 个 Rust 源文件** - 清晰的 workspace crate 架构  → **689 个**（持续增长）
 - **35 个核心 crate** - 模块化设计，职责清晰
-- **9,500+ 单元测试** - 全部通过，覆盖率超过 Go 版本
+- **16,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
+- **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
+- **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
+- **人格系统（Persona）** - 从 GitHub agency-agents 仓库搜索/安装/激活/切换 AI 人格，运行时热切换
+- **Logs Dashboard** - SSE 实时日志流（general/cluster/security/llm 多源），会话浏览器 + 安全审计 + 审计链可视化
+- **Prompt Cache 优化** - 时间等动态字段通过 `build_messages` 实时注入，system prompt 保持稳定，cache 命中率最大化
 - **系统托盘** - tray-icon + winit 原生实现（Windows/macOS）；Linux 通过 plugin-ui.so 运行时加载 GTK + libayatana-appindicator3，主框架零 UI 依赖
 - **桌面 GUI** - plugin-ui DLL（wry + tao），审批弹窗含安全降级
 - **SSE 流式传输** - LLM 响应实时推送到 Web 端
@@ -517,26 +576,28 @@ NemesisBot_Rust/
 
 ```
 nemesisbot gateway          # 启动网关（Web UI + 托盘）
+nemesisbot dashboard        # 打开 Dashboard（自动启动网关如未运行）
 nemesisbot onboard          # 初始化配置
 nemesisbot model            # 模型管理（add/list/default）
 nemesisbot channel          # 通道管理
 nemesisbot cluster          # 集群管理（init/status/enable/peers）
 nemesisbot security         # 安全配置（scanner/audit）
+nemesisbot scanner          # 扫描引擎管理（clamav install/enable/test）
 nemesisbot skills           # 技能管理（search/install/add-source）
+nemesisbot persona          # 人格管理（list/search/install/activate/remove）
 nemesisbot forge            # 自学习管理（status/enable/reflect）
 nemesisbot cron             # 定时任务管理
 nemesisbot mcp              # MCP 协议管理（inspect/tools/resources/prompts/discover）
 nemesisbot workflow         # 工作流管理（validate/template/create）
 nemesisbot log              # 日志管理（set-level/enable-file/disable-file）
 nemesisbot auth             # 认证管理
+nemesisbot memory           # 增强内存管理（status/enable/disable）
+nemesisbot voice            # 语音管理
 nemesisbot status           # 查看系统状态
 nemesisbot shutdown         # 关闭服务
-nemesisbot daemon           # 守护进程模式
 nemesisbot cors             # CORS 配置
-nemesisbot scanner          # 扫描引擎管理
-nemesisbot migrate          # 数据迁移
+nemesisbot migrate          # 数据迁移（OpenClaw → NemesisBot）
 nemesisbot agent            # Agent 管理
-nemesisbot voice            # 语音管理
 ```
 
 ---
@@ -545,40 +606,63 @@ nemesisbot voice            # 语音管理
 
 > **NemesisBot Rust 版本是 Go 版本的 1:1 功能替代品**
 
-在当前版本实现了完全的功能对等 —— 所有 21 个通道、29+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
+在当前版本实现了完全的功能对等 —— 所有 21 个通道、32+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
 
 参照 Golang 的版本是：8524282c14e86f92883933f44345ca941fd90252
 
-**最新状态**：已实现 100% 功能对等，所有 21 个通道、29+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
+**最新状态**：已实现 100% 功能对等，所有 21 个通道、32+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
 
 | 指标 | Go 版本 | Rust 版本 |
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
-| CLI 命令 | 21 个顶级 | 22 个顶级 |
-| 工具 | 20+ | 29+（含 mcp_discover、cli_reference、exec_async 等） |
+| CLI 命令 | 21 个顶级 | 24 个顶级（含 dashboard、persona） |
+| 工具 | 20+ | 32+（含 mcp_discover、cli_reference、exec_async、cluster_rpc 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
 | SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
 | 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
-| 单元测试 | ~6,500 | ~8,600+ |
+| 单元测试 | ~6,500 | ~16,000 |
+| 人格系统 | 无 | 有（agency-agents 仓库 + 运行时切换） |
+| Logs Dashboard | 无 | 有（SSE 实时流 + 会话/审计/审计链） |
+| 集群请求日志 | 单文件 | 按设备+任务分目录（双向视角） |
 
 ### Rust 版本额外功能
 
+**命令/CLI**：
+- `dashboard` 命令 — 一键打开 Dashboard UI（自动启动网关）
+- `persona` 命令 — 人格管理（list/search/install/activate/remove/current/restore）
 - `model default` 命令 — 设置默认模型
 - `mcp discover` 命令 — 发现 MCP 服务器能力（支持 stdio + HTTP 模式）
-- MCP HTTP/SSE 传输 — 支持 Streamable HTTP 协议的 MCP 服务器
 - `mcp inspect/tools/resources/prompts` — 更多 MCP 子命令
-- `cli_reference` 工具 — LLM 可按需查询 CLI 命令用法
-- `mcp_discover` / `mcp_list` 工具 — LLM 可发现和列出 MCP 工具
 - `skills validate/cache/install-builtin` — 更多技能管理
 - `workflow validate/template show/create` — 更完整工作流命令
 - `log set-level/enable-file/disable-file` — 更细粒度日志控制
-- 9 个额外 Web API 端点 — /api/version, /models, /sessions, /events, /api/chat/stream 等
+
+**LLM/Agent 内核**：
+- MCP HTTP/SSE 传输 — 支持 Streamable HTTP 协议的 MCP 服务器
 - MCP Server — Rust 有本地 MCP 服务器
-- MCP HTTP Transport — 支持 Streamable HTTP 协议连接远程 MCP 服务器
+- `cli_reference` 工具 — LLM 可按需查询 CLI 命令用法
+- `mcp_discover` / `mcp_list` 工具 — LLM 可发现和列出 MCP 工具
+- `cluster_rpc` 工具 — 异步集群 RPC + 续行快照 + session_log 持久化
 - ToolExecutor — 独立批处理执行器
+- Prompt Cache 优化 — 时间等动态字段在 `build_messages` 中实时注入，system prompt 保持稳定
+- 人格系统 — 从 GitHub `agency-agents` 仓库搜索/安装/激活 AI 人格，运行时热切换
+
+**集群**：
+- ClusterRequestLogger — 按对端设备 ID + 任务 ID 分目录隔离的 LLM 请求日志（`cluster_logs/{device}/{ts}_{task_id}/`）
+- 复合 session_key（`{node_id}/{chat_id}`）— 跨节点会话不串扰
+- 远端节点 ID 合并 — 自动合并真实节点信息到占位符
+- 续行回复持久化 — `handle_cluster_continuation` 通过 `chat_log::append_chat_log` + `SessionStore::save` 把最终回复写入 session_log
+
+**Web/Dashboard**：
+- 9 个额外 Web API 端点 — /api/version, /models, /sessions, /events, /api/chat/stream 等
+- Logs Dashboard — SSE 实时日志流 + 会话浏览器 + 安全审计 + 审计链可视化
+- Cluster Dashboard 6-Tab — 概览/拓扑/身份/任务/日志/设置
+- Cluster Diagnostics — Ping/系统信息/远端命令面板
+
+**安全/审批**：
 - 审批 DLL 安全降级 — plugin-ui.dll 缺失时自动拒绝，不放行
 
 ---

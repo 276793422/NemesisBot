@@ -1141,6 +1141,159 @@ async fn main() {
         .await,
     );
 
+    // T14: cluster_continuation persists final reply to Node-A session_logs
+    //
+    // Regression test for the bug where handle_cluster_continuation sent the
+    // AI's final reply through outbound_tx but never wrote it to
+    // session_logs/ — the user could see the reply in the dashboard but the
+    // JSONL history skipped it.
+    //
+    // Strategy:
+    //   1. Send a PEER_CHAT to Node-B with a unique marker in the content
+    //   2. Wait for the continuation response (testai-3.1 echoes content)
+    //   3. Scan ws_a's session_logs/*.jsonl for any file containing the marker
+    //   4. Verify that file has BOTH a "user" row AND an "assistant" row
+    //      containing the marker — i.e. the continuation reply was persisted
+    //      under the same session_key as the user message
+    //
+    // If this test fails on the assistant-row assertion but passes on the
+    // user-row one, the regression is back: handle_cluster_continuation is
+    // skipping log writes (empty session_key guard, or the session_key
+    // plumbing through ContinuationData broke).
+    all_results.push(
+        run_test("T14: session_log persists continuation reply", || async {
+            // Unique marker so we don't pick up rows from earlier tests.
+            let marker = format!(
+                "T14_SESSIONLOG_MARKER_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            );
+            let user_payload = format!(
+                r#"<PEER_CHAT>{{"peer_id":"Node-B","content":"{}"}}</PEER_CHAT>"#,
+                marker
+            );
+
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T14", format!("WS connect to A failed: {}", e)),
+            };
+            // Wait for the continuation response. testai-3.1 echoes the
+            // content back, so the marker should reappear in the assistant
+            // reply.
+            match ws_send_recv_until(&mut ws, &user_payload, 180, |resp| {
+                resp.contains(&marker)
+            })
+            .await
+            {
+                Ok(_resp) => {
+                    // Now scan Node-A's session_logs directory.
+                    let session_logs_dir = ws_a
+                        .home()
+                        .join("workspace")
+                        .join("logs")
+                        .join("session_logs");
+
+                    // Give the filesystem a moment to flush, then scan.
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+
+                    let mut matching_files: Vec<String> = Vec::new();
+                    let mut user_seen = false;
+                    let mut assistant_seen = false;
+                    let mut sample_line = String::new();
+
+                    let entries = match std::fs::read_dir(&session_logs_dir) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            return fail(
+                                "T14",
+                                format!(
+                                    "session_logs dir not readable at {}: {}",
+                                    session_logs_dir.display(),
+                                    e
+                                ),
+                            )
+                        }
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                            continue;
+                        }
+                        let content = match std::fs::read_to_string(&path) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        if !content.contains(&marker) {
+                            continue;
+                        }
+                        matching_files.push(path.display().to_string());
+                        for line in content.lines() {
+                            if !line.contains(&marker) {
+                                continue;
+                            }
+                            let is_user = line.contains(r#""role":"user""#)
+                                || line.contains(r#""role": "user""#);
+                            let is_assistant = line.contains(r#""role":"assistant""#)
+                                || line.contains(r#""role": "assistant""#);
+                            if is_user {
+                                user_seen = true;
+                            }
+                            if is_assistant {
+                                assistant_seen = true;
+                                sample_line = line.to_string();
+                            }
+                        }
+                    }
+
+                    if matching_files.is_empty() {
+                        return fail(
+                            "T14",
+                            format!(
+                                "no session_log file in {} contains marker {}; \
+                                 regression: continuation reply not persisted",
+                                session_logs_dir.display(),
+                                marker
+                            ),
+                        );
+                    }
+                    if !user_seen {
+                        return fail(
+                            "T14",
+                            format!(
+                                "marker found in {:?} but no user row — \
+                                 unexpected; user message should always be logged",
+                                matching_files
+                            ),
+                        );
+                    }
+                    if !assistant_seen {
+                        return fail(
+                            "T14",
+                            format!(
+                                "REGRESSION: marker found in {:?} with user row \
+                                 but NO assistant row — handle_cluster_continuation \
+                                 is skipping session_log writes",
+                                matching_files
+                            ),
+                        );
+                    }
+                    pass(
+                        "T14",
+                        format!(
+                            "continuation reply persisted: files={:?}, sample assistant line: {}",
+                            matching_files,
+                            trunc(&sample_line, 120)
+                        ),
+                    )
+                }
+                Err(e) => fail("T14", format!("180s 内未收到续行响应: {}", e)),
+            }
+        })
+        .await,
+    );
+
     // ==================================================================
     // Cleanup
     // ==================================================================
