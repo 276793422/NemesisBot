@@ -309,3 +309,6 @@ pub fn create_detector(cfg: &crate::config::AppConfig) -> Box<dyn VoiceDetector>
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

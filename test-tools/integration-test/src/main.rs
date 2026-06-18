@@ -423,6 +423,15 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_migrate(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_gateway_flags(&ws, &cfg.gateway_bin).await);
 
+    // --- Extra commands: memory, persona, dashboard, voice ---
+    println!("  [1.17] Memory / Persona / Dashboard / Voice...");
+    all_results.extend(cli_tests::test_cli_memory_status(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_memory_disable_enable_cycle(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_persona_help(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_persona_list_current(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_dashboard_help(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_voice_help(&ws, &cfg.gateway_bin).await);
+
     // ---- Phase 6: Forge tests (CLI, no gateway) ----
     println!("\n[Phase 6] Forge lifecycle tests...");
     all_results.extend(forge_tests::test_forge_enable_disable(&ws, &cfg.gateway_bin).await);

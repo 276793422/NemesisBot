@@ -19,6 +19,7 @@ pub mod workflow;
 pub mod scanner;
 pub mod agent;
 pub mod misc;
+pub mod extra_commands;
 
 // Re-export all public test functions for convenient access from main.rs
 pub use basic::test_cli_version;
@@ -108,3 +109,10 @@ pub use agent::test_cli_agent_message;
 
 pub use misc::test_cli_migrate;
 pub use misc::test_cli_gateway_flags;
+
+pub use extra_commands::test_cli_memory_status;
+pub use extra_commands::test_cli_memory_disable_enable_cycle;
+pub use extra_commands::test_cli_persona_help;
+pub use extra_commands::test_cli_persona_list_current;
+pub use extra_commands::test_cli_dashboard_help;
+pub use extra_commands::test_cli_voice_help;

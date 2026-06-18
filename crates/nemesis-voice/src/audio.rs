@@ -301,3 +301,6 @@ impl Resampler {
 impl Drop for Resampler {
     fn drop(&mut self) {}
 }
+
+#[cfg(test)]
+mod tests;
