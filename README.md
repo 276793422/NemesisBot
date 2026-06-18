@@ -268,23 +268,6 @@ nemesisbot cluster disable
 
 ![任务详情](test-tools/resource/cluster/5.png)
 
-
-### 关键点回顾
-
-| 步骤 | A 端（Zoo） | B 端（Alex） |
-|------|-----------|------------|
-| 1. 发现 | UDP 广播 + AES-256-GCM 加密 | 监听 + 解密回应 |
-| 2. 发起 | `cluster_rpc` 工具调用 + 保存续行快照 | RPC Server 接收 + 立即 ACK |
-| 3. 处理 | TCP 解除、用户先看到"已发送请求" | 异步 LLM 调用 + 工具链执行 |
-| 4. 回调 | 接收 `peer_chat_callback` | 通过 RPC client 回送结果 |
-| 5. 续行 | 加载快照 + 续行 LLM + 持久化 session_log | 任务完成、状态归档 |
-
-**注意事项**：
-- A 端发起后**不阻塞**等待 B 端，先给用户一个"已发送请求"回复
-- 续行回复会**写入 session_log**（`workspace/logs/session_logs/{session_key}.jsonl`），与正常路径一致
-- 续行快照**双写**：内存（进程重启丢失）+ 磁盘 `cluster/rpc_cache/{task_id}.json`（进程重启可恢复）
-- 单一 task_id 全程贯穿：A 端发起时分配，B 端处理时引用，回调时回到 A 端续行
-
 ---
 
 ## 身份系统
