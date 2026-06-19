@@ -142,6 +142,20 @@ async fn execute_new_task(
     // when "identity switching" is implemented (e.g., per-source-node system prompt).
     let instance = AgentInstance::new(config.clone());
 
+    // Restore history from SessionStore (same pattern as main AgentLoop).
+    // Without this, every peer_chat starts with empty context, so "give me the
+    // code from last time" can't be answered — Alex would have no memory of
+    // the previous task and would rewrite from scratch.
+    let restored = restore_session_history(agent_loop, &instance, &task.source.session_key);
+    if restored > 0 {
+        tracing::info!(
+            task_id = %task.task_id,
+            session_key = %task.source.session_key,
+            restored_msgs = restored,
+            "[ClusterAgent] Restored history from SessionStore"
+        );
+    }
+
     let token = tokio_util::sync::CancellationToken::new();
     if let Some(ref obs) = cluster_observer {
         obs.set_task_context(task.task_id.clone(), task.source.node_id.clone());
@@ -188,6 +202,16 @@ async fn execute_new_task(
     }
 
     let result = extract_final_message(&events);
+    // Persist (user, assistant) pair to SessionStore before sending the callback.
+    // Async-path tasks skip this; they'll be persisted by resume_task when the
+    // callback comes back and the task actually completes.
+    persist_session_history(
+        agent_loop,
+        &instance,
+        &task.source.session_key,
+        &task.content,
+        &result,
+    );
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
@@ -279,6 +303,20 @@ async fn resume_task(
     }
 
     let result = extract_final_message(&events);
+    // Persist (user, assistant) pair. user_content is `task.content` (the
+    // original request from the source node), not "(resume)" — SessionStore
+    // captures user-intent + final-response pairs, not internal resume markers.
+    // If execute_new_task already wrote a user row (sync-completion path,
+    // theoretically impossible to reach resume_task from), this would duplicate
+    // it; but resume_task is only reached from the async path, where
+    // execute_new_task skipped persist. So the append is correct.
+    persist_session_history(
+        agent_loop,
+        &instance,
+        &task.source.session_key,
+        &task.content,
+        &result,
+    );
     send_task_callback(rpc_client, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task("exec_done", &task.task_id, &format!("events={}", events.len()));
@@ -305,13 +343,98 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 /// Build a RequestContext for a cluster task.
+///
+/// `chat_id` 用稳定的 `session_key`（而不是 `node_id:task_id`），让同一对端节点的多次
+/// peer_chat 共享 chat_id。这样下游工具（cluster_rpc 多跳传播、cron、spawn）拿到的
+/// chat_id 不会每次变化，避免历史断裂和路由失效。
 fn build_context(task: &nemesis_cluster::cluster_task::ClusterTask) -> RequestContext {
     RequestContext::new(
         "cluster",
-        &format!("{}:{}", task.source.node_id, task.task_id),
+        &task.source.session_key,
         &task.source.node_id,
         &task.source.session_key,
     )
+}
+
+/// Restore conversation history from SessionStore into the given AgentInstance.
+///
+/// Mirrors `AgentLoop::get_or_create_instance` (loop.rs:2056-2069):
+/// - Reads `StoredSession` by `session_key`
+/// - If non-empty, converts messages to `ConversationTurn` and calls `set_history`
+/// - If summary is non-empty, sets it via `set_summary`
+///
+/// Failures are silent (no panic) — cluster peer_chat must degrade gracefully
+/// if SessionStore is unavailable or corrupt. Returns the number of restored
+/// messages for logging.
+fn restore_session_history(
+    agent_loop: &AgentLoop,
+    instance: &AgentInstance,
+    session_key: &str,
+) -> usize {
+    let store = match agent_loop.session_store() {
+        Some(s) => s,
+        None => return 0,
+    };
+    let stored = store.get_or_create(session_key);
+    if !stored.messages.is_empty() {
+        let history: Vec<nemesis_agent::types::ConversationTurn> = stored.messages
+            .into_iter()
+            .map(|m| m.into())
+            .collect();
+        let count = history.len();
+        instance.set_history(history);
+        if !stored.summary.is_empty() {
+            instance.set_summary(&stored.summary);
+        }
+        count
+    } else {
+        0
+    }
+}
+
+/// Persist the (user, assistant) pair for a session to SessionStore.
+///
+/// Mirrors `AgentLoop::run_agent_loop_internal` (loop.rs:2129-2148):
+/// - Ensures the session exists in store
+/// - Adds user message + final assistant response
+/// - Saves summary if available
+/// - Persists to disk
+///
+/// Used by both `execute_new_task` and `resume_task` on their sync-completion paths.
+/// Async paths (task went async again) skip this — the next resume will write the
+/// final response when it eventually completes.
+///
+/// `user_content` is `task.content` for new tasks; resume paths pass `""` to skip
+/// the user message (it was already written by the original execute_new_task).
+fn persist_session_history(
+    agent_loop: &AgentLoop,
+    instance: &AgentInstance,
+    session_key: &str,
+    user_content: &str,
+    assistant_content: &str,
+) {
+    let store = match agent_loop.session_store() {
+        Some(s) => s,
+        None => return,
+    };
+    store.get_or_create(session_key);
+    if !user_content.is_empty() {
+        store.add_message(session_key, "user", user_content);
+    }
+    if !assistant_content.is_empty() {
+        store.add_message(session_key, "assistant", assistant_content);
+    }
+    let summary = instance.get_summary();
+    if !summary.is_empty() {
+        store.set_summary(session_key, &summary);
+    }
+    if let Err(e) = store.save(session_key) {
+        tracing::warn!(
+            session_key = %session_key,
+            error = %e,
+            "[ClusterAgent] Failed to persist session history"
+        );
+    }
 }
 
 /// Check if the last execution ended in an async cluster_rpc by inspecting

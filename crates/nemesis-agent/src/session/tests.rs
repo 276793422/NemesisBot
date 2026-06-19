@@ -896,6 +896,94 @@ fn test_session_store_remove_with_disk() {
 }
 
 #[test]
+fn test_cleanup_old_sessions_keeps_recent_deletes_old() {
+    use std::fs;
+    use chrono::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let store = SessionStore::new_with_storage(&dir);
+
+    // Save a recent session normally.
+    store.get_or_create("recent:key");
+    store.set_history(
+        "recent:key",
+        vec![StoredMessage {
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: "2026-06-18T00:00:00Z".to_string(),
+            reasoning_content: None,
+        }],
+    );
+    store.save("recent:key").unwrap();
+
+    // Manually craft an old session file by saving then back-dating the
+    // `updated` field to 30 days ago.
+    let old_key = "old:key".to_string();
+    let old_filename = sanitize_filename(&old_key) + ".json";
+    let old_path = dir.join(&old_filename);
+    let old_snapshot = serde_json::json!({
+        "key": old_key,
+        "messages": [],
+        "summary": "",
+        "created": (Local::now() - Duration::days(40)).to_rfc3339(),
+        "updated": (Local::now() - Duration::days(30)).to_rfc3339(),
+    });
+    fs::write(&old_path, old_snapshot.to_string()).unwrap();
+
+    // Sanity: both files exist before cleanup.
+    assert!(dir.join(sanitize_filename("recent:key") + ".json").exists());
+    assert!(old_path.exists());
+
+    let deleted = store.cleanup_old_sessions(7);
+
+    // Only the old file should be removed.
+    assert_eq!(deleted, 1);
+    assert!(dir.join(sanitize_filename("recent:key") + ".json").exists());
+    assert!(!old_path.exists());
+    // The recent session should still be present.
+    assert!(store.contains("recent:key"));
+    // The old session was never loaded into memory by us, but if it had been,
+    // cleanup would have dropped it.
+}
+
+#[test]
+fn test_cleanup_old_sessions_in_memory_returns_zero() {
+    // In-memory stores have no disk to clean; must return 0 without panicking.
+    let store = SessionStore::new_in_memory();
+    store.get_or_create("mem:key");
+    let deleted = store.cleanup_old_sessions(7);
+    assert_eq!(deleted, 0);
+    assert!(store.contains("mem:key"));
+}
+
+#[test]
+fn test_cleanup_old_sessions_skips_corrupt_json() {
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let store = SessionStore::new_with_storage(&dir);
+
+    // Write a corrupt JSON file (invalid syntax) — cleanup should skip it.
+    let corrupt_path = dir.join("corrupt.json");
+    fs::write(&corrupt_path, "{not valid json}").unwrap();
+
+    // Write a valid JSON missing the `updated` field — cleanup should skip it too.
+    let no_updated_path = dir.join("no_updated.json");
+    fs::write(&no_updated_path, r#"{"key":"x","messages":[]}"#).unwrap();
+
+    let deleted = store.cleanup_old_sessions(7);
+
+    // Neither file should be deleted.
+    assert_eq!(deleted, 0);
+    assert!(corrupt_path.exists());
+    assert!(no_updated_path.exists());
+}
+
+#[test]
 fn test_session_store_len_empty_combined() {
     let store = SessionStore::new_in_memory();
     assert!(store.is_empty());

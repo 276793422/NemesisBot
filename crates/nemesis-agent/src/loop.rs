@@ -797,6 +797,14 @@ impl AgentLoop {
         self.session_store = Some(store);
     }
 
+    /// Get the session store, if one is configured.
+    ///
+    /// Used by callers outside the main agent loop (e.g. cluster_agent) that need
+    /// to read/write history via the same SessionStore the loop would use.
+    pub fn session_store(&self) -> Option<&Arc<crate::session::SessionStore>> {
+        self.session_store.as_ref()
+    }
+
     /// Set the continuation manager for async cluster RPC callbacks.
     ///
     /// When set, `cluster_continuation` messages intercepted by the bus loop

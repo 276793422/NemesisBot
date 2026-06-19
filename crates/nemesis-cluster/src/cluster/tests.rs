@@ -3878,8 +3878,20 @@ fn test_addr_eq_case_insensitive() {
 
 #[test]
 fn test_addr_eq_missing_port_one_side() {
-    assert!(addr_eq("1.2.3.4:9000", "1.2.3.4"));
-    assert!(addr_eq("1.2.3.4", "1.2.3.4:9000"));
+    // 严格语义：带 port 和不带 port 是不同的地址规范，不再视为相等。
+    // 历史 bug：旧规则容忍"任一无 port"导致 placeholder filter 用 addresses
+    // 字段（host-only 列表）跟 primary_address（host:rpc_port）比较时误判，
+    // 误删同 host 不同 port 的 peer（cluster-uat 13/14 失败根因）。
+    assert!(!addr_eq("1.2.3.4:9000", "1.2.3.4"));
+    assert!(!addr_eq("1.2.3.4", "1.2.3.4:9000"));
+}
+
+#[test]
+fn test_addr_eq_both_no_port() {
+    // 两边都 host-only：保留宽松语义。这是 addresses 字段内部比较需要的
+    // （discovery listener 把同节点的多个 IP 都放进 addresses，互比时仍要识别）。
+    assert!(addr_eq("1.2.3.4", "1.2.3.4"));
+    assert!(!addr_eq("1.2.3.4", "1.2.3.5"));
 }
 
 #[test]
@@ -3897,4 +3909,52 @@ fn test_addr_eq_empty() {
 #[test]
 fn test_addr_eq_whitespace_trimmed() {
     assert!(addr_eq("  1.2.3.4:9000  ", "1.2.3.4:9000"));
+}
+
+// -- placeholder filter regression (cluster-uat 13/14 failure root cause) --
+
+#[test]
+fn test_handle_discovered_node_does_not_collapse_same_host_different_port() {
+    // Regression: cluster-uat 4-node setup adds 3 static peers all on 127.0.0.1
+    // with different RPC ports (21950/21951/21952). gateway.rs:1068 loads each
+    // via handle_discovered_node(addresses=["127.0.0.1"], rpc_port=N).
+    //
+    // Old bug: placeholder filter's fallback check
+    //   `p.addresses.iter().any(|a| addr_eq(a, primary_address))`
+    // compared host-only addresses against host:rpc_port primary_address.
+    // addr_eq's loose rule "either side missing port => equal if hosts match"
+    // made Node-C's filter find Node-B as a "placeholder" (same host) and
+    // delete it; Node-D then deleted Node-C; only Node-D survived.
+    //
+    // After fix: addr_eq is strict (host-only vs host:port => NOT equal),
+    // so the fallback check only fires for true address overlaps. All three
+    // peers must survive.
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    let addresses = vec!["127.0.0.1".to_string()];
+    cluster.handle_discovered_node(
+        "Node-B", "Node-B", addresses.clone(),
+        21950, "worker", "general", vec![], vec![], "test",
+    );
+    cluster.handle_discovered_node(
+        "Node-C", "Node-C", addresses.clone(),
+        21951, "worker", "general", vec![], vec![], "test",
+    );
+    cluster.handle_discovered_node(
+        "Node-D", "Node-D", addresses.clone(),
+        21952, "worker", "general", vec![], vec![], "test",
+    );
+
+    // All three must remain in registry. handle_discovered_node only writes
+    // peers.toml for placeholder upgrades; brand-new nodes are persisted via
+    // merge_real_node_info during RPC get_info. The registry is therefore the
+    // authoritative regression check: if the bug resurfaces, Node-B and Node-C
+    // get deleted as "placeholders" and ids drops to ["Node-D"].
+    let nodes = cluster.list_nodes();
+    let ids: Vec<&str> = nodes.iter().map(|n| n.base.id.as_str()).collect();
+    assert!(
+        ids.contains(&"Node-B") && ids.contains(&"Node-C") && ids.contains(&"Node-D"),
+        "expected all three peers to survive, got: {:?}", ids
+    );
 }

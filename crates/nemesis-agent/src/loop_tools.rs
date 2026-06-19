@@ -1700,7 +1700,15 @@ impl ClusterRpcTool {
 #[async_trait]
 impl Tool for ClusterRpcTool {
     fn description(&self) -> String {
-        "Send a message to ANOTHER bot in the cluster (never yourself)".to_string()
+        "Send a message to ANOTHER bot in the cluster (never yourself). \
+         Returns the remote node's final response text. If the remote node executes an LLM task, \
+         the call may take tens of seconds to several minutes. Before calling, use the `message` \
+         tool to tell the user \"已联系对方，稍等\" so they know to wait. \
+         The remote node only sees your final message text — it does NOT see your prior tool \
+         calls, file writes, or command outputs. If you need the remote node to act on something \
+         you've produced locally (e.g. code you wrote), include the relevant content directly in \
+         the `message` field rather than just referencing it."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1833,10 +1841,26 @@ impl Tool for ClusterRpcTool {
             context.chat_id.clone()
         };
 
+        // 方案 D：检测并改写 chat_id 加 origin 前缀，防止多跳链路撞车。
+        //
+        // 传播规则：
+        //   - chat_id 已经以 "cluster:" 开头 → 已经被上游节点标记过，原样传播
+        //   - chat_id 为空 → 不改写（避免出现 "cluster:node-X:" 这种尾部空值）
+        //   - 其他 → 改写为 "cluster:{local_node_id}:{chat_id}"，把本节点 ID 嵌进去
+        //
+        // 下游节点 peer_chat_handler 用 `cluster_rpc:{source_node_id}/{chat_id}` 组 session_key，
+        // 多跳链路（A→B→C→D）中 C 端 session_key 会含原始 A 的 node_id，跟 Q→B→C→D 链的
+        // C 端 session_key 自然区分开（参考计划文档第十一节撞车分析）。
+        let propagated_chat_id = if chat_id.starts_with("cluster:") || chat_id.is_empty() {
+            chat_id
+        } else {
+            format!("cluster:{}:{}", self.config.local_node_id, chat_id)
+        };
+
         let payload = serde_json::json!({
             "content": message,
             "channel": channel,
-            "chat_id": chat_id,
+            "chat_id": propagated_chat_id,
             "timeout": self.config.timeout_secs,
             "_source_rpc_port": self.config.local_rpc_port,
         });

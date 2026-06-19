@@ -470,6 +470,107 @@ impl SessionStore {
     pub fn remove(&self, key: &str) -> Option<StoredSession> {
         self.sessions.write().unwrap().remove(key)
     }
+
+    /// Delete sessions whose `updated` timestamp is older than `max_age_days` days.
+    ///
+    /// Walks the on-disk directory (when storage_dir is set), parses each JSON file's
+    /// `updated` field, deletes files older than the threshold, and removes the
+    /// corresponding in-memory entries. Returns the number of sessions deleted.
+    ///
+    /// Sessions with corrupt/unparseable JSON or missing `updated` are left alone
+    /// (matches load_from_disk's tolerant stance). In-memory-only stores (no
+    /// storage_dir) return 0 without doing anything.
+    ///
+    /// Used by cluster_agent and the main AgentLoop at startup and via daily cron
+    /// to bound disk usage from accumulated peer_chat history files.
+    pub fn cleanup_old_sessions(&self, max_age_days: u64) -> usize {
+        let storage_dir = match &self.storage_dir {
+            Some(d) => d.clone(),
+            None => return 0,
+        };
+
+        let entries = match std::fs::read_dir(&storage_dir) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(
+                    dir = %storage_dir.display(),
+                    error = %e,
+                    "[SessionStore] cleanup: failed to read storage dir"
+                );
+                return 0;
+            }
+        };
+
+        let now = Local::now();
+        let mut deleted = 0usize;
+        let mut keys_to_drop: Vec<String> = Vec::new();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+
+            // Read the file content to extract `updated` timestamp.
+            let data = match std::fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let parsed: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let updated_str = match parsed.get("updated").and_then(|v| v.as_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let updated = match chrono::DateTime::parse_from_rfc3339(updated_str) {
+                Ok(dt) => dt.with_timezone(&Local),
+                Err(_) => continue,
+            };
+
+            let age_days = now.signed_duration_since(updated).num_days();
+            if age_days > max_age_days as i64 {
+                // Delete from disk.
+                if let Err(e) = std::fs::remove_file(&path) {
+                    warn!(
+                        file = %path.display(),
+                        error = %e,
+                        "[SessionStore] cleanup: failed to delete file"
+                    );
+                    continue;
+                }
+
+                // Record the session key (from parsed JSON) for in-memory removal.
+                if let Some(key) = parsed.get("key").and_then(|v| v.as_str()) {
+                    keys_to_drop.push(key.to_string());
+                }
+                deleted += 1;
+            }
+        }
+
+        // Drop in-memory cache entries.
+        if !keys_to_drop.is_empty() {
+            let mut sessions = self.sessions.write().unwrap();
+            for key in &keys_to_drop {
+                sessions.remove(key);
+            }
+        }
+
+        if deleted > 0 {
+            info!(
+                deleted,
+                remaining = self.len(),
+                max_age_days,
+                "[SessionStore] cleanup complete"
+            );
+        }
+
+        deleted
+    }
 }
 
 /// Sanitize a session key for use as a filename.

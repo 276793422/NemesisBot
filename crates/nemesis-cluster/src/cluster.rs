@@ -2647,7 +2647,12 @@ fn addr_eq(cand: &str, needle: &str) -> bool {
         Some((h, p)) if !p.is_empty() && !h.is_empty() => (h, Some(p)),
         _ => (needle_lc.as_str(), None),
     };
-    ch == nh && (cp.is_none() || np.is_none() || cp == np)
+    // 严格语义：host 必须相等，port 必须匹配（都存在且相等，或都不存在）。
+    // 不再容忍"一边带 port 一边不带"——这是 placeholder filter 误删同 host
+    // 不同 port peer 的根因（cluster-uat 历史 bug：addresses 字段是 host-only
+    // 列表，跟 host:rpc_port 比较时宽松规则会判定相等，导致后续加入的 peer
+    // 把前面同 host 的 placeholder 当重复项删掉）。
+    ch == nh && cp == np
 }
 
 // ---------------------------------------------------------------------------

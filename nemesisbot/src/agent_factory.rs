@@ -159,6 +159,18 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         let store = Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
             &sess_dir,
         ));
+        // Startup cleanup: remove sessions older than 7 days.
+        let deleted = store.cleanup_old_sessions(7);
+        if deleted > 0 {
+            info!(
+                deleted,
+                "[AgentFactory] Main SessionStore startup cleanup (TTL=7d)"
+            );
+        }
+        // Daily midnight cleanup. Spawns a task that sleeps until the next local
+        // midnight, then runs cleanup_old_sessions(7), and loops forever.
+        // Best-effort: if the runtime shuts down, the task is cancelled.
+        spawn_daily_cleanup(store.clone(), "Main");
         agent_loop.set_session_store(store);
         info!(
             "[AgentFactory] Session store initialized: {}",
@@ -537,6 +549,39 @@ pub fn build_cluster_agent_loop(
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
 
+    // 6b. Attach a dedicated SessionStore so cluster peer_chat can persist and
+    // restore conversation history per (source_node_id, chat_id) pair.
+    //
+    // Path: `{workspace}/sessions/cluster/`
+    // - Separate from main agent's `{workspace}/sessions/` to avoid any chance
+    //   of file-name collision (sanitize_filename keeps `:` and `/` distinct
+    //   from `_`, but a dedicated directory is the simpler invariant).
+    // - cluster_agent.rs::execute_new_task reads from this store to restore
+    //   history; writes back user + final assistant message after task completes.
+    //
+    // TTL: sessions older than 7 days are deleted at startup and via a daily
+    // midnight task (spawn_daily_cleanup). Bounded disk usage without manual
+    // intervention.
+    {
+        let cluster_sessions_dir = shared.home.join("workspace").join("sessions").join("cluster");
+        let cluster_session_store = Arc::new(
+            nemesis_agent::session::SessionStore::new_with_storage(&cluster_sessions_dir),
+        );
+        let deleted = cluster_session_store.cleanup_old_sessions(7);
+        if deleted > 0 {
+            info!(
+                deleted,
+                "[AgentFactory] Cluster SessionStore startup cleanup (TTL=7d)"
+            );
+        }
+        spawn_daily_cleanup(cluster_session_store.clone(), "Cluster");
+        agent_loop.set_session_store(cluster_session_store);
+        info!(
+            dir = %cluster_sessions_dir.display(),
+            "[AgentFactory] Cluster SessionStore attached (for peer_chat history)"
+        );
+    }
+
     // 7. Register cluster_rpc with call_fn + peers_fn (if available).
     if let (Some(rpc_config), Some(call_fn)) =
         (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
@@ -590,4 +635,46 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
         );
         Some(parts.join("\n\n---\n\n"))
     }
+}
+
+/// Spawn a background task that runs `cleanup_old_sessions(7)` every day at local midnight.
+///
+/// The task sleeps until the next local midnight, runs cleanup, then loops.
+/// If the tokio runtime shuts down (gateway stop), the task is cancelled and
+/// no further cleanups run — startup cleanup in `build_*_agent_loop` covers
+/// the next start.
+///
+/// `label` is used for logging only ("Main" / "Cluster").
+fn spawn_daily_cleanup(store: Arc<nemesis_agent::session::SessionStore>, label: &str) {
+    let label = label.to_string();
+    tokio::spawn(async move {
+        use chrono::TimeZone;
+        loop {
+            // Calculate seconds until next local midnight.
+            let now = chrono::Local::now();
+            let next_midnight = chrono::Local
+                .from_local_datetime(
+                    &now.date_naive()
+                        .succ_opt()
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                        .unwrap(),
+                )
+                .unwrap();
+            let dur = next_midnight.signed_duration_since(now);
+            let sleep_secs = dur.num_seconds().max(60) as u64;
+
+            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+
+            let deleted = store.cleanup_old_sessions(7);
+            if deleted > 0 {
+                info!(
+                    deleted,
+                    label = %label,
+                    "[AgentFactory] {} SessionStore daily midnight cleanup (TTL=7d)",
+                    label
+                );
+            }
+        }
+    });
 }
