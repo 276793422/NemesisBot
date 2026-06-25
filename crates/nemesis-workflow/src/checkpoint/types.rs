@@ -36,6 +36,17 @@ pub struct Checkpoint {
     /// top-level executions. (Spike 3 decision 3.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_execution_id: Option<String>,
+    /// What triggered this execution. Restored from the execution's
+    /// `trigger_source` field so post-restore observers can still tell
+    /// webhook / cli / agent invocations apart. (Gap 1 fix.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_source: Option<crate::types::TriggerSource>,
+    /// `true` when this checkpoint captures a terminal state
+    /// (Completed / Failed / Cancelled). `restore_incomplete_executions`
+    /// skips terminal checkpoints so finished workflows don't get
+    /// resurrected by the next process restart. (Gap 2 fix.)
+    #[serde(default)]
+    pub terminal: bool,
     /// Snapshot of the workflow context (variables, node results, input).
     pub context_snapshot: SerializableContext,
     /// Hash of the workflow definition at save time. Used to detect config
@@ -56,6 +67,11 @@ pub struct CheckpointMeta {
     pub completed_node_count: usize,
     /// `true` if this checkpoint captures a paused (Waiting) state.
     pub has_waiting: bool,
+    /// `true` if this checkpoint captures a terminal state. Mirrors
+    /// [`Checkpoint::terminal`] so listing endpoints can hide finished
+    /// executions without loading the full snapshot.
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 impl From<&Checkpoint> for CheckpointMeta {
@@ -66,6 +82,7 @@ impl From<&Checkpoint> for CheckpointMeta {
             saved_at: cp.saved_at,
             completed_node_count: cp.completed_nodes.len(),
             has_waiting: cp.waiting_node.is_some(),
+            terminal: cp.terminal,
         }
     }
 }
@@ -138,6 +155,8 @@ mod tests {
             completed_nodes: HashSet::from(["n1".to_string(), "n2".to_string()]),
             waiting_node: Some("review".to_string()),
             parent_execution_id: None,
+            trigger_source: None,
+            terminal: false,
             context_snapshot: SerializableContext {
                 variables: HashMap::from([
                     ("k".to_string(), serde_json::json!("v")),
@@ -156,7 +175,8 @@ mod tests {
 
     #[test]
     fn checkpoint_loads_with_missing_optional_fields() {
-        // Old snapshots may not have waiting_node / parent_execution_id.
+        // Old snapshots may not have waiting_node / parent_execution_id /
+        // trigger_source / terminal. All four default safely.
         let json = r#"{
             "id": "cp-1",
             "execution_id": "exec-1",
@@ -172,6 +192,91 @@ mod tests {
         let cp: Checkpoint = serde_json::from_str(json).unwrap();
         assert_eq!(cp.waiting_node, None);
         assert_eq!(cp.parent_execution_id, None);
+        assert_eq!(cp.trigger_source, None);
+        assert!(!cp.terminal);
+    }
+
+    #[test]
+    fn checkpoint_round_trip_with_trigger_source_and_terminal() {
+        // Gap 1 + Gap 2: trigger_source must survive round-trip, and terminal
+        // flag must persist so restore skips it.
+        let cp = Checkpoint {
+            id: "cp-term".to_string(),
+            execution_id: "exec-1".to_string(),
+            saved_at: Utc::now(),
+            completed_nodes: HashSet::from(["n1".to_string(), "n2".to_string()]),
+            waiting_node: None,
+            parent_execution_id: Some("exec-parent".to_string()),
+            trigger_source: Some(crate::types::TriggerSource::Webhook {
+                payload: serde_json::json!({"event": "push"}),
+            }),
+            terminal: true,
+            context_snapshot: SerializableContext {
+                variables: HashMap::new(),
+                node_results: HashMap::new(),
+                input: HashMap::new(),
+            },
+            workflow_hash: "h".to_string(),
+        };
+
+        let json = serde_json::to_string(&cp).unwrap();
+        let restored: Checkpoint = serde_json::from_str(&json).unwrap();
+        assert_eq!(cp, restored);
+        assert!(restored.terminal);
+        assert!(matches!(restored.trigger_source, Some(crate::types::TriggerSource::Webhook { .. })));
+    }
+
+    #[test]
+    fn checkpoint_round_trip_preserves_all_trigger_source_variants() {
+        // Belt-and-suspenders: each variant must round-trip. If serde tagging
+        // breaks for any variant, restore would silently lose the trigger info.
+        let variants: Vec<crate::types::TriggerSource> = vec![
+            crate::types::TriggerSource::Cli,
+            crate::types::TriggerSource::Cron,
+            crate::types::TriggerSource::Webhook {
+                payload: serde_json::json!({"x": 1}),
+            },
+            crate::types::TriggerSource::AgentTool {
+                tool_call_id: "tc-1".to_string(),
+                recursion_depth: 2,
+            },
+            crate::types::TriggerSource::Chat {
+                chat_id: "c".to_string(),
+                session_key: "s".to_string(),
+                sender_id: "u".to_string(),
+                message: "m".to_string(),
+            },
+            crate::types::TriggerSource::WebUI {
+                session_id: "ws-1".to_string(),
+            },
+            crate::types::TriggerSource::Event {
+                event_type: "push".to_string(),
+                data: serde_json::json!({"a": 1}),
+            },
+        ];
+
+        for (i, ts) in variants.into_iter().enumerate() {
+            let cp = Checkpoint {
+                id: format!("cp-{i}"),
+                execution_id: "exec-1".to_string(),
+                saved_at: Utc::now(),
+                completed_nodes: HashSet::new(),
+                waiting_node: None,
+                parent_execution_id: None,
+                trigger_source: Some(ts.clone()),
+                terminal: false,
+                context_snapshot: SerializableContext {
+                    variables: HashMap::new(),
+                    node_results: HashMap::new(),
+                    input: HashMap::new(),
+                },
+                workflow_hash: "h".to_string(),
+            };
+
+            let json = serde_json::to_string(&cp).unwrap();
+            let restored: Checkpoint = serde_json::from_str(&json).unwrap();
+            assert_eq!(restored.trigger_source, Some(ts));
+        }
     }
 
     #[test]
@@ -200,6 +305,8 @@ mod tests {
             completed_nodes: HashSet::from(["n1".to_string(), "n2".to_string()]),
             waiting_node: Some("review".to_string()),
             parent_execution_id: None,
+            trigger_source: None,
+            terminal: true,
             context_snapshot: SerializableContext {
                 variables: HashMap::new(),
                 node_results: HashMap::new(),
@@ -212,6 +319,7 @@ mod tests {
         assert_eq!(meta.execution_id, "exec-1");
         assert_eq!(meta.completed_node_count, 2);
         assert!(meta.has_waiting);
+        assert!(meta.terminal);
     }
 
     #[test]

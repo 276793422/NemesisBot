@@ -307,6 +307,8 @@ mod tests {
             completed_nodes: HashSet::new(),
             waiting_node: None,
             parent_execution_id: None,
+            trigger_source: None,
+            terminal: false,
             context_snapshot: SerializableContext {
                 variables: HashMap::new(),
                 node_results: HashMap::new(),

@@ -3592,3 +3592,321 @@ async fn test_workflow_run_returns_schema_with_input_property() {
     let required = params["required"].as_array().unwrap();
     assert!(required.iter().any(|r| r == "workflow"));
 }
+
+// ===========================================================================
+// Gap 3: full agent_node → WorkflowRunTool chain
+// ===========================================================================
+//
+// Verifies the end-to-end path that gateway.rs wires up in production:
+// an `agent` workflow node invokes AgentRunner, which (simulating an LLM
+// tool call) invokes WorkflowRunTool on a second workflow. Tests that:
+//   - the chain actually fires (both workflows complete)
+//   - the inner execution's trigger_source carries AgentTool { recursion_depth: 1 }
+//   - the inner execution's CallFrame had parent_execution_id == outer.id
+//     (verified by inspecting the live call stack during the inner run)
+
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use nemesis_workflow::call_stack::CallFrame;
+use nemesis_workflow::nodes::{AgentRunResult, AgentRunner, NodeExecutor};
+use nemesis_workflow::types::{Edge, ExecutionState, NodeDef, NodeResult, TriggerSource, Workflow};
+
+/// NodeExecutor that records the live call-stack state when invoked, then
+/// completes. Used inside the inner workflow so the test can verify the
+/// inner CallFrame's `parent_execution_id` after the fact.
+struct CaptureStackExecutor {
+    engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+    captured: Arc<Mutex<Option<Vec<CallFrame>>>>,
+}
+
+#[async_trait]
+impl NodeExecutor for CaptureStackExecutor {
+    async fn execute(
+        &self,
+        _node: &NodeDef,
+        _context: &std::collections::HashMap<String, serde_json::Value>,
+        _wf_ctx: &nemesis_workflow::context::WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        let snap = self.engine.call_stack().snapshot();
+        *self.captured.lock().unwrap() = Some(snap.clone());
+        let now = chrono::Local::now();
+        Ok(NodeResult {
+            node_id: "capture".to_string(),
+            output: serde_json::json!({"captured_frames": snap.len()}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: now.clone(),
+            ended_at: now,
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+}
+
+/// Stub AgentRunner that simulates an LLM deciding to call `workflow_run`
+/// on the inner workflow. Records the call-stack state at entry so we can
+/// confirm the outer frame was on top before WorkflowRunTool pushed the
+/// inner frame.
+struct StubAgentRunner {
+    engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+    inner_workflow: String,
+    stack_at_entry: Arc<Mutex<Option<Vec<CallFrame>>>>,
+    inner_exec_id: Arc<Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl AgentRunner for StubAgentRunner {
+    async fn run_direct(
+        &self,
+        _prompt: &str,
+        _agent_id: &str,
+        _max_turns: u32,
+    ) -> Result<AgentRunResult, String> {
+        // Snapshot the call stack at agent invocation time. This proves the
+        // agent_node is running inside the outer workflow's frame.
+        *self.stack_at_entry.lock().unwrap() = Some(self.engine.call_stack().snapshot());
+
+        // Simulate the agent invoking workflow_run via WorkflowRunTool.
+        let tool = WorkflowRunTool::new(Arc::clone(&self.engine));
+        let ctx = RequestContext::new("test", "chat", "user", "session");
+        let args = serde_json::json!({ "workflow": self.inner_workflow }).to_string();
+        let out = tool.execute(&args, &ctx).await.map_err(|e| {
+            format!("WorkflowRunTool failed inside StubAgentRunner: {e}")
+        })?;
+
+        // Record the inner execution_id so the test can look it up later.
+        let v: serde_json::Value = serde_json::from_str(&out)
+            .map_err(|e| format!("WorkflowRunTool returned invalid JSON: {e}"))?;
+        let id = v["execution_id"]
+            .as_str()
+            .ok_or("WorkflowRunTool response missing execution_id")?
+            .to_string();
+        *self.inner_exec_id.lock().unwrap() = Some(id);
+
+        Ok(AgentRunResult {
+            response: "ran inner workflow".to_string(),
+            tools_used: vec!["workflow_run".to_string()],
+        })
+    }
+}
+
+fn gap3_node(id: &str, node_type: &str, depends_on: &[&str]) -> NodeDef {
+    NodeDef {
+        id: id.to_string(),
+        node_type: node_type.to_string(),
+        config: std::collections::HashMap::new(),
+        depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    }
+}
+
+fn gap3_agent_node(id: &str, prompt: &str) -> NodeDef {
+    let mut n = gap3_node(id, "agent", &[]);
+    n.config
+        .insert("prompt".to_string(), serde_json::json!(prompt));
+    n
+}
+
+fn gap3_wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
+    let edges: Vec<Edge> = nodes
+        .iter()
+        .flat_map(|n| {
+            n.depends_on
+                .iter()
+                .map(move |dep| Edge {
+                    from_node: dep.clone(),
+                    to_node: n.id.clone(),
+                    condition: None,
+                })
+        })
+        .collect();
+    Workflow {
+        name: name.to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes,
+        edges,
+        variables: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
+    use nemesis_providers::failover::FailoverError;
+    use nemesis_providers::router::LLMProvider;
+    use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
+
+    struct LocalStubProvider;
+    #[async_trait]
+    impl LLMProvider for LocalStubProvider {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model: &str,
+            _options: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            // The agent_node never actually drives an LLM here — the
+            // StubAgentRunner ignores the prompt and calls WorkflowRunTool
+            // directly. This stub exists only to satisfy the engine ctor.
+            Ok(LLMResponse {
+                content: "stub".to_string(),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        fn name(&self) -> &str {
+            "stub"
+        }
+    }
+
+    // Build the engine with a stub LLM provider (the LLM doesn't actually
+    // drive the agent — the StubAgentRunner ignores the prompt and calls
+    // WorkflowRunTool directly).
+    let provider =
+        Arc::new(LocalStubProvider) as Arc<dyn nemesis_providers::router::LLMProvider>;
+    let tools_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
+        Arc::clone(&provider),
+        Arc::clone(&tools_registry),
+        None,
+    );
+
+    // Register the inner workflow with a capture_stack node so we can
+    // inspect the live call stack when the inner workflow runs.
+    let captured_during_inner: Arc<Mutex<Option<Vec<CallFrame>>>> =
+        Arc::new(Mutex::new(None));
+    let capture_exec = Arc::new(CaptureStackExecutor {
+        engine: Arc::clone(&engine),
+        captured: Arc::clone(&captured_during_inner),
+    });
+    engine.register_node_executor("capture_stack", capture_exec);
+
+    let inner_wf = gap3_wf(
+        "inner",
+        vec![gap3_node("capture", "capture_stack", &[])],
+    );
+    engine.register_workflow(inner_wf).unwrap();
+
+    // Register the StubAgentRunner as the agent_node backend.
+    let stack_at_entry: Arc<Mutex<Option<Vec<CallFrame>>>> =
+        Arc::new(Mutex::new(None));
+    let inner_exec_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let runner = Arc::new(StubAgentRunner {
+        engine: Arc::clone(&engine),
+        inner_workflow: "inner".to_string(),
+        stack_at_entry: Arc::clone(&stack_at_entry),
+        inner_exec_id: Arc::clone(&inner_exec_id),
+    });
+    engine.register_agent_runner(runner);
+
+    // Register the outer workflow with one agent_node.
+    let outer_wf = gap3_wf(
+        "outer",
+        vec![gap3_agent_node(
+            "call_agent",
+            "Please run the inner workflow.",
+        )],
+    );
+    engine.register_workflow(outer_wf).unwrap();
+
+    // Trigger the outer workflow as a CLI run (top-level).
+    let outer_exec = engine
+        .run("outer", std::collections::HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .expect("outer workflow should complete");
+    assert_eq!(
+        outer_exec.state,
+        ExecutionState::Completed,
+        "outer workflow must complete"
+    );
+
+    // --- Verify: stack at agent entry showed the outer frame ---
+    let stack_entry = stack_at_entry.lock().unwrap().clone().expect(
+        "StubAgentRunner.run_direct must have been invoked",
+    );
+    assert_eq!(
+        stack_entry.len(),
+        1,
+        "exactly the outer frame should be on the stack at agent entry, got {:?}",
+        stack_entry
+    );
+    assert_eq!(stack_entry[0].execution_id, outer_exec.id);
+    assert_eq!(stack_entry[0].workflow_name, "outer");
+
+    // --- Verify: inner execution was created with AgentTool trigger ---
+    let inner_id = inner_exec_id
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("WorkflowRunTool must have returned an inner execution_id");
+    let inner_exec = engine
+        .get_execution(&inner_id)
+        .await
+        .expect("inner execution must exist in engine memory");
+    assert_eq!(inner_exec.workflow_name, "inner");
+    assert_eq!(inner_exec.state, ExecutionState::Completed);
+
+    match inner_exec
+        .trigger_source
+        .as_ref()
+        .expect("inner execution must have a trigger_source")
+    {
+        TriggerSource::AgentTool {
+            tool_call_id,
+            recursion_depth,
+        } => {
+            assert!(
+                !tool_call_id.is_empty(),
+                "tool_call_id must be populated"
+            );
+            assert_eq!(
+                *recursion_depth, 1,
+                "first agent-mediated workflow_run must record depth=1"
+            );
+        }
+        other => panic!("expected AgentTool trigger, got {:?}", other),
+    }
+
+    // --- Verify: live call stack during inner run showed both frames ---
+    let inner_stack = captured_during_inner
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("CaptureStackExecutor must have run inside the inner workflow");
+    assert_eq!(
+        inner_stack.len(),
+        2,
+        "expected outer + inner frames on stack during inner run, got {:?}",
+        inner_stack
+    );
+    // Stack ordering: outer at index 0 (pushed first), inner at index 1 (top).
+    assert_eq!(inner_stack[0].execution_id, outer_exec.id);
+    assert_eq!(inner_stack[0].workflow_name, "outer");
+    assert_eq!(inner_stack[1].execution_id, inner_id);
+    assert_eq!(inner_stack[1].workflow_name, "inner");
+    // The critical invariant: inner frame's parent_execution_id links to outer.
+    assert_eq!(
+        inner_stack[1].parent_execution_id,
+        Some(outer_exec.id.clone()),
+        "inner CallFrame.parent_execution_id must link to outer execution"
+    );
+
+    // Also verify the outer frame's parent_execution_id is None (top-level).
+    assert!(
+        inner_stack[0].parent_execution_id.is_none(),
+        "outer is top-level, must have no parent"
+    );
+}

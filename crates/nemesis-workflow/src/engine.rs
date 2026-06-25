@@ -62,6 +62,7 @@ impl<'a> scheduler::ProgressHook for CheckpointHook<'a> {
                 wf_ctx,
                 waiting.as_deref(),
                 None,
+                false,
             )
             .await
         {
@@ -424,6 +425,18 @@ impl WorkflowEngine {
         );
     }
 
+    /// Register a custom [`NodeExecutor`] for a node type. Generalisation of
+    /// [`register_agent_runner`](Self::register_agent_runner) for downstream
+    /// crates that need to plug in their own executors (test scaffolding,
+    /// domain-specific node types, etc).
+    pub fn register_node_executor(
+        &self,
+        node_type: &str,
+        executor: Arc<dyn crate::nodes::NodeExecutor>,
+    ) {
+        self.node_executors.register(node_type, executor);
+    }
+
     /// Scan a directory for workflow definition files and register each one.
     ///
     /// Supports `.yaml`, `.yml`, and `.json` extensions. Files that fail to
@@ -772,10 +785,13 @@ impl WorkflowEngine {
                 }
             };
 
-            // Skip terminal checkpoints — nothing to resume.
+            // Skip terminal checkpoints — nothing to resume. The `terminal`
+            // flag is the authoritative signal (Gap 2 fix); the
+            // all-completed fallback covers legacy checkpoints written
+            // before the flag existed.
             let all_completed = cp.completed_nodes.len() >= workflow.nodes.len()
                 && cp.waiting_node.is_none();
-            if all_completed {
+            if cp.terminal || all_completed {
                 continue;
             }
 
@@ -787,6 +803,10 @@ impl WorkflowEngine {
             execution.id = exec_id.clone();
             execution.started_at = cp.saved_at.with_timezone(&chrono::Local);
             execution.workflow_hash = Some(cp.workflow_hash.clone());
+            // Restore the original trigger source so post-restore observers
+            // can still tell webhook / cli / agent invocations apart.
+            // (Gap 1 fix.)
+            execution.trigger_source = cp.trigger_source.clone();
 
             // Restore node_results from the snapshot so resume / inspection
             // can see what each node already produced.
@@ -830,6 +850,15 @@ impl WorkflowEngine {
     /// `completed_nodes` is the set of node IDs that have already finished
     /// (extracted from `wf_ctx` when not supplied explicitly). `waiting_node`
     /// is `Some(id)` when the execution is paused at a `human_review` node.
+    ///
+    /// `terminal=true` marks this checkpoint as capturing a terminal state
+    /// (Completed / Failed / Cancelled); `restore_incomplete_executions` skips
+    /// terminal checkpoints so finished workflows stay finished across process
+    /// restarts. (Gap 2 fix.)
+    ///
+    /// `trigger_source` is read from the in-memory execution map so the
+    /// checkpoint carries the same origin info (webhook / cli / agent / …) as
+    /// the live execution. (Gap 1 fix.)
     pub async fn save_checkpoint(
         &self,
         execution_id: &str,
@@ -837,6 +866,7 @@ impl WorkflowEngine {
         wf_ctx: &WorkflowContext,
         waiting_node: Option<&str>,
         parent_execution_id: Option<&str>,
+        terminal: bool,
     ) -> Result<(), EngineError> {
         let store = match self.checkpoint_store.read().clone() {
             Some(s) => s,
@@ -847,6 +877,16 @@ impl WorkflowEngine {
             .get_workflow(workflow_name)
             .ok_or_else(|| EngineError::WorkflowNotFound(workflow_name.to_string()))?;
         let workflow_hash = workflow.hash();
+
+        // Look up the execution's trigger_source so the checkpoint carries
+        // forward the original trigger info. Falls back to None when the
+        // execution has already been removed (defensive).
+        let trigger_source = {
+            let execs = self.executions.read().await;
+            execs
+                .get(execution_id)
+                .and_then(|e| e.trigger_source.clone())
+        };
 
         let snapshot = build_serialisable_context(wf_ctx);
         let completed_nodes: HashSet<String> = wf_ctx
@@ -863,6 +903,8 @@ impl WorkflowEngine {
             completed_nodes,
             waiting_node: waiting_node.map(|s| s.to_string()),
             parent_execution_id: parent_execution_id.map(|s| s.to_string()),
+            trigger_source,
+            terminal,
             context_snapshot: snapshot,
             workflow_hash,
         };
@@ -1101,6 +1143,52 @@ impl WorkflowEngine {
 
         // Persist final state
         self.persist_execution(&execution).await;
+
+        // Save a checkpoint capturing the post-run state. For Completed /
+        // Failed / Cancelled this is a *terminal* checkpoint —
+        // `restore_incomplete_executions` skips terminal checkpoints so the
+        // finished workflow doesn't get resurrected on the next process
+        // restart. For Waiting (paused at a human_review) this captures the
+        // waiting node so resume can find it. (Gap 2 fix.)
+        //
+        // parent_execution_id is read from the live call-stack frame (our own
+        // frame is still on the stack at this point — pop happens below).
+        let is_terminal = matches!(
+            execution.state,
+            ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
+        );
+        let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
+            wf_ctx
+                .get_all_node_results()
+                .iter()
+                .find(|(_, r)| r.state == ExecutionState::Waiting)
+                .map(|(id, _)| id.clone())
+        } else {
+            None
+        };
+        let parent_for_checkpoint = self
+            .call_stack
+            .snapshot()
+            .last()
+            .and_then(|f| f.parent_execution_id.clone());
+        if let Err(e) = self
+            .save_checkpoint(
+                &execution.id,
+                &execution.workflow_name,
+                &wf_ctx,
+                waiting.as_deref(),
+                parent_for_checkpoint.as_deref(),
+                is_terminal,
+            )
+            .await
+        {
+            warn!(
+                target: "nemesis_workflow::engine",
+                execution_id = %execution.id,
+                error = %e,
+                "failed to save terminal checkpoint"
+            );
+        }
 
         // Update in-memory execution
         {
@@ -1625,37 +1713,43 @@ impl WorkflowEngine {
         execution.node_results = wf_ctx.get_all_node_results();
         execution.variables = wf_ctx.get_all_variables();
 
-        // Save a new checkpoint reflecting post-resume state. Skip when the
-        // execution has already terminated (no value in checkpointing a dead
-        // execution; the latest checkpoint stays as the last in-flight one).
-        if execution.state == ExecutionState::Waiting || execution.state == ExecutionState::Running
+        // Save a new checkpoint reflecting post-resume state. Always save —
+        // for Waiting/Running this captures the in-flight state so future
+        // restarts can resume; for Completed/Failed/Cancelled the terminal
+        // flag tells `restore_incomplete_executions` to skip this execution
+        // next startup. (Gap 2 fix: previously terminal states were skipped,
+        // so the previous in-flight checkpoint would resurrect the execution
+        // on the next process restart.)
+        let is_terminal = matches!(
+            execution.state,
+            ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
+        );
+        let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
+            wf_ctx
+                .get_all_node_results()
+                .iter()
+                .find(|(_, r)| r.state == ExecutionState::Waiting)
+                .map(|(id, _)| id.clone())
+        } else {
+            None
+        };
+        if let Err(e) = self
+            .save_checkpoint(
+                &execution.id,
+                &execution.workflow_name,
+                &wf_ctx,
+                waiting.as_deref(),
+                None,
+                is_terminal,
+            )
+            .await
         {
-            let results = wf_ctx.get_all_node_results();
-            let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
-                results
-                    .iter()
-                    .find(|(_, r)| r.state == ExecutionState::Waiting)
-                    .map(|(id, _)| id.clone())
-            } else {
-                None
-            };
-            if let Err(e) = self
-                .save_checkpoint(
-                    &execution.id,
-                    &execution.workflow_name,
-                    &wf_ctx,
-                    waiting.as_deref(),
-                    None,
-                )
-                .await
-            {
-                warn!(
-                    target: "nemesis_workflow::engine",
-                    execution_id = %id,
-                    error = %e,
-                    "failed to save post-resume checkpoint"
-                );
-            }
+            warn!(
+                target: "nemesis_workflow::engine",
+                execution_id = %id,
+                error = %e,
+                "failed to save post-resume checkpoint"
+            );
         }
 
         // Persist + update in-memory state.
