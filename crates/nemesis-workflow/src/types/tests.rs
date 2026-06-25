@@ -478,3 +478,130 @@ fn execution_id_is_uuid_format() {
     assert_eq!(parts[3].len(), 4);
     assert_eq!(parts[4].len(), 12);
 }
+
+// ---------------------------------------------------------------------------
+// TriggerSource (1a-B1 / 1a-C2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trigger_source_cli_roundtrip() {
+    let source = TriggerSource::Cli;
+    let json = serde_json::to_string(&source).unwrap();
+    assert_eq!(json, "{\"kind\":\"cli\"}");
+    let back: TriggerSource = serde_json::from_str(&json).unwrap();
+    assert_eq!(source, back);
+}
+
+#[test]
+fn trigger_source_agent_tool_with_recursion_depth() {
+    let source = TriggerSource::AgentTool {
+        tool_call_id: "tc_123".to_string(),
+        recursion_depth: 2,
+    };
+    let json = serde_json::to_string(&source).unwrap();
+    let back: TriggerSource = serde_json::from_str(&json).unwrap();
+    assert_eq!(source, back);
+    if let TriggerSource::AgentTool { recursion_depth, .. } = &back {
+        assert_eq!(*recursion_depth, 2);
+    } else {
+        panic!("expected AgentTool variant");
+    }
+}
+
+#[test]
+fn trigger_source_chat_roundtrip() {
+    let source = TriggerSource::Chat {
+        chat_id: "c1".to_string(),
+        session_key: "s1".to_string(),
+        sender_id: "u1".to_string(),
+        message: "hi".to_string(),
+    };
+    let json = serde_json::to_string(&source).unwrap();
+    let back: TriggerSource = serde_json::from_str(&json).unwrap();
+    assert_eq!(source, back);
+}
+
+#[test]
+fn trigger_source_webhook_default_payload() {
+    // Missing `payload` field should default to Value::Null via #[serde(default)]
+    let json = "{\"kind\":\"webhook\"}";
+    let back: TriggerSource = serde_json::from_str(json).unwrap();
+    match back {
+        TriggerSource::Webhook { payload } => assert_eq!(payload, serde_json::Value::Null),
+        _ => panic!("expected Webhook variant"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Execution extended fields (1a-B1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn execution_new_has_default_none_for_new_fields() {
+    let exec = Execution::new("wf".to_string(), HashMap::new());
+    assert!(exec.trigger_source.is_none());
+    assert!(exec.chat_id.is_none());
+    assert!(exec.session_key.is_none());
+    assert!(exec.owner.is_none());
+    assert!(exec.tags.is_empty());
+    assert!(exec.workflow_hash.is_none());
+}
+
+#[test]
+fn execution_old_jsonl_loads_with_default_fields() {
+    // Simulate a legacy JSONL file written before 1a-B1 added the new fields.
+    let old_json = r#"{
+        "id": "exec-legacy",
+        "workflow_name": "wf",
+        "state": "completed",
+        "input": {},
+        "node_results": {},
+        "started_at": "2026-01-01T00:00:00Z",
+        "ended_at": null,
+        "error": null,
+        "variables": {}
+    }"#;
+    let exec: Execution = serde_json::from_str(old_json).unwrap();
+    assert_eq!(exec.id, "exec-legacy");
+    assert!(exec.trigger_source.is_none(), "trigger_source should default to None");
+    assert!(exec.chat_id.is_none());
+    assert!(exec.tags.is_empty());
+    assert!(exec.workflow_hash.is_none());
+}
+
+#[test]
+fn execution_full_roundtrip_preserves_new_fields() {
+    let mut exec = Execution::new("wf".to_string(), HashMap::new());
+    exec.trigger_source = Some(TriggerSource::Cron);
+    exec.chat_id = Some("c-1".to_string());
+    exec.session_key = Some("s-1".to_string());
+    exec.owner = Some("user-1".to_string());
+    exec.tags.insert("env".to_string(), "prod".to_string());
+    exec.workflow_hash = Some("abc123".to_string());
+
+    let json = serde_json::to_string(&exec).unwrap();
+    let back: Execution = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(exec.id, back.id);
+    assert_eq!(back.trigger_source, Some(TriggerSource::Cron));
+    assert_eq!(back.chat_id.as_deref(), Some("c-1"));
+    assert_eq!(back.session_key.as_deref(), Some("s-1"));
+    assert_eq!(back.owner.as_deref(), Some("user-1"));
+    assert_eq!(back.tags.get("env").map(|s| s.as_str()), Some("prod"));
+    assert_eq!(back.workflow_hash.as_deref(), Some("abc123"));
+}
+
+#[test]
+fn execution_skip_serializing_none_fields() {
+    let exec = Execution::new("wf".to_string(), HashMap::new());
+    let json = serde_json::to_string(&exec).unwrap();
+    // None fields should be skipped to keep JSONL output compact and
+    // indistinguishable from legacy format when no optional fields are set.
+    assert!(
+        !json.contains("trigger_source"),
+        "expected trigger_source to be skipped, got: {}",
+        json
+    );
+    assert!(!json.contains("chat_id"));
+    assert!(!json.contains("workflow_hash"));
+}

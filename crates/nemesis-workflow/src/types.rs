@@ -72,6 +72,47 @@ impl fmt::Display for ExecutionState {
     }
 }
 
+/// Origin of a workflow execution. First-class concept borrowed from n8n's
+/// Trigger Node model (decision 2 in the integration plan).
+///
+/// `AgentTool` carries a `recursion_depth` so deeply nested workflow_run calls
+/// can be rejected once they exceed `MAX_RECURSION_DEPTH` (decision 6 from the
+/// Spike phase, see `WorkflowCallStack`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TriggerSource {
+    /// Triggered from a CLI command (`nemesisbot workflow run`).
+    Cli,
+    /// Triggered by a cron schedule registered with `nemesis-cron`.
+    Cron,
+    /// Triggered by an HTTP webhook hit on `/api/workflow/webhook/:name`.
+    Webhook {
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
+    /// Triggered by an agent invoking the `workflow_run` tool.
+    AgentTool {
+        tool_call_id: String,
+        /// Increments on each nested workflow_run call. Stage 1c
+        /// `WorkflowCallStack` rejects calls past `MAX_RECURSION_DEPTH`.
+        #[serde(default)]
+        recursion_depth: u32,
+    },
+    /// Triggered by an inbound chat message routed to a workflow.
+    Chat {
+        chat_id: String,
+        session_key: String,
+        sender_id: String,
+        message: String,
+    },
+    /// Triggered by a generic event bus subscription.
+    Event {
+        event_type: String,
+        #[serde(default)]
+        data: serde_json::Value,
+    },
+}
+
 /// Definition of a single node within a workflow DAG.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDef {
@@ -151,6 +192,11 @@ pub struct NodeResult {
 }
 
 /// A workflow execution instance.
+///
+/// Extended in 1a-B1 with `trigger_source`, `chat_id`, `session_key`, `owner`,
+/// `tags`, `workflow_hash` to support agent tool calls, cron ownership, UI
+/// filtering, and Checkpointer config-drift detection. All new fields use
+/// `#[serde(default)]` so old JSONL files load with sensible defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Execution {
     pub id: String,
@@ -166,6 +212,28 @@ pub struct Execution {
     pub error: Option<String>,
     #[serde(default)]
     pub variables: HashMap<String, String>,
+
+    // --- 1a-B1 additions ---
+    /// What triggered this execution. `None` for legacy executions created
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_source: Option<TriggerSource>,
+    /// Chat/conversation ID when triggered from chat or agent tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
+    /// Session key for memory persistence scoping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
+    /// Owner (user/device) for cron/webhook executions that have no chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Free-form tags for filtering / grouping in the UI.
+    #[serde(default)]
+    pub tags: HashMap<String, String>,
+    /// Hash of the workflow definition at execution start, used by the
+    /// Checkpointer (1b) to warn on resume-time config drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_hash: Option<String>,
 }
 
 impl Execution {
@@ -181,6 +249,12 @@ impl Execution {
             ended_at: None,
             error: None,
             variables: HashMap::new(),
+            trigger_source: None,
+            chat_id: None,
+            session_key: None,
+            owner: None,
+            tags: HashMap::new(),
+            workflow_hash: None,
         }
     }
 }
