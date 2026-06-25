@@ -638,3 +638,94 @@ async fn test_with_executors_and_persistence() {
     let execution = engine.start_execution("wf", HashMap::new()).await.unwrap();
     assert_eq!(execution.state, ExecutionState::Completed);
 }
+
+// ---------------------------------------------------------------------------
+// Cancellation integration tests (1a-A2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cancel_returns_cancelled_state() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new());
+    let mut node = make_node("n1", "delay", vec![]);
+    // DelayNodeExecutor treats `seconds` as milliseconds (legacy naming).
+    node.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("long_wf", vec![node]))
+        .unwrap();
+
+    let engine_for_run = engine.clone();
+    let run_handle = tokio::spawn(async move {
+        let mut input = HashMap::new();
+        engine_for_run
+            .run("long_wf", input.drain().collect())
+            .await
+            .unwrap()
+    });
+
+    // Wait for the execution to start.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let executions = engine.list_executions(None).await;
+    assert_eq!(executions.len(), 1, "expected one in-flight execution");
+    let id = executions[0].id.clone();
+    assert_eq!(executions[0].state, ExecutionState::Running);
+
+    let cancelled = engine.cancel_execution(&id).await.unwrap();
+    assert_eq!(cancelled.state, ExecutionState::Cancelled);
+
+    // run() future should resolve quickly after cancel.
+    let join_result = tokio::time::timeout(Duration::from_secs(3), run_handle)
+        .await
+        .expect("run did not resolve within 3s of cancel");
+    let execution = join_result.unwrap();
+    assert_eq!(
+        execution.state,
+        ExecutionState::Cancelled,
+        "run() should return Cancelled state after cancellation"
+    );
+
+    // Token should be cleaned up.
+    assert!(
+        engine.cancel_tokens.get(&id).is_none(),
+        "cancel token should be removed after run() completes"
+    );
+}
+
+#[tokio::test]
+async fn test_close_cancels_all_in_flight() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new());
+    let mut node = make_node("n1", "delay", vec![]);
+    node.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("long_wf", vec![node]))
+        .unwrap();
+
+    let engine_for_run = engine.clone();
+    let run_handle = tokio::spawn(async move {
+        let mut input = HashMap::new();
+        engine_for_run
+            .run("long_wf", input.drain().collect())
+            .await
+            .unwrap()
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let id = engine.list_executions(None).await[0].id.clone();
+
+    engine.clone().close().await;
+
+    let join_result = tokio::time::timeout(Duration::from_secs(3), run_handle)
+        .await
+        .expect("run did not resolve within 3s of close");
+    let outcome = join_result.unwrap();
+    assert_eq!(outcome.state, ExecutionState::Cancelled);
+    assert!(engine.cancel_tokens.get(&id).is_none());
+}

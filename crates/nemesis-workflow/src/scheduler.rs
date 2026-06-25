@@ -5,13 +5,15 @@
 //! nodes level-by-level with retry support.
 
 use std::collections::{HashMap, HashSet};
-
-use crate::types::{Edge, ExecutionState, NodeDef};
-use crate::context::WorkflowContext;
-use crate::nodes::NodeExecutorRegistry;
 use std::sync::Arc;
 use std::time::Duration;
+
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+
+use crate::context::WorkflowContext;
+use crate::nodes::NodeExecutorRegistry;
+use crate::types::{Edge, ExecutionState, NodeDef};
 
 /// Performs a topological sort on the workflow graph.
 ///
@@ -111,20 +113,40 @@ fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_jso
     ctx
 }
 
+/// Scheduler outcome indicating how a schedule/schedule_resume call ended.
+///
+/// `Ok` variants represent expected paths (completed normally, cancelled by user).
+/// `Err` carries an internal failure (node panic, I/O error, etc.).
+///
+/// Note: `Waiting` variant will be added in 1b-A1-step4 when human_review /
+/// Checkpointer integration lands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScheduleOutcome {
+    /// All runnable nodes completed without cancellation.
+    Completed,
+    /// Cancellation token was triggered mid-execution.
+    Cancelled,
+}
+
 /// Execute workflow nodes respecting dependencies and parallelism.
 ///
 /// Nodes at the same topological level are executed concurrently.
 /// Supports retry, per-node timeout, and conditional edge evaluation.
 /// After each node executes, its output fields are propagated into the
 /// workflow context as `node_id.field = value` entries.
+///
+/// Cancellation: pass a `CancellationToken` that, when triggered, causes the
+/// scheduler to stop spawning new levels and abort waiting on in-flight nodes.
+/// Already-running node executors receive `cancel.cancelled()` via select! and
+/// are expected to bail out promptly.
 #[allow(clippy::too_many_arguments)]
 pub async fn schedule(
-    _ctx: tokio::task::JoinHandle<()>,
     nodes: &[NodeDef],
     edges: &[Edge],
     executors: &NodeExecutorRegistry,
     wf_ctx: &mut WorkflowContext,
-) -> Result<(), String> {
+    cancel: CancellationToken,
+) -> Result<ScheduleOutcome, String> {
     // Build node lookup
     let node_map: HashMap<String, &NodeDef> = nodes.iter().map(|n| (n.id.clone(), n)).collect();
 
@@ -132,10 +154,7 @@ pub async fn schedule(
     let mut cond_edges: HashMap<String, Vec<&Edge>> = HashMap::new();
     for e in edges {
         if e.condition.is_some() {
-            cond_edges
-                .entry(e.to_node.clone())
-                .or_default()
-                .push(e);
+            cond_edges.entry(e.to_node.clone()).or_default().push(e);
         }
     }
 
@@ -144,6 +163,11 @@ pub async fn schedule(
 
     // Execute level by level
     for level in levels {
+        // Bail out early if cancelled before spawning the next level.
+        if cancel.is_cancelled() {
+            return Ok(ScheduleOutcome::Cancelled);
+        }
+
         // Filter nodes that should run based on conditional edges
         let runnable: Vec<String> = level
             .into_iter()
@@ -168,7 +192,12 @@ pub async fn schedule(
 
             let executor = match executors.get(&node.node_type) {
                 Some(e) => Arc::clone(e),
-                None => return Err(format!("no executor for node type {:?} (node {})", node.node_type, node_id)),
+                None => {
+                    return Err(format!(
+                        "no executor for node type {:?} (node {})",
+                        node.node_type, node_id
+                    ))
+                }
             };
 
             let node_id = node.id.clone();
@@ -176,20 +205,35 @@ pub async fn schedule(
             let node_timeout = node.timeout_duration();
             let ctx = exec_ctx.clone();
             let wf_ctx_clone = wf_ctx.clone();
+            let task_cancel = cancel.clone();
 
             let handle = tokio::spawn(async move {
-                // Execute with retry
+                // Execute with retry; bail out if cancelled between attempts.
                 let mut last_result = None;
-                let mut last_error = None;
+                let mut last_error: Option<String> = None;
 
                 for attempt in 0..=max_retries {
+                    if task_cancel.is_cancelled() {
+                        break;
+                    }
+
                     let result = if let Some(dur) = node_timeout {
-                        match timeout(dur, executor.execute(&node, &ctx, &wf_ctx_clone)).await {
-                            Ok(r) => r,
-                            Err(_) => Err(format!("node {:?} timed out after {:?}", node.id, dur)),
+                        tokio::select! {
+                            biased;
+                            _ = task_cancel.cancelled() => break,
+                            r = timeout(dur, executor.execute(&node, &ctx, &wf_ctx_clone)) => {
+                                match r {
+                                    Ok(inner) => inner,
+                                    Err(_) => Err(format!("node {:?} timed out after {:?}", node.id, dur)),
+                                }
+                            }
                         }
                     } else {
-                        executor.execute(&node, &ctx, &wf_ctx_clone).await
+                        tokio::select! {
+                            biased;
+                            _ = task_cancel.cancelled() => break,
+                            r = executor.execute(&node, &ctx, &wf_ctx_clone) => r,
+                        }
                     };
 
                     match result {
@@ -208,10 +252,14 @@ pub async fn schedule(
                         }
                     }
 
-                    // Backoff before retry
+                    // Backoff before retry, but bail if cancelled during sleep.
                     if attempt < max_retries {
                         let backoff = Duration::from_millis((attempt as u64 + 1) * 500);
-                        tokio::time::sleep(backoff).await;
+                        tokio::select! {
+                            biased;
+                            _ = task_cancel.cancelled() => break,
+                            _ = tokio::time::sleep(backoff) => {}
+                        }
                     }
                 }
 
@@ -221,11 +269,16 @@ pub async fn schedule(
             handles.push(handle);
         }
 
-        // Collect results and propagate variables into workflow context
+        // Collect results; abort waiting if cancelled.
         for handle in handles {
-            match handle.await {
+            let collected = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(ScheduleOutcome::Cancelled),
+                r = handle => r,
+            };
+
+            match collected {
                 Ok((node_id, Some(result), None)) => {
-                    // Set output variables into context: node_id.field = value
                     if let Some(obj) = result.output.as_object() {
                         for (field, val) in obj {
                             wf_ctx.set_var(
@@ -240,16 +293,23 @@ pub async fn schedule(
                     return Err(format!("node {:?} execution failed: {}", node_id, err));
                 }
                 Ok((node_id, None, None)) => {
+                    // Could be a cancellation during retry/backoff: check flag.
+                    if cancel.is_cancelled() {
+                        return Ok(ScheduleOutcome::Cancelled);
+                    }
                     return Err(format!("node {:?} produced no result", node_id));
                 }
                 Err(e) => {
+                    if cancel.is_cancelled() {
+                        return Ok(ScheduleOutcome::Cancelled);
+                    }
                     return Err(format!("node task panicked: {}", e));
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(ScheduleOutcome::Completed)
 }
 
 /// Check if a node should be executed based on conditional edges.

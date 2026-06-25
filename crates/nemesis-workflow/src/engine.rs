@@ -11,12 +11,13 @@ use std::sync::Arc;
 use chrono::Local;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::context::WorkflowContext;
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
-use crate::scheduler;
+use crate::scheduler::{self, ScheduleOutcome};
 use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, Workflow};
 
 /// Error type for workflow engine operations.
@@ -63,6 +64,10 @@ pub struct WorkflowEngine {
     persistence_dir: Option<PathBuf>,
     /// Whether the engine has been shut down.
     closed: RwLock<bool>,
+    /// Per-execution cancellation tokens. Presence of an entry implies the
+    /// execution is still in-flight (Running); completion removes the entry.
+    /// Cancelled tokens cause scheduler + node executors to bail out promptly.
+    cancel_tokens: DashMap<String, CancellationToken>,
 }
 
 impl WorkflowEngine {
@@ -79,6 +84,7 @@ impl WorkflowEngine {
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         }
     }
 
@@ -95,6 +101,7 @@ impl WorkflowEngine {
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         });
 
         // Replace the sub_workflow stub with a real executor that holds
@@ -119,6 +126,7 @@ impl WorkflowEngine {
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         }
     }
 
@@ -132,6 +140,7 @@ impl WorkflowEngine {
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         });
 
         let engine_ptr = Arc::as_ptr(&engine);
@@ -152,6 +161,7 @@ impl WorkflowEngine {
             node_executors,
             persistence_dir: None,
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         }
     }
 
@@ -166,6 +176,7 @@ impl WorkflowEngine {
             node_executors,
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
         }
     }
 
@@ -252,39 +263,48 @@ impl WorkflowEngine {
         // Persist initial state
         self.persist_execution(&execution).await;
 
+        // Create cancellation token for this execution. Stored in cancel_tokens
+        // so cancel_execution(id) can trigger it; removed on completion.
+        let cancel_token = CancellationToken::new();
+        self.cancel_tokens
+            .insert(execution.id.clone(), cancel_token.clone());
+
         // Execute the workflow using the scheduler
         let schedule_result = scheduler::schedule(
-            // We pass a dummy JoinHandle since we don't have a real cancellation context
-            tokio::spawn(async {}),
             &workflow.nodes,
             &workflow.edges,
             &self.node_executors,
             &mut wf_ctx,
+            cancel_token.clone(),
         )
         .await;
+
+        // Token is no longer needed; remove from map.
+        self.cancel_tokens.remove(&execution.id);
 
         let now = Local::now();
         execution.ended_at = Some(now);
 
-        if let Err(err) = schedule_result {
-            // Check if it was a cancellation
-            if err.contains("cancel") {
+        match schedule_result {
+            Ok(ScheduleOutcome::Cancelled) => {
                 execution.state = ExecutionState::Cancelled;
-            } else {
-                execution.state = ExecutionState::Failed;
             }
-            execution.error = Some(err);
-        } else {
-            // Check if any node is in waiting state (human review)
-            let all_completed = wf_ctx
-                .get_all_node_results()
-                .values()
-                .all(|r| r.state != ExecutionState::Waiting);
+            Ok(ScheduleOutcome::Completed) => {
+                // Check if any node is in waiting state (human review)
+                let all_completed = wf_ctx
+                    .get_all_node_results()
+                    .values()
+                    .all(|r| r.state != ExecutionState::Waiting);
 
-            if all_completed {
-                execution.state = ExecutionState::Completed;
-            } else {
-                execution.state = ExecutionState::Waiting;
+                if all_completed {
+                    execution.state = ExecutionState::Completed;
+                } else {
+                    execution.state = ExecutionState::Waiting;
+                }
+            }
+            Err(err) => {
+                execution.state = ExecutionState::Failed;
+                execution.error = Some(err);
             }
         }
 
@@ -502,9 +522,19 @@ impl WorkflowEngine {
 
     /// Cancel a running or waiting execution.
     ///
-    /// Marks the execution as cancelled and persists the state change.
-    /// Only executions in `Running` or `Waiting` state can be cancelled.
+    /// Triggers the execution's cancellation token (causing scheduler and node
+    /// executors to bail out), marks the execution as cancelled, and persists
+    /// the state change. Only executions in `Running` or `Waiting` state can be
+    /// cancelled. Returns the updated execution.
     pub async fn cancel_execution(&self, id: &str) -> Result<Execution, EngineError> {
+        // Trigger the cancellation token first so in-flight tasks exit promptly.
+        if let Some(entry) = self.cancel_tokens.get(id) {
+            entry.cancel();
+            drop(entry);
+        } else {
+            // No active token: execution may already be finished. Validate state below.
+        }
+
         let mut execs = self.executions.write().await;
         let execution = execs
             .get_mut(id)
@@ -608,7 +638,11 @@ impl WorkflowEngine {
         let mut closed = self.closed.write().await;
         *closed = true;
 
-        // Future enhancement: cancel all running executions, flush persistence, etc.
+        // Cancel all in-flight executions so scheduler + node executors exit.
+        for entry in self.cancel_tokens.iter() {
+            entry.cancel();
+        }
+        self.cancel_tokens.clear();
     }
 
     /// Check whether the engine is closed.

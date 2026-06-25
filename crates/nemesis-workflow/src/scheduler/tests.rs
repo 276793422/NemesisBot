@@ -1,5 +1,13 @@
 use super::*;
-use crate::types::NodeDef;
+use crate::context::WorkflowContext;
+use crate::nodes::{NodeExecutor, NodeExecutorRegistry};
+use crate::types::{Edge, ExecutionState, NodeDef, NodeResult};
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 fn make_node(id: &str, depends_on: Vec<&str>) -> NodeDef {
     NodeDef {
@@ -487,4 +495,124 @@ fn test_topological_sort_chain_of_5() {
     let edges = vec![];
     let levels = topological_sort(&nodes, &edges).unwrap();
     assert_eq!(levels.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation tests (1a-A2)
+// ---------------------------------------------------------------------------
+
+/// Executor that sleeps for a configured duration unless cancelled.
+/// Tracks how many times it ran to verify scheduler didn't re-execute nodes.
+struct SlowNodeExecutor {
+    started_counter: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl NodeExecutor for SlowNodeExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _ctx: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        self.started_counter.fetch_add(1, Ordering::SeqCst);
+        let secs = node
+            .config
+            .get("seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({"slept_secs": secs}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_cancel_mid_execution() {
+    let started_counter = Arc::new(AtomicUsize::new(0));
+    let mut registry = NodeExecutorRegistry::new();
+    registry.register(
+        "slow",
+        Arc::new(SlowNodeExecutor {
+            started_counter: started_counter.clone(),
+        }),
+    );
+
+    let nodes = vec![NodeDef {
+        id: "n1".to_string(),
+        node_type: "slow".to_string(),
+        config: HashMap::from([("seconds".to_string(), serde_json::json!(30u64))]),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+    }];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let cancel = CancellationToken::new();
+    let cancel_clone = cancel.clone();
+
+    // Trigger cancellation after 500ms
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        cancel_clone.cancel();
+    });
+
+    let start = std::time::Instant::now();
+    let outcome = schedule(&nodes, &edges, &registry, &mut wf_ctx, cancel).await;
+    let elapsed = start.elapsed();
+
+    assert!(outcome.is_ok(), "schedule returned Err: {:?}", outcome);
+    assert_eq!(
+        outcome.unwrap(),
+        ScheduleOutcome::Cancelled,
+        "expected Cancelled outcome"
+    );
+    // Should return quickly after cancel (well under the 30s sleep).
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "scheduler took too long to cancel: {:?}",
+        elapsed
+    );
+    assert_eq!(
+        started_counter.load(Ordering::SeqCst),
+        1,
+        "node should have been started exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_schedule_completes_without_cancel() {
+    let started_counter = Arc::new(AtomicUsize::new(0));
+    let mut registry = NodeExecutorRegistry::new();
+    registry.register(
+        "slow",
+        Arc::new(SlowNodeExecutor {
+            started_counter: started_counter.clone(),
+        }),
+    );
+
+    let nodes = vec![NodeDef {
+        id: "n1".to_string(),
+        node_type: "slow".to_string(),
+        config: HashMap::from([("seconds".to_string(), serde_json::json!(0u64))]),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+    }];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+
+    let cancel = CancellationToken::new();
+    let outcome = schedule(&nodes, &edges, &registry, &mut wf_ctx, cancel).await;
+
+    assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
+    assert_eq!(started_counter.load(Ordering::SeqCst), 1);
 }
