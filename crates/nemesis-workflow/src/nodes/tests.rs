@@ -240,7 +240,7 @@ fn test_registry_has_all_node_types() {
 
 #[test]
 fn test_registry_custom_executor() {
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     registry.register("custom", Arc::new(LLMNodeExecutor));
     assert!(registry.get("custom").is_some());
 }
@@ -303,7 +303,7 @@ fn test_node_executor_registry_get_nonexistent() {
 
 #[test]
 fn test_node_executor_registry_register_overwrite() {
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     // Overwrite the existing "llm" executor
     registry.register("llm", Arc::new(DelayNodeExecutor));
     // Should return the new executor (no panic)
@@ -316,6 +316,52 @@ fn test_node_executor_registry_new_with_composite() {
     assert!(registry.get("parallel").is_some());
     assert!(registry.get("loop").is_some());
     assert!(registry.get("llm").is_some());
+}
+
+#[test]
+fn test_registry_concurrent_access() {
+    // Verify that the RwLock-backed registry is safe under concurrent
+    // read/write access from multiple threads. Regression guard for the
+    // unsafe removal refactor (1a-A3).
+    use std::sync::Arc;
+    use std::thread;
+
+    let registry = Arc::new(NodeExecutorRegistry::new());
+    let mut handles = Vec::new();
+
+    // Writer thread: continuously register custom executors
+    let writer_reg = Arc::clone(&registry);
+    let writer = thread::spawn(move || {
+        for i in 0..50 {
+            writer_reg.register(
+                &format!("custom_{}", i),
+                Arc::new(crate::nodes::DelayNodeExecutor),
+            );
+        }
+    });
+    handles.push(writer);
+
+    // Reader threads: continuously look up types
+    for _ in 0..4 {
+        let reader_reg = Arc::clone(&registry);
+        let reader = thread::spawn(move || {
+            for i in 0..50 {
+                let _ = reader_reg.get(&format!("custom_{}", i));
+                let _ = reader_reg.get("llm");
+                let _ = reader_reg.node_types();
+            }
+        });
+        handles.push(reader);
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    // After concurrent writes complete, all custom types should be present.
+    for i in 0..50 {
+        assert!(registry.get(&format!("custom_{}", i)).is_some(), "custom_{} missing", i);
+    }
 }
 
 #[tokio::test]

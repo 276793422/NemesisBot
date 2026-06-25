@@ -278,7 +278,7 @@ impl NodeExecutor for ParallelNodeExecutor {
 
             handles.push(tokio::spawn(async move {
                 let executor = match registry.get(&child_def.node_type) {
-                    Some(e) => Arc::clone(e),
+                    Some(e) => e,
                     None => {
                         return (
                             branch_key,
@@ -505,7 +505,7 @@ impl NodeExecutor for LoopNodeExecutor {
             let mut iteration_failed = false;
             for child_def in &children {
                 let executor = match self.registry.get(&child_def.node_type) {
-                    Some(e) => Arc::clone(e),
+                    Some(e) => e,
                     None => {
                         loop_error = Some(format!(
                             "unknown node type {:?} in loop body",
@@ -961,19 +961,37 @@ impl NodeExecutor for HumanReviewNodeExecutor {
 /// Registry that maps node type names to executors.
 ///
 /// For composite node types (parallel, loop, sub_workflow) that need to
-/// look up executors for child nodes, the registry wraps itself in Arc
-/// internally so that these executors can be created after the registry.
+/// look up executors for child nodes, the registry stores a weak self-reference
+/// via `OnceLock<Weak<Self>>`. Composite executors receive an `Arc<Self>` so
+/// they can dynamically resolve child executors at runtime without `unsafe`.
+///
+/// Interior mutability (`RwLock<HashMap>`) lets `register` work through
+/// `&self`, so callers (e.g. `WorkflowEngine::new_arc`) can mutate the
+/// registry after it's been wrapped in `Arc`.
 pub struct NodeExecutorRegistry {
-    executors: HashMap<String, Arc<dyn NodeExecutor>>,
+    executors: parking_lot::RwLock<HashMap<String, Arc<dyn NodeExecutor>>>,
+    self_weak: std::sync::OnceLock<std::sync::Weak<Self>>,
 }
 
 impl NodeExecutorRegistry {
     /// Create a registry pre-loaded with all built-in executors.
     ///
     /// Composite executors (parallel, loop, sub_workflow) are registered
-    /// as stubs initially. Call [`Self::setup_composite_executors`] to
-    /// replace them with real implementations that hold registry/engine refs.
+    /// as stubs initially. For full composite support use [`Self::new_with_composite`]
+    /// or call [`Self::setup_composite_executors`] after wrapping in `Arc`.
     pub fn new() -> Self {
+        let mut executors = Self::builtin_executors();
+        executors.insert("parallel".to_string(), Arc::new(ParallelNodeStub));
+        executors.insert("loop".to_string(), Arc::new(LoopNodeStub));
+        executors.insert("sub_workflow".to_string(), Arc::new(SubWorkflowNodeStub));
+        Self {
+            executors: parking_lot::RwLock::new(executors),
+            self_weak: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Built-in executors that don't need registry/engine self-reference.
+    fn builtin_executors() -> HashMap<String, Arc<dyn NodeExecutor>> {
         let mut executors: HashMap<String, Arc<dyn NodeExecutor>> = HashMap::new();
         executors.insert("llm".to_string(), Arc::new(LLMNodeExecutor));
         executors.insert("tool".to_string(), Arc::new(ToolNodeExecutor));
@@ -983,93 +1001,68 @@ impl NodeExecutorRegistry {
         executors.insert("http".to_string(), Arc::new(HTTPNodeExecutor));
         executors.insert("script".to_string(), Arc::new(ScriptNodeExecutor));
         executors.insert("human_review".to_string(), Arc::new(HumanReviewNodeExecutor));
-
-        // Placeholders for composite executors (they need registry self-ref)
-        executors.insert("parallel".to_string(), Arc::new(ParallelNodeStub));
-        executors.insert("loop".to_string(), Arc::new(LoopNodeStub));
-        executors.insert("sub_workflow".to_string(), Arc::new(SubWorkflowNodeStub));
-
-        Self { executors }
+        executors
     }
 
     /// Create a registry with composite executors that can look up child executors.
     ///
     /// This is the recommended constructor when parallel/loop/sub_workflow nodes
-    /// need to execute real child nodes.
+    /// need to execute real child nodes. The returned `Arc<Self>` holds an internal
+    /// weak self-reference used by `ParallelNodeExecutor` / `LoopNodeExecutor`.
     pub fn new_with_composite() -> Arc<Self> {
-        // Build the executor map with composite stubs initially
-        let mut executors: HashMap<String, Arc<dyn NodeExecutor>> = HashMap::new();
-        executors.insert("llm".to_string(), Arc::new(LLMNodeExecutor));
-        executors.insert("tool".to_string(), Arc::new(ToolNodeExecutor));
-        executors.insert("condition".to_string(), Arc::new(ConditionNodeExecutor));
-        executors.insert("delay".to_string(), Arc::new(DelayNodeExecutor));
-        executors.insert("transform".to_string(), Arc::new(TransformNodeExecutor));
-        executors.insert("http".to_string(), Arc::new(HTTPNodeExecutor));
-        executors.insert("script".to_string(), Arc::new(ScriptNodeExecutor));
-        executors.insert("human_review".to_string(), Arc::new(HumanReviewNodeExecutor));
-
-        // Pre-allocate the Arc so we can get the raw pointer for self-reference
-        let reg = Arc::new(Self { executors });
-        let reg_ptr = Arc::as_ptr(&reg);
-
-        // SAFETY: reg_ptr points to a valid Arc. We only read the executors field
-        // through this pointer in the ParallelNodeExecutor and LoopNodeExecutor,
-        // which are stored inside the same Arc. The Arc is never mutated after
-        // this function returns, so there is no data race. We clone the Arc to
-        // increment the refcount for the executors to hold.
-        let reg_clone = unsafe { Arc::from_raw(reg_ptr) };
-        // Clone again so we don't consume the original
-        let reg_for_parallel = Arc::clone(&reg_clone);
-        let reg_for_loop = Arc::clone(&reg_clone);
-        // Forget the temporary clone so we don't double-free
-        std::mem::forget(reg_clone);
-
-        // Now we need to mutate the Arc. Since we just created it and reg_for_parallel
-        // and reg_for_loop are only captured within closures that won't be called until
-        // after we're done mutating, this is safe.
-        //
-        // Actually, Arc::get_mut won't work because reg_for_parallel holds a ref.
-        // Instead, we use unsafe to get a mutable reference.
-        let reg_mut = unsafe { &mut *(reg_ptr as *mut Self) };
-        reg_mut.executors.insert(
-            "parallel".to_string(),
-            Arc::new(ParallelNodeExecutor::new(reg_for_parallel)),
-        );
-        reg_mut.executors.insert(
-            "loop".to_string(),
-            Arc::new(LoopNodeExecutor::new(reg_for_loop)),
-        );
-
+        let reg = Arc::new(Self::new());
+        // Stash a weak self-reference. Safe because `Arc::downgrade` doesn't
+        // require unique access and OnceLock guarantees one-shot initialization.
+        let _ = reg.self_weak.set(Arc::downgrade(&reg));
+        reg.setup_composite_executors();
         reg
     }
 
     /// Create a fully-featured registry with composite executors and a sub_workflow engine.
     pub fn new_with_engine(engine: Arc<crate::engine::WorkflowEngine>) -> Arc<Self> {
-        let reg = Self::new_with_composite();
-        // Use the same unsafe pattern as new_with_composite since Arc::get_mut
-        // won't work (internal refs from parallel/loop executors)
-        let reg_ptr = Arc::as_ptr(&reg);
-        let reg_mut = unsafe { &mut *(reg_ptr as *mut Self) };
-        reg_mut.executors.insert(
-            "sub_workflow".to_string(),
-            Arc::new(SubWorkflowNodeExecutor::new(engine)),
-        );
+        let reg = Arc::new(Self::new());
+        let _ = reg.self_weak.set(Arc::downgrade(&reg));
+        reg.setup_composite_executors();
+        reg.executors
+            .write()
+            .insert("sub_workflow".to_string(), Arc::new(SubWorkflowNodeExecutor::new(engine)));
         reg
     }
 
-    /// Register a custom executor for a node type.
-    pub fn register(&mut self, node_type: &str, executor: Arc<dyn NodeExecutor>) {
-        self.executors.insert(node_type.to_string(), executor);
+    /// Replace the parallel/loop stubs with real composite executors.
+    /// Requires `self_weak` to be initialized (set by `new_with_composite` /
+    /// `new_with_engine` after the `Arc<Self>` is constructed).
+    fn setup_composite_executors(&self) {
+        if let Some(strong) = self.self_weak.get().and_then(|w| w.upgrade()) {
+            let mut execs = self.executors.write();
+            execs.insert(
+                "parallel".to_string(),
+                Arc::new(ParallelNodeExecutor::new(strong.clone())),
+            );
+            execs.insert("loop".to_string(), Arc::new(LoopNodeExecutor::new(strong)));
+        }
     }
 
-    /// Look up the executor for the given node type.
-    pub fn get(&self, node_type: &str) -> Option<&Arc<dyn NodeExecutor>> {
-        self.executors.get(node_type)
+    /// Register a custom executor for a node type. Overwrites any existing
+    /// executor for the same type. Safe to call through shared reference
+    /// (e.g. `Arc<WorkflowEngine>::node_executors.register(...)`) thanks to
+    /// interior mutability.
+    pub fn register(&self, node_type: &str, executor: Arc<dyn NodeExecutor>) {
+        self.executors
+            .write()
+            .insert(node_type.to_string(), executor);
+    }
+
+    /// Look up the executor for the given node type, returning an owned
+    /// `Arc<dyn NodeExecutor>` so callers can use it across `.await` points
+    /// without holding a borrow on the registry.
+    pub fn get(&self, node_type: &str) -> Option<Arc<dyn NodeExecutor>> {
+        self.executors.read().get(node_type).cloned()
     }
 
     /// Return all registered node type names.
     pub fn node_types(&self) -> Vec<String> {
-        self.executors.keys().cloned().collect()
+        self.executors.read().keys().cloned().collect()
     }
 }
 

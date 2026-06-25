@@ -5,7 +5,6 @@
 //! nodes level-by-level with retry support.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::timeout;
@@ -191,7 +190,7 @@ pub async fn schedule(
             };
 
             let executor = match executors.get(&node.node_type) {
-                Some(e) => Arc::clone(e),
+                Some(e) => e,
                 None => {
                     return Err(format!(
                         "no executor for node type {:?} (node {})",

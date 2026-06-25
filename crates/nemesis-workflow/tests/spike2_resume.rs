@@ -195,7 +195,7 @@ async fn schedule_resume(
         for node_id in runnable {
             let node = node_map.get(&node_id).cloned().unwrap();
             let executor = match executors.get(&node.node_type) {
-                Some(e) => Arc::clone(e),
+                Some(e) => e,
                 None => {
                     return Err(format!(
                         "no executor for node type {:?} (node {})",
@@ -325,7 +325,7 @@ fn make_test_workflow() -> Workflow {
 }
 
 fn make_test_registry() -> NodeExecutorRegistry {
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     registry.register(
         "complete",
         Arc::new(CompleteNodeExecutor {
@@ -523,7 +523,7 @@ async fn test_spike2_skip_completed_efficiency() {
     let workflow = make_test_workflow();
 
     // 替换 registry:所有节点都用 counting executor
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     let counter_a = Arc::clone(&counter);
     registry.register(
         "complete",

@@ -537,7 +537,7 @@ impl NodeExecutor for SlowNodeExecutor {
 #[tokio::test]
 async fn test_cancel_mid_execution() {
     let started_counter = Arc::new(AtomicUsize::new(0));
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     registry.register(
         "slow",
         Arc::new(SlowNodeExecutor {
@@ -591,7 +591,7 @@ async fn test_cancel_mid_execution() {
 #[tokio::test]
 async fn test_schedule_completes_without_cancel() {
     let started_counter = Arc::new(AtomicUsize::new(0));
-    let mut registry = NodeExecutorRegistry::new();
+    let registry = NodeExecutorRegistry::new();
     registry.register(
         "slow",
         Arc::new(SlowNodeExecutor {

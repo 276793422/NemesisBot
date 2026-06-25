@@ -104,11 +104,10 @@ impl WorkflowEngine {
             cancel_tokens: DashMap::new(),
         });
 
-        // Replace the sub_workflow stub with a real executor that holds
-        // a reference to this engine (mirrors Go: e.executors.Register("sub_workflow", &SubWorkflowNode{Engine: e}))
-        let engine_ptr = Arc::as_ptr(&engine);
-        let reg_mut = unsafe { &mut (*(engine_ptr as *mut Self)).node_executors };
-        reg_mut.register(
+        // Wire the engine into the sub_workflow executor. `register` works
+        // through `&self` (RwLock-backed interior mutability) so no `unsafe`
+        // mutation of the Arc is required.
+        engine.node_executors.register(
             "sub_workflow",
             Arc::new(SubWorkflowNodeExecutor::new(engine.clone())),
         );
@@ -143,9 +142,7 @@ impl WorkflowEngine {
             cancel_tokens: DashMap::new(),
         });
 
-        let engine_ptr = Arc::as_ptr(&engine);
-        let reg_mut = unsafe { &mut (*(engine_ptr as *mut Self)).node_executors };
-        reg_mut.register(
+        engine.node_executors.register(
             "sub_workflow",
             Arc::new(SubWorkflowNodeExecutor::new(engine.clone())),
         );
