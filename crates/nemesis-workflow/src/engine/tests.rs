@@ -1076,3 +1076,178 @@ fn test_trigger_source_via_run_blocking() {
         .unwrap();
     assert_eq!(execution.trigger_source, Some(TriggerSource::Cron));
 }
+
+// ---------------------------------------------------------------------------
+// WorkflowEvent observer integration (1a-C3)
+// ---------------------------------------------------------------------------
+
+use crate::events::{WorkflowEvent, WorkflowObserver};
+use async_trait::async_trait;
+use std::sync::Mutex;
+use std::time::Duration;
+
+/// Test observer that captures every event into a Vec.
+struct RecordingObserver {
+    name: String,
+    events: Mutex<Vec<WorkflowEvent>>,
+}
+
+impl RecordingObserver {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            events: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<WorkflowEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    fn event_kinds(&self) -> Vec<&'static str> {
+        self.events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| match e {
+                WorkflowEvent::Started { .. } => "started",
+                WorkflowEvent::NodeStarted { .. } => "node_started",
+                WorkflowEvent::NodeCompleted { .. } => "node_completed",
+                WorkflowEvent::NodeFailed { .. } => "node_failed",
+                WorkflowEvent::Completed { .. } => "completed",
+                WorkflowEvent::Failed { .. } => "failed",
+                WorkflowEvent::Cancelled { .. } => "cancelled",
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl WorkflowObserver for RecordingObserver {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn on_event(&self, event: WorkflowEvent) {
+        let mut events = self.events.lock().unwrap();
+        events.push(event);
+    }
+}
+
+#[tokio::test]
+async fn test_events_for_completed_workflow() {
+    // A successful workflow should emit Started + Completed.
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+
+    engine
+        .register_workflow(make_workflow("ev_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let _ = engine.run("ev_wf", HashMap::new(), None).await.unwrap();
+
+    // Emit runs in a spawned task; give it a moment to land.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let kinds = recorder.event_kinds();
+    assert_eq!(kinds, vec!["started", "completed"]);
+}
+
+#[tokio::test]
+async fn test_events_for_cancelled_workflow() {
+    // A cancelled workflow should emit Started + Cancelled.
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new());
+    let recorder = Arc::new(RecordingObserver::new("recorder"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+
+    // Slow node so we can cancel mid-execution.
+    let mut node = make_node("n1", "delay", vec![]);
+    node.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("ev_cancel_wf", vec![node]))
+        .unwrap();
+
+    let engine_for_run = engine.clone();
+    let run_handle = tokio::spawn(async move {
+        engine_for_run
+            .run("ev_cancel_wf", HashMap::new(), None)
+            .await
+            .unwrap()
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let id = engine.list_executions(None).await[0].id.clone();
+    engine.cancel_execution(&id).await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(3), run_handle)
+        .await
+        .expect("run resolves within 3s of cancel")
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let kinds = recorder.event_kinds();
+    assert_eq!(kinds, vec!["started", "cancelled"]);
+}
+
+#[tokio::test]
+async fn test_started_event_carries_trigger_source() {
+    // The Started event payload must echo back the trigger_source passed
+    // to run().
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+
+    engine
+        .register_workflow(make_workflow("ev_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let _ = engine
+        .run(
+            "ev_trig_wf",
+            HashMap::new(),
+            Some(TriggerSource::Cli),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let snapshot = recorder.snapshot();
+    let started = snapshot
+        .iter()
+        .find(|e| matches!(e, WorkflowEvent::Started { .. }))
+        .expect("Started event should have been emitted");
+    match started {
+        WorkflowEvent::Started {
+            trigger_source, ..
+        } => assert_eq!(*trigger_source, Some(TriggerSource::Cli)),
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn test_no_events_without_observers() {
+    // When no observers are registered, emit is effectively a no-op and
+    // must not error or interfere with execution.
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("ev_no_obs", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+    assert!(!engine.event_manager().has_observers().await);
+
+    let execution = engine.run("ev_no_obs", HashMap::new(), None).await.unwrap();
+    assert_eq!(execution.state, ExecutionState::Completed);
+}

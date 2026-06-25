@@ -5,6 +5,7 @@
 
 pub mod types;
 pub mod engine;
+pub mod events;
 pub mod nodes;
 pub mod persistence;
 pub mod scheduler;
@@ -15,3 +16,4 @@ pub mod conditions;
 
 pub use triggers::{TriggerManager, TriggerConfig};
 pub use context::WorkflowContext;
+pub use events::{WorkflowEvent, WorkflowEventManager, WorkflowObserver};

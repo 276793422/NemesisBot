@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::context::WorkflowContext;
+use crate::events::{WorkflowEvent, WorkflowEventManager};
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
 use crate::scheduler::{self, ScheduleOutcome};
@@ -68,6 +69,10 @@ pub struct WorkflowEngine {
     /// execution is still in-flight (Running); completion removes the entry.
     /// Cancelled tokens cause scheduler + node executors to bail out promptly.
     cancel_tokens: DashMap<String, CancellationToken>,
+    /// Observer / event-bus for workflow lifecycle events
+    /// (Started/Completed/Failed/Cancelled). External systems (web dashboards,
+    /// log shippers) register observers via [`event_manager`](Self::event_manager).
+    event_manager: WorkflowEventManager,
 }
 
 impl WorkflowEngine {
@@ -85,6 +90,7 @@ impl WorkflowEngine {
             persistence_dir: None,
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         }
     }
 
@@ -102,6 +108,7 @@ impl WorkflowEngine {
             persistence_dir: None,
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -126,6 +133,7 @@ impl WorkflowEngine {
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         }
     }
 
@@ -140,6 +148,7 @@ impl WorkflowEngine {
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         });
 
         engine.node_executors.register(
@@ -159,6 +168,7 @@ impl WorkflowEngine {
             persistence_dir: None,
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         }
     }
 
@@ -174,12 +184,20 @@ impl WorkflowEngine {
             persistence_dir: Some(persistence_dir),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
         }
     }
 
     // -----------------------------------------------------------------------
     // Workflow Registration
     // -----------------------------------------------------------------------
+
+    /// Borrow this engine's event manager so callers can register/unregister
+    /// [`WorkflowObserver`]s. Lifetime ties to `&self`; observers stay
+    /// registered for the lifetime of the engine unless explicitly removed.
+    pub fn event_manager(&self) -> &WorkflowEventManager {
+        &self.event_manager
+    }
 
     /// Register a workflow definition.
     ///
@@ -249,7 +267,7 @@ impl WorkflowEngine {
 
         let mut execution = Execution::new(workflow_name.to_string(), input);
         execution.state = ExecutionState::Running;
-        execution.trigger_source = trigger_source;
+        execution.trigger_source = trigger_source.clone();
 
         // Store execution in memory
         {
@@ -259,6 +277,17 @@ impl WorkflowEngine {
 
         // Persist initial state
         self.persist_execution(&execution).await;
+
+        // Notify observers (Started). Built unconditionally so the event
+        // payload reflects exactly what callers passed in.
+        self.event_manager
+            .emit(WorkflowEvent::Started {
+                execution_id: execution.id.clone(),
+                workflow_name: workflow_name.to_string(),
+                trigger_source,
+                timestamp: Local::now(),
+            })
+            .await;
 
         Ok(execution)
     }
@@ -349,6 +378,44 @@ impl WorkflowEngine {
         {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
+        }
+
+        // Emit terminal-state event. Only the four terminal states are
+        // observable here (Waiting is non-terminal from the engine's POV —
+        // observers see Started, then either Completed/Failed/Cancelled).
+        let workflow_name_for_event = execution.workflow_name.clone();
+        let execution_id_for_event = execution.id.clone();
+        match execution.state {
+            ExecutionState::Completed => {
+                self.event_manager
+                    .emit(WorkflowEvent::Completed {
+                        execution_id: execution_id_for_event,
+                        workflow_name: workflow_name_for_event,
+                        timestamp: Local::now(),
+                    })
+                    .await;
+            }
+            ExecutionState::Failed => {
+                let err = execution.error.clone().unwrap_or_default();
+                self.event_manager
+                    .emit(WorkflowEvent::Failed {
+                        execution_id: execution_id_for_event,
+                        workflow_name: workflow_name_for_event,
+                        error: err,
+                        timestamp: Local::now(),
+                    })
+                    .await;
+            }
+            ExecutionState::Cancelled => {
+                self.event_manager
+                    .emit(WorkflowEvent::Cancelled {
+                        execution_id: execution_id_for_event,
+                        workflow_name: workflow_name_for_event,
+                        timestamp: Local::now(),
+                    })
+                    .await;
+            }
+            _ => {}
         }
 
         Ok(execution)
