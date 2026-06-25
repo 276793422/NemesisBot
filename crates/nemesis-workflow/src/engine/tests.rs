@@ -96,7 +96,7 @@ async fn test_start_execution_basic() {
 #[tokio::test]
 async fn test_run_not_found() {
     let engine = WorkflowEngine::new();
-    let result = engine.run("nonexistent", HashMap::new()).await;
+    let result = engine.run("nonexistent", HashMap::new(), None).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, EngineError::WorkflowNotFound(_)));
@@ -374,7 +374,7 @@ async fn test_close_engine() {
     engine
         .register_workflow(make_workflow("wf", vec![make_node("n1", "llm", vec![])]))
         .unwrap();
-    let result = engine.run("wf", HashMap::new()).await;
+    let result = engine.run("wf", HashMap::new(), None).await;
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), EngineError::InvalidState(_)));
 }
@@ -665,7 +665,7 @@ async fn test_cancel_returns_cancelled_state() {
     let run_handle = tokio::spawn(async move {
         let mut input = HashMap::new();
         engine_for_run
-            .run("long_wf", input.drain().collect())
+            .run("long_wf", input.drain().collect(), None)
             .await
             .unwrap()
     });
@@ -716,7 +716,7 @@ async fn test_close_cancels_all_in_flight() {
     let run_handle = tokio::spawn(async move {
         let mut input = HashMap::new();
         engine_for_run
-            .run("long_wf", input.drain().collect())
+            .run("long_wf", input.drain().collect(), None)
             .await
             .unwrap()
     });
@@ -752,7 +752,7 @@ fn test_run_blocking_completes() {
         .register_workflow(make_workflow("blocking_wf", nodes))
         .unwrap();
 
-    let execution = engine.run_blocking("blocking_wf", HashMap::new()).unwrap();
+    let execution = engine.run_blocking("blocking_wf", HashMap::new(), None).unwrap();
 
     assert_eq!(execution.state, ExecutionState::Completed);
     assert_eq!(execution.node_results.len(), 2);
@@ -766,7 +766,7 @@ fn test_run_blocking_unknown_workflow() {
     // Synchronous entry point surfaces WorkflowNotFound synchronously
     // rather than panicking or hanging.
     let engine = WorkflowEngine::new();
-    let result = engine.run_blocking("does_not_exist", HashMap::new());
+    let result = engine.run_blocking("does_not_exist", HashMap::new(), None);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, EngineError::WorkflowNotFound(_)));
@@ -794,6 +794,7 @@ async fn test_start_async_returns_id_quickly() {
         Arc::clone(&engine),
         "async_wf",
         HashMap::new(),
+        None,
     )
     .await
     .expect("start_async should return execution id");
@@ -828,7 +829,7 @@ async fn test_start_async_unknown_workflow() {
     use std::sync::Arc;
 
     let engine = Arc::new(WorkflowEngine::new_arc());
-    let result = WorkflowEngine::start_async(Arc::clone(&engine), "nope", HashMap::new()).await;
+    let result = WorkflowEngine::start_async(Arc::clone(&engine), "nope", HashMap::new(), None).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, EngineError::WorkflowNotFound(_)));
@@ -856,6 +857,7 @@ async fn test_start_async_eventually_completes() {
         Arc::clone(&engine),
         "poll_wf",
         HashMap::new(),
+        None,
     )
     .await
     .unwrap();
@@ -895,7 +897,7 @@ async fn test_create_execution_then_run_async_separately() {
         .unwrap();
 
     let execution = engine
-        .create_execution("two_step_wf", HashMap::new())
+        .create_execution("two_step_wf", HashMap::new(), None)
         .await
         .unwrap();
     assert_eq!(execution.state, ExecutionState::Running);
@@ -909,4 +911,168 @@ async fn test_create_execution_then_run_async_separately() {
     assert_eq!(completed.state, ExecutionState::Completed);
     assert!(completed.ended_at.is_some());
     assert_eq!(completed.node_results.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// TriggerSource integration (1a-C2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_trigger_source_cli_recorded_on_execution() {
+    // TriggerSource::Cli is stamped onto the execution by run().
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("cli_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution = engine
+        .run("cli_wf", HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .unwrap();
+    assert_eq!(execution.trigger_source, Some(TriggerSource::Cli));
+}
+
+#[tokio::test]
+async fn test_trigger_source_cron_recorded_on_execution() {
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("cron_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution = engine
+        .run("cron_wf", HashMap::new(), Some(TriggerSource::Cron))
+        .await
+        .unwrap();
+    assert_eq!(execution.trigger_source, Some(TriggerSource::Cron));
+}
+
+#[tokio::test]
+async fn test_trigger_source_webhook_recorded_with_payload() {
+    // Webhook variant carries its payload through the trigger_source field.
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("webhook_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let payload = serde_json::json!({"event": "push", "ref": "main"});
+    let trigger = TriggerSource::Webhook {
+        payload: payload.clone(),
+    };
+    let execution = engine
+        .run("webhook_wf", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+
+    match execution.trigger_source {
+        Some(TriggerSource::Webhook { payload: p }) => assert_eq!(p, payload),
+        other => panic!("expected Webhook variant, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_trigger_source_agent_tool_carries_recursion_depth() {
+    // AgentTool trigger carries tool_call_id + recursion_depth, both preserved
+    // through the engine. This is the field 1c reads to enforce
+    // MAX_RECURSION_DEPTH.
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("agent_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let trigger = TriggerSource::AgentTool {
+        tool_call_id: "tc_abc".to_string(),
+        recursion_depth: 2,
+    };
+    let execution = engine
+        .run("agent_wf", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+
+    match execution.trigger_source {
+        Some(TriggerSource::AgentTool {
+            tool_call_id,
+            recursion_depth,
+        }) => {
+            assert_eq!(tool_call_id, "tc_abc");
+            assert_eq!(recursion_depth, 2);
+        }
+        other => panic!("expected AgentTool variant, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_trigger_source_none_default() {
+    // Passing None leaves trigger_source unset (legacy behavior).
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("plain_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution = engine
+        .run("plain_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert!(execution.trigger_source.is_none());
+}
+
+#[tokio::test]
+async fn test_trigger_source_preserved_through_start_async() {
+    // start_async path also stamps the trigger_source on the initial
+    // execution record (visible immediately) and the final state (after
+    // background task completes).
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new_arc());
+    engine
+        .register_workflow(make_workflow("async_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution_id = WorkflowEngine::start_async(
+        Arc::clone(&engine),
+        "async_trig_wf",
+        HashMap::new(),
+        Some(TriggerSource::Cli),
+    )
+    .await
+    .unwrap();
+
+    // Should be visible on the initial record immediately.
+    let early = engine.get_execution(&execution_id).await.unwrap();
+    assert_eq!(early.trigger_source, Some(TriggerSource::Cli));
+
+    // And on the completed record after the background task finishes.
+    let mut final_exec = None;
+    for _ in 0..200 {
+        if let Some(e) = engine.get_execution(&execution_id).await {
+            if matches!(
+                e.state,
+                ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
+            ) {
+                final_exec = Some(e);
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let final_exec = final_exec.expect("execution should complete within 2s");
+    assert_eq!(final_exec.trigger_source, Some(TriggerSource::Cli));
+}
+
+#[test]
+fn test_trigger_source_via_run_blocking() {
+    // run_blocking also propagates trigger_source correctly.
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("blocking_trig_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution = engine
+        .run_blocking(
+            "blocking_trig_wf",
+            HashMap::new(),
+            Some(TriggerSource::Cron),
+        )
+        .unwrap();
+    assert_eq!(execution.trigger_source, Some(TriggerSource::Cron));
 }

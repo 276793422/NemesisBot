@@ -405,7 +405,9 @@ async fn cmd_run(workflow_dir: &std::path::Path, name: &str, input_args: &[Strin
         .map_err(|e| anyhow::anyhow!("Registration error: {}", e))?;
 
     println!("  Executing...");
-    let result = engine.run(name, input_map).await
+    let result = engine
+        .run(name, input_map, Some(nemesis_workflow::types::TriggerSource::Cli))
+        .await
         .map_err(|e| anyhow::anyhow!("Execution error: {}", e))?;
 
     // Display result with timestamps and duration

@@ -18,7 +18,7 @@ use crate::context::WorkflowContext;
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
 use crate::scheduler::{self, ScheduleOutcome};
-use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, Workflow};
+use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, TriggerSource, Workflow};
 
 /// Error type for workflow engine operations.
 #[derive(Debug, thiserror::Error)]
@@ -227,10 +227,15 @@ impl WorkflowEngine {
     /// actually execute the workflow. Most callers should use the convenience
     /// wrappers [`run`](Self::run), [`run_blocking`](Self::run_blocking), or
     /// [`start_async`](Self::start_async) instead.
+    ///
+    /// `trigger_source` is recorded on the execution for observability and is
+    /// used by 1c to enforce `MAX_RECURSION_DEPTH` for `AgentTool` triggers.
+    /// Pass `None` when no specific origin applies (e.g., internal tests).
     pub async fn create_execution(
         &self,
         workflow_name: &str,
         input: HashMap<String, serde_json::Value>,
+        trigger_source: Option<TriggerSource>,
     ) -> Result<Execution, EngineError> {
         if *self.closed.read().await {
             return Err(EngineError::InvalidState("engine is closed".to_string()));
@@ -244,6 +249,7 @@ impl WorkflowEngine {
 
         let mut execution = Execution::new(workflow_name.to_string(), input);
         execution.state = ExecutionState::Running;
+        execution.trigger_source = trigger_source;
 
         // Store execution in memory
         {
@@ -350,8 +356,8 @@ impl WorkflowEngine {
 
     /// Run a registered workflow by name (the core convenience entry point).
     ///
-    /// Equivalent to `create_execution(name, input)` followed by
-    /// `run_async(execution_id)`. Returns the completed execution.
+    /// Equivalent to `create_execution(name, input, trigger_source)` followed
+    /// by `run_async(execution_id)`. Returns the completed execution.
     ///
     /// This is the Rust equivalent of Go's `Engine.Run`. Prefer
     /// [`run_blocking`](Self::run_blocking) from synchronous contexts or
@@ -361,8 +367,11 @@ impl WorkflowEngine {
         &self,
         workflow_name: &str,
         input: HashMap<String, serde_json::Value>,
+        trigger_source: Option<TriggerSource>,
     ) -> Result<Execution, EngineError> {
-        let execution = self.create_execution(workflow_name, input).await?;
+        let execution = self
+            .create_execution(workflow_name, input, trigger_source)
+            .await?;
         self.run_async(&execution.id).await
     }
 
@@ -380,12 +389,13 @@ impl WorkflowEngine {
         &self,
         workflow_name: &str,
         input: HashMap<String, serde_json::Value>,
+        trigger_source: Option<TriggerSource>,
     ) -> Result<Execution, EngineError> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| EngineError::InvalidState(format!("runtime creation failed: {}", e)))?;
-        rt.block_on(self.run(workflow_name, input))
+        rt.block_on(self.run(workflow_name, input, trigger_source))
     }
 
     /// Fire-and-forget entry point for async callers.
@@ -406,8 +416,11 @@ impl WorkflowEngine {
         self: Arc<Self>,
         workflow_name: &str,
         input: HashMap<String, serde_json::Value>,
+        trigger_source: Option<TriggerSource>,
     ) -> Result<String, EngineError> {
-        let execution = self.create_execution(workflow_name, input).await?;
+        let execution = self
+            .create_execution(workflow_name, input, trigger_source)
+            .await?;
         let execution_id = execution.id.clone();
         let engine = self.clone();
         tokio::spawn(async move {

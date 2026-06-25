@@ -648,7 +648,7 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
         // Execute sub-workflow via engine
         let exec_result = self
             .engine
-            .run(workflow_name, sub_input)
+            .run(workflow_name, sub_input, None)
             .await
             .map_err(|e| e.to_string())?;
 
