@@ -12,6 +12,7 @@ nemesis-mcp = { workspace = true }
 nemesis-tools = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-forge = { workspace = true }
+nemesis-workflow = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = { workspace = true }
@@ -35,4 +36,5 @@ regex = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
 mockall = { workspace = true }
+nemesis-providers = { workspace = true }
 tempfile = "3"

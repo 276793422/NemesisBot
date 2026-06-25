@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+nemesis-providers = { workspace = true }
+nemesis-tools = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -19,6 +21,8 @@ regex = { workspace = true }
 parking_lot = { workspace = true }
 reqwest = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
+croner = "3"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

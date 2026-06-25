@@ -5,21 +5,145 @@
 //! optional JSONL-based persistence.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Local;
 use dashmap::DashMap;
+use nemesis_providers::router::LLMProvider;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use crate::checkpoint::{
+    Checkpoint, CheckpointStore, FileCheckpointStore, SerializableContext,
+};
 use crate::context::WorkflowContext;
 use crate::events::{WorkflowEvent, WorkflowEventManager};
 use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
 use crate::scheduler::{self, ScheduleOutcome};
+use crate::triggers::CronTimezone;
 use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, TriggerSource, Workflow};
+
+/// Render a path for logging without panicking on non-UTF8.
+fn path_dbg(path: &Path) -> String {
+    path.display().to_string()
+}
+
+/// [`scheduler::ProgressHook`] implementation that saves a checkpoint after
+/// every level (1b-A1 step 6). Borrows the engine for the duration of the
+/// scheduler call — constructed locally in `run_async` so it never outlives
+/// the engine reference.
+struct CheckpointHook<'a> {
+    engine: &'a WorkflowEngine,
+    execution_id: String,
+    workflow_name: String,
+}
+
+#[async_trait::async_trait]
+impl<'a> scheduler::ProgressHook for CheckpointHook<'a> {
+    async fn on_level_completed(&self, wf_ctx: &WorkflowContext) {
+        // Detect whether a human_review node paused us mid-level. The hook
+        // is invoked after *every* level, Waiting or not — capturing the
+        // waiting node id here keeps resume straightforward.
+        let waiting = wf_ctx
+            .get_all_node_results()
+            .iter()
+            .find(|(_, r)| r.state == ExecutionState::Waiting)
+            .map(|(id, _)| id.clone());
+
+        if let Err(e) = self
+            .engine
+            .save_checkpoint(
+                &self.execution_id,
+                &self.workflow_name,
+                wf_ctx,
+                waiting.as_deref(),
+                None,
+            )
+            .await
+        {
+            warn!(
+                target: "nemesis_workflow::engine",
+                execution_id = %self.execution_id,
+                error = %e,
+                "failed to save checkpoint after level"
+            );
+        }
+    }
+}
+
+/// Snapshot a [`WorkflowContext`] into its serialisable form.
+///
+/// Used by [`WorkflowEngine::save_checkpoint`] (1b-A1 step 6) when persisting
+/// in-flight state. Variables and input are pulled directly; `node_results`
+/// are converted one at a time so we can swap `DateTime<Local>` for UTC and
+/// the state enum for its snake_case string.
+fn build_serialisable_context(wf_ctx: &WorkflowContext) -> SerializableContext {
+    use crate::checkpoint::SerializableNodeResult;
+    use crate::types::ExecutionState;
+
+    let mut node_results = HashMap::new();
+    for (id, nr) in wf_ctx.get_all_node_results() {
+        let state_str = match nr.state {
+            ExecutionState::Pending => "pending",
+            ExecutionState::Running => "running",
+            ExecutionState::Completed => "completed",
+            ExecutionState::Failed => "failed",
+            ExecutionState::Cancelled => "cancelled",
+            ExecutionState::Waiting => "waiting",
+        }
+        .to_string();
+        node_results.insert(
+            id,
+            SerializableNodeResult {
+                node_id: nr.node_id.clone(),
+                output: nr.output.clone(),
+                error: nr.error.clone(),
+                state: state_str,
+                started_at: nr.started_at.with_timezone(&chrono::Utc),
+                ended_at: nr.ended_at.with_timezone(&chrono::Utc),
+                metadata: nr.metadata.clone(),
+            },
+        );
+    }
+
+    SerializableContext {
+        variables: wf_ctx.get_all_variables(),
+        node_results,
+        input: wf_ctx.get_all_input(),
+    }
+}
+
+/// Rebuild a [`WorkflowContext`] from a saved checkpoint snapshot.
+///
+/// Inverse of [`build_serialisable_context`]: variables/input come back
+/// directly; node results need their state string parsed back to the enum
+/// and their UTC timestamps converted back to local (the engine uses local
+/// time internally for legacy reasons — see `NodeResult::started_at`).
+fn restore_context_from_snapshot(snapshot: &SerializableContext) -> WorkflowContext {
+    use crate::checkpoint::parse_state;
+
+    let wf_ctx = WorkflowContext::new(snapshot.input.clone());
+    for (k, v) in &snapshot.variables {
+        wf_ctx.set_var(k, v.clone());
+    }
+    for (id, snr) in &snapshot.node_results {
+        let nr = NodeResult {
+            node_id: snr.node_id.clone(),
+            output: snr.output.clone(),
+            error: snr.error.clone(),
+            state: parse_state(&snr.state),
+            started_at: snr.started_at.with_timezone(&chrono::Local),
+            ended_at: snr.ended_at.with_timezone(&chrono::Local),
+            metadata: snr.metadata.clone(),
+        };
+        wf_ctx.set_node_result(id, nr);
+    }
+    wf_ctx
+}
 
 /// Error type for workflow engine operations.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +171,9 @@ pub enum EngineError {
 
     #[error("persistence error: {0}")]
     PersistenceError(String),
+
+    #[error("recursion limit exceeded: {0}")]
+    RecursionLimitExceeded(String),
 }
 
 /// The core workflow engine.
@@ -63,6 +190,13 @@ pub struct WorkflowEngine {
     node_executors: NodeExecutorRegistry,
     /// Optional persistence directory. If empty, persistence is disabled.
     persistence_dir: Option<PathBuf>,
+    /// Optional checkpoint store. If `None`, checkpoints are kept in memory
+    /// (lost on restart). Gateway wires a [`FileCheckpointStore`] so resume
+    /// survives process restarts.
+    ///
+    /// Wrapped in `RwLock` so callers can swap the store post-construction
+    /// through [`Self::set_checkpoint_store`] without needing `&mut self`.
+    checkpoint_store: parking_lot::RwLock<Option<Arc<dyn CheckpointStore>>>,
     /// Whether the engine has been shut down.
     closed: RwLock<bool>,
     /// Per-execution cancellation tokens. Presence of an entry implies the
@@ -73,6 +207,10 @@ pub struct WorkflowEngine {
     /// (Started/Completed/Failed/Cancelled). External systems (web dashboards,
     /// log shippers) register observers via [`event_manager`](Self::event_manager).
     event_manager: WorkflowEventManager,
+    /// Per-engine workflow call stack (1c-F2). Tracks every in-flight
+    /// execution so we can enforce MAX_RECURSION_DEPTH for AgentTool
+    /// nestings and provide diagnostics (snapshot of active frames).
+    call_stack: std::sync::Arc<crate::call_stack::WorkflowCallStack>,
 }
 
 impl WorkflowEngine {
@@ -88,9 +226,11 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         }
     }
 
@@ -106,9 +246,11 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -131,9 +273,11 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         }
     }
 
@@ -146,9 +290,11 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         });
 
         engine.node_executors.register(
@@ -166,9 +312,11 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors,
             persistence_dir: None,
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         }
     }
 
@@ -182,10 +330,341 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors,
             persistence_dir: Some(persistence_dir),
+            checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
         }
+    }
+
+    /// Create an integrated engine backed by real LLM and Tool node executors.
+    ///
+    /// Wires `RealLLMNodeExecutor` and `RealToolNodeExecutor` over the mock
+    /// defaults, enabling workflows that contain `llm` and `tool` nodes to
+    /// actually invoke the configured provider / tool registry at runtime.
+    /// Also wires the `sub_workflow` executor so nested workflows work.
+    ///
+    /// `persistence_dir` controls where in-flight execution state is
+    /// JSONL-persisted; pass `None` to disable persistence.
+    ///
+    /// Returns `Arc<Self>` because the `sub_workflow` executor holds a back
+    /// reference. This is the recommended constructor for gateway / service
+    /// integration (milestone 1a-E1).
+    pub fn new_integrated(
+        provider: Arc<dyn LLMProvider>,
+        tools: Arc<nemesis_tools::registry::ToolRegistry>,
+        persistence_dir: Option<PathBuf>,
+    ) -> Arc<Self> {
+        // If persistence is enabled, also enable on-disk checkpoints so resume
+        // survives restarts. Checkpoints live under
+        // `{persistence_dir}/checkpoints/`.
+        let checkpoint_store: Option<Arc<dyn CheckpointStore>> = persistence_dir
+            .as_ref()
+            .and_then(|dir| match FileCheckpointStore::new(dir.clone()) {
+                Ok(s) => Some(Arc::new(s) as Arc<dyn CheckpointStore>),
+                Err(e) => {
+                    warn!(
+                        target: "nemesis_workflow::engine",
+                        error = %e,
+                        dir = ?dir,
+                        "failed to initialise checkpoint store; resume will not survive restart"
+                    );
+                    None
+                }
+            });
+
+        let engine = Arc::new(Self {
+            workflows: DashMap::new(),
+            executions: RwLock::new(HashMap::new()),
+            node_executors: NodeExecutorRegistry::new(),
+            persistence_dir,
+            checkpoint_store: parking_lot::RwLock::new(checkpoint_store),
+            closed: RwLock::new(false),
+            cancel_tokens: DashMap::new(),
+            event_manager: WorkflowEventManager::new(),
+            call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+        });
+
+        // Override mock node executors with real ones.
+        engine.node_executors.register(
+            "llm",
+            Arc::new(crate::nodes::RealLLMNodeExecutor::new(provider.clone())),
+        );
+        engine.node_executors.register(
+            "tool",
+            Arc::new(crate::nodes::RealToolNodeExecutor::new(tools)),
+        );
+        engine.node_executors.register(
+            "question_classifier",
+            Arc::new(crate::nodes::QuestionClassifierNodeExecutor::new(provider.clone())),
+        );
+        engine.node_executors.register(
+            "parameter_extractor",
+            Arc::new(crate::nodes::ParameterExtractorNodeExecutor::new(provider)),
+        );
+        engine.node_executors.register(
+            "sub_workflow",
+            Arc::new(SubWorkflowNodeExecutor::new(engine.clone())),
+        );
+
+        engine
+    }
+
+    /// Register an [`AgentRunner`] for `agent` workflow nodes (milestone 1b-D2).
+    ///
+    /// Call this after gateway has constructed the AgentLoop. The runner
+    /// is responsible for bridging `agent` workflow nodes to the actual
+    /// `AgentLoop::process_direct_with_channel` call, so the workflow crate
+    /// doesn't need to depend on `nemesis-agent`.
+    pub fn register_agent_runner(&self, runner: Arc<dyn crate::nodes::AgentRunner>) {
+        self.node_executors.register(
+            "agent",
+            Arc::new(crate::nodes::AgentNodeExecutor::new(runner)),
+        );
+    }
+
+    /// Scan a directory for workflow definition files and register each one.
+    ///
+    /// Supports `.yaml`, `.yml`, and `.json` extensions. Files that fail to
+    /// parse or validate are skipped with a warning log; other files are still
+    /// loaded. Returns the number of workflows successfully registered.
+    ///
+    /// Used by the gateway (milestone 1a-E1) to populate the engine from
+    /// `{home}/workspace/workflows/` at startup.
+    pub fn load_workflows_from_dir(&self, dir: &Path) -> Result<usize, EngineError> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    // Missing dir is fine - no workflows to load.
+                    return Ok(0);
+                }
+                return Err(EngineError::PersistenceError(format!(
+                    "read workflow dir {:?}: {}",
+                    dir, err
+                )));
+            }
+        };
+
+        let mut count = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_wf_file = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|ext| matches!(ext, "yaml" | "yml" | "json"))
+                .unwrap_or(false);
+            if !is_wf_file {
+                continue;
+            }
+
+            match crate::parser::parse_file(&path) {
+                Ok(wf) => match self.register_workflow(wf) {
+                    Ok(_) => count += 1,
+                    Err(err) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %err,
+                            "[Workflow] Skipping file: validation failed"
+                        );
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "[Workflow] Skipping file: parse failed"
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            dir = %path_dbg(dir),
+            loaded = count,
+            "[Workflow] Loaded workflow definitions"
+        );
+        Ok(count)
+    }
+
+    /// Scan registered workflows for `cron` triggers and return them as a
+    /// list of `(workflow_name, cron_expr, timezone, static_input)` tuples.
+    ///
+    /// Only triggers with `trigger_type == "cron"` are returned. The static
+    /// input is the trigger's `config.input` object if present, else an empty
+    /// map - the gateway / scheduler is free to enrich it at fire time.
+    ///
+    /// The timezone field is `"local"` (default) or `"utc"`. Any other value
+    /// falls back to local with a warning, so a typo doesn't silently disable
+    /// a schedule.
+    ///
+    /// Used by gateway (milestone 1a-E2) to register cron schedules at startup.
+    pub fn list_cron_workflows(
+        &self,
+    ) -> Vec<(String, String, CronTimezone, HashMap<String, serde_json::Value>)> {
+        let mut out = Vec::new();
+        for entry in self.workflows.iter() {
+            let wf = entry.value();
+            for trigger in &wf.triggers {
+                if trigger.trigger_type != "cron" {
+                    continue;
+                }
+                let schedule = match trigger.config.get("schedule").and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        tracing::warn!(
+                            workflow = %wf.name,
+                            "[Workflow] Cron trigger missing 'schedule' field, skipping"
+                        );
+                        continue;
+                    }
+                };
+                let timezone = match trigger.config.get("timezone").and_then(|v| v.as_str()) {
+                    Some(s) => match CronTimezone::from_config_str(s) {
+                        Some(tz) => tz,
+                        None => {
+                            tracing::warn!(
+                                workflow = %wf.name,
+                                timezone = %s,
+                                "[Workflow] Unknown cron timezone, falling back to local"
+                            );
+                            CronTimezone::Local
+                        }
+                    },
+                    None => CronTimezone::Local,
+                };
+                let input = trigger
+                    .config
+                    .get("input")
+                    .and_then(|v| v.as_object())
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<HashMap<_, _>>()
+                    })
+                    .unwrap_or_default();
+                out.push((wf.name.clone(), schedule, timezone, input));
+            }
+        }
+        out
+    }
+
+    /// Spawn a tokio task per cron-triggered workflow that fires the workflow
+    /// on schedule. Returns `JoinHandle`s so the caller (gateway) can abort
+    /// them on shutdown.
+    ///
+    /// Uses `croner` for cron parsing. Invalid cron expressions are logged
+    /// and skipped.
+    ///
+    /// Each fire calls `start_async(workflow_name, input, TriggerSource::Cron)`.
+    /// Errors during execution are logged but do not stop the schedule.
+    ///
+    /// Timezone handling: if the trigger config has `"timezone": "utc"`, the
+    /// cron expression is evaluated against UTC. Otherwise it's evaluated
+    /// against local time (the default), which matches how sysadmins think
+    /// about cron.
+    pub fn spawn_cron_triggers(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
+        let cron_workflows = self.list_cron_workflows();
+        let mut handles = Vec::with_capacity(cron_workflows.len());
+
+        for (wf_name, schedule, timezone, input) in cron_workflows {
+            let cron = match croner::Cron::from_str(&schedule) {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::warn!(
+                        workflow = %wf_name,
+                        schedule = %schedule,
+                        error = %err,
+                        "[Workflow] Invalid cron expression, skipping"
+                    );
+                    continue;
+                }
+            };
+
+            let engine = Arc::clone(self);
+            let task_name = wf_name.clone();
+            let handle = tokio::spawn(async move {
+                loop {
+                    // Evaluate "now" in the configured timezone so the cron
+                    // expression's wall-clock semantics match the user's
+                    // intent. `find_next_occurrence` returns the next fire
+                    // time in the same TZ; converting both ends to a
+                    // Duration cancels out the offset.
+                    let now_utc = chrono::Utc::now();
+                    let now_local = chrono::Local::now();
+                    let delay = match timezone {
+                        CronTimezone::Utc => {
+                            match cron.find_next_occurrence(&now_utc, false) {
+                                Ok(next) => (next - now_utc).to_std().unwrap_or_else(|_| {
+                                    std::time::Duration::from_millis(100)
+                                }),
+                                Err(err) => {
+                                    tracing::warn!(
+                                        workflow = %task_name,
+                                        error = %err,
+                                        "[Workflow] Failed to compute next cron fire, stopping schedule"
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        CronTimezone::Local => {
+                            match cron.find_next_occurrence(&now_local, false) {
+                                Ok(next) => (next - now_local).to_std().unwrap_or_else(|_| {
+                                    std::time::Duration::from_millis(100)
+                                }),
+                                Err(err) => {
+                                    tracing::warn!(
+                                        workflow = %task_name,
+                                        error = %err,
+                                        "[Workflow] Failed to compute next cron fire, stopping schedule"
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    tokio::time::sleep(delay).await;
+
+                    let exec_engine = Arc::clone(&engine);
+                    let exec_name = task_name.clone();
+                    let exec_input = input.clone();
+                    tokio::spawn(async move {
+                        let trigger = TriggerSource::Cron;
+                        match exec_engine
+                            .start_async(&exec_name, exec_input, Some(trigger))
+                            .await
+                        {
+                            Ok(id) => {
+                                tracing::info!(
+                                    workflow = %exec_name,
+                                    execution_id = %id,
+                                    "[Workflow] Cron-triggered execution started"
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    workflow = %exec_name,
+                                    error = %err,
+                                    "[Workflow] Cron-triggered start_async failed"
+                                );
+                            }
+                        }
+                    });
+                }
+            });
+            handles.push(handle);
+
+            tracing::info!(
+                workflow = %wf_name,
+                schedule = %schedule,
+                timezone = %timezone.label(),
+                "[Workflow] Cron schedule registered"
+            );
+        }
+
+        handles
     }
 
     // -----------------------------------------------------------------------
@@ -197,6 +676,202 @@ impl WorkflowEngine {
     /// registered for the lifetime of the engine unless explicitly removed.
     pub fn event_manager(&self) -> &WorkflowEventManager {
         &self.event_manager
+    }
+
+    /// Borrow the workflow call stack. Useful for diagnostics — e.g.
+    /// listing currently in-flight executions for a "what's running right
+    /// now" WSAPI command.
+    pub fn call_stack(&self) -> &std::sync::Arc<crate::call_stack::WorkflowCallStack> {
+        &self.call_stack
+    }
+
+    /// Borrow the checkpoint store, if configured. Returns `None` when
+    /// checkpoints are disabled (in-memory engine, no persistence dir).
+    ///
+    /// Used by gateway restart-recovery (1b-A1 step 7) to enumerate and
+    /// resume in-flight executions.
+    pub fn checkpoint_store(&self) -> Option<Arc<dyn CheckpointStore>> {
+        self.checkpoint_store.read().clone()
+    }
+
+    /// Replace the checkpoint store. Mainly useful for tests that want to
+    /// inject an [`InMemoryCheckpointStore`]; production code should use
+    /// [`Self::new_integrated`] which wires a [`FileCheckpointStore`].
+    pub fn set_checkpoint_store(&self, store: Arc<dyn CheckpointStore>) {
+        *self.checkpoint_store.write() = Some(store);
+    }
+
+    /// Scan the checkpoint store for in-flight executions and restore them
+    /// into the engine's in-memory map. Called by gateway on startup (1b-A1
+    /// step 7) so executions paused at `human_review` survive process
+    /// restarts.
+    ///
+    /// Returns the number of executions restored. Each restored execution
+    /// is reinserted with its last-known state (`Waiting`, typically). The
+    /// caller can then call [`Self::resume_execution`] to continue past the
+    /// paused node, or leave it parked until an operator decides.
+    ///
+    /// Config-drift handling: if the workflow definition's hash no longer
+    /// matches the checkpoint's hash, the execution is *not* restored and a
+    /// warning is logged. The caller can fish it out of the checkpoint store
+    /// manually if needed.
+    ///
+    /// Mid-flight `Running` checkpoints (no `waiting_node`, incomplete
+    /// `completed_nodes`) are also restored but left in `Running` state so
+    /// observers can see they were in-flight at crash time. Auto-resuming
+    /// them would risk double-execution of side effects.
+    pub async fn restore_incomplete_executions(&self) -> Result<usize, EngineError> {
+        let store = match self.checkpoint_store.read().clone() {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let execution_ids = store
+            .list_executions()
+            .await
+            .map_err(|e| EngineError::PersistenceError(format!("list_executions: {e}")))?;
+
+        let mut restored = 0usize;
+        for exec_id in execution_ids {
+            let cp = match store.latest(&exec_id).await {
+                Ok(Some(c)) => c,
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!(
+                        target: "nemesis_workflow::engine",
+                        execution_id = %exec_id,
+                        error = %e,
+                        "failed to load checkpoint during restore"
+                    );
+                    continue;
+                }
+            };
+
+            // Look up the workflow so we can rebuild a full Execution.
+            // We need to know the workflow_name to do the lookup, but the
+            // checkpoint doesn't carry it directly — derive from execution_id
+            // is fragile. Instead, store it on the checkpoint going forward
+            // (1b-A1 step 7 enhancement): we look it up by scanning registered
+            // workflows whose hash matches.
+            let workflow = self
+                .workflows
+                .iter()
+                .find(|entry| entry.value().hash() == cp.workflow_hash)
+                .map(|e| e.value().clone());
+
+            let workflow = match workflow {
+                Some(w) => w,
+                None => {
+                    warn!(
+                        target: "nemesis_workflow::engine",
+                        execution_id = %exec_id,
+                        hash = %cp.workflow_hash,
+                        "skipping restore: workflow definition not found or hash mismatch (config drift)"
+                    );
+                    continue;
+                }
+            };
+
+            // Skip terminal checkpoints — nothing to resume.
+            let all_completed = cp.completed_nodes.len() >= workflow.nodes.len()
+                && cp.waiting_node.is_none();
+            if all_completed {
+                continue;
+            }
+
+            // Rebuild the Execution. We don't have the original input/trigger
+            // metadata on the checkpoint (the snapshot carries variables/input
+            // separately), so we lift them back out of the context snapshot.
+            let now = Local::now();
+            let mut execution = Execution::new(workflow.name.clone(), cp.context_snapshot.input.clone());
+            execution.id = exec_id.clone();
+            execution.started_at = cp.saved_at.with_timezone(&chrono::Local);
+            execution.workflow_hash = Some(cp.workflow_hash.clone());
+
+            // Restore node_results from the snapshot so resume / inspection
+            // can see what each node already produced.
+            let wf_ctx = restore_context_from_snapshot(&cp.context_snapshot);
+            execution.node_results = wf_ctx.get_all_node_results();
+            execution.variables = wf_ctx.get_all_variables();
+
+            // Determine terminal-vs-paused state.
+            execution.state = if cp.waiting_node.is_some() {
+                ExecutionState::Waiting
+            } else {
+                // Mid-level crash. Leave as Running so observers notice it;
+                // gateway can decide whether to auto-resume.
+                ExecutionState::Running
+            };
+            execution.ended_at = if execution.state == ExecutionState::Waiting {
+                None
+            } else {
+                Some(now)
+            };
+
+            {
+                let mut execs = self.executions.write().await;
+                execs.insert(exec_id.clone(), execution);
+            }
+            restored += 1;
+            info!(
+                target: "nemesis_workflow::engine",
+                execution_id = %exec_id,
+                state = ?if cp.waiting_node.is_some() { "Waiting" } else { "Running" },
+                "restored execution from checkpoint"
+            );
+        }
+
+        Ok(restored)
+    }
+
+    /// Save a checkpoint for `execution_id` capturing the current state of
+    /// `wf_ctx`. Best-effort: returns `Ok(())` if no store is configured.
+    ///
+    /// `completed_nodes` is the set of node IDs that have already finished
+    /// (extracted from `wf_ctx` when not supplied explicitly). `waiting_node`
+    /// is `Some(id)` when the execution is paused at a `human_review` node.
+    pub async fn save_checkpoint(
+        &self,
+        execution_id: &str,
+        workflow_name: &str,
+        wf_ctx: &WorkflowContext,
+        waiting_node: Option<&str>,
+        parent_execution_id: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let store = match self.checkpoint_store.read().clone() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let workflow = self
+            .get_workflow(workflow_name)
+            .ok_or_else(|| EngineError::WorkflowNotFound(workflow_name.to_string()))?;
+        let workflow_hash = workflow.hash();
+
+        let snapshot = build_serialisable_context(wf_ctx);
+        let completed_nodes: HashSet<String> = wf_ctx
+            .get_all_node_results()
+            .iter()
+            .filter(|(_, r)| r.state == ExecutionState::Completed)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        let checkpoint = Checkpoint {
+            id: uuid::Uuid::new_v4().to_string(),
+            execution_id: execution_id.to_string(),
+            saved_at: chrono::Utc::now(),
+            completed_nodes,
+            waiting_node: waiting_node.map(|s| s.to_string()),
+            parent_execution_id: parent_execution_id.map(|s| s.to_string()),
+            context_snapshot: snapshot,
+            workflow_hash,
+        };
+
+        store
+            .save(checkpoint)
+            .await
+            .map_err(|e| EngineError::PersistenceError(format!("save checkpoint: {e}")))?;
+        Ok(())
     }
 
     /// Register a workflow definition.
@@ -317,11 +992,44 @@ impl WorkflowEngine {
             .get_workflow(&execution.workflow_name)
             .ok_or_else(|| EngineError::WorkflowNotFound(execution.workflow_name.clone()))?;
 
+        // 1c-F2: push a call-stack frame for this execution. The depth comes
+        // from the trigger source (AgentTool-triggered runs carry a depth;
+        // everything else is 0). Push can reject if a caller bypassed the
+        // WorkflowRunTool's pre-check and tried to start at depth > MAX.
+        let recursion_depth = crate::call_stack::CallFrame::depth_from_trigger(
+            &execution.trigger_source,
+        );
+        // If we're already inside a workflow run (sub_workflow node, or an
+        // agent_node that re-invoked workflow_run), link this new frame to
+        // the current top of the stack as its parent. Top-level invocations
+        // (stack empty) have no parent.
+        let parent_execution_id = self
+            .call_stack
+            .snapshot()
+            .last()
+            .map(|f| f.execution_id.clone());
+        let frame = crate::call_stack::CallFrame {
+            execution_id: execution.id.clone(),
+            workflow_name: execution.workflow_name.clone(),
+            parent_execution_id,
+            trigger_source: execution.trigger_source.clone(),
+            recursion_depth,
+        };
+        if let Err(reason) = self.call_stack.push(frame) {
+            return Err(EngineError::RecursionLimitExceeded(reason));
+        }
+
         // Initialize workflow context from execution input
         let mut wf_ctx = WorkflowContext::new(execution.input.clone());
         for (k, v) in &workflow.variables {
-            wf_ctx.set_var(k, v);
+            // Workflow YAML stores initial variables as strings; lift them to
+            // Value::String so the rest of the engine only sees JSON values.
+            wf_ctx.set_var(k, serde_json::Value::String(v.clone()));
         }
+
+        // Stamp the execution with the workflow's structural hash so the
+        // resume path can detect config drift (1b-A1 step 5).
+        execution.workflow_hash = Some(workflow.hash());
 
         // Create cancellation token for this execution. Stored in cancel_tokens
         // so cancel_execution(id) can trigger it; removed on completion.
@@ -329,15 +1037,35 @@ impl WorkflowEngine {
         self.cancel_tokens
             .insert(execution.id.clone(), cancel_token.clone());
 
-        // Execute the workflow using the scheduler
-        let schedule_result = scheduler::schedule(
-            &workflow.nodes,
-            &workflow.edges,
-            &self.node_executors,
-            &mut wf_ctx,
-            cancel_token,
-        )
-        .await;
+        // Execute the workflow using the scheduler. When a checkpoint store
+        // is wired, install a per-level hook so an interrupted execution can
+        // resume from the most recently completed level.
+        let has_store = self.checkpoint_store.read().is_some();
+        let schedule_result = if has_store {
+            let hook = CheckpointHook {
+                engine: self,
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+            };
+            scheduler::schedule_with_hook(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                cancel_token,
+                &hook,
+            )
+            .await
+        } else {
+            scheduler::schedule(
+                &workflow.nodes,
+                &workflow.edges,
+                &self.node_executors,
+                &mut wf_ctx,
+                cancel_token,
+            )
+            .await
+        };
 
         // Token is no longer needed; remove from map.
         self.cancel_tokens.remove(&execution.id);
@@ -417,6 +1145,9 @@ impl WorkflowEngine {
             }
             _ => {}
         }
+
+        // Pop our call-stack frame now that the execution has settled.
+        self.call_stack.pop();
 
         Ok(execution)
     }
@@ -738,67 +1469,203 @@ impl WorkflowEngine {
 
     /// Resume a waiting execution (e.g., after human review).
     ///
-    /// The `review_result` map contains the reviewer's response. This method
-    /// finds the node in `Waiting` state, updates it with the review result,
-    /// and marks the execution as completed.
+    /// Updates the waiting node's result with the reviewer's response, then
+    /// continues executing the rest of the workflow via `schedule_resume`.
+    /// Any nodes that already ran (everything in `node_results` with state
+    /// `Completed`) are skipped; only nodes downstream of the waiting node
+    /// actually re-execute.
+    ///
+    /// If a checkpoint store is configured (1b-A1), the new state is saved
+    /// to a fresh checkpoint so a crash mid-resume still recovers.
+    ///
+    /// On success, returns the updated execution. The execution's terminal
+    /// state is `Completed` unless another `human_review` node paused it
+    /// again (in which case it's `Waiting`).
     pub async fn resume_execution(
         &self,
         id: &str,
         review_result: HashMap<String, serde_json::Value>,
-    ) -> Result<(), EngineError> {
-        let mut execs = self.executions.write().await;
-        let execution = execs
-            .get_mut(id)
-            .ok_or_else(|| EngineError::ExecutionNotFound(id.to_string()))?;
+    ) -> Result<Execution, EngineError> {
+        // Snapshot the execution under the write lock, then release the lock
+        // for the duration of the (potentially long) scheduler call.
+        let execution_snapshot = {
+            let mut execs = self.executions.write().await;
+            let execution = execs
+                .get_mut(id)
+                .ok_or_else(|| EngineError::ExecutionNotFound(id.to_string()))?;
 
-        if execution.state != ExecutionState::Waiting {
-            return Err(EngineError::InvalidState(format!(
-                "execution {} is not waiting (state={})",
-                id, execution.state
-            )));
-        }
+            if execution.state != ExecutionState::Waiting {
+                return Err(EngineError::InvalidState(format!(
+                    "execution {} is not waiting (state={})",
+                    id, execution.state
+                )));
+            }
 
-        // Find the waiting node and update its result
-        let mut found_waiting = false;
-        for (node_id, result) in execution.node_results.iter_mut() {
-            if result.state == ExecutionState::Waiting {
-                result.output = serde_json::json!(review_result);
-                result.state = ExecutionState::Completed;
-                result.ended_at = Local::now();
-
-                // Set variable for downstream nodes: {node_id}_approved
-                if let Some(approved) = review_result.get("approved") {
-                    if let Some(b) = approved.as_bool() {
-                        // We store approval status as a node result metadata field
-                        // since the Execution type doesn't have a variables field
-                        debug!(
-                            "[Workflow] Node {} review result: approved={}",
-                            node_id, b
-                        );
+            // Find the waiting node and update its result with the review.
+            let mut found_waiting: Option<String> = None;
+            for (node_id, result) in execution.node_results.iter_mut() {
+                if result.state == ExecutionState::Waiting {
+                    result.output = serde_json::json!(review_result);
+                    result.state = ExecutionState::Completed;
+                    result.ended_at = Local::now();
+                    if let Some(approved) = review_result.get("approved") {
+                        if let Some(b) = approved.as_bool() {
+                            debug!(
+                                "[Workflow] Node {} review result: approved={}",
+                                node_id, b
+                            );
+                        }
                     }
+                    found_waiting = Some(node_id.clone());
+                    break;
                 }
+            }
 
-                found_waiting = true;
-                break;
+            let waiting_id = found_waiting.ok_or_else(|| {
+                EngineError::InvalidState(format!(
+                    "execution {} has no node in waiting state",
+                    id
+                ))
+            })?;
+
+            // Mark as Running while schedule_resume executes.
+            execution.state = ExecutionState::Running;
+            execution.ended_at = None;
+            let snap = execution.clone();
+            (snap, waiting_id)
+        };
+
+        let (mut execution, _waiting_node_id) = execution_snapshot;
+
+        // Load the workflow definition (needed for schedule_resume).
+        let workflow = self
+            .get_workflow(&execution.workflow_name)
+            .ok_or_else(|| EngineError::WorkflowNotFound(execution.workflow_name.clone()))?;
+
+        // Optional config-drift warning.
+        if let Some(ref stored_hash) = execution.workflow_hash {
+            let current_hash = workflow.hash();
+            if stored_hash != &current_hash {
+                warn!(
+                    target: "nemesis_workflow::engine",
+                    execution_id = %id,
+                    workflow = %execution.workflow_name,
+                    "config drift detected: checkpoint hash {} != current {}",
+                    stored_hash, current_hash
+                );
             }
         }
 
-        if !found_waiting {
-            return Err(EngineError::InvalidState(format!(
-                "execution {} has no node in waiting state",
-                id
-            )));
+        // Build context from the current execution state (carries the
+        // just-resolved review_result through to downstream nodes).
+        let mut wf_ctx = WorkflowContext::new(execution.input.clone());
+        for (k, v) in &execution.variables {
+            wf_ctx.set_var(k, v.clone());
+        }
+        for (id, nr) in &execution.node_results {
+            wf_ctx.set_node_result(id, nr.clone());
         }
 
-        execution.state = ExecutionState::Completed;
-        execution.ended_at = Some(Local::now());
+        // Nodes already in `Completed` state must not re-run.
+        let completed_nodes: HashSet<String> = execution
+            .node_results
+            .iter()
+            .filter(|(_, r)| r.state == ExecutionState::Completed)
+            .map(|(id, _)| id.clone())
+            .collect();
 
-        let updated = execution.clone();
-        drop(execs); // Release lock before persistence I/O
+        // Install / refresh cancellation token.
+        let cancel_token = CancellationToken::new();
+        self.cancel_tokens
+            .insert(execution.id.clone(), cancel_token.clone());
 
-        self.persist_execution(&updated).await;
+        let schedule_result = scheduler::schedule_resume(
+            &workflow.nodes,
+            &workflow.edges,
+            &self.node_executors,
+            &mut wf_ctx,
+            &completed_nodes,
+            cancel_token.clone(),
+        )
+        .await;
 
-        Ok(())
+        self.cancel_tokens.remove(&execution.id);
+
+        let now = Local::now();
+        match schedule_result {
+            Ok(ScheduleOutcome::Cancelled) => {
+                execution.state = ExecutionState::Cancelled;
+                execution.ended_at = Some(now);
+            }
+            Ok(ScheduleOutcome::Completed) => {
+                // Detect whether a fresh `human_review` paused us again.
+                let still_waiting = wf_ctx
+                    .get_all_node_results()
+                    .values()
+                    .any(|r| r.state == ExecutionState::Waiting);
+                execution.state = if still_waiting {
+                    ExecutionState::Waiting
+                } else {
+                    ExecutionState::Completed
+                };
+                if !still_waiting {
+                    execution.ended_at = Some(now);
+                } else {
+                    execution.ended_at = None;
+                }
+            }
+            Err(err) => {
+                execution.state = ExecutionState::Failed;
+                execution.error = Some(err);
+                execution.ended_at = Some(now);
+            }
+        }
+
+        // Copy fresh node_results + variables back into the execution.
+        execution.node_results = wf_ctx.get_all_node_results();
+        execution.variables = wf_ctx.get_all_variables();
+
+        // Save a new checkpoint reflecting post-resume state. Skip when the
+        // execution has already terminated (no value in checkpointing a dead
+        // execution; the latest checkpoint stays as the last in-flight one).
+        if execution.state == ExecutionState::Waiting || execution.state == ExecutionState::Running
+        {
+            let results = wf_ctx.get_all_node_results();
+            let waiting: Option<String> = if execution.state == ExecutionState::Waiting {
+                results
+                    .iter()
+                    .find(|(_, r)| r.state == ExecutionState::Waiting)
+                    .map(|(id, _)| id.clone())
+            } else {
+                None
+            };
+            if let Err(e) = self
+                .save_checkpoint(
+                    &execution.id,
+                    &execution.workflow_name,
+                    &wf_ctx,
+                    waiting.as_deref(),
+                    None,
+                )
+                .await
+            {
+                warn!(
+                    target: "nemesis_workflow::engine",
+                    execution_id = %id,
+                    error = %e,
+                    "failed to save post-resume checkpoint"
+                );
+            }
+        }
+
+        // Persist + update in-memory state.
+        self.persist_execution(&execution).await;
+        {
+            let mut execs = self.executions.write().await;
+            execs.insert(execution.id.clone(), execution.clone());
+        }
+
+        Ok(execution)
     }
 
     // -----------------------------------------------------------------------

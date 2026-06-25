@@ -49,6 +49,9 @@ pub struct SharedResources {
     pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
     pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
     pub enabled_channels: Vec<String>,
+    /// Workflow engine reference — when set, registers the `workflow_run`
+    /// agent tool. None keeps the tool absent (e.g., during tests).
+    pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
 
     // Cluster RPC closure (Cluster itself is mem::forget'd, but rpc_call_fn must survive)
     pub cluster_rpc_call_fn: Option<
@@ -311,6 +314,7 @@ fn build_shared_tool_config(
         }),
         cluster_rpc: None, // Registered separately with call_fn
         mcp_tool_snapshot,
+        workflow_engine: shared.workflow_engine.clone(),
     }
 }
 

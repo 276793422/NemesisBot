@@ -1157,3 +1157,1296 @@ async fn test_new_with_engine_registry() {
     assert!(registry.get("loop").is_some());
     assert!(registry.get("llm").is_some());
 }
+
+// ---------------------------------------------------------------------------
+// RealLLMNodeExecutor (1a-D1)
+// ---------------------------------------------------------------------------
+
+use async_trait::async_trait;
+use nemesis_providers::failover::FailoverError;
+use nemesis_providers::router::LLMProvider;
+use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
+
+/// Provider stub that returns a fixed response and records the request.
+struct StubProvider {
+    name: String,
+    default_model: String,
+    response: String,
+    fail_with: Option<String>,
+    last_model: std::sync::Mutex<Option<String>>,
+    last_options: std::sync::Mutex<Option<ChatOptions>>,
+    last_messages: std::sync::Mutex<Vec<Message>>,
+}
+
+impl StubProvider {
+    fn success(name: &str, model: &str, response: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            default_model: model.to_string(),
+            response: response.to_string(),
+            fail_with: None,
+            last_model: std::sync::Mutex::new(None),
+            last_options: std::sync::Mutex::new(None),
+            last_messages: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn failing(name: &str, model: &str, err: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            default_model: model.to_string(),
+            response: String::new(),
+            fail_with: Some(err.to_string()),
+            last_model: std::sync::Mutex::new(None),
+            last_options: std::sync::Mutex::new(None),
+            last_messages: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl LLMProvider for StubProvider {
+    async fn chat(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        model: &str,
+        options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        *self.last_model.lock().unwrap() = Some(model.to_string());
+        *self.last_options.lock().unwrap() = Some(options.clone());
+        *self.last_messages.lock().unwrap() = messages.to_vec();
+
+        if let Some(err) = &self.fail_with {
+            return Err(FailoverError::Unknown {
+                provider: self.name.clone(),
+                message: err.clone(),
+            });
+        }
+
+        Ok(LLMResponse {
+            content: self.response.clone(),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            usage: Some(nemesis_providers::types::UsageInfo {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            }),
+            reasoning_content: None,
+            extra: HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    fn default_model(&self) -> &str {
+        &self.default_model
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+fn llm_config_prompt_only(prompt: &str) -> HashMap<String, serde_json::Value> {
+    let mut c = HashMap::new();
+    c.insert("prompt".to_string(), serde_json::json!(prompt));
+    c
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_success_path() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "hello world"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert!(result.error.is_none());
+
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("text").unwrap(), "hello world");
+    assert_eq!(out.get("model").unwrap(), "stub-model");
+    assert_eq!(out.get("finish_reason").unwrap(), "stop");
+    let usage = out.get("usage").unwrap().as_object().unwrap();
+    assert_eq!(usage.get("total_tokens").unwrap(), 15);
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_passes_temperature_and_max_tokens() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let mut config = llm_config_prompt_only("Hi");
+    config.insert("temperature".to_string(), serde_json::json!(0.7));
+    config.insert("max_tokens".to_string(), serde_json::json!(256u64));
+    let node = make_node("n1", "llm", config);
+
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = provider
+        .last_options
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("provider should have captured ChatOptions");
+    assert_eq!(captured.temperature, Some(0.7));
+    assert_eq!(captured.max_tokens, Some(256));
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_honors_explicit_model() {
+    let provider = Arc::new(StubProvider::success("stub", "default-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let mut config = llm_config_prompt_only("Hi");
+    config.insert("model".to_string(), serde_json::json!("custom-7b"));
+    let node = make_node("n1", "llm", config);
+
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = provider.last_model.lock().unwrap().clone();
+    assert_eq!(captured.as_deref(), Some("custom-7b"));
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_falls_back_to_default_model() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-default", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = provider
+        .last_model
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert_eq!(captured, "stub-default");
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_provider_error_returns_failed_node_result() {
+    // Provider errors are surfaced as a Failed NodeResult (not Err), so the
+    // workflow can capture and branch on the failure state.
+    let provider = Arc::new(StubProvider::failing("stub", "stub-model", "timeout"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.expect("Failed state should carry an error");
+    assert!(err.contains("LLM provider error"));
+    assert!(err.contains("timeout"));
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_missing_prompt_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(provider as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", HashMap::new());
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap();
+    assert!(err.contains("missing required 'prompt'"));
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_resolves_prompt_template() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hello {{name}}!"));
+    let mut ctx = HashMap::new();
+    ctx.insert("name".to_string(), serde_json::json!("Alice"));
+
+    let _ = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+
+    let captured = provider.last_messages.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].content, "Hello Alice!");
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_prepends_system_prompt() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let mut config = llm_config_prompt_only("Hi");
+    config.insert(
+        "system_prompt".to_string(),
+        serde_json::json!("You are a robot."),
+    );
+    let node = make_node("n1", "llm", config);
+
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = provider.last_messages.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].role, "system");
+    assert_eq!(captured[0].content, "You are a robot.");
+    assert_eq!(captured[1].role, "user");
+}
+
+#[tokio::test]
+async fn test_real_llm_executor_can_be_registered_as_llm_node() {
+    // Verifies the real executor can override the default mock via
+    // NodeExecutorRegistry::register("llm", ...).
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "real-response"));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "llm",
+        Arc::new(RealLLMNodeExecutor::new(provider as Arc<dyn LLMProvider>)),
+    );
+
+    let executor = registry.get("llm").expect("llm executor should be registered");
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let result = executor
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("text").unwrap(), "real-response");
+}
+
+// ===========================================================================
+// RealToolNodeExecutor tests
+// ===========================================================================
+
+use nemesis_tools::registry::{Tool, ToolRegistry};
+use nemesis_tools::types::ToolResult;
+
+/// Minimal in-memory Tool implementation for tests.
+///
+/// Captures the last args it was called with and returns either a
+/// pre-canned success result or an error result.
+struct StubTool {
+    name: String,
+    canned_output: String,
+    fail_with: Option<String>,
+    last_args: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+impl StubTool {
+    fn success(name: &str, output: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            canned_output: output.to_string(),
+            fail_with: None,
+            last_args: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn failing(name: &str, err: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            canned_output: String::new(),
+            fail_with: Some(err.to_string()),
+            last_args: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn captured_args(&self) -> Option<serde_json::Value> {
+        self.last_args.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl Tool for StubTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "stub tool for workflow tests"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(&self, args: &serde_json::Value) -> ToolResult {
+        *self.last_args.lock().unwrap() = Some(args.clone());
+        if let Some(err) = &self.fail_with {
+            return ToolResult::error(err);
+        }
+        ToolResult::success(&self.canned_output)
+    }
+}
+
+fn tool_config_name_only(name: &str) -> HashMap<String, serde_json::Value> {
+    let mut c = HashMap::new();
+    c.insert("name".to_string(), serde_json::json!(name));
+    c
+}
+
+fn tool_config_with_args(name: &str, args: serde_json::Value) -> HashMap<String, serde_json::Value> {
+    let mut c = HashMap::new();
+    c.insert("name".to_string(), serde_json::json!(name));
+    c.insert("args".to_string(), args);
+    c
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_calls_registered_tool() {
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("weather", "sunny, 22C"));
+    registry.register(stub as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let node = make_node("n1", "tool", tool_config_name_only("weather"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert!(result.error.is_none());
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("tool").unwrap(), "weather");
+    assert_eq!(out.get("result").unwrap(), "sunny, 22C");
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_passes_args_through() {
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("echo", ""));
+    registry.register(stub.clone() as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let args = serde_json::json!({"city": "Tokyo", "units": "metric"});
+    let node = make_node("n1", "tool", tool_config_with_args("echo", args));
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = stub.captured_args().expect("tool should have been invoked");
+    assert_eq!(captured["city"], "Tokyo");
+    assert_eq!(captured["units"], "metric");
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_resolves_template_in_args() {
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("echo", ""));
+    registry.register(stub.clone() as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+
+    let mut ctx = HashMap::new();
+    ctx.insert("city".to_string(), serde_json::json!("Paris"));
+
+    // String field with {{city}} placeholder + nested object.
+    let args = serde_json::json!({
+        "query": "weather in {{city}}",
+        "nested": {"location": "{{city}}", "count": 3},
+        "plain": 42,
+    });
+    let node = make_node("n1", "tool", tool_config_with_args("echo", args));
+    let _ = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+
+    let captured = stub.captured_args().expect("tool should have been invoked");
+    assert_eq!(captured["query"], "weather in Paris");
+    assert_eq!(captured["nested"]["location"], "Paris");
+    assert_eq!(captured["nested"]["count"], 3);
+    assert_eq!(captured["plain"], 42);
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_surfaces_tool_error_as_failed_state() {
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::failing("db", "connection refused"));
+    registry.register(stub as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let node = make_node("n1", "tool", tool_config_name_only("db"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    // Tool errors become a Failed NodeResult (not Err) so the workflow can
+    // branch on failure.
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.expect("Failed state should carry an error");
+    assert!(err.contains("tool 'db' error"));
+    assert!(err.contains("connection refused"));
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_missing_name_fails() {
+    let registry = Arc::new(ToolRegistry::new());
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let node = make_node("n1", "tool", HashMap::new());
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap();
+    assert!(err.contains("missing required 'name'"));
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_unknown_tool_returns_failed() {
+    let registry = Arc::new(ToolRegistry::new());
+    // Registry is empty - tool lookup will fail inside ToolRegistry::execute.
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let node = make_node("n1", "tool", tool_config_name_only("does_not_exist"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap();
+    // ToolRegistry::error result: "tool \"does_not_exist\" not found"
+    assert!(err.contains("does_not_exist"));
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_accepts_legacy_tool_key() {
+    // Existing workflows use config["tool"] instead of config["name"].
+    // Both should work.
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("legacy_tool", "ok"));
+    registry.register(stub as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let mut config = HashMap::new();
+    config.insert("tool".to_string(), serde_json::json!("legacy_tool"));
+    let node = make_node("n1", "tool", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("tool").unwrap(), "legacy_tool");
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_can_be_registered_as_tool_node() {
+    // Verifies the real executor can override the default mock via
+    // NodeExecutorRegistry::register("tool", ...).
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("ping", "pong"));
+    registry.register(stub as Arc<dyn Tool>);
+
+    let node_registry = NodeExecutorRegistry::new();
+    node_registry.register("tool", Arc::new(RealToolNodeExecutor::new(Arc::clone(&registry))));
+
+    let executor = node_registry
+        .get("tool")
+        .expect("tool executor should be registered");
+    let node = make_node("n1", "tool", tool_config_name_only("ping"));
+    let result = executor
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("result").unwrap(), "pong");
+}
+
+#[tokio::test]
+async fn test_real_tool_executor_defaults_args_to_null() {
+    // If config has no "args" key, the tool still gets called (with null).
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success("noop", "done"));
+    registry.register(stub.clone() as Arc<dyn Tool>);
+
+    let exec = RealToolNodeExecutor::new(Arc::clone(&registry));
+    let node = make_node("n1", "tool", tool_config_name_only("noop"));
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let captured = stub.captured_args().expect("tool should have been invoked");
+    assert!(captured.is_null());
+}
+
+// ---------------------------------------------------------------------------
+// QuestionClassifierNodeExecutor tests (1b-D3)
+// ---------------------------------------------------------------------------
+
+fn classifier_config(question: &str, classes: &[(&str, &str)]) -> HashMap<String, serde_json::Value> {
+    let classes_json: Vec<serde_json::Value> = classes
+        .iter()
+        .map(|(id, desc)| {
+            serde_json::json!({"id": id, "description": desc})
+        })
+        .collect();
+    HashMap::from([
+        ("question".to_string(), serde_json::json!(question)),
+        ("classes".to_string(), serde_json::Value::Array(classes_json)),
+    ])
+}
+
+#[tokio::test]
+async fn test_question_classifier_success_first_attempt() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("I want a refund", &[
+            ("billing", "questions about invoices, refunds, payments"),
+            ("support", "technical issues"),
+            ("sales", "purchase inquiries"),
+        ]),
+    );
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("class_id").unwrap(), "billing");
+    assert_eq!(out.get("attempts").unwrap(), 1);
+    // First-attempt confidence is 1.0.
+    let confidence = out.get("confidence").unwrap().as_f64().unwrap();
+    assert!(confidence > 0.99, "expected confidence 1.0, got {}", confidence);
+}
+
+#[tokio::test]
+async fn test_question_classifier_strips_wrapper_punctuation() {
+    // LLM often wraps the id in quotes / periods. The parser should clean it.
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "\"sales.\""));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("How much is the pro plan?", &[
+            ("billing", "..."),
+            ("sales", "..."),
+        ]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["class_id"], "sales");
+}
+
+#[tokio::test]
+async fn test_question_classifier_takes_first_token_when_prose_follows() {
+    // Defensive parse: "billing\n(because invoice)" → "billing"
+    let provider = Arc::new(StubProvider::success("stub", "stub-model",
+        "billing\n(because the user mentioned invoices)"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("refund please", &[
+            ("billing", "..."),
+            ("support", "..."),
+        ]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["class_id"], "billing");
+}
+
+#[tokio::test]
+async fn test_question_classifier_fails_on_unknown_class() {
+    // Stub returns "hr" but only ["billing","support"] are valid.
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "hr"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = classifier_config("help", &[
+        ("billing", "..."),
+        ("support", "..."),
+    ]);
+    config.insert("max_attempts".to_string(), serde_json::json!(2));
+    let node = make_node("classify", "question_classifier", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("failed after 2 attempts"));
+}
+
+#[tokio::test]
+async fn test_question_classifier_missing_question_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = HashMap::new();
+    config.insert(
+        "classes".to_string(),
+        serde_json::json!([{"id": "billing", "description": "..."}]),
+    );
+    let node = make_node("classify", "question_classifier", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("missing required 'question'"));
+}
+
+#[tokio::test]
+async fn test_question_classifier_missing_classes_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = HashMap::new();
+    config.insert("question".to_string(), serde_json::json!("hello"));
+    let node = make_node("classify", "question_classifier", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("missing required 'classes'"));
+}
+
+#[tokio::test]
+async fn test_question_classifier_empty_classes_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("hello", &[]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("empty 'classes'"));
+}
+
+#[tokio::test]
+async fn test_question_classifier_resolves_template_in_question() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "support"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("{{user_msg}}", &[("support", "...")]),
+    );
+    let ctx = HashMap::from([(
+        "user_msg".to_string(),
+        serde_json::json!("the app crashed"),
+    )]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["class_id"], "support");
+}
+
+#[tokio::test]
+async fn test_question_classifier_provider_error_retries_then_fails() {
+    let provider = Arc::new(StubProvider::failing("stub", "stub-model", "rate limited"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = classifier_config("hello", &[("billing", "...")]);
+    config.insert("max_attempts".to_string(), serde_json::json!(2));
+    let node = make_node("classify", "question_classifier", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_ref().unwrap();
+    assert!(err.contains("failed after 2 attempts"));
+    assert!(err.contains("rate limited"));
+}
+
+#[tokio::test]
+async fn test_question_classifier_uses_default_temperature_zero() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("hi", &[("billing", "...")]),
+    );
+
+    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let last_options = provider.last_options.lock().unwrap().clone().unwrap();
+    assert_eq!(last_options.temperature, Some(0.0));
+}
+
+#[test]
+fn parse_classifier_output_handles_bare_id() {
+    assert_eq!(parse_classifier_output("billing"), Some("billing".to_string()));
+}
+
+#[test]
+fn parse_classifier_output_trims_punctuation() {
+    assert_eq!(parse_classifier_output("  \"billing.\"  "), Some("billing".to_string()));
+    assert_eq!(parse_classifier_output("'sales',"), Some("sales".to_string()));
+}
+
+#[test]
+fn parse_classifier_output_takes_first_token_from_prose() {
+    assert_eq!(
+        parse_classifier_output("billing because invoice"),
+        Some("billing".to_string())
+    );
+}
+
+#[test]
+fn parse_classifier_output_returns_none_for_empty() {
+    assert_eq!(parse_classifier_output("   "), None);
+    assert_eq!(parse_classifier_output(""), None);
+}
+
+// ---------------------------------------------------------------------------
+// ParameterExtractorNodeExecutor tests (1b-D4)
+// ---------------------------------------------------------------------------
+
+/// Build a parameter_extractor config from a text + a list of
+/// `(name, type, description, required)` tuples.
+fn extractor_config(
+    text: &str,
+    params: &[(&str, &str, &str, bool)],
+) -> HashMap<String, serde_json::Value> {
+    let params_json: Vec<serde_json::Value> = params
+        .iter()
+        .map(|(name, ty, desc, req)| {
+            serde_json::json!({
+                "name": name,
+                "type": ty,
+                "description": desc,
+                "required": req,
+            })
+        })
+        .collect();
+    HashMap::from([
+        ("text".to_string(), serde_json::json!(text)),
+        ("parameters".to_string(), serde_json::Value::Array(params_json)),
+    ])
+}
+
+#[tokio::test]
+async fn test_extractor_returns_valid_json() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Alice","age":30}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config(
+            "Hi, I'm Alice and I'm 30 years old.",
+            &[
+                ("name", "string", "user's name", true),
+                ("age", "number", "user's age", false),
+            ],
+        ),
+    );
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    let out = result.output.as_object().unwrap();
+    let params = out.get("parameters").unwrap().as_object().unwrap();
+    assert_eq!(params.get("name").unwrap(), "Alice");
+    assert_eq!(params.get("age").unwrap(), 30);
+    assert_eq!(out.get("attempts").unwrap(), 1);
+}
+
+#[tokio::test]
+async fn test_extractor_handles_partial_data() {
+    // Only name is extractable; the optional `email` field should be filled
+    // with null (not omitted) so downstream nodes see a stable shape.
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Bob"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config(
+            "I'm Bob.",
+            &[
+                ("name", "string", "name", true),
+                ("email", "string", "email", false),
+            ],
+        ),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let params = result.output["parameters"].as_object().unwrap();
+    assert_eq!(params.get("name").unwrap(), "Bob");
+    assert!(params.get("email").unwrap().is_null());
+}
+
+#[tokio::test]
+async fn test_extractor_fills_missing_optional_with_null() {
+    // LLM returns only the required field; optional ones are added by normalizer.
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"city":"NYC"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config(
+            "lives in NYC",
+            &[
+                ("city", "string", "city", true),
+                ("country", "string", "country", false),
+                ("zip", "string", "zip code", false),
+            ],
+        ),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let params = result.output["parameters"].as_object().unwrap();
+    assert_eq!(params.len(), 3, "all declared fields should appear");
+    assert_eq!(params.get("city").unwrap(), "NYC");
+    assert!(params.get("country").unwrap().is_null());
+    assert!(params.get("zip").unwrap().is_null());
+}
+
+#[tokio::test]
+async fn test_extractor_strips_markdown_fence() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        "```json\n{\"name\":\"Carol\"}\n```",
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("Carol", &[("name", "string", "name", true)]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["parameters"]["name"], "Carol");
+}
+
+#[tokio::test]
+async fn test_extractor_extracts_json_from_prose() {
+    // LLM wraps the JSON with chatty text — parser should still find the {...} region.
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        "Sure, here's the JSON:\n{\"name\":\"Dave\"}\nLet me know if you need anything else!",
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("Dave", &[("name", "string", "name", true)]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["parameters"]["name"], "Dave");
+}
+
+#[tokio::test]
+async fn test_extractor_retry_on_invalid_json() {
+    use std::sync::atomic::AtomicUsize;
+
+    // First call returns junk; second call returns valid JSON.
+    struct TwoPhase {
+        attempts: AtomicUsize,
+        first: String,
+        second: String,
+    }
+    #[async_trait]
+    impl LLMProvider for TwoPhase {
+        fn name(&self) -> &str { "two-phase" }
+        fn default_model(&self) -> &str { "stub-model" }
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model: &str,
+            _options: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            let n = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let content = if n == 0 { self.first.clone() } else { self.second.clone() };
+            Ok(LLMResponse {
+                content,
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    let provider = Arc::new(TwoPhase {
+        attempts: AtomicUsize::new(0),
+        first: "this is not json at all".to_string(),
+        second: r#"{"name":"Eve"}"#.to_string(),
+    });
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("Eve", &[("name", "string", "name", true)]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["parameters"]["name"], "Eve");
+    assert_eq!(result.output["attempts"], 2);
+}
+
+#[tokio::test]
+async fn test_extractor_fails_when_required_missing_after_retries() {
+    // LLM never emits the required field — should exhaust retries and fail.
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"email":"a@b.com"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut cfg = extractor_config(
+        "contact info",
+        &[
+            ("name", "string", "name", true),
+            ("email", "string", "email", false),
+        ],
+    );
+    cfg.insert("max_attempts".to_string(), serde_json::json!(2));
+    let node = make_node("extract", "parameter_extractor", cfg);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_ref().unwrap();
+    assert!(err.contains("failed after 2 attempts"), "got: {}", err);
+    assert!(err.contains("missing required"), "got: {}", err);
+    assert!(err.contains("name"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn test_extractor_missing_text_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "{}"));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut cfg = HashMap::new();
+    cfg.insert(
+        "parameters".to_string(),
+        serde_json::json!([{"name": "x", "type": "string", "description": "", "required": false}]),
+    );
+    let node = make_node("extract", "parameter_extractor", cfg);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("missing required 'text'"));
+}
+
+#[tokio::test]
+async fn test_extractor_missing_parameters_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "{}"));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut cfg = HashMap::new();
+    cfg.insert("text".to_string(), serde_json::json!("hello"));
+    let node = make_node("extract", "parameter_extractor", cfg);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("missing required 'parameters'"));
+}
+
+#[tokio::test]
+async fn test_extractor_empty_parameters_fails() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "{}"));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("hello", &[]),
+    );
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("empty 'parameters'"));
+}
+
+#[tokio::test]
+async fn test_extractor_resolves_template_in_text() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Frank"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("{{user_input}}", &[("name", "string", "name", true)]),
+    );
+    let ctx = HashMap::from([(
+        "user_input".to_string(),
+        serde_json::json!("My name is Frank"),
+    )]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["parameters"]["name"], "Frank");
+
+    // The provider should have seen the resolved text, not the raw template.
+    let last = provider.last_messages.lock().unwrap().clone();
+    assert_eq!(last[1].content, "My name is Frank");
+}
+
+#[tokio::test]
+async fn test_extractor_default_temperature_zero() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "{}"));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config("hi", &[("x", "string", "", false)]),
+    );
+
+    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let last_options = provider.last_options.lock().unwrap().clone().unwrap();
+    assert_eq!(last_options.temperature, Some(0.0));
+}
+
+#[tokio::test]
+async fn test_extractor_provider_error_retries_then_fails() {
+    let provider = Arc::new(StubProvider::failing("stub", "stub-model", "rate limited"));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut cfg = extractor_config("hi", &[("x", "string", "", true)]);
+    cfg.insert("max_attempts".to_string(), serde_json::json!(2));
+    let node = make_node("extract", "parameter_extractor", cfg);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_ref().unwrap();
+    assert!(err.contains("failed after 2 attempts"));
+    assert!(err.contains("rate limited"));
+}
+
+#[test]
+fn parse_json_object_handles_bare_object() {
+    let v = parse_json_object(r#"{"a":1}"#).unwrap();
+    assert_eq!(v["a"], 1);
+}
+
+#[test]
+fn parse_json_object_strips_fences() {
+    let v = parse_json_object("```json\n{\"a\":1}\n```").unwrap();
+    assert_eq!(v["a"], 1);
+    let v = parse_json_object("```\n{\"a\":1}\n```").unwrap();
+    assert_eq!(v["a"], 1);
+}
+
+#[test]
+fn parse_json_object_extracts_from_prose() {
+    let v = parse_json_object("here you go:\n{\"a\":1}\nenjoy!").unwrap();
+    assert_eq!(v["a"], 1);
+}
+
+#[test]
+fn parse_json_object_rejects_non_object() {
+    // Array parses as JSON but is rejected because we need an object.
+    assert!(parse_json_object("[1,2,3]").is_err());
+    assert!(parse_json_object("\"string\"").is_err());
+    assert!(parse_json_object("not json at all").is_err());
+    assert!(parse_json_object("").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// AgentNodeExecutor tests (1b-D2)
+// ---------------------------------------------------------------------------
+
+/// Records each `run_direct` invocation so tests can assert against them.
+#[derive(Clone)]
+struct CapturedCall {
+    prompt: String,
+    agent_id: String,
+    max_turns: u32,
+}
+
+/// Test runner that returns a queued response and remembers the last call.
+struct StubAgentRunner {
+    response: String,
+    fail_with: Option<String>,
+    tools_used: Vec<String>,
+    last_call: std::sync::Mutex<Option<CapturedCall>>,
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+impl StubAgentRunner {
+    fn success(response: &str, tools: &[&str]) -> Self {
+        Self {
+            response: response.to_string(),
+            fail_with: None,
+            tools_used: tools.iter().map(|s| s.to_string()).collect(),
+            last_call: std::sync::Mutex::new(None),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn failing(err: &str) -> Self {
+        Self {
+            response: String::new(),
+            fail_with: Some(err.to_string()),
+            tools_used: Vec::new(),
+            last_call: std::sync::Mutex::new(None),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl AgentRunner for StubAgentRunner {
+    async fn run_direct(
+        &self,
+        prompt: &str,
+        agent_id: &str,
+        max_turns: u32,
+    ) -> Result<AgentRunResult, String> {
+        self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self.last_call.lock().unwrap() = Some(CapturedCall {
+            prompt: prompt.to_string(),
+            agent_id: agent_id.to_string(),
+            max_turns,
+        });
+        if let Some(e) = &self.fail_with {
+            return Err(e.clone());
+        }
+        Ok(AgentRunResult {
+            response: self.response.clone(),
+            tools_used: self.tools_used.clone(),
+        })
+    }
+}
+
+fn agent_config(prompt: &str) -> HashMap<String, serde_json::Value> {
+    HashMap::from([("prompt".to_string(), serde_json::json!(prompt))])
+}
+
+#[tokio::test]
+async fn test_agent_node_executes() {
+    let runner = Arc::new(StubAgentRunner::success("all done", &["weather", "memory"]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let node = make_node("agent", "agent", agent_config("What's the weather?"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    let out = result.output.as_object().unwrap();
+    assert_eq!(out.get("response").unwrap(), "all done");
+    let tools = out.get("tools_used").unwrap().as_array().unwrap();
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0], "weather");
+    assert_eq!(tools[1], "memory");
+
+    // Default agent_id and max_turns.
+    assert_eq!(out.get("agent_id").unwrap(), "workflow_agent");
+    assert_eq!(out.get("max_turns").unwrap(), 5);
+
+    // The runner saw the resolved prompt.
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.prompt, "What's the weather?");
+    assert_eq!(captured.agent_id, "workflow_agent");
+    assert_eq!(captured.max_turns, 5);
+}
+
+#[tokio::test]
+async fn test_agent_node_respects_max_turns() {
+    let runner = Arc::new(StubAgentRunner::success("ok", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let mut cfg = agent_config("hello");
+    cfg.insert("max_turns".to_string(), serde_json::json!(12));
+    cfg.insert("agent_id".to_string(), serde_json::json!("custom_agent"));
+    let node = make_node("agent", "agent", cfg);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.max_turns, 12);
+    assert_eq!(captured.agent_id, "custom_agent");
+}
+
+#[tokio::test]
+async fn test_agent_node_error_propagation() {
+    let runner = Arc::new(StubAgentRunner::failing("model timeout"));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let node = make_node("agent", "agent", agent_config("hello"));
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_ref().unwrap();
+    assert!(err.contains("agent error"), "got: {}", err);
+    assert!(err.contains("model timeout"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn test_agent_node_missing_prompt_fails() {
+    let runner = Arc::new(StubAgentRunner::success("never called", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let node = make_node("agent", "agent", HashMap::new());
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_ref().unwrap().contains("missing required 'prompt'"));
+    // The runner should NOT have been called.
+    assert_eq!(runner.calls(), 0);
+}
+
+#[tokio::test]
+async fn test_agent_node_resolves_template_in_prompt() {
+    let runner = Arc::new(StubAgentRunner::success("ok", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let node = make_node(
+        "agent",
+        "agent",
+        agent_config("Tell {{name}} about {{topic}}"),
+    );
+    let ctx = HashMap::from([
+        ("name".to_string(), serde_json::json!("Alice")),
+        ("topic".to_string(), serde_json::json!("quantum physics")),
+    ]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.prompt, "Tell Alice about quantum physics");
+}

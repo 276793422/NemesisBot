@@ -78,6 +78,20 @@ impl fmt::Display for ExecutionState {
 /// `AgentTool` carries a `recursion_depth` so deeply nested workflow_run calls
 /// can be rejected once they exceed `MAX_RECURSION_DEPTH` (decision 6 from the
 /// Spike phase, see `WorkflowCallStack`).
+
+/// Maximum nesting depth for workflow_run tool calls (decision 6 from the
+/// Spike phase). Depth counts the number of `AgentTool` frames on the call
+/// stack:
+///   - 0 = top-level workflow (no AgentTool ancestor)
+///   - 1 = workflow_run invoked from an agent at top level
+///   - 2 = workflow_run → workflow with agent → workflow_run
+///   - 3 = one more level (the limit)
+///
+/// Once a new call would push depth past this limit, the call is rejected.
+/// The limit exists because each workflow_run call blocks an LLM-driven tool
+/// iteration, and deep nesting can stack up tokio tasks + memory quickly.
+pub const MAX_RECURSION_DEPTH: u32 = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TriggerSource {
@@ -104,6 +118,13 @@ pub enum TriggerSource {
         session_key: String,
         sender_id: String,
         message: String,
+    },
+    /// Triggered from the dashboard / WebSocket UI (milestone 1c-E7).
+    /// Carries the WebSocket session_id so downstream handlers can attribute
+    /// the run back to the originating user.
+    WebUI {
+        #[serde(default)]
+        session_id: String,
     },
     /// Triggered by a generic event bus subscription.
     Event {
@@ -240,6 +261,42 @@ impl Workflow {
             serde_json::Value::Object(merged)
         }
     }
+
+    /// Compute a stable SHA-256 hash of the workflow's structural content.
+    ///
+    /// Used by the Checkpointer (1b-A1) to detect config drift between
+    /// checkpoint save and resume — if the workflow definition changed
+    /// (nodes added/removed, edges rewired, node configs altered) the hash
+    /// changes and the resume path can refuse or warn.
+    ///
+    /// Only structural fields are hashed: name, nodes, edges. `description`,
+    /// `version`, `metadata`, `triggers`, `variables` are excluded so cosmetic
+    /// edits and trigger-only changes don't invalidate in-flight checkpoints.
+    /// The hash is the hex digest of canonical JSON
+    /// (`{"name":...,"nodes":[...],"edges":[...]}`).
+    pub fn hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        // Build a stable canonical form: keys in deterministic order, no
+        // pretty-printing, sorted-by-id node list.
+        let mut nodes_sorted = self.nodes.clone();
+        nodes_sorted.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut edges_sorted = self.edges.clone();
+        edges_sorted.sort_by(|a, b| {
+            (a.from_node.as_str(), a.to_node.as_str()).cmp(&(b.from_node.as_str(), b.to_node.as_str()))
+        });
+
+        // Serialise each field independently to control key order and skip
+        // non-structural fields. Wrap in a single JSON object for hashing.
+        let canonical = serde_json::json!({
+            "name": self.name,
+            "nodes": nodes_sorted,
+            "edges": edges_sorted,
+        });
+        let bytes = serde_json::to_vec(&canonical).unwrap_or_default();
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    }
 }
 
 /// Result produced by a single node execution.
@@ -274,8 +331,12 @@ pub struct Execution {
     pub ended_at: Option<DateTime<Local>>,
     #[serde(default)]
     pub error: Option<String>,
+    /// Per-execution variables. JSON-typed since 1b-B3 so workflows can carry
+    /// arbitrary structures. Old JSONL files stored `HashMap<String, String>`
+    /// — `serde_json::Value` deserialises those as `Value::String` automatically,
+    /// so no explicit migration is required.
     #[serde(default)]
-    pub variables: HashMap<String, String>,
+    pub variables: HashMap<String, serde_json::Value>,
 
     // --- 1a-B1 additions ---
     /// What triggered this execution. `None` for legacy executions created

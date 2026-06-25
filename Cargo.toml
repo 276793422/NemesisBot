@@ -104,6 +104,7 @@ tokio-tungstenite = "0.26"
 
 # Crypto
 sha2 = "0.10"
+hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
 aes-gcm = "0.10"
 rand = "0.8"

@@ -18,6 +18,41 @@ pub struct TriggerConfig {
     pub config: HashMap<String, serde_json::Value>,
 }
 
+/// Timezone a cron trigger evaluates its expression in (milestone 1b-C4).
+///
+/// Most users write cron expressions thinking of wall-clock local time
+/// ("0 9 * * * *" = "9am my time"), so [`CronTimezone::Local`] is the
+/// default. Workloads that need to fire simultaneously across regions
+/// (e.g. "midnight UTC everywhere") opt in via `"timezone": "utc"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CronTimezone {
+    /// Evaluate against the host's local timezone (default).
+    Local,
+    /// Evaluate against UTC.
+    Utc,
+}
+
+impl CronTimezone {
+    /// Parse a config string into a [`CronTimezone`]. Accepts
+    /// case-insensitive `"local"` / `"utc"`. Returns `None` for anything
+    /// else so the caller can warn + fall back to local.
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "local" => Some(Self::Local),
+            "utc" => Some(Self::Utc),
+            _ => None,
+        }
+    }
+
+    /// Human-readable label for logging.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Utc => "utc",
+        }
+    }
+}
+
 /// Manager for workflow triggers.
 ///
 /// Supports cron schedules, webhook endpoints, event matching, and message

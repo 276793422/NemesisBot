@@ -379,8 +379,9 @@ fn execution_with_error() {
 #[test]
 fn execution_with_variables() {
     let mut exec = Execution::new("test_wf".to_string(), HashMap::new());
-    exec.variables.insert("key".to_string(), "value".to_string());
-    assert_eq!(exec.variables.get("key").unwrap(), "value");
+    exec.variables
+        .insert("key".to_string(), serde_json::json!("value"));
+    assert_eq!(exec.variables.get("key").unwrap(), &serde_json::json!("value"));
 }
 
 #[test]

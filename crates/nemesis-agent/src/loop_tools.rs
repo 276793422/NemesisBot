@@ -3382,6 +3382,9 @@ pub struct SharedToolConfig {
     pub memory_executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
     /// Snapshot of registered MCP tool names and descriptions for McpListTool.
     pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
+    /// Workflow engine reference for the `workflow_run` agent tool.
+    /// `None` means workflows aren't wired in (tool stays unregistered).
+    pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
 }
 
 impl Default for SharedToolConfig {
@@ -3398,6 +3401,7 @@ impl Default for SharedToolConfig {
             forge: None,
             memory_executor: None,
             mcp_tool_snapshot: None,
+            workflow_engine: None,
         }
     }
 }
@@ -3413,6 +3417,7 @@ impl std::fmt::Debug for SharedToolConfig {
             .field("workspace", &self.workspace)
             .field("memory_executor", &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"))
             .field("mcp_tool_snapshot", &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"))
+            .field("workflow_engine", &self.workflow_engine.as_ref().map(|_| "WorkflowEngine"))
             .finish()
     }
 }
@@ -3569,15 +3574,164 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
+    // Workflow tool — lets the agent trigger registered workflows.
+    if let Some(ref engine) = config.workflow_engine {
+        tools.insert(
+            "workflow_run".to_string(),
+            Box::new(WorkflowRunTool::new(engine.clone())),
+        );
+        info!("[AgentTools] Registered workflow_run tool");
+    }
+
     info!(
-        "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={})",
+        "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={}, workflow={})",
         tools.len(),
         config.web_search.is_some(),
         config.cluster_rpc.is_some(),
         config.spawn.is_some(),
+        config.workflow_engine.is_some(),
     );
 
     tools
+}
+
+// ===========================================================================
+// WorkflowRunTool — lets the agent invoke a registered workflow by name.
+// ===========================================================================
+
+/// Agent tool that invokes a registered workflow synchronously.
+///
+/// Mirrors Go's `workflow_run` tool. The agent supplies a workflow name and
+/// an optional input object; the tool calls `WorkflowEngine::run` and
+/// returns the execution id / state / aggregated node output as JSON.
+///
+/// **Recursion depth**: each call increments the depth carried in
+/// `TriggerSource::AgentTool`. When the new depth would exceed
+/// `MAX_RECURSION_DEPTH`, the call is rejected without dispatching to the
+/// engine. This prevents runaway `workflow_run → agent → workflow_run`
+/// cycles from stack-allocating unbounded tokio tasks.
+pub struct WorkflowRunTool {
+    engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+    /// Depth attributed to the call this tool is about to make. Top-level
+    /// agent calls pass 0; nested calls (when the tool is itself invoked
+    /// from inside a sub_workflow that was triggered by an AgentTool) read
+    /// this from the enclosing execution's trigger source. The tool always
+    /// increments by 1 before dispatching.
+    starting_depth: u32,
+}
+
+impl WorkflowRunTool {
+    pub fn new(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> Self {
+        Self {
+            engine,
+            starting_depth: 0,
+        }
+    }
+
+    /// Construct with a non-zero starting depth. Used when the tool is
+    /// invoked from within a workflow that was itself triggered by an
+    /// AgentTool (so the depth chains correctly across nestings).
+    pub fn with_starting_depth(
+        engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+        starting_depth: u32,
+    ) -> Self {
+        Self {
+            engine,
+            starting_depth,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for WorkflowRunTool {
+    fn description(&self) -> String {
+        "Run a registered workflow by name. Returns the workflow's execution id, final state, and aggregated node output as JSON. Use this when the user wants to execute a multi-step predefined process (a workflow) rather than ad-hoc tool calls.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workflow": {
+                    "type": "string",
+                    "description": "Name of the registered workflow to run."
+                },
+                "input": {
+                    "type": "object",
+                    "description": "Optional input variables for the workflow. Keys become workflow variables accessible to nodes.",
+                    "additionalProperties": true
+                }
+            },
+            "required": ["workflow"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: &str,
+        _context: &RequestContext,
+    ) -> Result<String, String> {
+        let args_value: serde_json::Value = serde_json::from_str(args)
+            .map_err(|e| format!("invalid JSON args: {}", e))?;
+
+        let workflow_name = args_value
+            .get("workflow")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "parameter 'workflow' (non-empty string) is required".to_string())?
+            .to_string();
+
+        let input: std::collections::HashMap<String, serde_json::Value> = match args_value
+            .get("input")
+        {
+            Some(serde_json::Value::Object(map)) => {
+                map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            }
+            Some(serde_json::Value::Null) | None => std::collections::HashMap::new(),
+            Some(other) => {
+                return Err(format!(
+                    "parameter 'input' must be an object, got {}",
+                    other
+                ));
+            }
+        };
+
+        let new_depth = self.starting_depth.saturating_add(1);
+        if new_depth > nemesis_workflow::MAX_RECURSION_DEPTH {
+            return Err(format!(
+                "workflow_run recursion limit reached: new depth {} would exceed MAX_RECURSION_DEPTH={}",
+                new_depth,
+                nemesis_workflow::MAX_RECURSION_DEPTH
+            ));
+        }
+
+        let trigger = nemesis_workflow::types::TriggerSource::AgentTool {
+            tool_call_id: uuid::Uuid::new_v4().to_string(),
+            recursion_depth: new_depth,
+        };
+
+        let execution = self
+            .engine
+            .run(&workflow_name, input, Some(trigger))
+            .await
+            .map_err(|e| format!("workflow '{}' failed to execute: {}", workflow_name, e))?;
+
+        let mut output_map = serde_json::Map::new();
+        for (node_id, nr) in &execution.node_results {
+            output_map.insert(node_id.clone(), nr.output.clone());
+        }
+        let payload = serde_json::json!({
+            "execution_id": execution.id,
+            "workflow": execution.workflow_name,
+            "state": format!("{:?}", execution.state),
+            "started_at": execution.started_at,
+            "ended_at": execution.ended_at,
+            "node_results": serde_json::Value::Object(output_map),
+            "error": execution.error,
+        });
+        Ok(serde_json::to_string(&payload)
+            .map_err(|e| format!("failed to serialize workflow output: {}", e))?)
+    }
 }
 
 /// Register extended tools including web search, memory, and skills.
@@ -3600,6 +3754,7 @@ pub fn register_extended_tools(
         forge: None,
         memory_executor: None,
         mcp_tool_snapshot: None,
+        workflow_engine: None,
     };
     register_shared_tools(&shared_config)
 }

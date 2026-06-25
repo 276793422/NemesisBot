@@ -713,12 +713,83 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
-    // Validate provider config by attempting creation (actual provider is built by the factory).
-    nemesis_providers::factory::create_provider(&factory_cfg)
+    // Build the LLM provider once. The same Arc<dyn LLMProvider> is reused by
+    // the workflow engine (milestone 1a-E1) so workflow `llm` nodes route to
+    // the same model as the agent loop.
+    let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
     info!("[Gateway] Provider config validated for {}", llm_ref);
 
     let model_name = resolution.model_name.clone();
+
+    // --- Workflow Engine (milestone 1a-E1) ---
+    // Build an integrated engine that wires RealLLMNodeExecutor (so llm nodes
+    // invoke the same provider as the agent) and RealToolNodeExecutor (so tool
+    // nodes can dispatch to any later-registered tools). Persistence lives
+    // under {home}/workflow/ for in-flight execution recovery.
+    let workflow_persistence_dir = home.join("workflow");
+    if let Err(e) = std::fs::create_dir_all(&workflow_persistence_dir) {
+        warn!(
+            "[Gateway] Failed to create workflow persistence dir: {}",
+            e
+        );
+    }
+    let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
+        llm_provider.clone(),
+        workflow_tool_registry.clone(),
+        Some(workflow_persistence_dir.clone()),
+    );
+
+    // Load all workflow definitions from {home}/workspace/workflows/.
+    let workflow_defs_dir = home.join("workspace").join("workflows");
+    match workflow_engine.load_workflows_from_dir(&workflow_defs_dir) {
+        Ok(n) => {
+            info!(
+                "[Gateway] Workflow engine loaded {} definition(s) from {}",
+                n,
+                workflow_defs_dir.display()
+            );
+        }
+        Err(e) => {
+            warn!(
+                "[Gateway] Workflow engine load failed: {} (dir={})",
+                e,
+                workflow_defs_dir.display()
+            );
+        }
+    }
+
+    // Spawn cron-triggered workflows (milestone 1a-E2).
+    let _workflow_cron_handles = workflow_engine.spawn_cron_triggers();
+    let cron_wf_count = _workflow_cron_handles.len();
+    if cron_wf_count > 0 {
+        info!(
+            "[Gateway] Workflow cron triggers registered: {}",
+            cron_wf_count
+        );
+    }
+
+    // Restore any in-flight executions paused at human_review nodes or
+    // interrupted by a previous crash (milestone 1b-A1 step 7). The checkpoint
+    // store lives under {home}/workflow/checkpoints/.
+    match workflow_engine.restore_incomplete_executions().await {
+        Ok(n) if n > 0 => {
+            info!(
+                "[Gateway] Workflow engine restored {} in-flight execution(s) from checkpoints",
+                n
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(
+                "[Gateway] Workflow checkpoint restore failed: {} (continuing with fresh state)",
+                e
+            );
+        }
+    }
+
+    let workflow_engine: Arc<nemesis_workflow::engine::WorkflowEngine> = workflow_engine;
 
     // Step 8: Create MessageBus
     let bus = Arc::new(nemesis_bus::MessageBus::new());
@@ -1800,6 +1871,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         skills_registry: skills_registry_arc.clone(),
         memory_manager: memory_manager_for_web.clone(),
         enabled_channels: enabled_channels.clone(),
+        workflow_engine: Some(workflow_engine.clone()),
         cluster_rpc_call_fn,
         cluster_rpc_config,
         cluster_peers_fn,
@@ -1813,6 +1885,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
     let initial_tool_count = agent_loop.tool_count();
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
+
+    // Wire up `agent` workflow nodes (milestone 1b-D2). Each workflow run
+    // that hits an `agent` node will route through this runner, which
+    // namespaces session keys under `workflow:{agent_id}` so workflow
+    // sessions don't collide with human user sessions.
+    workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+    info!("[Gateway] Workflow agent runner registered");
 
     // --- Inject tool capabilities into cluster for discovery broadcast ---
     if let Some((ref cluster, _, _)) = cluster_adapter_refs {
@@ -1937,6 +2016,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject AgentLoop ref into web server for runtime model switching
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");
+
+    // Inject WorkflowEngine into web server for /api/workflow/* endpoints
+    web_server.set_workflow_engine(workflow_engine.clone());
+    info!("[Gateway] Workflow engine injected into web server");
 
     info!("[Gateway] Web server components injected");
 
@@ -2471,5 +2554,57 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     println!("  OK Gateway stopped");
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// GatewayAgentRunner — bridges workflow `agent` nodes to the live AgentLoop
+// ---------------------------------------------------------------------------
+
+/// Adapter that lets workflow `agent` nodes drive the gateway's AgentLoop
+/// without `nemesis-workflow` needing to depend on `nemesis-agent` (which
+/// would pull in a huge transitive dependency closure).
+///
+/// Session keys are namespaced as `workflow:{agent_id}` so that workflow
+/// sessions stay isolated from human user sessions in the SessionStore.
+///
+/// `tools_used` is currently always empty: the public AgentLoop entry point
+/// only returns the final response string. If/when we surface tool-call
+/// events, this struct can be extended to capture them without breaking the
+/// trait contract.
+struct GatewayAgentRunner {
+    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+}
+
+impl GatewayAgentRunner {
+    fn new(agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>) -> Self {
+        Self { agent_loop }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
+    async fn run_direct(
+        &self,
+        prompt: &str,
+        agent_id: &str,
+        max_turns: u32,
+    ) -> Result<nemesis_workflow::nodes::AgentRunResult, String> {
+        // Note: max_turns is currently applied via AgentLoop's own config at
+        // construction time. Once we add a per-call override on AgentLoop
+        // (e.g. `process_direct_with_options`), this runner should respect
+        // it explicitly to prevent runaway workflow agent loops.
+        let _ = max_turns;
+
+        let session_key = format!("workflow:{}", agent_id);
+        let response = self
+            .agent_loop
+            .process_direct(prompt, &session_key)
+            .await?;
+
+        Ok(nemesis_workflow::nodes::AgentRunResult {
+            response,
+            tools_used: Vec::new(),
+        })
+    }
 }
 

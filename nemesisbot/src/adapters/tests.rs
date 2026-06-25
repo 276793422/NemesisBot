@@ -209,6 +209,7 @@ fn make_test_shared(bus: &Arc<nemesis_bus::MessageBus>) -> Arc<crate::agent_fact
         skills_registry: None,
         memory_manager: None,
         enabled_channels: vec![],
+        workflow_engine: None,
         cluster_rpc_call_fn: None,
         cluster_rpc_config: None,
         cluster_peers_fn: None,

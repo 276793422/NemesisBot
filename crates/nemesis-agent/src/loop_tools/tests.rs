@@ -3418,3 +3418,177 @@ fn test_cluster_rpc_params_required_fields() {
     assert_eq!(params["properties"]["message"]["type"], "string");
     assert_eq!(params["properties"]["timeout"]["type"], "integer");
 }
+
+// ===========================================================================
+// WorkflowRunTool tests
+// ===========================================================================
+
+/// Builds a workflow engine wired with a stub LLM provider that ignores
+/// prompts and returns a fixed string. Used to exercise WorkflowRunTool
+/// end-to-end without standing up the full gateway.
+async fn build_test_engine_with_workflow(
+    workflow_name: &str,
+) -> (
+    Arc<nemesis_workflow::engine::WorkflowEngine>,
+    nemesis_workflow::types::Workflow,
+) {
+    use async_trait::async_trait;
+    use nemesis_providers::failover::FailoverError;
+    use nemesis_providers::router::LLMProvider;
+    use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
+    use nemesis_workflow::types::{Edge, NodeDef};
+
+    struct StubProvider;
+    #[async_trait]
+    impl LLMProvider for StubProvider {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model: &str,
+            _options: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            Ok(LLMResponse {
+                content: "stubbed".to_string(),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        fn name(&self) -> &str {
+            "stub"
+        }
+    }
+
+    let provider = Arc::new(StubProvider) as Arc<dyn LLMProvider>;
+    let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
+        provider,
+        tools,
+        None,
+    );
+
+    let nodes = vec![NodeDef {
+        id: "n1".to_string(),
+        node_type: "delay".to_string(),
+        config: std::collections::HashMap::new(),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    }];
+    let edges: Vec<Edge> = vec![];
+    let workflow = nemesis_workflow::types::Workflow {
+        name: workflow_name.to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes,
+        edges,
+        variables: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
+    };
+    engine.register_workflow(workflow.clone()).unwrap();
+    (engine, workflow)
+}
+
+#[tokio::test]
+async fn test_workflow_run_executes_named_workflow() {
+    let (engine, _) = build_test_engine_with_workflow("hello").await;
+    let tool = WorkflowRunTool::new(engine);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let out = tool
+        .execute(r#"{"workflow": "hello"}"#, &ctx)
+        .await
+        .expect("tool should succeed");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["workflow"], "hello");
+    assert_eq!(v["state"], "Completed");
+    assert!(v["execution_id"].is_string());
+}
+
+#[tokio::test]
+async fn test_workflow_run_records_agent_tool_trigger() {
+    use nemesis_workflow::types::TriggerSource;
+
+    let (engine, _) = build_test_engine_with_workflow("wf").await;
+    let tool = WorkflowRunTool::new(engine.clone());
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let out = tool
+        .execute(r#"{"workflow": "wf"}"#, &ctx)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let exec_id = v["execution_id"].as_str().unwrap().to_string();
+
+    let exec = engine.get_execution(&exec_id).await.expect("execution must exist");
+    match exec.trigger_source.as_ref().unwrap() {
+        TriggerSource::AgentTool {
+            tool_call_id,
+            recursion_depth,
+        } => {
+            assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
+            assert_eq!(*recursion_depth, 1, "first agent call should record depth=1");
+        }
+        other => panic!("expected AgentTool trigger, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_workflow_run_rejects_missing_workflow_param() {
+    let (engine, _) = build_test_engine_with_workflow("wf").await;
+    let tool = WorkflowRunTool::new(engine);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let err = tool
+        .execute(r#"{"input": {}}"#, &ctx)
+        .await
+        .expect_err("missing workflow should error");
+    assert!(
+        err.contains("'workflow'"),
+        "error should mention missing workflow, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_workflow_run_rejects_recursion_depth_exceeded() {
+    let (engine, _) = build_test_engine_with_workflow("wf").await;
+    // Pretend we're already at the max depth — the next call must be rejected.
+    let tool = WorkflowRunTool::with_starting_depth(
+        engine,
+        nemesis_workflow::MAX_RECURSION_DEPTH,
+    );
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let err = tool
+        .execute(r#"{"workflow": "wf"}"#, &ctx)
+        .await
+        .expect_err("recursion limit should be enforced");
+    assert!(
+        err.contains("recursion"),
+        "error should mention recursion, got: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_workflow_run_returns_schema_with_input_property() {
+    let (engine, _) = build_test_engine_with_workflow("wf").await;
+    let tool = WorkflowRunTool::new(engine);
+    let params = tool.parameters();
+    assert_eq!(params["type"], "object");
+    assert!(params["properties"]["workflow"]["type"] == "string");
+    assert_eq!(params["properties"]["input"]["type"], "object");
+    let required = params["required"].as_array().unwrap();
+    assert!(required.iter().any(|r| r == "workflow"));
+}

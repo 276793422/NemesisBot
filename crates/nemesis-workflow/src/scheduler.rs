@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
@@ -14,7 +15,19 @@ use crate::context::WorkflowContext;
 use crate::nodes::NodeExecutorRegistry;
 use crate::types::{Edge, ExecutionState, NodeDef};
 
-/// Performs a topological sort on the workflow graph.
+/// Optional progress hook invoked by the scheduler after each level finishes.
+///
+/// Used by the engine (1b-A1 step 6) to persist a checkpoint of the current
+/// `wf_ctx` between levels so an interrupted execution can resume without
+/// re-running completed nodes.
+///
+/// The hook receives the workflow context as it stands *after* the level's
+/// results have been merged in. Implementations must be cheap — they run on
+/// the scheduler's task, blocking further levels until they return.
+#[async_trait]
+pub trait ProgressHook: Send + Sync {
+    async fn on_level_completed(&self, wf_ctx: &WorkflowContext);
+}/// Performs a topological sort on the workflow graph.
 ///
 /// Returns execution levels where each level contains node IDs that can be
 /// executed in parallel. Returns an error if a cycle is detected.
@@ -93,9 +106,9 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
 fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_json::Value> {
     let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
 
-    // Workflow variables
+    // Workflow variables (already JSON-typed since 1b-B3).
     for (k, v) in wf_ctx.get_all_variables() {
-        ctx.insert(k, serde_json::json!(v));
+        ctx.insert(k, v);
     }
 
     // Previous node results: store each output field as node_id.field
@@ -117,8 +130,10 @@ fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_jso
 /// `Ok` variants represent expected paths (completed normally, cancelled by user).
 /// `Err` carries an internal failure (node panic, I/O error, etc.).
 ///
-/// Note: `Waiting` variant will be added in 1b-A1-step4 when human_review /
-/// Checkpointer integration lands.
+/// `Waiting` is detected *after* the scheduler returns — by inspecting node
+/// results — so the scheduler itself never produces a `Waiting` outcome. This
+/// matches the engine's existing post-schedule inspection logic and keeps the
+/// outcome enum focused on how the scheduler exited.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScheduleOutcome {
     /// All runnable nodes completed without cancellation.
@@ -138,6 +153,9 @@ pub enum ScheduleOutcome {
 /// scheduler to stop spawning new levels and abort waiting on in-flight nodes.
 /// Already-running node executors receive `cancel.cancelled()` via select! and
 /// are expected to bail out promptly.
+///
+/// Fresh-run entry point: see [`schedule_resume`] for the checkpoint-driven
+/// resume path that skips already-completed nodes.
 #[allow(clippy::too_many_arguments)]
 pub async fn schedule(
     nodes: &[NodeDef],
@@ -145,6 +163,81 @@ pub async fn schedule(
     executors: &NodeExecutorRegistry,
     wf_ctx: &mut WorkflowContext,
     cancel: CancellationToken,
+) -> Result<ScheduleOutcome, String> {
+    let empty = HashSet::new();
+    schedule_inner(nodes, edges, executors, wf_ctx, &empty, cancel, None).await
+}
+
+/// Like [`schedule`] but with a per-level progress hook (1b-A1 step 6).
+#[allow(clippy::too_many_arguments)]
+pub async fn schedule_with_hook(
+    nodes: &[NodeDef],
+    edges: &[Edge],
+    executors: &NodeExecutorRegistry,
+    wf_ctx: &mut WorkflowContext,
+    cancel: CancellationToken,
+    hook: &dyn ProgressHook,
+) -> Result<ScheduleOutcome, String> {
+    let empty = HashSet::new();
+    schedule_inner(nodes, edges, executors, wf_ctx, &empty, cancel, Some(hook)).await
+}
+
+/// Resume execution from a checkpoint.
+///
+/// `completed_nodes` lists nodes that already ran successfully before the
+/// crash / pause and must not be re-executed. Their previous outputs are
+/// expected to already be present in `wf_ctx` (the caller restores them from
+/// the checkpoint's `context_snapshot` before invoking this function).
+///
+/// The scheduler runs the same DAG, just with the skip filter applied. This
+/// is what lets us resume deterministically after a crash: the topology is
+/// unchanged, only the set of "still needs to run" nodes differs.
+///
+/// Conditional edges, retry, timeout, and cancellation behave identically to
+/// [`schedule`]. A node that lands in `ExecutionState::Waiting` is saved to
+/// the workflow context like any other result — the caller detects Waiting
+/// state after this function returns.
+#[allow(clippy::too_many_arguments)]
+pub async fn schedule_resume(
+    nodes: &[NodeDef],
+    edges: &[Edge],
+    executors: &NodeExecutorRegistry,
+    wf_ctx: &mut WorkflowContext,
+    completed_nodes: &HashSet<String>,
+    cancel: CancellationToken,
+) -> Result<ScheduleOutcome, String> {
+    schedule_inner(nodes, edges, executors, wf_ctx, completed_nodes, cancel, None).await
+}
+
+/// Like [`schedule_resume`] but with a per-level progress hook.
+#[allow(clippy::too_many_arguments)]
+pub async fn schedule_resume_with_hook(
+    nodes: &[NodeDef],
+    edges: &[Edge],
+    executors: &NodeExecutorRegistry,
+    wf_ctx: &mut WorkflowContext,
+    completed_nodes: &HashSet<String>,
+    cancel: CancellationToken,
+    hook: &dyn ProgressHook,
+) -> Result<ScheduleOutcome, String> {
+    schedule_inner(nodes, edges, executors, wf_ctx, completed_nodes, cancel, Some(hook)).await
+}
+
+/// Shared body for [`schedule`] and [`schedule_resume`].
+///
+/// `skip` lists node IDs that must not be executed (already-completed nodes
+/// when resuming from a checkpoint; empty for fresh runs).
+/// `hook` is invoked after each level finishes (1b-A1 step 6) so callers can
+/// persist progress; pass `None` to skip.
+#[allow(clippy::too_many_arguments)]
+async fn schedule_inner(
+    nodes: &[NodeDef],
+    edges: &[Edge],
+    executors: &NodeExecutorRegistry,
+    wf_ctx: &mut WorkflowContext,
+    skip: &HashSet<String>,
+    cancel: CancellationToken,
+    hook: Option<&dyn ProgressHook>,
 ) -> Result<ScheduleOutcome, String> {
     // Build node lookup
     let node_map: HashMap<String, &NodeDef> = nodes.iter().map(|n| (n.id.clone(), n)).collect();
@@ -167,9 +260,13 @@ pub async fn schedule(
             return Ok(ScheduleOutcome::Cancelled);
         }
 
-        // Filter nodes that should run based on conditional edges
+        // Filter nodes that should run based on conditional edges and the
+        // resume skip set. Skipped nodes (already-completed when resuming
+        // from a checkpoint) are dropped here — their outputs were already
+        // restored into wf_ctx by the caller.
         let runnable: Vec<String> = level
             .into_iter()
+            .filter(|id| !skip.contains(id))
             .filter(|id| should_run_node(id, &cond_edges, wf_ctx))
             .collect();
 
@@ -280,9 +377,11 @@ pub async fn schedule(
                 Ok((node_id, Some(result), None)) => {
                     if let Some(obj) = result.output.as_object() {
                         for (field, val) in obj {
+                            // Store as JSON value (1b-B3) — preserves structure
+                            // for downstream nodes instead of stringifying.
                             wf_ctx.set_var(
                                 &format!("{}.{}", node_id, field),
-                                &val.to_string(),
+                                val.clone(),
                             );
                         }
                     }
@@ -305,6 +404,13 @@ pub async fn schedule(
                     return Err(format!("node task panicked: {}", e));
                 }
             }
+        }
+
+        // After all nodes in this level have settled (some may be in Waiting
+        // state), give the hook a chance to checkpoint progress before the
+        // next level starts. Skipping on cancel keeps shutdown snappy.
+        if let Some(h) = hook {
+            h.on_level_completed(wf_ctx).await;
         }
     }
 

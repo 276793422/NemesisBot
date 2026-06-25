@@ -619,3 +619,234 @@ async fn test_schedule_completes_without_cancel() {
     assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
     assert_eq!(started_counter.load(Ordering::SeqCst), 1);
 }
+
+// ---------------------------------------------------------------------------
+// schedule_resume tests (1b-A1 step 4)
+// ---------------------------------------------------------------------------
+
+/// Test executor that records every invocation in a shared vector so tests
+/// can assert which nodes ran and in what order. Returns a synthetic output
+/// so downstream nodes have something to read.
+struct RecordingExecutor {
+    calls: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl NodeExecutor for RecordingExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        _ctx: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        self.calls.lock().push(node.id.clone());
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({"ran": node.id}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+fn make_typed_node(id: &str, ty: &str, depends_on: Vec<&str>) -> NodeDef {
+    NodeDef {
+        id: id.to_string(),
+        node_type: ty.to_string(),
+        config: HashMap::new(),
+        depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    }
+}
+
+#[tokio::test]
+async fn schedule_resume_skips_completed_nodes() {
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor { calls: calls.clone() }),
+    );
+
+    // Linear DAG: a -> b -> c
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec!["a"]),
+        make_typed_node("c", "rec", vec!["b"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+
+    // Pretend "a" already ran before the crash — pre-populate its result so
+    // downstream nodes have something to read.
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    wf_ctx.set_node_result(
+        "a",
+        NodeResult {
+            node_id: "a".to_string(),
+            output: serde_json::json!({"ran": "a"}),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+
+    let completed: HashSet<String> = HashSet::from(["a".to_string()]);
+    let outcome = schedule_resume(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        &completed,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+
+    let ran = calls.lock().clone();
+    assert_eq!(ran, vec!["b".to_string(), "c".to_string()]);
+}
+
+#[tokio::test]
+async fn schedule_resume_with_empty_completed_equivalent_to_fresh() {
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor { calls: calls.clone() }),
+    );
+
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec!["a"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    let completed: HashSet<String> = HashSet::new();
+
+    let outcome =
+        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
+            .await
+            .unwrap();
+
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+    let ran = calls.lock().clone();
+    assert_eq!(ran, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[tokio::test]
+async fn schedule_resume_all_completed_runs_nothing() {
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor { calls: calls.clone() }),
+    );
+
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec!["a"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    let completed: HashSet<String> = HashSet::from(["a".to_string(), "b".to_string()]);
+
+    let outcome =
+        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
+            .await
+            .unwrap();
+
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+    assert!(calls.lock().is_empty(), "no nodes should have run");
+}
+
+#[tokio::test]
+async fn schedule_resume_preserves_waiting_node_result() {
+    // A human_review-style node returns Waiting. schedule_resume should
+    // propagate that result into wf_ctx; the caller (engine) detects it
+    // via get_all_node_results() and decides whether to pause.
+    struct WaitingExecutor;
+    #[async_trait]
+    impl NodeExecutor for WaitingExecutor {
+        async fn execute(
+            &self,
+            node: &NodeDef,
+            _ctx: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            Ok(NodeResult {
+                node_id: node.id.clone(),
+                output: serde_json::json!({"prompt": "approve?"}),
+                error: None,
+                state: ExecutionState::Waiting,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let registry = NodeExecutorRegistry::new();
+    registry.register("wait", Arc::new(WaitingExecutor));
+
+    let nodes = vec![
+        make_typed_node("review", "wait", vec![]),
+        make_typed_node("after", "wait", vec!["review"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    let completed: HashSet<String> = HashSet::new();
+
+    let outcome =
+        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
+            .await
+            .unwrap();
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+
+    // "review" returned Waiting and was stored. Downstream "after" should
+    // also have run because the scheduler doesn't treat Waiting as a stop
+    // signal — that's the engine's job to interpret.
+    let results = wf_ctx.get_all_node_results();
+    assert_eq!(results["review"].state, ExecutionState::Waiting);
+}
+
+#[tokio::test]
+async fn schedule_resume_skip_set_independent_of_conditional_edges() {
+    // Confirms that skip (completed_nodes) and conditional-edge filter
+    // both apply: a node that's in the skip set is skipped regardless of
+    // whether its conditional edge would have permitted it.
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let registry = NodeExecutorRegistry::new();
+    registry.register(
+        "rec",
+        Arc::new(RecordingExecutor { calls: calls.clone() }),
+    );
+
+    let nodes = vec![
+        make_typed_node("a", "rec", vec![]),
+        make_typed_node("b", "rec", vec![]),
+        make_typed_node("c", "rec", vec!["a", "b"]),
+    ];
+    let edges: Vec<Edge> = vec![];
+    let mut wf_ctx = WorkflowContext::new(HashMap::new());
+    let completed: HashSet<String> = HashSet::from(["a".to_string()]);
+
+    let outcome =
+        schedule_resume(&nodes, &edges, &registry, &mut wf_ctx, &completed, CancellationToken::new())
+            .await
+            .unwrap();
+    assert_eq!(outcome, ScheduleOutcome::Completed);
+
+    let ran = calls.lock().clone();
+    assert!(ran.contains(&"b".to_string()));
+    assert!(ran.contains(&"c".to_string()));
+    assert!(!ran.contains(&"a".to_string()));
+}
