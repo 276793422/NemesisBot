@@ -592,16 +592,19 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
         .route("/api/workflow/run", post(handle_workflow_run))
         .route("/api/workflow/start", post(handle_workflow_start))
         .route("/api/workflow/list", get(handle_workflow_list))
-        .route("/api/workflow/status/:id", get(handle_workflow_status))
+        .route("/api/workflow/status/{id}", get(handle_workflow_status))
         .route("/api/workflow/executions", get(handle_workflow_executions))
-        .route("/api/workflow/webhook/:name", post(handle_workflow_webhook))
-        .route("/api/workflow/webhook/:name", get(handle_workflow_webhook_get))
+        .route("/api/workflow/webhook/{name}", post(handle_workflow_webhook))
         .route(
-            "/api/workflow/checkpoints/:execution_id",
+            "/api/workflow/webhook/{name}",
+            get(handle_workflow_webhook_get),
+        )
+        .route(
+            "/api/workflow/checkpoints/{execution_id}",
             get(handle_workflow_checkpoints_list),
         )
         .route(
-            "/api/workflow/checkpoints/:execution_id/:checkpoint_id",
+            "/api/workflow/checkpoints/{execution_id}/{checkpoint_id}",
             get(handle_workflow_checkpoint_load),
         )
 }
