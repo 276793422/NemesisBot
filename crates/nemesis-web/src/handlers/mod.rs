@@ -22,6 +22,7 @@ pub mod tasks;
 pub mod tools;
 pub mod voice;
 pub mod persona;
+pub mod workflow;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,6 +51,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(agent::AgentHandler));
     router.register(Arc::new(voice::VoiceHandler::new()));
     router.register(Arc::new(persona::PersonaHandler::new()));
+    router.register(Arc::new(workflow::WorkflowHandler));
 }
 
 // ---------------------------------------------------------------------------

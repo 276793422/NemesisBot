@@ -83,6 +83,8 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -609,6 +611,8 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {

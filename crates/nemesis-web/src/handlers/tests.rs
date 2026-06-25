@@ -39,6 +39,8 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         });
         RequestContext {
@@ -76,6 +78,8 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         });
         RequestContext {

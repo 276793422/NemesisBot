@@ -360,6 +360,8 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         };
         let mgr = state.session_manager_ref();
@@ -567,6 +569,8 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         };
         assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 5);
@@ -682,6 +686,8 @@ use super::*;
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         })
     }

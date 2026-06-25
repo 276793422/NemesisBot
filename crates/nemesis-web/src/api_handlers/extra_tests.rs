@@ -51,6 +51,8 @@ fn make_state(
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     })
 }
@@ -85,6 +87,8 @@ fn make_state_with_tx(
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
     })
 }
@@ -299,6 +303,8 @@ async fn test_handle_api_status_includes_model_base() {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     let resp = handle_api_status(State(state)).await;
@@ -644,6 +650,8 @@ async fn test_handle_api_sessions_with_count() {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     let resp = handle_api_sessions(State(state)).await;
@@ -1013,6 +1021,8 @@ fn test_app_state_clone() {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     };
     let cloned = state.clone();

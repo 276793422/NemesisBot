@@ -18,6 +18,7 @@ nemesis-voice = { workspace = true }
 nemesis-memory = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-agent = { workspace = true }
+nemesis-workflow = { workspace = true }
 nemesis-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,6 +40,7 @@ async-trait = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 base64 = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

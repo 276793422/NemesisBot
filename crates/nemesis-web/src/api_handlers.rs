@@ -82,6 +82,11 @@ pub struct AppState {
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     pub cluster_log_dir: Option<String>,
+    /// Workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    /// Per-IP rate limiter for webhook endpoints (1c-E5). Keyed by client
+    /// IP; tracks request timestamps inside a sliding 1-minute window.
+    pub webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
     /// Internal command sender (gateway → web handler bridge).
     pub internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }

@@ -133,6 +133,11 @@ pub struct WebServer {
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     cluster_log_dir: Option<String>,
+    /// Workflow engine for trigger / execution APIs (milestone 1a-E3/E4).
+    workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    /// Per-IP rate limiter for webhook endpoints (milestone 1c-E5).
+    /// Created lazily; shared with AppState.
+    webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
     /// Internal command sender for /api/internal endpoint.
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }
@@ -165,6 +170,8 @@ impl WebServer {
             cluster: None,
             cluster_service: None,
             cluster_log_dir: None,
+            workflow_engine: None,
+            webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         }
     }
@@ -231,6 +238,11 @@ impl WebServer {
         self.cluster_log_dir = Some(dir);
     }
 
+    /// Set the workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    pub fn set_workflow_engine(&mut self, engine: Arc<nemesis_workflow::engine::WorkflowEngine>) {
+        self.workflow_engine = Some(engine);
+    }
+
     /// Set the internal command sender for /api/internal endpoint.
     pub fn set_internal_cmd_tx(&mut self, tx: tokio::sync::mpsc::Sender<crate::internal::InternalCommand>) {
         self.internal_cmd_tx = Some(tx);
@@ -268,6 +280,8 @@ impl WebServer {
             cluster: self.cluster.clone(),
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
+            workflow_engine: self.workflow_engine.clone(),
+            webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
         };
 
@@ -313,6 +327,8 @@ impl WebServer {
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
             .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream))
+            // Workflow REST endpoints (milestone 1a-E3/E4)
+            .merge(crate::handlers::workflow::routes())
             // Internal control endpoint (undocumented)
             .route("/api/internal", axum::routing::post(crate::api_handlers::handle_api_internal))
             // CORS layer

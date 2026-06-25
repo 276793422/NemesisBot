@@ -51,6 +51,8 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -90,6 +92,8 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: Some(log_dir.to_string_lossy().to_string()),
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -126,6 +130,8 @@ fn make_ctx_no_workspace() -> RequestContext {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -163,6 +169,8 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         cluster: None,
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -1507,6 +1515,8 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         cluster: Some(cluster),
         cluster_service: None,
         cluster_log_dir: None,
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
@@ -1550,6 +1560,8 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         cluster: Some(cluster),
         cluster_service: None,
         cluster_log_dir: Some(log_dir.to_string_lossy().to_string()),
+        workflow_engine: None,
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
     RequestContext {
