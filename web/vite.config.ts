@@ -18,6 +18,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         chat: resolve(__dirname, 'chat/index.html'),
+        workflowChat: resolve(__dirname, 'workflow-chat/index.html'),
       },
       output: {
         manualChunks: {

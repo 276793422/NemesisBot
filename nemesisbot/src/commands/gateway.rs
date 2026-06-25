@@ -643,6 +643,106 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
 // Gateway command
 // ---------------------------------------------------------------------------
 
+/// One-shot migration: move pre-refactor workflow files from
+/// `{home}/workflow/` (the legacy flat layout) into the new four-subdir
+/// layout under `{home}/workspace/workflow/`.
+///
+/// Legacy layout (pre-refactor):
+///   {home}/workflow/{wf}_{exec}.jsonl         -> executions/
+///   {home}/workflow/checkpoints/{exec}/{cp}.json -> checkpoints/
+///
+/// New layout (post-refactor):
+///   {home}/workspace/workflow/executions/{wf}_{exec}.jsonl
+///   {home}/workspace/workflow/checkpoints/{exec}/{cp}.json
+///
+/// Runs only if the legacy dir exists. Skips files that already exist at
+/// the destination (idempotent across re-runs). Removes the legacy dir if
+/// it ends up empty. Errors are logged at warn level — gateway startup
+/// proceeds regardless, since stale data shouldn't block the service.
+fn migrate_legacy_workflow_dir(
+    home: &std::path::Path,
+    new_executions_dir: &std::path::Path,
+    new_checkpoints_dir: &std::path::Path,
+) {
+    let legacy_root = home.join("workflow");
+    if !legacy_root.exists() {
+        return;
+    }
+    info!(
+        "[Gateway] Migrating legacy workflow dir: {} -> {}",
+        legacy_root.display(),
+        new_executions_dir.parent().unwrap_or(new_executions_dir).display()
+    );
+
+    // Move *.jsonl execution logs.
+    if let Ok(entries) = std::fs::read_dir(&legacy_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|ext| ext == "jsonl")
+                    .unwrap_or(false)
+            {
+                let dest = new_executions_dir.join(path.file_name().unwrap_or_default());
+                if dest.exists() {
+                    continue;
+                }
+                if let Err(e) = std::fs::rename(&path, &dest) {
+                    warn!(
+                        "[Gateway] migration: failed to move {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // Move checkpoints/ subdir contents.
+    let legacy_checkpoints = legacy_root.join("checkpoints");
+    if legacy_checkpoints.exists() {
+        if let Ok(entries) = std::fs::read_dir(&legacy_checkpoints) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let dest = new_checkpoints_dir.join(&name);
+                if dest.exists() {
+                    continue;
+                }
+                if let Err(e) = std::fs::rename(&path, &dest) {
+                    warn!(
+                        "[Gateway] migration: failed to move checkpoint {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // Best-effort cleanup: remove legacy dir if empty (ignoring the
+    // now-empty checkpoints/ subdir). Don't touch non-empty dir — user may
+    // have files we don't recognise.
+    let _ = std::fs::remove_dir(legacy_root.join("checkpoints"));
+    if std::fs::read_dir(&legacy_root)
+        .map(|mut e| e.next().is_none())
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_dir(&legacy_root);
+        info!("[Gateway] Migration complete; removed empty legacy workflow dir");
+    } else {
+        warn!(
+            "[Gateway] Migration partial: legacy dir {} not empty, left in place",
+            legacy_root.display()
+        );
+    }
+}
+
 /// Run the gateway command.
 pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 1: Resolve home directory
@@ -725,24 +825,34 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // --- Workflow Engine (milestone 1a-E1) ---
     // Build an integrated engine that wires RealLLMNodeExecutor (so llm nodes
     // invoke the same provider as the agent) and RealToolNodeExecutor (so tool
-    // nodes can dispatch to any later-registered tools). Persistence lives
-    // under {home}/workflow/ for in-flight execution recovery.
-    let workflow_persistence_dir = home.join("workflow");
-    if let Err(e) = std::fs::create_dir_all(&workflow_persistence_dir) {
-        warn!(
-            "[Gateway] Failed to create workflow persistence dir: {}",
-            e
-        );
+    // nodes can dispatch to any later-registered tools). All workflow files
+    // live under {home}/workspace/workflow/ with four subdirs:
+    //   definitions/  - YAML workflow definitions (loaded at startup)
+    //   templates/    - starter templates for the CLI workflow command
+    //   checkpoints/  - resume snapshots for in-flight recovery
+    //   executions/   - JSONL execution logs
+    // Migrate any pre-refactor data from {home}/workflow/ first.
+    let workflow_root = home.join("workspace").join("workflow");
+    let workflow_executions_dir = workflow_root.join("executions");
+    let workflow_checkpoints_dir = workflow_root.join("checkpoints");
+    let workflow_defs_dir = workflow_root.join("definitions");
+    for d in [&workflow_executions_dir, &workflow_checkpoints_dir, &workflow_defs_dir] {
+        if let Err(e) = std::fs::create_dir_all(d) {
+            warn!("[Gateway] Failed to create workflow subdir {}: {}", d.display(), e);
+        }
     }
+    migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
+
     let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-    let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
+    let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
         llm_provider.clone(),
         workflow_tool_registry.clone(),
-        Some(workflow_persistence_dir.clone()),
+        Some(workflow_executions_dir.clone()),
+        Some(workflow_checkpoints_dir.clone()),
     );
 
-    // Load all workflow definitions from {home}/workspace/workflows/.
-    let workflow_defs_dir = home.join("workspace").join("workflows");
+    // Load all workflow definitions from {home}/workspace/workflow/definitions/.
+    workflow_engine.set_workflow_defs_dir(workflow_defs_dir.clone());
     match workflow_engine.load_workflows_from_dir(&workflow_defs_dir) {
         Ok(n) => {
             info!(
@@ -772,7 +882,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Restore any in-flight executions paused at human_review nodes or
     // interrupted by a previous crash (milestone 1b-A1 step 7). The checkpoint
-    // store lives under {home}/workflow/checkpoints/.
+    // store lives under {home}/workspace/workflow/checkpoints/.
     match workflow_engine.restore_incomplete_executions().await {
         Ok(n) if n > 0 => {
             info!(
@@ -790,6 +900,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     let workflow_engine: Arc<nemesis_workflow::engine::WorkflowEngine> = workflow_engine;
+
+    // Per-workflow chat password store for the standalone workflow-chat page.
+    // Loaded from {home}/workspace/workflow/chat_secrets.json — created on
+    // first set_password call. Lives outside the workflow engine because
+    // secrets shouldn't ride along with workflow YAML (which is shareable).
+    let chat_secrets_path = workflow_root.join("chat_secrets.json");
+    let chat_secret_store = Arc::new(
+        nemesis_workflow::chat_secrets::ChatSecretStore::open(chat_secrets_path),
+    );
 
     // Step 8: Create MessageBus
     let bus = Arc::new(nemesis_bus::MessageBus::new());
@@ -2019,7 +2138,186 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Inject WorkflowEngine into web server for /api/workflow/* endpoints
     web_server.set_workflow_engine(workflow_engine.clone());
+    web_server.set_chat_secret_store(chat_secret_store.clone());
     info!("[Gateway] Workflow engine injected into web server");
+
+    // --- Workflow trigger drivers (event + message) ---
+    // Two subscription tasks wire trigger configs to their data sources:
+    //
+    // 1. Inbound bus → message triggers:
+    //    Every InboundMessage published by any channel (web, telegram, discord,
+    //    etc.) is matched against each workflow's `message` trigger configs
+    //    (channel/content/sender_id/chat_id glob match). Matches start a
+    //    background execution.
+    //
+    // 2. EventDispatcher → event triggers:
+    //    TriggerEvents (workflow.completed/failed, forge.pattern_created, or
+    //    manual fire_event via WSAPI) match each workflow's `event` trigger
+    //    configs (event_type glob + data field matchers). Matches start a
+    //    background execution.
+    //
+    // Without these, `message` and `event` triggers never fire — the warning
+    // "trigger type X has no runtime driver" no longer applies as of P3.
+    let msg_engine = workflow_engine.clone();
+    let mut inbound_rx_for_wf = bus.subscribe_inbound();
+    let inbound_wf_handle = tokio::spawn(async move {
+        loop {
+            match inbound_rx_for_wf.recv().await {
+                Ok(msg) => {
+                    let channel = msg.channel.clone();
+                    let sender = msg.sender_id.clone();
+                    let chat = msg.chat_id.clone();
+                    let content = msg.content.clone();
+                    let session_key = msg.session_key.clone();
+                    let matched = msg_engine.workflows_matching_message(
+                        &channel,
+                        &sender,
+                        &chat,
+                        &content,
+                    );
+                    if matched.is_empty() {
+                        continue;
+                    }
+                    for wf_name in matched {
+                        let engine = msg_engine.clone();
+                        let ch = channel.clone();
+                        let sd = sender.clone();
+                        let ct = chat.clone();
+                        let cn = content.clone();
+                        let sk = session_key.clone();
+                        tokio::spawn(async move {
+                            let trigger = nemesis_workflow::types::TriggerSource::Message {
+                                channel: ch.clone(),
+                                chat_id: ct.clone(),
+                                sender_id: sd.clone(),
+                                content: cn.clone(),
+                            };
+                            let mut input = std::collections::HashMap::new();
+                            input.insert("channel".to_string(), serde_json::json!(ch));
+                            input.insert("sender_id".to_string(), serde_json::json!(sd));
+                            input.insert("chat_id".to_string(), serde_json::json!(ct));
+                            input.insert("content".to_string(), serde_json::json!(cn));
+                            input.insert("session_key".to_string(), serde_json::json!(sk));
+                            match engine.start_async(&wf_name, input, Some(trigger)).await {
+                                Ok(id) => {
+                                    info!(
+                                        workflow = %wf_name,
+                                        execution_id = %id,
+                                        channel = %ch,
+                                        "[Workflow] message-triggered execution started"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        workflow = %wf_name,
+                                        error = %e,
+                                        "[Workflow] message-triggered execution failed to start"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(
+                        n,
+                        "[Workflow] message-trigger subscriber lagged (some triggerable messages dropped)"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("[Workflow] inbound bus closed, message-trigger task exiting");
+                    break;
+                }
+            }
+        }
+    });
+
+    let evt_engine = workflow_engine.clone();
+    let mut event_rx = evt_engine.event_dispatcher().subscribe();
+    let event_wf_handle = tokio::spawn(async move {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    let matched = evt_engine.workflows_matching_event(&event);
+                    if matched.is_empty() {
+                        continue;
+                    }
+                    for wf_name in matched {
+                        let engine = evt_engine.clone();
+                        let ev = event.clone();
+                        tokio::spawn(async move {
+                            let trigger =
+                                nemesis_workflow::types::TriggerSource::Event {
+                                    event_type: ev.event_type.clone(),
+                                    data: serde_json::Value::Object(ev.data.clone().into_iter().collect()),
+                                };
+                            let mut input = std::collections::HashMap::new();
+                            input.insert("event_type".to_string(), serde_json::json!(ev.event_type));
+                            for (k, v) in &ev.data {
+                                input.insert(k.clone(), v.clone());
+                            }
+                            if let Some(src) = &ev.source_execution_id {
+                                input.insert(
+                                    "source_execution_id".to_string(),
+                                    serde_json::json!(src),
+                                );
+                            }
+                            match engine.start_async(&wf_name, input, Some(trigger)).await {
+                                Ok(id) => {
+                                    info!(
+                                        workflow = %wf_name,
+                                        execution_id = %id,
+                                        event_type = %ev.event_type,
+                                        "[Workflow] event-triggered execution started"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        workflow = %wf_name,
+                                        event_type = %ev.event_type,
+                                        error = %e,
+                                        "[Workflow] event-triggered execution failed to start"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(
+                        n,
+                        "[Workflow] event-trigger subscriber lagged (some triggerable events dropped)"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!("[Workflow] event dispatcher closed, event-trigger task exiting");
+                    break;
+                }
+            }
+        }
+    });
+
+    let _ = inbound_wf_handle;
+    let _ = event_wf_handle;
+    info!("[Gateway] Workflow trigger drivers spawned (event + message)");
+
+    // Register the WorkflowChatReplyObserver so `/workflow/chat/<index>`
+    // pages get a reply broadcast when their execution finishes. The observer
+    // filters by `TriggerSource::WorkflowChat` so non-chat executions are
+    // ignored. Per-workflow serialization guards are released here too.
+    {
+        let observer = Arc::new(
+            nemesis_web::workflow_chat_reply_observer::WorkflowChatReplyObserver::new(
+                web_server.session_manager().clone(),
+                workflow_engine.clone(),
+            ),
+        );
+        workflow_engine
+            .event_manager()
+            .register(observer as Arc<dyn nemesis_workflow::events::WorkflowObserver>)
+            .await;
+        info!("[Gateway] WorkflowChatReplyObserver registered");
+    }
 
     info!("[Gateway] Web server components injected");
 

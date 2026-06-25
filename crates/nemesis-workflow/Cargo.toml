@@ -23,6 +23,8 @@ reqwest = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 croner = "3"
 sha2 = { workspace = true }
+argon2 = "0.5"
+rand = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

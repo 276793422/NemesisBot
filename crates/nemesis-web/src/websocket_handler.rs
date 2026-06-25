@@ -117,14 +117,21 @@ impl SendQueue {
 /// Query parameters for WebSocket connections.
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
-    /// Authentication token.
+    /// Authentication token (dashboard path).
     pub token: Option<String>,
+    /// Workflow chat index (standalone `/workflow/chat/<index>` path).
+    /// When present, the session is treated as a workflow-chat session and
+    /// `pwd` must match the per-workflow password configured via
+    /// `workflow.set_chat_password`.
+    pub workflow_chat: Option<String>,
+    /// Password for the workflow-chat session (paired with `workflow_chat`).
+    pub pwd: Option<String>,
 }
 
 /// Handle WebSocket upgrade requests.
 ///
 /// This is the entry point for the WebSocket route. It performs:
-/// 1. Auth token validation (if configured)
+/// 1. Auth validation — either dashboard token or workflow-chat password
 /// 2. WebSocket upgrade
 /// 3. Session creation
 /// 4. Handoff to the WebSocket connection handler
@@ -133,18 +140,36 @@ pub async fn handle_websocket_upgrade(
     Query(query): Query<WsQuery>,
     State(state): State<Arc<crate::api_handlers::AppState>>,
 ) -> axum::response::Response {
-    // Verify auth token if configured
-    if !state.auth_token.is_empty() {
-        let token = query.token.unwrap_or_default();
-        if token != state.auth_token {
-            tracing::warn!("[WebSocket] Authentication failed");
+    let auth_method = if let Some(ref index) = query.workflow_chat {
+        // Standalone workflow-chat path. Password verification rules:
+        //   - If a password is configured for this workflow → pwd must match.
+        //   - If no password is configured → accept any pwd (including empty).
+        // The frontend hits /api/workflow/chat/info first to learn whether
+        // a password is needed and only prompts the user when it is.
+        let pwd = query.pwd.unwrap_or_default();
+        let store = state.chat_secret_store.clone();
+        let needs_pwd = store.has_password(index);
+        if needs_pwd && !store.verify_password(index, &pwd) {
+            tracing::warn!(
+                index = %index,
+                "[WebSocket] workflow_chat authentication failed (password required)"
+            );
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
-    }
+        crate::session::AuthMethod::WorkflowChat
+    } else {
+        // Dashboard path: verify the dashboard token (if configured).
+        if !state.auth_token.is_empty() {
+            let token = query.token.unwrap_or_default();
+            if token != state.auth_token {
+                tracing::warn!("[WebSocket] Authentication failed");
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+        }
+        crate::session::AuthMethod::Dashboard
+    };
 
-    ws.on_upgrade(move |socket| {
-        handle_websocket(socket, state)
-    })
+    ws.on_upgrade(move |socket| handle_websocket(socket, state, auth_method))
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +185,14 @@ pub async fn handle_websocket_upgrade(
 /// 4. Dispatches by protocol type (message/system)
 /// 5. Sends pong responses for heartbeat pings
 /// 6. Cleans up session on disconnect
-pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers::AppState>) {
-    let session = state.session_manager_ref().create_session();
+pub async fn handle_websocket(
+    socket: WebSocket,
+    state: Arc<crate::api_handlers::AppState>,
+    auth_method: crate::session::AuthMethod,
+) {
+    let session = state
+        .session_manager_ref()
+        .create_session_with_method(auth_method);
     let session_id = session.id.clone();
     let sender_id = session.sender_id.clone();
     let chat_id = session.chat_id.clone();
@@ -217,6 +248,7 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                         workspace: state.workspace.clone(),
                                         home: state.home.clone(),
                                         state: state.clone(),
+                                        auth_method,
                                     };
                                     let router = router.clone();
                                     let sq = send_queue.clone();
@@ -234,6 +266,29 @@ pub async fn handle_websocket(socket: WebSocket, state: Arc<crate::api_handlers:
                                     }
                                 }
                                 // Request handled, skip legacy dispatch
+                                continue;
+                            }
+
+                            // workflow_chat module: dedicated chat page for testing
+                            // workflows. Handled entirely async, never forwarded
+                            // to the bus. Spawned so the WS loop stays responsive.
+                            if pm.msg_type == "message" && pm.module == "workflow_chat" {
+                                let state2 = state.clone();
+                                let sid = session_id.clone();
+                                let cid = chat_id.clone();
+                                let pm2 = pm.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = crate::workflow_chat::handle_workflow_chat_message(
+                                        state2, sid, cid, pm2,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "[WebSocket] workflow_chat handler error"
+                                        );
+                                    }
+                                });
                                 continue;
                             }
                         }

@@ -322,3 +322,33 @@ variables: {}
         assert_eq!(wf.triggers[0].trigger_type, "cron");
         assert_eq!(wf.triggers[1].trigger_type, "webhook");
     }
+
+    /// Verify the three developer-facing template files shipped under
+    /// `nemesisbot/workspace/workflow/definitions/` parse and validate cleanly.
+    /// Catches schema drift if someone edits the templates without testing
+    /// them.
+    #[test]
+    fn test_shipped_workflow_templates_parse_and_validate() {
+        let template_paths = [
+            "../../nemesisbot/workspace/workflow/definitions/template-hello-loop.yaml",
+            "../../nemesisbot/workspace/workflow/definitions/template-linear-pipeline.yaml",
+            "../../nemesisbot/workspace/workflow/definitions/template-parallel-fanout.yaml",
+        ];
+        for path_str in template_paths {
+            let path = std::path::Path::new(path_str);
+            assert!(
+                path.exists(),
+                "template file missing: {} (run from crate root)",
+                path_str
+            );
+            let wf = parse_file(path)
+                .unwrap_or_else(|e| panic!("parse {}: {}", path_str, e));
+            validate(&wf)
+                .unwrap_or_else(|e| panic!("validate {}: {}", path_str, e));
+            assert!(
+                !wf.nodes.is_empty(),
+                "{} should have at least one node",
+                path_str
+            );
+        }
+    }

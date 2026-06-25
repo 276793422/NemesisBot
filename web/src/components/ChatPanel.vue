@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
@@ -35,6 +35,14 @@ hljs.registerLanguage('markdown', markdown)
 
 const props = defineProps<{
   standalone?: boolean
+  /** WS protocol module to send/receive on. Defaults to 'chat'. */
+  module?: string
+  /** Extra fields merged into each send + history_request data payload. */
+  moduleData?: Record<string, unknown>
+  /** Override the assistant welcome title / heading. */
+  titleOverride?: string
+  /** Override the textarea placeholder. */
+  placeholderOverride?: string
 }>()
 
 const chatStore = useChatStore()
@@ -147,7 +155,8 @@ function onChatAreaClick() {
 
 function handleWSMessage(data: any) {
   if (data.module !== undefined) {
-    if (data.type === 'message' && data.module === 'chat') {
+    const activeModule = props.module ?? 'chat'
+    if (data.type === 'message' && data.module === activeModule) {
       if (data.cmd === 'receive') {
         chatStore.addMessage({
           role: data.data.role || 'assistant',
@@ -160,8 +169,18 @@ function handleWSMessage(data: any) {
         if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
           request('voice', 'tts_playback', { text: data.data.content }).catch(() => {})
         }
-      } else if (data.cmd === 'history') {
+      } else if (data.cmd === 'history_response') {
         handleHistoryResponse(data.data)
+      } else if (data.cmd === 'history') {
+        // Legacy chat history reply uses cmd 'history' (data shape is the same).
+        handleHistoryResponse(data.data)
+      } else if (data.cmd === 'error') {
+        chatStore.addMessage({
+          role: 'error',
+          content: data.data.content || data.data,
+          timestamp: data.timestamp,
+        })
+        chatStore.streaming = false
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
       chatStore.addMessage({
@@ -246,7 +265,10 @@ function loadHistory() {
   chatStore.historyLoading = true
   const requestId = 'hist_' + Date.now()
   const limit = 20
-  sendHistoryRequest(requestId, limit, chatStore.oldestIndex)
+  sendHistoryRequest(requestId, limit, chatStore.oldestIndex, {
+    module: props.module,
+    moduleData: props.moduleData,
+  })
 
   // Safety timeout: reset loading flag if no response in 10s
   setTimeout(() => {
@@ -273,7 +295,10 @@ function sendMessage() {
   if (chatInput.value) chatInput.value.style.height = 'auto'
 
   // Send with voice_playback flag if playback is enabled
-  send(content, voicePlayback.value)
+  send(content, voicePlayback.value, {
+    module: props.module,
+    moduleData: props.moduleData,
+  })
 
   // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
   if (voiceDialogue.value) {
@@ -288,6 +313,10 @@ function sendMessage() {
 }
 
 function stopGeneration() {
+  // stopGeneration only applies to the default chat module (cancels the
+  // agent loop). Workflow_chat streams are driven by the workflow engine,
+  // not the agent loop, so agent.cancel is a no-op there — we hide the
+  // stop button in that case via `showStopButton`.
   request('agent', 'cancel').then((res) => {
     if (res && res.cancelled > 0) {
       chatStore.streaming = false
@@ -302,6 +331,11 @@ function stopGeneration() {
     chatStore.streaming = false
   })
 }
+
+const showStopButton = computed(() => {
+  const activeModule = props.module ?? 'chat'
+  return activeModule === 'chat'
+})
 
 // Voice toolbar toggle functions
 async function toggleDictation() {
@@ -458,6 +492,13 @@ onMounted(() => {
   onMessage(handleWSMessage)
   setupScrollListener()
 
+  // Non-default module (e.g., workflow_chat) must NOT share conversation
+  // state with a prior chat session in the same tab — reset before binding.
+  const activeModule = props.module ?? 'chat'
+  if (activeModule !== 'chat') {
+    chatStore.reset()
+  }
+
   nextTick(() => {
     scrollToBottom()
     if (chatMessages.value && scrollHandler) {
@@ -508,7 +549,7 @@ onUnmounted(() => {
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <div class="message-bubble">
-            <p>你好！我是 NemesisBot。有什么可以帮助你的吗？</p>
+            <p>{{ props.titleOverride || '你好！我是 NemesisBot。有什么可以帮助你的吗？' }}</p>
           </div>
         </div>
       </div>
@@ -585,21 +626,24 @@ onUnmounted(() => {
     <div class="chat-input-area">
       <textarea
         ref="chatInput"
-        placeholder="输入消息... (Ctrl+Enter 发送)"
+        :placeholder="props.placeholderOverride || '输入消息... (Ctrl+Enter 发送)'"
         rows="1"
         v-model="chatStore.input"
         @keydown="handleKeydown"
         @input="handleInput"
         :disabled="chatStore.streaming"
       ></textarea>
-      <button v-if="chatStore.streaming" class="btn btn-stop" @click="stopGeneration" title="停止生成">
+      <button v-if="chatStore.streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
       </button>
-      <button v-else class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
+      <button v-else-if="!chatStore.streaming" class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
         发送
       </button>
+      <span v-else class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
+        执行中...
+      </span>
       <button
         class="toolbar-toggle"
         :class="{ active: !toolbarCollapsed }"
@@ -708,5 +752,10 @@ onUnmounted(() => {
 }
 .btn-stop svg {
   display: block;
+}
+.btn-disabled-workflow {
+  opacity: 0.6;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 </style>

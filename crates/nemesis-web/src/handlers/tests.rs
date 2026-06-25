@@ -40,6 +40,7 @@ use super::*;
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
+            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         });
@@ -49,6 +50,7 @@ use super::*;
             workspace: Some(ws.clone()),
             home: Some(ws),
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 
@@ -79,6 +81,7 @@ use super::*;
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
+            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         });
@@ -88,6 +91,7 @@ use super::*;
             workspace: None,
             home: None,
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 

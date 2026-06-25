@@ -225,3 +225,191 @@ fn test_match_event_wrong_channel() {
     let matched = mgr.match_event("webhook", &data);
     assert!(matched.is_empty());
 }
+
+// ============================================================
+// match_trigger_event: typed TriggerEvent path (the "real" event matcher)
+// ============================================================
+
+use crate::event_dispatcher::TriggerEvent;
+use std::collections::HashMap as StdHashMap;
+
+fn make_typed_event(event_type: &str, data: &[(&str, serde_json::Value)]) -> TriggerEvent {
+    let mut m = StdHashMap::new();
+    for (k, v) in data {
+        m.insert(k.to_string(), v.clone());
+    }
+    TriggerEvent::new(event_type, m)
+}
+
+#[test]
+fn match_trigger_event_matches_when_event_type_filter_matches() {
+    let mgr = TriggerManager::new();
+    // event trigger filtering on event_type=workflow.completed
+    let trigger = make_trigger(
+        "event",
+        HashMap::from([("event_type", "workflow.completed")]),
+    );
+    mgr.register_trigger("on_complete", trigger).unwrap();
+
+    let ev = make_typed_event("workflow.completed", &[]);
+    let matched = mgr.match_trigger_event(&ev);
+    assert_eq!(matched, vec!["on_complete"]);
+}
+
+#[test]
+fn match_trigger_event_supports_glob_event_type() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger(
+        "event",
+        HashMap::from([("event_type", "workflow.*")]),
+    );
+    mgr.register_trigger("any_workflow_event", trigger).unwrap();
+
+    let ev = make_typed_event("workflow.failed", &[]);
+    assert_eq!(mgr.match_trigger_event(&ev), vec!["any_workflow_event"]);
+
+    let ev = make_typed_event("forge.pattern_created", &[]);
+    assert!(mgr.match_trigger_event(&ev).is_empty());
+}
+
+#[test]
+fn match_trigger_event_supports_additional_data_matchers() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger(
+        "event",
+        HashMap::from([
+            ("event_type", "workflow.completed"),
+            ("status", "success"),
+        ]),
+    );
+    mgr.register_trigger("on_success", trigger).unwrap();
+
+    // status=success → matches
+    let ev = make_typed_event(
+        "workflow.completed",
+        &[("status", serde_json::json!("success"))],
+    );
+    assert_eq!(mgr.match_trigger_event(&ev), vec!["on_success"]);
+
+    // status=failed → no match
+    let ev = make_typed_event(
+        "workflow.completed",
+        &[("status", serde_json::json!("failed"))],
+    );
+    assert!(mgr.match_trigger_event(&ev).is_empty());
+}
+
+#[test]
+fn match_trigger_event_ignores_triggers_without_event_type_key() {
+    // An event trigger without `event_type` in config is malformed and ignored.
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("event", HashMap::new());
+    mgr.register_trigger("malformed", trigger).unwrap();
+
+    let ev = make_typed_event("anything", &[]);
+    assert!(mgr.match_trigger_event(&ev).is_empty());
+}
+
+// ============================================================
+// match_message: inbound bus message path
+// ============================================================
+
+#[test]
+fn match_message_matches_by_channel_only() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("message", HashMap::from([("channel", "web")]));
+    mgr.register_trigger("web_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "user1",
+        chat_id: "chat1",
+        content: "anything",
+    };
+    assert_eq!(mgr.match_message(&msg), vec!["web_wf"]);
+}
+
+#[test]
+fn match_message_supports_glob_channel() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("message", HashMap::from([("channel", "*")]));
+    mgr.register_trigger("any_channel_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "telegram",
+        sender_id: "u",
+        chat_id: "c",
+        content: "x",
+    };
+    assert_eq!(mgr.match_message(&msg), vec!["any_channel_wf"]);
+}
+
+#[test]
+fn match_message_supports_content_glob() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger(
+        "message",
+        HashMap::from([("channel", "web"), ("content", "/cmd *")]),
+    );
+    mgr.register_trigger("slash_cmd_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "u",
+        chat_id: "c",
+        content: "/cmd arg1",
+    };
+    assert_eq!(mgr.match_message(&msg), vec!["slash_cmd_wf"]);
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "u",
+        chat_id: "c",
+        content: "not a slash command",
+    };
+    assert!(mgr.match_message(&msg).is_empty());
+}
+
+#[test]
+fn match_message_filters_by_sender_id() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger(
+        "message",
+        HashMap::from([
+            ("channel", "web"),
+            ("sender_id", "admin"),
+        ]),
+    );
+    mgr.register_trigger("admin_only_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "admin",
+        chat_id: "c",
+        content: "x",
+    };
+    assert_eq!(mgr.match_message(&msg), vec!["admin_only_wf"]);
+
+    let msg = InboundMessageRef {
+        channel: "web",
+        sender_id: "guest",
+        chat_id: "c",
+        content: "x",
+    };
+    assert!(mgr.match_message(&msg).is_empty());
+}
+
+#[test]
+fn match_message_empty_config_matches_everything() {
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("message", HashMap::new());
+    mgr.register_trigger("catchall_wf", trigger).unwrap();
+
+    let msg = InboundMessageRef {
+        channel: "any",
+        sender_id: "any",
+        chat_id: "any",
+        content: "any",
+    };
+    assert_eq!(mgr.match_message(&msg), vec!["catchall_wf"]);
+}

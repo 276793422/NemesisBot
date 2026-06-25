@@ -14,6 +14,11 @@ const messageQueue: string[] = []
 let manualClose = false
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 
+// Extra query params appended to the WS URL on connect (e.g.
+// `workflow_chat=<index>&pwd=<password>` for the standalone
+// workflow-chat page). Persists across reconnects.
+let extraQueryParams: Record<string, string> = {}
+
 // Multi-handler support (replaces single onMessageCallback)
 type MessageHandler = (data: any) => void
 const messageHandlers: MessageHandler[] = []
@@ -24,6 +29,18 @@ function buildWSUrl(): string {
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return protocol + '//' + window.location.host + '/ws'
+}
+
+function applyQueryParams(wsUrl: string): string {
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+  for (const [k, v] of Object.entries(extraQueryParams)) {
+    params.set(k, v)
+  }
+  const qs = params.toString()
+  if (!qs) return wsUrl
+  const sep = wsUrl.includes('?') ? '&' : '?'
+  return wsUrl + sep + qs
 }
 
 function flushQueue() {
@@ -71,19 +88,20 @@ function reconnect() {
   }, reconnectDelay)
 }
 
-export function connect(host?: string | null, authToken?: string | null) {
+export function connect(
+  host?: string | null,
+  authToken?: string | null,
+  extraParams?: Record<string, string> | null,
+) {
   // Skip if already open or connecting (prevents orphaned WebSocket connections)
   if (ws && ws.readyState < WebSocket.CLOSING) return
 
   if (authToken) token = authToken
+  if (extraParams) extraQueryParams = { ...extraParams }
   manualClose = false
   notifyStatus('connecting')
 
-  let wsUrl = host || buildWSUrl()
-  if (token) {
-    const sep = wsUrl.includes('?') ? '&' : '?'
-    wsUrl = wsUrl + sep + 'token=' + encodeURIComponent(token)
-  }
+  const wsUrl = applyQueryParams(host || buildWSUrl())
 
   try {
     ws = new WebSocket(wsUrl)
@@ -156,26 +174,41 @@ export function sendRaw(msg: object) {
 // Initialize useWSAPI with sendRaw (breaks circular dependency)
 initWSAPI(sendRaw)
 
-export function send(content: string, voicePlayback?: boolean) {
+export function send(
+  content: string,
+  voicePlayback?: boolean,
+  extra?: { module?: string; moduleData?: Record<string, unknown> },
+) {
   const data: any = { content }
   if (voicePlayback) {
     data.voice_playback = true
   }
+  if (extra?.moduleData) {
+    Object.assign(data, extra.moduleData)
+  }
   sendRaw({
     type: 'message',
-    module: 'chat',
+    module: extra?.module ?? 'chat',
     cmd: 'send',
     data,
   })
 }
 
-export function sendHistoryRequest(requestId: string, limit: number, beforeIndex?: number | null) {
+export function sendHistoryRequest(
+  requestId: string,
+  limit: number,
+  beforeIndex?: number | null,
+  extra?: { module?: string; moduleData?: Record<string, unknown> },
+) {
   const data: any = { request_id: requestId, limit }
   if (beforeIndex != null) data.before_index = beforeIndex
+  if (extra?.moduleData) {
+    Object.assign(data, extra.moduleData)
+  }
 
   sendRaw({
     type: 'message',
-    module: 'chat',
+    module: extra?.module ?? 'chat',
     cmd: 'history_request',
     data,
   })

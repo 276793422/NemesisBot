@@ -119,6 +119,17 @@ pub enum TriggerSource {
         sender_id: String,
         message: String,
     },
+    /// Triggered by an inbound bus message matching a `message` trigger config.
+    /// Distinct from `Chat` (which is used when an agent tool returns a chat
+    /// message back to the caller): `Message` is the *producer* side — the
+    /// gateway subscribes to the inbound bus, matches channel/content/sender
+    /// against trigger configs, and starts the workflow with this source.
+    Message {
+        channel: String,
+        chat_id: String,
+        sender_id: String,
+        content: String,
+    },
     /// Triggered from the dashboard / WebSocket UI (milestone 1c-E7).
     /// Carries the WebSocket session_id so downstream handlers can attribute
     /// the run back to the originating user.
@@ -131,6 +142,35 @@ pub enum TriggerSource {
         event_type: String,
         #[serde(default)]
         data: serde_json::Value,
+    },
+    /// Triggered from the dedicated workflow-chat page (`/#/workflow/chat/<index>`).
+    ///
+    /// The chat page is the URL contract — being on the page runs that workflow
+    /// unconditionally, no trigger config needed. This variant carries both
+    /// the transport identifiers (needed to route the reply OutboundMessage
+    /// back to the originating WebSocket) and the logical identifiers (used
+    /// for session_key namespacing so memory/agent nodes fetch the right
+    /// per-workflow conversation history).
+    WorkflowChat {
+        /// Transport chat_id, format `"web:<session_id>"`. The reply observer
+        /// publishes OutboundMessage with this chat_id so the existing
+        /// `crates/nemesis-web/src/server.rs:958` dispatcher routes it back
+        /// to the right WebSocket session.
+        chat_id: String,
+        /// Bare session_id (without the `"web:"` prefix). Used for direct
+        /// `send_to_session` calls if needed.
+        session_id: String,
+        /// The workflow that's running. Used by the reply observer to look
+        /// up the workflow def (terminal agent nodes etc.) without re-resolving
+        /// from index.
+        workflow_name: String,
+        /// Logical index, first 8 hex chars of `sha256(name)`. Same value
+        /// as the URL path segment. Mostly for logging/diagnostics.
+        index: String,
+        /// Logical session_key, format `"wf_chat:<workflow_name>"`. Memory
+        /// and agent nodes inside the workflow use this to fetch prior turns
+        /// of the same workflow-chat conversation.
+        session_key: String,
     },
 }
 

@@ -14,6 +14,11 @@ const routes: RouteRecordRaw[] = [
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
+  { path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') },
+  // Note: `/workflow/chat/<index>` is served as a standalone HTML page
+  // (workflow-chat.html, see vite.config.ts + serve_embedded_static),
+  // not as a Vue Router route. The dashboard SPA never renders this path;
+  // WorkflowList opens it via window.open to a fresh tab.
   { path: '/forge', name: 'forge', component: () => import('../views/ForgeView.vue') },
   { path: '/persona-shop', name: 'persona-shop', component: () => import('../views/PersonaShopView.vue') },
   // Configuration

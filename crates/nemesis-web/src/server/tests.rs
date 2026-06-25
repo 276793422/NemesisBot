@@ -548,6 +548,7 @@ async fn test_handle_health_endpoint() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
@@ -585,6 +586,7 @@ async fn test_handle_health_not_running() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
@@ -1083,6 +1085,7 @@ async fn test_handle_health_with_model_state() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });

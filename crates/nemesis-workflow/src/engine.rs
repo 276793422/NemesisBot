@@ -25,11 +25,97 @@ use crate::nodes::{NodeExecutorRegistry, SubWorkflowNodeExecutor};
 use crate::persistence::WorkflowPersistence;
 use crate::scheduler::{self, ScheduleOutcome};
 use crate::triggers::CronTimezone;
-use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, TriggerSource, Workflow};
+use crate::types::{Execution, ExecutionState, NodeDef, NodeResult, TriggerConfig, TriggerSource, Workflow};
 
 /// Render a path for logging without panicking on non-UTF8.
 fn path_dbg(path: &Path) -> String {
     path.display().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Workflow summary types (UI API response shape)
+// ---------------------------------------------------------------------------
+
+/// UI-facing summary of a workflow definition. Used by `workflow.list`
+/// WSAPI response. Driver status comes from [`crate::driver_status`] —
+/// the UI must not hardcode trigger-type→driven mapping.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkflowSummary {
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub node_count: usize,
+    pub trigger_count: usize,
+    pub triggers: Vec<TriggerSummary>,
+    /// Opaque short ID used by the workflow-chat URL (`/workflow/chat/<chat_index>`).
+    /// Computed as the first 8 chars of `sha256(name)` hex. Stable across
+    /// restarts, not enumerable from outside, and unique enough to avoid
+    /// collisions for any realistic workflow count.
+    pub chat_index: String,
+}
+
+/// Trigger summary within a workflow list response. `driven` and `reason`
+/// come from [`crate::driver_status::driver_status_for`] — the UI treats
+/// these as authoritative and renders whatever they say.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TriggerSummary {
+    pub trigger_type: String,
+    pub config: HashMap<String, serde_json::Value>,
+    pub driven: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// ISO-8601 next-fire timestamp for cron triggers. `None` for non-cron
+    /// triggers or when the cron expression is invalid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_fire_at: Option<String>,
+}
+
+/// Compute the next fire time for a cron trigger. Returns `None` if the
+/// trigger isn't a cron trigger, the schedule is missing/invalid, or the
+/// schedule has no future fire date.
+fn cron_next_fire_at_from_trigger(trigger: &TriggerConfig) -> Option<String> {
+    if trigger.trigger_type != "cron" {
+        return None;
+    }
+    let schedule = trigger.config.get("schedule").and_then(|v| v.as_str())?;
+    let tz_str = trigger.config.get("timezone").and_then(|v| v.as_str());
+    let cron = croner::Cron::from_str(schedule).ok()?;
+
+    let next_str = match tz_str {
+        Some(s) if CronTimezone::from_config_str(s) == Some(CronTimezone::Utc) => {
+            let now = chrono::Utc::now();
+            cron.find_next_occurrence(&now, false).ok()?.to_rfc3339()
+        }
+        _ => {
+            let now = Local::now();
+            cron.find_next_occurrence(&now, false).ok()?.to_rfc3339()
+        }
+    };
+    Some(next_str)
+}
+
+/// Make a workflow name safe to use as a filename. Replaces anything
+/// outside `[A-Za-z0-9_-]` with `_`. Empty names get a `wf_` prefix to
+/// avoid hidden files.
+fn sanitize_workflow_filename(name: &str) -> String {
+    if name.is_empty() {
+        return "wf_unnamed".to_string();
+    }
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.starts_with('.') {
+        format!("wf_{}", sanitized)
+    } else {
+        sanitized
+    }
 }
 
 /// [`scheduler::ProgressHook`] implementation that saves a checkpoint after
@@ -191,6 +277,11 @@ pub struct WorkflowEngine {
     node_executors: NodeExecutorRegistry,
     /// Optional persistence directory. If empty, persistence is disabled.
     persistence_dir: Option<PathBuf>,
+    /// Optional workflow definitions directory. When set, workflow
+    /// create/update/delete operations also write to this directory so
+    /// changes survive gateway restarts. Gateway sets this to
+    /// `{home}/workspace/workflow/definitions/`.
+    workflow_defs_dir: parking_lot::RwLock<Option<PathBuf>>,
     /// Optional checkpoint store. If `None`, checkpoints are kept in memory
     /// (lost on restart). Gateway wires a [`FileCheckpointStore`] so resume
     /// survives process restarts.
@@ -212,6 +303,18 @@ pub struct WorkflowEngine {
     /// execution so we can enforce MAX_RECURSION_DEPTH for AgentTool
     /// nestings and provide diagnostics (snapshot of active frames).
     call_stack: std::sync::Arc<crate::call_stack::WorkflowCallStack>,
+    /// Fan-out event bus for `event`/`message` trigger drivers. Gateway
+    /// subscribes a task that turns each [`TriggerEvent`] into a
+    /// [`workflows_matching_event`] lookup, then fires the matching workflows.
+    /// Business code (workflow lifecycle, forge, etc.) calls
+    /// [`publish_event`] when something interesting happens.
+    event_dispatcher: crate::event_dispatcher::EventDispatcher,
+    /// Per-workflow chat serialization state (1c-E8 workflow chat page).
+    /// Bundles the per-workflow mutex map + pending-execution guard map so
+    /// the WebSocket send handler (acquire + store_guard) and the reply
+    /// observer (take_guard + drop) share one instance without extra plumbing
+    /// through AppState. See [`crate::workflow_chat_state`] for the design.
+    workflow_chat_state: std::sync::Arc<crate::workflow_chat_state::WorkflowChatState>,
 }
 
 impl WorkflowEngine {
@@ -227,11 +330,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         }
     }
 
@@ -247,11 +353,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: None,
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -274,11 +383,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         }
     }
 
@@ -291,11 +403,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
             persistence_dir: Some(persistence_dir),
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         });
 
         engine.node_executors.register(
@@ -313,11 +428,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors,
             persistence_dir: None,
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         }
     }
 
@@ -331,11 +449,14 @@ impl WorkflowEngine {
             executions: RwLock::new(HashMap::new()),
             node_executors,
             persistence_dir: Some(persistence_dir),
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         }
     }
 
@@ -347,7 +468,10 @@ impl WorkflowEngine {
     /// Also wires the `sub_workflow` executor so nested workflows work.
     ///
     /// `persistence_dir` controls where in-flight execution state is
-    /// JSONL-persisted; pass `None` to disable persistence.
+    /// JSONL-persisted AND where checkpoints are stored (under
+    /// `{persistence_dir}/checkpoints/`). Pass `None` to disable both.
+    /// For separate control over JSONL vs checkpoint locations, use
+    /// [`new_integrated_with_dirs`].
     ///
     /// Returns `Arc<Self>` because the `sub_workflow` executor holds a back
     /// reference. This is the recommended constructor for gateway / service
@@ -357,10 +481,26 @@ impl WorkflowEngine {
         tools: Arc<nemesis_tools::registry::ToolRegistry>,
         persistence_dir: Option<PathBuf>,
     ) -> Arc<Self> {
-        // If persistence is enabled, also enable on-disk checkpoints so resume
-        // survives restarts. Checkpoints live under
-        // `{persistence_dir}/checkpoints/`.
-        let checkpoint_store: Option<Arc<dyn CheckpointStore>> = persistence_dir
+        Self::new_integrated_with_dirs(provider, tools, persistence_dir.clone(), persistence_dir)
+    }
+
+    /// Like [`new_integrated`] but splits JSONL persistence from checkpoint
+    /// storage. The gateway uses this so JSONL execution logs go to
+    /// `workspace/workflow/executions/` while checkpoints live under
+    /// `workspace/workflow/checkpoints/` — both under the same `workflow/`
+    /// tree but in their own subdirectories instead of mixing at the root.
+    ///
+    /// - `executions_dir`: where `{workflow_name}_{execution_id}.jsonl` files
+    ///   are written. `None` disables JSONL persistence.
+    /// - `checkpoint_root`: parent of the `checkpoints/` subdir. `None`
+    ///   disables on-disk checkpoints (in-memory only, lost on restart).
+    pub fn new_integrated_with_dirs(
+        provider: Arc<dyn LLMProvider>,
+        tools: Arc<nemesis_tools::registry::ToolRegistry>,
+        executions_dir: Option<PathBuf>,
+        checkpoint_root: Option<PathBuf>,
+    ) -> Arc<Self> {
+        let checkpoint_store: Option<Arc<dyn CheckpointStore>> = checkpoint_root
             .as_ref()
             .and_then(|dir| match FileCheckpointStore::new(dir.clone()) {
                 Ok(s) => Some(Arc::new(s) as Arc<dyn CheckpointStore>),
@@ -379,12 +519,15 @@ impl WorkflowEngine {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
             node_executors: NodeExecutorRegistry::new(),
-            persistence_dir,
+            persistence_dir: executions_dir,
+            workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(checkpoint_store),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
+            event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
+            workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
         });
 
         // Override mock node executors with real ones.
@@ -444,7 +587,7 @@ impl WorkflowEngine {
     /// loaded. Returns the number of workflows successfully registered.
     ///
     /// Used by the gateway (milestone 1a-E1) to populate the engine from
-    /// `{home}/workspace/workflows/` at startup.
+    /// `{home}/workspace/workflow/definitions/` at startup.
     pub fn load_workflows_from_dir(&self, dir: &Path) -> Result<usize, EngineError> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -691,6 +834,26 @@ impl WorkflowEngine {
         &self.event_manager
     }
 
+    /// Borrow the trigger-event dispatcher so callers can subscribe a
+    /// consumer (gateway wires a task that calls
+    /// [`workflows_matching_event`] → [`start_async`] for each match) and
+    /// publish events from business code.
+    pub fn event_dispatcher(&self) -> &crate::event_dispatcher::EventDispatcher {
+        &self.event_dispatcher
+    }
+
+    /// Access the per-workflow chat serialization state (1c-E8).
+    /// The WebSocket send handler and the reply observer share this instance
+    /// to serialize concurrent workflow_chat sends to the same workflow.
+    pub fn workflow_chat_state(&self) -> &std::sync::Arc<crate::workflow_chat_state::WorkflowChatState> {
+        &self.workflow_chat_state
+    }
+
+    /// Convenience: publish a [`TriggerEvent`] on this engine's dispatcher.
+    pub fn publish_event(&self, event: crate::event_dispatcher::TriggerEvent) {
+        self.event_dispatcher.publish(event);
+    }
+
     /// Borrow the workflow call stack. Useful for diagnostics — e.g.
     /// listing currently in-flight executions for a "what's running right
     /// now" WSAPI command.
@@ -927,8 +1090,68 @@ impl WorkflowEngine {
                 workflow.name, e
             )));
         }
+
         self.workflows.insert(workflow.name.clone(), workflow);
         Ok(())
+    }
+
+    /// Find workflows whose `event` trigger matches the given [`TriggerEvent`].
+    ///
+    /// Walks every registered workflow's trigger list, filters by
+    /// `trigger_type == "event"`, then matches `config.event_type` against the
+    /// event's `event_type` (glob allowed, e.g. `"workflow.*"`) and any
+    /// remaining config keys against `event.data`. Returns the names of
+    /// matching workflows (one entry per workflow even if multiple triggers
+    /// match).
+    pub fn workflows_matching_event(
+        &self,
+        event: &crate::event_dispatcher::TriggerEvent,
+    ) -> Vec<String> {
+        let mgr = crate::triggers::TriggerManager::new();
+        // Re-register every workflow's triggers into a transient manager so
+        // we can reuse the matching helpers without exposing them publicly.
+        for entry in self.workflows.iter() {
+            for t in &entry.value().triggers {
+                let _ = mgr.register_trigger(
+                    entry.key(),
+                    crate::triggers::TriggerConfig {
+                        trigger_type: t.trigger_type.clone(),
+                        config: t.config.clone(),
+                    },
+                );
+            }
+        }
+        mgr.match_trigger_event(event)
+    }
+
+    /// Find workflows whose `message` trigger matches the given inbound
+    /// message fields.
+    pub fn workflows_matching_message(
+        &self,
+        channel: &str,
+        sender_id: &str,
+        chat_id: &str,
+        content: &str,
+    ) -> Vec<String> {
+        let mgr = crate::triggers::TriggerManager::new();
+        for entry in self.workflows.iter() {
+            for t in &entry.value().triggers {
+                let _ = mgr.register_trigger(
+                    entry.key(),
+                    crate::triggers::TriggerConfig {
+                        trigger_type: t.trigger_type.clone(),
+                        config: t.config.clone(),
+                    },
+                );
+            }
+        }
+        let msg = crate::triggers::InboundMessageRef {
+            channel,
+            sender_id,
+            chat_id,
+            content,
+        };
+        mgr.match_message(&msg)
     }
 
     /// Retrieve a workflow by name.
@@ -939,6 +1162,178 @@ impl WorkflowEngine {
     /// List all registered workflow names.
     pub fn list_workflows(&self) -> Vec<String> {
         self.workflows.iter().map(|r| r.key().clone()).collect()
+    }
+
+    /// Set the directory where workflow definition YAML/JSON files are
+    /// persisted. When set, [`Self::persist_workflow`] / [`Self::delete_workflow_file`]
+    /// write/delete files under this directory. Gateway wires this to
+    /// `{home}/workspace/workflow/definitions/` so UI-driven CRUD survives restarts.
+    pub fn set_workflow_defs_dir(&self, dir: PathBuf) {
+        *self.workflow_defs_dir.write() = Some(dir);
+    }
+
+    /// Query whether workflow definitions are persisted to disk.
+    pub fn workflow_defs_dir(&self) -> Option<PathBuf> {
+        self.workflow_defs_dir.read().clone()
+    }
+
+    /// Build a detailed summary of every registered workflow, suitable for
+    /// the UI's workflow list view. Includes trigger driver status (the
+    /// single source of truth — the UI does not hardcode this) and the
+    /// next cron fire time when applicable.
+    pub fn list_workflows_detailed(&self) -> Vec<WorkflowSummary> {
+        self.workflows
+            .iter()
+            .map(|entry| {
+                let wf = entry.value();
+                self.build_workflow_summary(wf)
+            })
+            .collect()
+    }
+
+    pub fn build_workflow_summary(&self, wf: &Workflow) -> WorkflowSummary {
+        let triggers_summary: Vec<TriggerSummary> = wf
+            .triggers
+            .iter()
+            .map(|t| {
+                let driver = crate::driver_status::driver_status_for(&t.trigger_type);
+                let next_fire_at = if t.trigger_type == "cron" {
+                    cron_next_fire_at_from_trigger(t)
+                } else {
+                    None
+                };
+                TriggerSummary {
+                    trigger_type: t.trigger_type.clone(),
+                    config: t.config.clone(),
+                    driven: driver.driven,
+                    reason: driver.reason,
+                    next_fire_at,
+                }
+            })
+            .collect();
+
+        WorkflowSummary {
+            name: wf.name.clone(),
+            description: wf.description.clone(),
+            version: wf.version.clone(),
+            node_count: wf.nodes.len(),
+            trigger_count: wf.triggers.len(),
+            triggers: triggers_summary,
+            chat_index: Self::chat_index(&wf.name),
+        }
+    }
+
+    /// Compute the workflow-chat URL index for a workflow name.
+    ///
+    /// Returns the first 8 hex chars of `sha256(name.to_lowercase())` —
+    /// stable, opaque, not enumerable. Used by:
+    /// - `WorkflowSummary::chat_index` (UI list response)
+    /// - `workflow_by_chat_index` (resolving an incoming chat URL back to a workflow)
+    /// - WSAPI `workflow.resolve_chat_target`
+    ///
+    /// Lowercasing the name first lets users type the URL case-insensitively
+    /// without changing the canonical workflow name.
+    pub fn chat_index(workflow_name: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(workflow_name.to_lowercase().as_bytes());
+        let hash = hasher.finalize();
+        let mut out = String::with_capacity(8);
+        for b in hash.iter().take(4) {
+            out.push_str(&format!("{:02x}", b));
+        }
+        out
+    }
+
+    /// Resolve a chat URL index back to a workflow name. O(n) scan — fine for
+    /// realistic workflow counts (chat_index collisions matter at ~65k entries).
+    /// Returns None if no registered workflow's chat_index matches.
+    pub fn workflow_by_chat_index(&self, index: &str) -> Option<String> {
+        let lower = index.to_lowercase();
+        for entry in self.workflows.iter() {
+            if Self::chat_index(entry.key()) == lower {
+                return Some(entry.key().clone());
+            }
+        }
+        None
+    }
+
+    /// Register + persist a workflow to disk (UI create/update path).
+    /// Writes a YAML file under [`workflow_defs_dir`] and registers in
+    /// memory. Returns error if persistence is not configured or if the
+    /// workflow fails validation.
+    pub fn persist_workflow(&self, workflow: Workflow) -> Result<(), EngineError> {
+        // Validate first so we don't write a broken file to disk.
+        if let Err(e) = crate::parser::validate(&workflow) {
+            return Err(EngineError::ExecutionFailed(format!(
+                "validate workflow {:?}: {}",
+                workflow.name, e
+            )));
+        }
+
+
+        let dir = self.workflow_defs_dir.read().clone().ok_or_else(|| {
+            EngineError::PersistenceError(
+                "workflow_defs_dir not set; call set_workflow_defs_dir() first".to_string(),
+            )
+        })?;
+
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            EngineError::PersistenceError(format!("create dir {:?}: {}", dir, e))
+        })?;
+
+        let path = dir.join(format!("{}.yaml", sanitize_workflow_filename(&workflow.name)));
+        let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
+            EngineError::PersistenceError(format!("serialize workflow {:?}: {}", workflow.name, e))
+        })?;
+        std::fs::write(&path, yaml).map_err(|e| {
+            EngineError::PersistenceError(format!("write {:?}: {}", path, e))
+        })?;
+
+        self.workflows.insert(workflow.name.clone(), workflow);
+        Ok(())
+    }
+
+    /// Delete a workflow from disk + memory (UI delete path).
+    /// Returns Ok(()) even if the in-memory entry was already absent (idempotent).
+    /// Returns error if persistence is configured and the on-disk file exists
+    /// but cannot be removed.
+    pub fn delete_workflow_file(&self, name: &str) -> Result<(), EngineError> {
+        let dir = self.workflow_defs_dir.read().clone();
+
+        // Remove from memory first — if file deletion fails the caller can
+        // retry file removal without re-running the whole flow.
+        self.workflows.remove(name);
+
+        if let Some(dir) = dir {
+            let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
+            if candidate.exists() {
+                std::fs::remove_file(&candidate).map_err(|e| {
+                    EngineError::PersistenceError(format!(
+                        "remove {:?}: {}",
+                        candidate, e
+                    ))
+                })?;
+            }
+            // Also try .yml + .json variants — load_workflows_from_dir accepts all three.
+            for ext in &["yml", "json"] {
+                let p = dir.join(format!("{}.{}", sanitize_workflow_filename(name), ext));
+                if p.exists() {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate a workflow definition without registering it. Returns
+    /// all errors as a flat list — empty Vec means valid. The UI uses
+    /// this for live validation as the user edits.
+    pub fn validate_workflow(wf: &Workflow) -> Vec<String> {
+        match crate::parser::validate(wf) {
+            Ok(()) => Vec::new(),
+            Err(e) => vec![e],
+        }
     }
 
     /// Unregister (remove) a workflow definition from the engine.
@@ -1203,33 +1598,71 @@ impl WorkflowEngine {
         let execution_id_for_event = execution.id.clone();
         match execution.state {
             ExecutionState::Completed => {
+                let event_name = workflow_name_for_event.clone();
+                let event_id = execution_id_for_event.clone();
                 self.event_manager
                     .emit(WorkflowEvent::Completed {
-                        execution_id: execution_id_for_event,
-                        workflow_name: workflow_name_for_event,
+                        execution_id: event_id,
+                        workflow_name: event_name,
                         timestamp: Local::now(),
                     })
                     .await;
+                // Also publish on the trigger-event dispatcher so any workflow
+                // with an `event` trigger matching `workflow.completed` fires.
+                let mut data = std::collections::HashMap::new();
+                data.insert(
+                    "workflow_name".to_string(),
+                    serde_json::json!(workflow_name_for_event),
+                );
+                data.insert("status".to_string(), serde_json::json!("completed"));
+                self.publish_event(
+                    crate::event_dispatcher::TriggerEvent::new("workflow.completed", data)
+                        .with_source_execution_id(execution_id_for_event),
+                );
             }
             ExecutionState::Failed => {
                 let err = execution.error.clone().unwrap_or_default();
+                let event_name = workflow_name_for_event.clone();
+                let event_id = execution_id_for_event.clone();
                 self.event_manager
                     .emit(WorkflowEvent::Failed {
-                        execution_id: execution_id_for_event,
-                        workflow_name: workflow_name_for_event,
+                        execution_id: event_id,
+                        workflow_name: event_name,
                         error: err,
                         timestamp: Local::now(),
                     })
                     .await;
+                let mut data = std::collections::HashMap::new();
+                data.insert(
+                    "workflow_name".to_string(),
+                    serde_json::json!(workflow_name_for_event),
+                );
+                data.insert("status".to_string(), serde_json::json!("failed"));
+                self.publish_event(
+                    crate::event_dispatcher::TriggerEvent::new("workflow.failed", data)
+                        .with_source_execution_id(execution_id_for_event),
+                );
             }
             ExecutionState::Cancelled => {
+                let event_name = workflow_name_for_event.clone();
+                let event_id = execution_id_for_event.clone();
                 self.event_manager
                     .emit(WorkflowEvent::Cancelled {
-                        execution_id: execution_id_for_event,
-                        workflow_name: workflow_name_for_event,
+                        execution_id: event_id,
+                        workflow_name: event_name,
                         timestamp: Local::now(),
                     })
                     .await;
+                let mut data = std::collections::HashMap::new();
+                data.insert(
+                    "workflow_name".to_string(),
+                    serde_json::json!(workflow_name_for_event),
+                );
+                data.insert("status".to_string(), serde_json::json!("cancelled"));
+                self.publish_event(
+                    crate::event_dispatcher::TriggerEvent::new("workflow.cancelled", data)
+                        .with_source_execution_id(execution_id_for_event),
+                );
             }
             _ => {}
         }

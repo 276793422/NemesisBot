@@ -1,0 +1,55 @@
+name: template-parallel-fanout
+description: |
+  [高级模板] 并发 fan-out + 条件路由。
+  演示要点：
+  - parallel 节点：config.nodes 内的子节点并发执行（tokio 任务）
+  - parallel 输出按子节点 id（或 branch_N）聚合到 context
+  - condition 节点求值后输出 condition_result 到 context
+  - edges.condition 控制下游节点是否运行（true/false 或表达式）
+  - chat 页运行时 {{content}} 自动注入为用户消息
+  测试方法：在画布页点 ▶ 运行观察并行执行，或在 chat 页输入任意内容触发。
+version: 1.0.0
+triggers: []
+nodes:
+  - id: fan_out
+    node_type: parallel
+    config:
+      nodes:
+        - id: task_a
+          node_type: script
+          config:
+            language: bash
+            script: |
+              echo '{"task": "A", "duration_ms": 100}'
+        - id: task_b
+          node_type: script
+          config:
+            language: bash
+            script: |
+              echo '{"task": "B", "duration_ms": 50}'
+        - id: task_c
+          node_type: transform
+          config:
+            expression: identity
+  - id: check_status
+    node_type: condition
+    config:
+      condition: "1 == 1"
+  - id: report_success
+    node_type: script
+    config:
+      language: bash
+      script: |
+        echo '{"status": "success", "message": "All parallel tasks completed"}'
+    is_terminal: true
+edges:
+  - from_node: fan_out
+    to_node: check_status
+    condition: null
+  - from_node: check_status
+    to_node: report_success
+    condition: "true"
+variables: {}
+metadata:
+  difficulty: advanced
+  author: nemesisbot-template

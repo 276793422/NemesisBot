@@ -8,6 +8,17 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
+/// Borrowed view of an inbound message — used by [`TriggerManager::match_message`]
+/// so this crate doesn't need to depend on `nemesis-types`. The gateway wires
+/// real `nemesis_types::InboundMessage` into this shape at the call site.
+#[derive(Debug, Clone, Copy)]
+pub struct InboundMessageRef<'a> {
+    pub channel: &'a str,
+    pub sender_id: &'a str,
+    pub chat_id: &'a str,
+    pub content: &'a str,
+}
+
 /// Configuration for a single trigger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerConfig {
@@ -122,6 +133,12 @@ impl TriggerManager {
     ///
     /// The event type is matched against trigger types, and the data map
     /// is used for additional matching criteria.
+    ///
+    /// **Historical note**: this method predates the proper `match_trigger_event`
+    /// helper below. Its semantics are unusual — it matches `trigger_type`
+    /// against the supplied `event_type` string rather than filtering by
+    /// `trigger_type == "event"` and then matching `config.event_type`. New
+    /// callers should use [`Self::match_trigger_event`] instead.
     pub fn match_event(
         &self,
         event_type: &str,
@@ -144,6 +161,127 @@ impl TriggerManager {
         }
 
         matched
+    }
+
+    /// Match a typed [`TriggerEvent`] against all registered `event` triggers.
+    ///
+    /// This is the *correct* event-matching path: filters by
+    /// `trigger_type == "event"`, then matches `config.event_type` against the
+    /// event's `event_type` field (glob allowed, e.g. `"workflow.*"`), then
+    /// matches any remaining config keys against `event.data`.
+    ///
+    /// Returns workflow names with at least one matching trigger.
+    pub fn match_trigger_event(&self, event: &crate::event_dispatcher::TriggerEvent) -> Vec<String> {
+        let triggers = self.triggers.read().unwrap();
+        let mut matched = Vec::new();
+
+        for (wf_name, wf_triggers) in triggers.iter() {
+            for trigger in wf_triggers {
+                if trigger.trigger_type != "event" {
+                    continue;
+                }
+
+                // First key to match is event_type itself.
+                let expected_event_type = match trigger.config.get("event_type").and_then(|v| v.as_str()) {
+                    Some(pattern) => pattern,
+                    None => continue, // event trigger must declare event_type
+                };
+                if !match_glob(expected_event_type, &event.event_type) {
+                    continue;
+                }
+
+                // Remaining config keys match against event.data.
+                if self.match_event_data(trigger, &event.data) {
+                    matched.push(wf_name.clone());
+                    break;
+                }
+            }
+        }
+
+        matched
+    }
+
+    /// Match an inbound message against all registered `message` triggers.
+    ///
+    /// A `message` trigger config supports these keys (all optional except
+    /// matching is empty-match-all by default):
+    ///   - `channel`: glob match against the channel name (e.g. `"web"`, `"telegram"`, `"*"`)
+    ///   - `content`: glob match against the message text (e.g. `"*hello*"`, `"/cmd *"`)
+    ///   - `sender_id`: glob match against the sender id
+    ///   - `chat_id`: glob match against the chat id
+    ///
+    /// Returns workflow names with at least one matching trigger.
+    pub fn match_message(&self, msg: &InboundMessageRef<'_>) -> Vec<String> {
+        let triggers = self.triggers.read().unwrap();
+        let mut matched = Vec::new();
+
+        for (wf_name, wf_triggers) in triggers.iter() {
+            for trigger in wf_triggers {
+                if trigger.trigger_type != "message" {
+                    continue;
+                }
+
+                if !self.match_message_data(trigger, msg) {
+                    continue;
+                }
+
+                matched.push(wf_name.clone());
+                break;
+            }
+        }
+
+        matched
+    }
+
+    /// Check if the event data matches the trigger's config criteria,
+    /// **ignoring** the `event_type` key (which is matched separately by
+    /// `match_trigger_event`). All other keys must match (glob allowed).
+    fn match_event_data(
+        &self,
+        trigger: &TriggerConfig,
+        data: &HashMap<String, serde_json::Value>,
+    ) -> bool {
+        for (key, expected) in &trigger.config {
+            if key == "event_type" {
+                continue; // already matched
+            }
+            let actual = match data.get(key) {
+                Some(v) => v,
+                None => return false,
+            };
+            let expected_str = value_to_string(expected);
+            let actual_str = value_to_string(actual);
+            if expected_str.contains('*') {
+                if !match_glob(&expected_str, &actual_str) {
+                    return false;
+                }
+            } else if expected_str != actual_str {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check if an inbound message matches the trigger's config criteria.
+    fn match_message_data(&self, trigger: &TriggerConfig, msg: &InboundMessageRef<'_>) -> bool {
+        for (key, expected) in &trigger.config {
+            let expected_str = value_to_string(expected);
+            let actual_str = match key.as_str() {
+                "channel" => msg.channel.to_string(),
+                "content" => msg.content.to_string(),
+                "sender_id" => msg.sender_id.to_string(),
+                "chat_id" => msg.chat_id.to_string(),
+                _ => continue, // unknown keys ignored — be permissive
+            };
+            if expected_str.contains('*') {
+                if !match_glob(&expected_str, &actual_str) {
+                    return false;
+                }
+            } else if expected_str != actual_str {
+                return false;
+            }
+        }
+        true
     }
 
     /// Return all workflow names that have cron triggers.

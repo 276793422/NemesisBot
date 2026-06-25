@@ -30,6 +30,21 @@ export const useChatStore = defineStore('chat', () => {
     input.value = ''
   }
 
+  /**
+   * Reset all conversation state. Used when ChatPanel mounts under a
+   * non-default module (e.g., workflow_chat) so messages from a previous
+   * chat session don't bleed into the new context.
+   */
+  function reset() {
+    messages.value = []
+    input.value = ''
+    streaming.value = false
+    historyLoading.value = false
+    hasMoreHistory.value = true
+    oldestIndex.value = null
+    historyLoaded.value = false
+  }
+
   return {
     messages,
     input,
@@ -41,5 +56,6 @@ export const useChatStore = defineStore('chat', () => {
     addMessage,
     prependHistory,
     clearInput,
+    reset,
   }
 })

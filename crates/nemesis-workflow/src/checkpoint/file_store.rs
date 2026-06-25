@@ -25,9 +25,9 @@ use super::types::{Checkpoint, CheckpointMeta};
 /// Filesystem-backed [`CheckpointStore`].
 ///
 /// `root` is the parent directory; checkpoints live under
-/// `{root}/checkpoints/`. Callers usually point this at
-/// `{workspace}/workflow/` so the layout becomes
-/// `{workspace}/workflow/checkpoints/{exec}/{cp}.json`.
+/// `{root}/checkpoints/`. Gateway points this at
+/// `{home}/workspace/workflow/checkpoints/` so the layout becomes
+/// `{home}/workspace/workflow/checkpoints/{exec}/{cp}.json`.
 pub struct FileCheckpointStore {
     root: PathBuf,
 }

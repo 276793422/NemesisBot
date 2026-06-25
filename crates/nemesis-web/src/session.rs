@@ -18,6 +18,30 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
+// Auth method (how a WebSocket session authenticated)
+// ---------------------------------------------------------------------------
+
+/// How a WebSocket session authenticated.
+///
+/// Used to gate certain WSAPI commands (e.g. `workflow.set_chat_password`)
+/// to dashboard-only access — a session that connected via the standalone
+/// workflow-chat page must not be able to change passwords.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// Authenticated via the dashboard `token` query param (or no auth configured).
+    Dashboard,
+    /// Authenticated via `workflow_chat=<index>&pwd=<password>` query params
+    /// on the standalone `/workflow/chat/<index>` page.
+    WorkflowChat,
+}
+
+impl Default for AuthMethod {
+    fn default() -> Self {
+        Self::Dashboard
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
@@ -29,6 +53,8 @@ pub struct Session {
     pub chat_id: String,
     pub created_at: DateTime<Local>,
     pub last_active: DateTime<Local>,
+    /// How this session authenticated at WS upgrade time.
+    pub auth_method: AuthMethod,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +101,11 @@ impl SessionManager {
 
     /// Create a new session and return it.
     pub fn create_session(&self) -> Session {
+        self.create_session_with_method(AuthMethod::default())
+    }
+
+    /// Create a new session with the given auth method.
+    pub fn create_session_with_method(&self, auth_method: AuthMethod) -> Session {
         let id = generate_session_id();
         let sender_id = format!("web:{}", id);
         let chat_id = sender_id.clone();
@@ -86,6 +117,7 @@ impl SessionManager {
             chat_id,
             created_at: now,
             last_active: now,
+            auth_method,
         };
 
         let entry = SessionEntry {

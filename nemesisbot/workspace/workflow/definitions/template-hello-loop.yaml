@@ -1,0 +1,27 @@
+name: template-hello-loop
+description: |
+  [入门模板] 循环 3 次输出 Hello World。
+  演示要点：
+  - loop 节点：通过 config.max_iterations 控制迭代次数
+  - 子节点在 config.nodes 数组中定义（不需要 edges）
+  - is_terminal=true 标记输出节点
+  测试方法：在画布页点 ▶ 运行，或在列表页点 💬 在 chat 页测试。
+version: 1.0.0
+triggers: []
+nodes:
+  - id: loop
+    node_type: loop
+    config:
+      max_iterations: 3
+      nodes:
+        - id: say_hello
+          node_type: script
+          config:
+            language: bash
+            script: echo "Hello World"
+    is_terminal: true
+edges: []
+variables: {}
+metadata:
+  difficulty: beginner
+  author: nemesisbot-template

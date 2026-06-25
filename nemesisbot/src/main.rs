@@ -442,7 +442,13 @@ async fn main() -> Result<()> {
             // --- Step 10: Create additional directories ---
             let _ = std::fs::create_dir_all(workspace_dir.join("logs"));
             let _ = std::fs::create_dir_all(workspace_dir.join("forge"));
-            let _ = std::fs::create_dir_all(workspace_dir.join("workflow"));
+            // Workflow subdirs: definitions/ (YAML), templates/ (starter
+            // templates), checkpoints/ (resume snapshots), executions/ (JSONL
+            // run logs). All four are created up-front so the gateway can
+            // rely on them existing without each callsite having to mkdir.
+            for sub in ["definitions", "templates", "checkpoints", "executions"] {
+                let _ = std::fs::create_dir_all(workspace_dir.join("workflow").join(sub));
+            }
 
             // --- Step 10: Delete BOOTSTRAP.md from workspace if it exists ---
             // BOOTSTRAP.md is the bootstrap init file; after onboard default the

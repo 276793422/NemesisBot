@@ -187,15 +187,20 @@ pub async fn handle_workflow_start(
     })))
 }
 
-/// `GET /api/workflow/list` — list registered workflow names.
+/// `GET /api/workflow/list` — list registered workflows with full trigger
+/// driver status and next-fire timestamps. The UI reads `trigger_drivers`
+/// and the per-workflow `triggers[].driven` field to render status — it
+/// never hardcodes "event/message is undriven" knowledge on the client.
 pub async fn handle_workflow_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let engine = state.workflow_engine.as_ref().ok_or_else(engine_missing)?;
-    let names = engine.list_workflows();
+    let summaries = engine.list_workflows_detailed();
+    let driver_status_map = nemesis_workflow::all_driver_statuses();
     Ok(Json(serde_json::json!({
-        "workflows": names,
-        "count": names.len(),
+        "workflows": summaries,
+        "trigger_driver_status": driver_status_map,
+        "count": summaries.len(),
     })))
 }
 
@@ -607,6 +612,11 @@ pub fn routes() -> axum::Router<Arc<AppState>> {
             "/api/workflow/checkpoints/{execution_id}/{checkpoint_id}",
             get(handle_workflow_checkpoint_load),
         )
+        // Standalone workflow-chat page (public metadata + password verify).
+        // See "Standalone workflow-chat HTTP endpoints" section below for
+        // why these are unauthenticated.
+        .route("/api/workflow/chat/info", get(handle_workflow_chat_info))
+        .route("/api/workflow/chat/verify", post(handle_workflow_chat_verify))
 }
 
 /// List every checkpoint (metadata only) for an execution — milestone 1b-A1
@@ -699,6 +709,148 @@ pub async fn handle_workflow_checkpoint_load(
 }
 
 // ---------------------------------------------------------------------------
+// Standalone workflow-chat HTTP endpoints
+//
+// These are intentionally public (no `X-Auth-Token` requirement). The
+// standalone `/workflow/chat/<index>` page cannot use WSAPI for the initial
+// handshake because WSAPI requires an already-authenticated WebSocket —
+// and the WS upgrade needs to know whether a password is required before
+// accepting the connection. HTTP endpoints break that chicken-and-egg.
+//
+// Information disclosure: indices are 8-hex chars (sha256(workflow_name)
+// truncated), so enumerating them is impractical (2^32 search space). The
+// metadata returned (name + description + chat_eligible) is what the page
+// needs to render the password form.
+// ---------------------------------------------------------------------------
+
+/// Query params for `GET /api/workflow/chat/info`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ChatInfoQuery {
+    pub index: String,
+}
+
+/// `GET /api/workflow/chat/info?index=<8hex>` — public metadata used by the
+/// standalone workflow-chat page before deciding whether to prompt for a
+/// password. Returns `needs_password` so the client knows whether to show
+/// the password form or connect the WebSocket immediately.
+pub async fn handle_workflow_chat_info(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ChatInfoQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let engine = match state.workflow_engine.clone() {
+        Some(e) => e,
+        None => return Err(engine_missing()),
+    };
+    let needs_password = state.chat_secret_store.has_password(&q.index);
+    match engine.workflow_by_chat_index(&q.index) {
+        None => Ok(Json(serde_json::json!({
+            "found": false,
+            "chat_eligible": false,
+            "needs_password": needs_password,
+            "reason": "no workflow matches this index",
+        }))),
+        Some(name) => {
+            let wf = engine
+                .get_workflow(&name)
+                .ok_or_else(|| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "workflow_vanished",
+                            "message": format!("workflow vanished after resolve: {}", name),
+                        })),
+                    )
+                })?;
+            let has_human_review = wf
+                .nodes
+                .iter()
+                .any(|n| n.node_type == "human_review");
+            let chat_eligible = !has_human_review;
+            let reason = if has_human_review {
+                Some(format!(
+                    "工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
+                ))
+            } else {
+                None
+            };
+            Ok(Json(serde_json::json!({
+                "found": true,
+                "workflow_name": name,
+                "description": wf.description,
+                "chat_eligible": chat_eligible,
+                "needs_password": needs_password,
+                "reason": reason,
+            })))
+        }
+    }
+}
+
+/// `POST /api/workflow/chat/verify` — verify a workflow-chat password.
+///
+/// Body: `{ "index": string, "password": string }`. On success returns the
+/// workflow metadata (same shape as `chat/info` minus `needs_password`,
+/// plus `verified: true`). On failure returns 401.
+pub async fn handle_workflow_chat_verify(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let engine = match state.workflow_engine.clone() {
+        Some(e) => e,
+        None => return Err(engine_missing()),
+    };
+    let index = payload
+        .get("index")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing_field", "field": "index"})),
+            )
+        })?;
+    let password = payload
+        .get("password")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Always run verify (constant-time on configured indexes; consumes time
+    // on missing ones via DECOY_HASH) so the response time doesn't leak
+    // whether an index is known.
+    if !state.chat_secret_store.verify_password(index, password) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "verified": false,
+                "error": "unauthorized",
+            })),
+        ));
+    }
+
+    let name = engine.workflow_by_chat_index(index).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "verified": false,
+                "error": "workflow_not_found_for_index",
+            })),
+        )
+    })?;
+    let wf = engine.get_workflow(&name).ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "workflow_vanished",
+                "message": format!("workflow vanished after verify: {}", name),
+            })),
+        )
+    })?;
+    Ok(Json(serde_json::json!({
+        "verified": true,
+        "workflow_name": name,
+        "description": wf.description,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket API (WSAPI) — milestone 1c-E7
 // ---------------------------------------------------------------------------
 
@@ -728,10 +880,139 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
         match cmd {
             "list" => {
-                let names = engine.list_workflows();
+                let summaries = engine.list_workflows_detailed();
+                let driver_status_map = nemesis_workflow::all_driver_statuses();
+                let store = ctx.state.chat_secret_store.clone();
+                let workflows: Vec<serde_json::Value> = summaries
+                    .iter()
+                    .map(|s| {
+                        let mut v = serde_json::to_value(s).unwrap_or(serde_json::Value::Null);
+                        if let Some(obj) = v.as_object_mut() {
+                            let has = store.has_password(&s.chat_index);
+                            obj.insert(
+                                "has_chat_password".to_string(),
+                                serde_json::Value::Bool(has),
+                            );
+                        }
+                        v
+                    })
+                    .collect();
+                let count = workflows.len();
                 Ok(Some(serde_json::json!({
-                    "workflows": names,
-                    "count": names.len(),
+                    "workflows": workflows,
+                    "trigger_driver_status": driver_status_map,
+                    "count": count,
+                })))
+            }
+
+            "get" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?;
+                let wf = engine
+                    .get_workflow(name)
+                    .ok_or_else(|| format!("workflow_not_found: {}", name))?;
+                let summary = engine.build_workflow_summary(&wf);
+                Ok(Some(serde_json::json!({
+                    "workflow": wf,
+                    "summary": summary,
+                })))
+            }
+
+            "create" => {
+                let data = data.ok_or("missing data")?;
+                let wf_raw = data
+                    .get("workflow")
+                    .ok_or("missing field: workflow")?;
+                let wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
+                    .map_err(|e| format!("invalid workflow definition: {}", e))?;
+                let name = wf.name.clone();
+                engine
+                    .persist_workflow(wf)
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(serde_json::json!({
+                    "name": name,
+                    "created": true,
+                })))
+            }
+
+            "update" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?
+                    .to_string();
+                let wf_raw = data
+                    .get("workflow")
+                    .ok_or("missing field: workflow")?;
+                let mut wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
+                    .map_err(|e| format!("invalid workflow definition: {}", e))?;
+                // Force the name to match the URL/param — caller can't rename
+                // via update; renames require delete + create.
+                wf.name = name.clone();
+                engine
+                    .persist_workflow(wf)
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(serde_json::json!({
+                    "name": name,
+                    "updated": true,
+                })))
+            }
+
+            "delete" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?;
+                engine
+                    .delete_workflow_file(name)
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(serde_json::json!({
+                    "name": name,
+                    "deleted": true,
+                })))
+            }
+
+            "validate" => {
+                let data = data.ok_or("missing data")?;
+                let wf_raw = data
+                    .get("workflow")
+                    .ok_or("missing field: workflow")?;
+                let wf: nemesis_workflow::types::Workflow = serde_json::from_value(wf_raw.clone())
+                    .map_err(|e| format!("invalid workflow definition: {}", e))?;
+                let errors = nemesis_workflow::engine::WorkflowEngine::validate_workflow(&wf);
+                Ok(Some(serde_json::json!({
+                    "valid": errors.is_empty(),
+                    "errors": errors,
+                })))
+            }
+
+            "run_now" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?
+                    .to_string();
+                let input = parse_input_object(data.get("input"));
+                let exec_id = WorkflowEngine::start_async(
+                    Arc::clone(engine),
+                    &name,
+                    input,
+                    Some(TriggerSource::WebUI {
+                        session_id: ctx.session_id.clone(),
+                    }),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok(Some(serde_json::json!({
+                    "execution_id": exec_id,
+                    "workflow_name": name,
+                    "state": "Running",
                 })))
             }
 
@@ -758,6 +1039,87 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     "workflow_name": name,
                     "state": "Running",
                 })))
+            }
+
+            // Manually fire a trigger event into the engine's EventDispatcher.
+            // Used by the canvas page's "⚡ 模拟事件" button — let users test
+            // `event` triggers without needing the real producer (e.g. without
+            // waiting for a real workflow.completed lifecycle event).
+            //
+            // Payload: { event_type: string, data?: Record<string, any> }
+            // Response: { event_type, data, matched_workflows: string[], published: true }
+            "fire_event" => {
+                let data = data.ok_or("missing data")?;
+                let event_type = data
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: event_type")?
+                    .to_string();
+                let data_map: std::collections::HashMap<String, serde_json::Value> = data
+                    .get("data")
+                    .and_then(|v| v.as_object())
+                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                let event = nemesis_workflow::event_dispatcher::TriggerEvent::new(
+                    event_type.clone(),
+                    data_map.clone(),
+                );
+                let matched = engine.workflows_matching_event(&event);
+                engine.publish_event(event);
+                Ok(Some(serde_json::json!({
+                    "event_type": event_type,
+                    "data": data_map,
+                    "matched_workflows": matched,
+                    "published": true,
+                })))
+            }
+
+            // Resolve an opaque workflow-chat URL index back to a workflow
+            // (name + description + chat_eligibility). Used by the
+            // `WorkflowChatView` page before it lets the user type — the
+            // UI needs the workflow title, and must reject chat-ineligible
+            // workflows (those with `human_review` nodes pause indefinitely
+            // and would hang the chat UI).
+            //
+            // Payload: { index: string }
+            // Response: { found, workflow_name?, description?, chat_eligible, reason? }
+            "resolve_chat_target" => {
+                let data = data.ok_or("missing data")?;
+                let index = data
+                    .get("index")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: index")?;
+                match engine.workflow_by_chat_index(index) {
+                    None => Ok(Some(serde_json::json!({
+                        "found": false,
+                        "chat_eligible": false,
+                        "reason": "no workflow matches this index",
+                    }))),
+                    Some(name) => {
+                        let wf = engine
+                            .get_workflow(&name)
+                            .ok_or_else(|| format!("workflow vanished after resolve: {}", name))?;
+                        let has_human_review = wf
+                            .nodes
+                            .iter()
+                            .any(|n| n.node_type == "human_review");
+                        let chat_eligible = !has_human_review;
+                        let reason = if has_human_review {
+                            Some(format!(
+                                "工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
+                            ))
+                        } else {
+                            None
+                        };
+                        Ok(Some(serde_json::json!({
+                            "found": true,
+                            "workflow_name": name,
+                            "description": wf.description,
+                            "chat_eligible": chat_eligible,
+                            "reason": reason,
+                        })))
+                    }
+                }
             }
 
             "status" => {
@@ -854,6 +1216,112 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     "execution_id": exec_id,
                     "checkpoints": metas,
                 })))
+            }
+
+            "get_checkpoint" => {
+                let data = data.ok_or("missing data")?;
+                let exec_id = data
+                    .get("execution_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: execution_id")?;
+                let cp_id = data
+                    .get("checkpoint_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: checkpoint_id")?;
+                let store = engine.checkpoint_store().ok_or_else(|| {
+                    "checkpoint_store_unavailable: persistence is not enabled".to_string()
+                })?;
+                match store.load(exec_id, cp_id).await {
+                    Ok(cp) => Ok(Some(serde_json::json!({
+                        "checkpoint": cp,
+                    }))),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+
+            "set_chat_password" => {
+                // Dashboard-only: a session that connected via the standalone
+                // workflow-chat page must not be able to mutate passwords.
+                if ctx.auth_method != crate::session::AuthMethod::Dashboard {
+                    return Err("permission_denied: set_chat_password requires dashboard auth"
+                        .to_string());
+                }
+                let data = data.ok_or("missing data")?;
+                let index = data
+                    .get("index")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: index")?;
+                let password = data
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: password")?;
+                if password.is_empty() {
+                    return Err("password must not be empty".to_string());
+                }
+                let store = ctx.state.chat_secret_store.clone();
+                store
+                    .set_password(index, password)
+                    .map_err(|e| format!("set_chat_password failed: {}", e))?;
+                Ok(Some(serde_json::json!({
+                    "index": index,
+                    "set": true,
+                })))
+            }
+
+            "clear_chat_password" => {
+                if ctx.auth_method != crate::session::AuthMethod::Dashboard {
+                    return Err("permission_denied: clear_chat_password requires dashboard auth"
+                        .to_string());
+                }
+                let data = data.ok_or("missing data")?;
+                let index = data
+                    .get("index")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: index")?;
+                let store = ctx.state.chat_secret_store.clone();
+                store
+                    .clear_password(index)
+                    .map_err(|e| format!("clear_chat_password failed: {}", e))?;
+                Ok(Some(serde_json::json!({
+                    "index": index,
+                    "cleared": true,
+                })))
+            }
+
+            "verify_chat_password" => {
+                // Public: callable from the standalone page. Returns metadata
+                // (workflow_name + description) on success so the page can
+                // render without a separate resolve call.
+                let data = data.ok_or("missing data")?;
+                let index = data
+                    .get("index")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: index")?;
+                let password = data
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: password")?;
+                let store = ctx.state.chat_secret_store.clone();
+                if !store.verify_password(index, password) {
+                    return Err("unauthorized".to_string());
+                }
+                let name = engine.workflow_by_chat_index(index);
+                match name {
+                    Some(name) => {
+                        let wf = engine.get_workflow(&name);
+                        let description = wf
+                            .as_ref()
+                            .map(|w| w.description.clone())
+                            .unwrap_or_default();
+                        Ok(Some(serde_json::json!({
+                            "index": index,
+                            "workflow_name": name,
+                            "description": description,
+                            "verified": true,
+                        })))
+                    }
+                    None => Err(format!("workflow_not_found_for_index: {}", index)),
+                }
             }
 
             _ => Err(format!("unknown command: workflow.{}", cmd)),
@@ -1013,6 +1481,7 @@ mod tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
+            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         })
@@ -1086,6 +1555,7 @@ mod tests {
             workspace: None,
             home: None,
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 
@@ -1117,6 +1587,7 @@ mod tests {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: Some(engine),
+            chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         });
@@ -1126,6 +1597,7 @@ mod tests {
             workspace: None,
             home: None,
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 
@@ -1162,7 +1634,12 @@ mod tests {
         let result = handler.handle_cmd("list", None, &ctx).await.unwrap();
         let payload = result.unwrap();
         assert_eq!(payload["count"], 1);
-        assert_eq!(payload["workflows"][0], "wf_alpha");
+        // After Phase 3, workflows[] holds summary objects, not name strings.
+        assert_eq!(payload["workflows"][0]["name"], "wf_alpha");
+        assert_eq!(payload["workflows"][0]["node_count"], 1);
+        // trigger_driver_status is the global capability declaration.
+        assert_eq!(payload["trigger_driver_status"]["cron"]["driven"], true);
+        assert_eq!(payload["trigger_driver_status"]["event"]["driven"], true);
     }
 
     #[tokio::test]
@@ -1235,6 +1712,267 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("checkpoint_store_unavailable"), "got: {}", err);
+    }
+
+    // ---- Phase A: WSAPI get / create / update / delete / validate / run_now
+
+    fn sample_workflow_def(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "description": "phase a test",
+            "version": "1.0.0",
+            "triggers": [],
+            "nodes": [
+                {"id": "n1", "node_type": "delay", "config": {"seconds": 1}}
+            ],
+            "edges": [],
+            "variables": {},
+            "metadata": {}
+        })
+    }
+
+    fn make_ctx_with_engine_and_defs_dir(
+        engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+        dir: &std::path::Path,
+    ) -> RequestContext {
+        engine.set_workflow_defs_dir(dir.to_path_buf());
+        make_ctx_with_engine(engine)
+    }
+
+    #[tokio::test]
+    async fn wsapi_get_returns_workflow_and_summary() {
+        let engine = build_test_engine();
+        engine
+            .register_workflow(serde_json::from_value(sample_workflow_def("wf_x")).unwrap())
+            .unwrap();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let data = Some(serde_json::json!({"name": "wf_x"}));
+        let payload = handler
+            .handle_cmd("get", data, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["workflow"]["name"], "wf_x");
+        assert_eq!(payload["summary"]["name"], "wf_x");
+        assert_eq!(payload["summary"]["node_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn wsapi_get_missing_workflow_returns_error() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let data = Some(serde_json::json!({"name": "ghost"}));
+        let err = handler.handle_cmd("get", data, &ctx).await.unwrap_err();
+        assert!(err.contains("workflow_not_found"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_create_persists_to_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine_and_defs_dir(engine.clone(), tmp.path());
+        let handler = WorkflowHandler;
+
+        let data = Some(serde_json::json!({
+            "workflow": sample_workflow_def("wf_new"),
+        }));
+        let payload = handler
+            .handle_cmd("create", data, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["name"], "wf_new");
+        assert_eq!(payload["created"], true);
+
+        // File exists on disk.
+        let file = tmp.path().join("wf_new.yaml");
+        assert!(file.exists(), "expected {:?} to exist", file);
+
+        // Engine memory has the workflow.
+        let names = engine.list_workflows();
+        assert!(names.contains(&"wf_new".to_string()));
+    }
+
+    #[tokio::test]
+    async fn wsapi_create_rejects_invalid_workflow() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine_and_defs_dir(engine, tmp.path());
+        let handler = WorkflowHandler;
+
+        // Empty nodes list fails validation.
+        let data = Some(serde_json::json!({
+            "workflow": {
+                "name": "broken",
+                "description": "",
+                "version": "1.0.0",
+                "triggers": [],
+                "nodes": [],
+                "edges": [],
+                "variables": {},
+                "metadata": {}
+            }
+        }));
+        let err = handler
+            .handle_cmd("create", data, &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_lowercase().contains("node") || err.contains("validate"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_update_overwrites_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine_and_defs_dir(engine, tmp.path());
+        let handler = WorkflowHandler;
+
+        // Initial create.
+        handler
+            .handle_cmd(
+                "create",
+                Some(serde_json::json!({"workflow": sample_workflow_def("wf_y")})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        // Update with different description.
+        let mut updated = sample_workflow_def("wf_y");
+        updated["description"] = serde_json::json!("updated!");
+        let payload = handler
+            .handle_cmd(
+                "update",
+                Some(serde_json::json!({"name": "wf_y", "workflow": updated})),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["name"], "wf_y");
+        assert_eq!(payload["updated"], true);
+
+        // File content reflects the new description.
+        let content = std::fs::read_to_string(tmp.path().join("wf_y.yaml")).unwrap();
+        assert!(content.contains("updated!"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_delete_removes_file_and_memory_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine_and_defs_dir(engine.clone(), tmp.path());
+        let handler = WorkflowHandler;
+
+        // Setup: create then delete.
+        handler
+            .handle_cmd(
+                "create",
+                Some(serde_json::json!({"workflow": sample_workflow_def("wf_z")})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let file = tmp.path().join("wf_z.yaml");
+        assert!(file.exists());
+
+        let payload = handler
+            .handle_cmd(
+                "delete",
+                Some(serde_json::json!({"name": "wf_z"})),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["name"], "wf_z");
+        assert_eq!(payload["deleted"], true);
+        assert!(!file.exists());
+        assert!(!engine.list_workflows().contains(&"wf_z".to_string()));
+    }
+
+    #[tokio::test]
+    async fn wsapi_validate_reports_errors() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+
+        // Valid workflow: no errors.
+        let data = Some(serde_json::json!({
+            "workflow": sample_workflow_def("valid_wf"),
+        }));
+        let payload = handler
+            .handle_cmd("validate", data, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["valid"], true);
+        assert_eq!(payload["errors"].as_array().unwrap().len(), 0);
+
+        // Invalid workflow (empty nodes).
+        let data = Some(serde_json::json!({
+            "workflow": {
+                "name": "broken",
+                "description": "",
+                "version": "1.0.0",
+                "triggers": [],
+                "nodes": [],
+                "edges": [],
+                "variables": {},
+                "metadata": {}
+            }
+        }));
+        let payload = handler
+            .handle_cmd("validate", data, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload["valid"], false);
+        assert!(payload["errors"].as_array().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn wsapi_run_now_missing_name_returns_error() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler
+            .handle_cmd("run_now", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: name"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_run_now_unknown_workflow_returns_error() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let data = Some(serde_json::json!({"name": "ghost_wf"}));
+        let err = handler
+            .handle_cmd("run_now", data, &ctx)
+            .await
+            .unwrap_err();
+        // WorkflowNotFound error string mentions the missing name.
+        assert!(err.contains("ghost_wf"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_create_fails_when_defs_dir_not_set() {
+        // No defs dir configured → persist should fail with helpful error.
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let data = Some(serde_json::json!({
+            "workflow": sample_workflow_def("no_dir_wf"),
+        }));
+        let err = handler
+            .handle_cmd("create", data, &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("workflow_defs_dir"), "got: {}", err);
     }
 }
 

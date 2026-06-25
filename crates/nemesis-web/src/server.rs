@@ -135,6 +135,10 @@ pub struct WebServer {
     cluster_log_dir: Option<String>,
     /// Workflow engine for trigger / execution APIs (milestone 1a-E3/E4).
     workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    /// Per-workflow chat password store for the standalone workflow-chat page.
+    /// Gateway constructs this from `{home}/workspace/workflow/chat_secrets.json`
+    /// and shares it with handlers that verify passwords.
+    chat_secret_store: Option<Arc<nemesis_workflow::chat_secrets::ChatSecretStore>>,
     /// Per-IP rate limiter for webhook endpoints (milestone 1c-E5).
     /// Created lazily; shared with AppState.
     webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
@@ -171,6 +175,7 @@ impl WebServer {
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
+            chat_secret_store: None,
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
         }
@@ -243,6 +248,14 @@ impl WebServer {
         self.workflow_engine = Some(engine);
     }
 
+    /// Set the per-workflow chat password store.
+    pub fn set_chat_secret_store(
+        &mut self,
+        store: Arc<nemesis_workflow::chat_secrets::ChatSecretStore>,
+    ) {
+        self.chat_secret_store = Some(store);
+    }
+
     /// Set the internal command sender for /api/internal endpoint.
     pub fn set_internal_cmd_tx(&mut self, tx: tokio::sync::mpsc::Sender<crate::internal::InternalCommand>) {
         self.internal_cmd_tx = Some(tx);
@@ -281,6 +294,10 @@ impl WebServer {
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine: self.workflow_engine.clone(),
+            chat_secret_store: self
+                .chat_secret_store
+                .clone()
+                .unwrap_or_else(|| Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory())),
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
         };
@@ -577,8 +594,10 @@ fn cors_origin_value(req: &axum::extract::Request) -> String {
 /// Serve a static file request from an in-memory `StaticFiles` provider.
 ///
 /// 1. Exact path match
-/// 2. SPA fallback: paths without a file extension → index.html
-/// 3. 404
+/// 2. Path-prefix rule: `workflow/chat/<anything>` → `workflow-chat.html`
+///    (the standalone entry; the rest of the path is parsed client-side)
+/// 3. SPA fallback: paths without a file extension → index.html
+/// 4. 404
 async fn serve_embedded_static(
     files: Arc<dyn StaticFiles>,
     req: axum::extract::Request,
@@ -601,7 +620,26 @@ async fn serve_embedded_static(
         ).into_response();
     }
 
-    // 2. SPA fallback: no file extension → serve index.html
+    // 2. Path-prefix rule: standalone workflow-chat page.
+    //    The 8-hex index lives in the URL path (not query), so any path
+    //    beginning with `workflow/chat/` serves the same HTML shell; the
+    //    client reads window.location.pathname to know which workflow to
+    //    resolve.
+    if path.starts_with("workflow/chat/") {
+        if let Some(content) = files.get_file("workflow-chat/index.html") {
+            return (
+                axum::http::StatusCode::OK,
+                [
+                    (http::header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+                    (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                    (http::header::VARY, "Origin".to_string()),
+                ],
+                content,
+            ).into_response();
+        }
+    }
+
+    // 3. SPA fallback: no file extension → serve index.html
     if !path.contains('.') {
         if let Some(content) = files.get_file("index.html") {
             return (
@@ -616,7 +654,7 @@ async fn serve_embedded_static(
         }
     }
 
-    // 3. 404
+    // 4. 404
     (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
 }
 

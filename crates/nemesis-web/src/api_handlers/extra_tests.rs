@@ -52,6 +52,7 @@ fn make_state(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     })
@@ -88,6 +89,7 @@ fn make_state_with_tx(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
     })
@@ -304,6 +306,7 @@ async fn test_handle_api_status_includes_model_base() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
@@ -651,6 +654,7 @@ async fn test_handle_api_sessions_with_count() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     });
@@ -1022,6 +1026,7 @@ fn test_app_state_clone() {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     };

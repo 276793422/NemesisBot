@@ -7,7 +7,7 @@
 //! - [`types`]: serialisable structs (`Checkpoint`, `SerializableContext`, …)
 //! - [`store`]: `CheckpointStore` trait + `InMemoryCheckpointStore`
 //! - [`file_store`]: `FileCheckpointStore` (JSON files under
-//!   `{workspace}/workflow/checkpoints/`)
+//!   `{home}/workspace/workflow/checkpoints/`)
 
 pub mod file_store;
 pub mod store;

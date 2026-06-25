@@ -27,6 +27,8 @@ pub mod protocol;
 pub mod session;
 pub mod sse_chat;
 pub mod websocket_handler;
+pub mod workflow_chat;
+pub mod workflow_chat_reply_observer;
 pub mod ws_router;
 
 pub use events::EventHub;

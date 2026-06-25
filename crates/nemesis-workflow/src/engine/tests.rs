@@ -1612,6 +1612,45 @@ fn cron_timezone_parses_known_strings() {
 }
 
 // ---------------------------------------------------------------------------
+// Undriven trigger warning (short-term fix for event/message trap)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_accepts_event_trigger_without_error() {
+    use crate::types::TriggerConfig;
+    let mut wf = make_workflow(
+        "event_undriven",
+        vec![make_node("n1", "delay", vec![])],
+    );
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "event".to_string(),
+        config: HashMap::from([(
+            "event_type".to_string(),
+            serde_json::json!("forge.pattern_created"),
+        )]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).expect("event trigger should still register (with warning)");
+}
+
+#[test]
+fn register_accepts_message_trigger_without_error() {
+    use crate::types::TriggerConfig;
+    let mut wf = make_workflow(
+        "message_undriven",
+        vec![make_node("n1", "delay", vec![])],
+    );
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "message".to_string(),
+        config: HashMap::new(),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).expect("message trigger should still register (with warning)");
+}
+
+// ---------------------------------------------------------------------------
 // Auto-checkpoint tests (1b-A1 step 6)
 // ---------------------------------------------------------------------------
 
@@ -1779,4 +1818,66 @@ async fn restore_skips_executions_with_config_drift() {
     engine_b.register_workflow(wf_v2).unwrap();
     let restored = engine_b.restore_incomplete_executions().await.unwrap();
     assert_eq!(restored, 0, "config drift should prevent restore");
+}
+
+// ============================================================
+// chat_index helpers (workflow chat URL feature)
+// ============================================================
+
+#[test]
+fn chat_index_is_stable_and_lowercase_hex_8chars() {
+    let idx = WorkflowEngine::chat_index("hello-bot");
+    assert_eq!(idx.len(), 8);
+    assert!(idx.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    // Stable
+    assert_eq!(idx, WorkflowEngine::chat_index("hello-bot"));
+}
+
+#[test]
+fn chat_index_is_case_insensitive_on_input() {
+    // Lowercasing the input first means "MyWorkflow" and "myworkflow" resolve to the same index.
+    assert_eq!(WorkflowEngine::chat_index("MyWorkflow"), WorkflowEngine::chat_index("myworkflow"));
+}
+
+#[test]
+fn chat_index_distinguishes_different_names() {
+    let a = WorkflowEngine::chat_index("workflow-a");
+    let b = WorkflowEngine::chat_index("workflow-b");
+    assert_ne!(a, b);
+}
+
+#[tokio::test]
+async fn workflow_by_chat_index_resolves_registered_workflow() {
+    let engine = WorkflowEngine::new_arc();
+    let wf = make_workflow("my-test-flow", vec![make_node("n1", "start", vec![])]);
+    let expected_index = WorkflowEngine::chat_index("my-test-flow");
+    engine.register_workflow(wf).unwrap();
+
+    assert_eq!(
+        engine.workflow_by_chat_index(&expected_index).as_deref(),
+        Some("my-test-flow")
+    );
+    // Case-insensitive lookup
+    let upper = expected_index.to_uppercase();
+    assert_eq!(
+        engine.workflow_by_chat_index(&upper).as_deref(),
+        Some("my-test-flow")
+    );
+}
+
+#[tokio::test]
+async fn workflow_by_chat_index_returns_none_for_unknown() {
+    let engine = WorkflowEngine::new_arc();
+    assert!(engine.workflow_by_chat_index("deadbeef").is_none());
+}
+
+#[tokio::test]
+async fn workflow_summary_includes_chat_index() {
+    let engine = WorkflowEngine::new_arc();
+    let wf = make_workflow("summary-test", vec![make_node("n1", "start", vec![])]);
+    engine.register_workflow(wf).unwrap();
+
+    let summaries = engine.list_workflows_detailed();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].chat_index, WorkflowEngine::chat_index("summary-test"));
 }

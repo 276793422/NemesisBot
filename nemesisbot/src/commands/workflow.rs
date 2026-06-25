@@ -715,7 +715,7 @@ fn cmd_validate(path: &str) -> Result<()> {
 
 pub fn run(action: WorkflowAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
-    let workflow_dir = common::workspace_path(&home).join("workflow");
+    let workflow_dir = common::workspace_path(&home).join("workflow").join("definitions");
 
     match action {
         WorkflowAction::List => cmd_list(&workflow_dir)?,

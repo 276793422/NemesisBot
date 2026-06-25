@@ -6,6 +6,7 @@
 
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
+use crate::session::AuthMethod;
 use crate::websocket_handler::SendQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +54,12 @@ pub struct RequestContext {
     pub home: Option<String>,
     /// Shared application state.
     pub state: Arc<AppState>,
+    /// How this session authenticated at WS upgrade time.
+    ///
+    /// Gates dashboard-only commands (e.g. `workflow.set_chat_password`)
+    /// so a session that connected via the standalone workflow-chat page
+    /// cannot mutate passwords.
+    pub auth_method: AuthMethod,
 }
 
 // ---------------------------------------------------------------------------

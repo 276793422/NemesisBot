@@ -64,6 +64,7 @@ fn make_test_state() -> Arc<AppState> {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
+        chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
     })
@@ -98,6 +99,7 @@ async fn test_dispatch_unknown_module() {
         workspace: None,
         home: None,
         state,
+            auth_method: crate::session::AuthMethod::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
@@ -125,6 +127,7 @@ async fn test_dispatch_success() {
         workspace: None,
         home: None,
         state,
+            auth_method: crate::session::AuthMethod::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
@@ -153,6 +156,7 @@ async fn test_dispatch_handler_error() {
         workspace: None,
         home: None,
         state,
+            auth_method: crate::session::AuthMethod::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
@@ -180,6 +184,7 @@ async fn test_dispatch_no_data_response() {
         workspace: None,
         home: None,
         state,
+            auth_method: crate::session::AuthMethod::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
@@ -206,6 +211,7 @@ async fn test_dispatch_req_id_roundtrip() {
         workspace: None,
         home: None,
         state,
+            auth_method: crate::session::AuthMethod::default(),
     };
 
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);

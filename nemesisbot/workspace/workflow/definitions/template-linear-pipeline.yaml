@@ -1,0 +1,39 @@
+name: template-linear-pipeline
+description: |
+  [进阶模板] 线性数据管道：extract → transform → load。
+  演示要点：
+  - 多节点通过 edges 串联（线性 DAG）
+  - transform 节点的 expression 字段控制行为（identity/passthrough 或任意标识）
+  - is_terminal 标记最终输出节点
+  - 上游节点的 output 会被合并到下游节点的 context
+  测试方法：在画布页点 ▶ 运行，或在列表页点 💬 在 chat 页测试。
+version: 1.0.0
+triggers: []
+nodes:
+  - id: extract
+    node_type: script
+    config:
+      language: bash
+      script: |
+        echo '{"records": 3, "source": "demo"}'
+  - id: transform
+    node_type: transform
+    config:
+      expression: normalize
+  - id: load
+    node_type: script
+    config:
+      language: bash
+      script: echo "Data loaded successfully"
+    is_terminal: true
+edges:
+  - from_node: extract
+    to_node: transform
+    condition: null
+  - from_node: transform
+    to_node: load
+    condition: null
+variables: {}
+metadata:
+  difficulty: intermediate
+  author: nemesisbot-template
