@@ -337,6 +337,7 @@ fn test_workflow_definition_serialization() {
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
+        is_terminal: false,
         }],
         edges: vec![Edge {
             from_node: "start".to_string(),

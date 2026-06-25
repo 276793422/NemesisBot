@@ -47,6 +47,7 @@ fn workflow_serialization_roundtrip() {
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
+        is_terminal: false,
         }],
         edges: vec![Edge {
             from_node: "n1".to_string(),
@@ -93,6 +94,7 @@ fn node_def_with_config() {
         depends_on: vec!["n0".to_string()],
         retry_count: 3,
         timeout: Some("60".to_string()),
+    is_terminal: false,
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: NodeDef = serde_json::from_str(&json).unwrap();
@@ -214,6 +216,7 @@ fn node_def_timeout_duration() {
         depends_on: vec![],
         retry_count: 0,
         timeout: Some("5m".to_string()),
+    is_terminal: false,
     };
     assert_eq!(node.timeout_duration(), Some(Duration::from_secs(300)));
 
@@ -224,6 +227,7 @@ fn node_def_timeout_duration() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     };
     assert_eq!(node_no_timeout.timeout_duration(), None);
 }
@@ -302,6 +306,7 @@ fn node_def_with_all_defaults() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     };
     assert!(node.config.is_empty());
     assert!(node.depends_on.is_empty());
@@ -319,6 +324,7 @@ fn node_def_with_multiple_dependencies() {
         depends_on: vec!["n1".to_string(), "n2".to_string()],
         retry_count: 5,
         timeout: Some("10s".to_string()),
+    is_terminal: false,
     };
     assert_eq!(node.depends_on.len(), 2);
     assert_eq!(node.retry_count, 5);
@@ -334,6 +340,7 @@ fn node_def_invalid_timeout() {
         depends_on: vec![],
         retry_count: 0,
         timeout: Some("invalid".to_string()),
+    is_terminal: false,
     };
     assert!(node.timeout_duration().is_none());
 }
@@ -402,6 +409,7 @@ fn workflow_serialization_with_all_fields() {
                 depends_on: vec![],
                 retry_count: 3,
                 timeout: Some("30s".to_string()),
+            is_terminal: false,
             },
             NodeDef {
                 id: "n2".to_string(),
@@ -410,6 +418,7 @@ fn workflow_serialization_with_all_fields() {
                 depends_on: vec!["n1".to_string()],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
         ],
         edges: vec![Edge {
@@ -604,4 +613,297 @@ fn execution_skip_serializing_none_fields() {
     );
     assert!(!json.contains("chat_id"));
     assert!(!json.contains("workflow_hash"));
+}
+
+// ---------------------------------------------------------------------------
+// Workflow::compute_output (1a-B2)
+// ---------------------------------------------------------------------------
+
+fn make_node_result(id: &str, output: serde_json::Value) -> NodeResult {
+    NodeResult {
+        node_id: id.to_string(),
+        output,
+        error: None,
+        state: ExecutionState::Completed,
+        started_at: chrono::Local::now(),
+        ended_at: chrono::Local::now(),
+        metadata: HashMap::new(),
+    }
+}
+
+#[test]
+fn node_def_is_terminal_default_false() {
+    // Serializing a NodeDef without specifying is_terminal should default to
+    // false when deserialized back, ensuring legacy files load correctly.
+    let json = r#"{
+        "id": "n1",
+        "node_type": "llm",
+        "config": {},
+        "depends_on": [],
+        "retry_count": 0,
+        "timeout": null
+    }"#;
+    let node: NodeDef = serde_json::from_str(json).unwrap();
+    assert!(!node.is_terminal);
+}
+
+#[test]
+fn node_def_is_terminal_roundtrip() {
+    let node = NodeDef {
+        id: "out".to_string(),
+        node_type: "set".to_string(),
+        config: HashMap::new(),
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: true,
+    };
+    let json = serde_json::to_string(&node).unwrap();
+    let back: NodeDef = serde_json::from_str(&json).unwrap();
+    assert!(back.is_terminal);
+}
+
+#[test]
+fn workflow_compute_output_from_terminal_node() {
+    // When a node is marked is_terminal=true, only its output is included
+    // in the workflow's final output (other completed nodes are excluded).
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![
+            NodeDef {
+                id: "input".to_string(),
+                node_type: "manual".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+            NodeDef {
+                id: "output".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec!["input".to_string()],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: true,
+            },
+        ],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let mut node_results = HashMap::new();
+    node_results.insert(
+        "input".to_string(),
+        make_node_result("input", serde_json::json!({"intermediate": "data"})),
+    );
+    node_results.insert(
+        "output".to_string(),
+        make_node_result("output", serde_json::json!({"result": "final"})),
+    );
+
+    let output = wf.compute_output(&node_results);
+    let obj = output.as_object().expect("expected object output");
+    assert_eq!(obj.get("result").unwrap(), "final");
+    assert!(
+        !obj.contains_key("intermediate"),
+        "non-terminal node output should not appear in workflow output"
+    );
+}
+
+#[test]
+fn workflow_compute_output_leaf_fallback_when_no_terminal() {
+    // When no node is marked is_terminal, leaf nodes (no downstream edges)
+    // contribute their outputs.
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![
+            NodeDef {
+                id: "start".to_string(),
+                node_type: "manual".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+            NodeDef {
+                id: "leaf_a".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec!["start".to_string()],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+            NodeDef {
+                id: "leaf_b".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec!["start".to_string()],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            },
+        ],
+        // start -> leaf_a, start -> leaf_b; both leaf_a and leaf_b are leaves
+        edges: vec![
+            Edge {
+                from_node: "start".to_string(),
+                to_node: "leaf_a".to_string(),
+                condition: None,
+            },
+            Edge {
+                from_node: "start".to_string(),
+                to_node: "leaf_b".to_string(),
+                condition: None,
+            },
+        ],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let mut node_results = HashMap::new();
+    node_results.insert(
+        "start".to_string(),
+        make_node_result("start", serde_json::json!({"skipped": true})),
+    );
+    node_results.insert(
+        "leaf_a".to_string(),
+        make_node_result("leaf_a", serde_json::json!({"a": 1})),
+    );
+    node_results.insert(
+        "leaf_b".to_string(),
+        make_node_result("leaf_b", serde_json::json!({"b": 2})),
+    );
+
+    let output = wf.compute_output(&node_results);
+    let obj = output.as_object().expect("expected object output");
+    assert_eq!(obj.get("a").unwrap(), 1);
+    assert_eq!(obj.get("b").unwrap(), 2);
+    assert!(
+        !obj.contains_key("skipped"),
+        "non-leaf 'start' should not contribute"
+    );
+}
+
+#[test]
+fn workflow_compute_output_multiple_terminals_merge() {
+    // When multiple nodes are marked terminal, their object outputs are merged.
+    // Later-defined keys overwrite earlier ones (intentional merge semantic).
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![
+            NodeDef {
+                id: "t1".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: true,
+            },
+            NodeDef {
+                id: "t2".to_string(),
+                node_type: "set".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: true,
+            },
+        ],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let mut node_results = HashMap::new();
+    node_results.insert(
+        "t1".to_string(),
+        make_node_result("t1", serde_json::json!({"shared": "from_t1", "only_t1": "x"})),
+    );
+    node_results.insert(
+        "t2".to_string(),
+        make_node_result("t2", serde_json::json!({"shared": "from_t2", "only_t2": "y"})),
+    );
+
+    let output = wf.compute_output(&node_results);
+    let obj = output.as_object().expect("expected object output");
+    // shared key: t2 wins (declared later in nodes vec)
+    assert_eq!(obj.get("shared").unwrap(), "from_t2");
+    assert_eq!(obj.get("only_t1").unwrap(), "x");
+    assert_eq!(obj.get("only_t2").unwrap(), "y");
+}
+
+#[test]
+fn workflow_compute_output_non_object_output_keyed_by_node_id() {
+    // When a terminal node produces a non-object output (e.g., a string or
+    // number), it is keyed by the node id in the merged result.
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![NodeDef {
+            id: "scalar".to_string(),
+            node_type: "set".to_string(),
+            config: HashMap::new(),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: true,
+        }],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let mut node_results = HashMap::new();
+    node_results.insert(
+        "scalar".to_string(),
+        make_node_result("scalar", serde_json::json!(42)),
+    );
+
+    let output = wf.compute_output(&node_results);
+    let obj = output.as_object().expect("expected object output");
+    assert_eq!(obj.get("scalar").unwrap(), 42);
+}
+
+#[test]
+fn workflow_compute_output_empty_node_results_is_null() {
+    // No node_results at all -> Null output (callers can detect this and fall
+    // back to a sensible default).
+    let wf = Workflow {
+        name: "wf".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![NodeDef {
+            id: "n1".to_string(),
+            node_type: "set".to_string(),
+            config: HashMap::new(),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: true,
+        }],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+
+    let output = wf.compute_output(&HashMap::new());
+    assert!(output.is_null());
 }

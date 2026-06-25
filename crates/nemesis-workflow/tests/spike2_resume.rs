@@ -292,6 +292,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec![],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
             NodeDef {
                 id: "review".to_string(),
@@ -300,6 +301,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["A".to_string()],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
             NodeDef {
                 id: "B".to_string(),
@@ -308,6 +310,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["review".to_string()],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
             NodeDef {
                 id: "C".to_string(),
@@ -316,6 +319,7 @@ fn make_test_workflow() -> Workflow {
                 depends_on: vec!["B".to_string()],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
         ],
         edges: vec![],

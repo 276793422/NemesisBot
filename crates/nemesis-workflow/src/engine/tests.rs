@@ -22,6 +22,7 @@ fn make_node(id: &str, node_type: &str, depends_on: Vec<&str>) -> NodeDef {
         depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }
 }
 
@@ -116,6 +117,7 @@ async fn test_condition_evaluation_in_execution() {
             depends_on: vec!["n1".to_string()],
             retry_count: 0,
             timeout: None,
+        is_terminal: false,
         },
     ];
     engine
@@ -250,6 +252,7 @@ async fn test_resume_waiting_execution() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }];
     engine
         .register_workflow(make_workflow("hr_wf", nodes))
@@ -490,6 +493,7 @@ async fn test_start_execution_unknown_node_type() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }];
     engine
         .register_workflow(make_workflow("bad_type_wf", nodes))

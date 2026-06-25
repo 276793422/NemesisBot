@@ -17,6 +17,7 @@ fn make_node(id: &str, depends_on: Vec<&str>) -> NodeDef {
         depends_on: depends_on.into_iter().map(|s| s.to_string()).collect(),
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }
 }
 
@@ -552,6 +553,7 @@ async fn test_cancel_mid_execution() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }];
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
@@ -606,6 +608,7 @@ async fn test_schedule_completes_without_cancel() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }];
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());

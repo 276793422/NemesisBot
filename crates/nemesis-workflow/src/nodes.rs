@@ -94,6 +94,11 @@ fn get_config_node_list(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let is_terminal = obj
+            .get("is_terminal")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         nodes.push(NodeDef {
             id,
             node_type,
@@ -101,6 +106,7 @@ fn get_config_node_list(
             depends_on,
             retry_count,
             timeout,
+            is_terminal,
         });
     }
     nodes

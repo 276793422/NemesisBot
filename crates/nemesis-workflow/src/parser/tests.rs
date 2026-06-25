@@ -24,6 +24,7 @@ use super::*;
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
+        is_terminal: false,
         }
     }
 
@@ -153,6 +154,7 @@ variables: {}
                 depends_on: vec![],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             }],
         );
         let result = validate(&wf);
@@ -272,6 +274,7 @@ variables: {}
                 depends_on: vec!["n1".to_string()],
                 retry_count: 0,
                 timeout: None,
+            is_terminal: false,
             },
         ]);
         wf.edges.push(Edge {

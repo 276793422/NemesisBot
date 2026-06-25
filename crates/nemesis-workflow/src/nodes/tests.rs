@@ -10,6 +10,7 @@ fn make_node(id: &str, node_type: &str, config: HashMap<String, serde_json::Valu
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     }
 }
 
@@ -813,6 +814,7 @@ async fn test_sub_workflow_node_with_engine_success() {
             depends_on: vec![],
             retry_count: 0,
             timeout: None,
+        is_terminal: false,
         }],
         edges: vec![],
         variables: HashMap::new(),
@@ -976,6 +978,7 @@ async fn test_inline_node_execution_for_unknown_type() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -992,6 +995,7 @@ async fn test_inline_node_execution_transform() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
@@ -1008,6 +1012,7 @@ async fn test_inline_node_execution_condition() {
         depends_on: vec![],
         retry_count: 0,
         timeout: None,
+    is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);

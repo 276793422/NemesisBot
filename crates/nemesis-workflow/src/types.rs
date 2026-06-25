@@ -128,6 +128,13 @@ pub struct NodeDef {
     /// Matches Go's `Timeout string` field so workflow definition files can be shared.
     #[serde(default)]
     pub timeout: Option<String>,
+    /// Marks this node as a workflow output source. When set, the node's
+    /// `output` is merged into the workflow's final result returned to
+    /// callers (decision 5 in the integration plan, used by `workflow_run`
+    /// agent tool). If no node is marked terminal, leaf nodes (no
+    /// downstream edges) are used as fallback.
+    #[serde(default)]
+    pub is_terminal: bool,
 }
 
 impl NodeDef {
@@ -176,6 +183,63 @@ pub struct Workflow {
 
 fn default_version() -> String {
     "1.0.0".to_string()
+}
+
+impl Workflow {
+    /// Compute the workflow's output by merging `NodeResult::output` from
+    /// terminal nodes.
+    ///
+    /// - If one or more nodes have `is_terminal: true`, only those nodes'
+    ///   outputs are merged (object fields combined; non-object values are
+    ///   keyed by node id). Later nodes overwrite earlier ones on key
+    ///   collision.
+    /// - If no node is marked terminal, falls back to leaf nodes (nodes with
+    ///   no downstream edges in `self.edges`).
+    /// - Returns `Value::Null` when no terminal/leaf node produced output.
+    ///
+    /// Decision 5 in the integration plan: surfaces workflow results back to
+    /// the LLM via the `workflow_run` agent tool.
+    pub fn compute_output(
+        &self,
+        node_results: &HashMap<String, NodeResult>,
+    ) -> serde_json::Value {
+        let terminal_ids: Vec<&str> = self
+            .nodes
+            .iter()
+            .filter(|n| n.is_terminal)
+            .map(|n| n.id.as_str())
+            .collect();
+
+        let output_ids: Vec<&str> = if !terminal_ids.is_empty() {
+            terminal_ids
+        } else {
+            let downstream: Vec<&str> = self.edges.iter().map(|e| e.from_node.as_str()).collect();
+            self.nodes
+                .iter()
+                .filter(|n| !downstream.contains(&n.id.as_str()))
+                .map(|n| n.id.as_str())
+                .collect()
+        };
+
+        let mut merged = serde_json::Map::new();
+        for id in output_ids {
+            if let Some(nr) = node_results.get(id) {
+                if let Some(obj) = nr.output.as_object() {
+                    for (k, v) in obj {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                } else if !nr.output.is_null() {
+                    merged.insert(id.to_string(), nr.output.clone());
+                }
+            }
+        }
+
+        if merged.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::Object(merged)
+        }
+    }
 }
 
 /// Result produced by a single node execution.
