@@ -218,38 +218,32 @@ impl WorkflowEngine {
     // Execution Lifecycle
     // -----------------------------------------------------------------------
 
-    /// Run a registered workflow by name (the core execution function).
+    /// Create and persist an execution record for the named workflow without
+    /// running any nodes. The returned execution has state `Running` and is
+    /// tracked in the engine's in-memory map plus (if enabled) on-disk
+    /// persistence.
     ///
-    /// Validates the DAG, creates an Execution record, initializes variables
-    /// from the workflow definition and input, runs nodes using the scheduler,
-    /// and persists the final state.
-    ///
-    /// This is the Rust equivalent of Go's `Engine.Run`.
-    pub async fn run(
+    /// Use [`run_async`](Self::run_async) with the returned execution's ID to
+    /// actually execute the workflow. Most callers should use the convenience
+    /// wrappers [`run`](Self::run), [`run_blocking`](Self::run_blocking), or
+    /// [`start_async`](Self::start_async) instead.
+    pub async fn create_execution(
         &self,
         workflow_name: &str,
         input: HashMap<String, serde_json::Value>,
     ) -> Result<Execution, EngineError> {
-        // Check if engine is closed
         if *self.closed.read().await {
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
 
-        let workflow = self
+        // Verify the workflow is registered before we mint an execution ID,
+        // so callers get a clean WorkflowNotFound error up front.
+        let _workflow = self
             .get_workflow(workflow_name)
             .ok_or_else(|| EngineError::WorkflowNotFound(workflow_name.to_string()))?;
 
-        // Create execution record
-        let mut execution = Execution::new(workflow_name.to_string(), input.clone());
+        let mut execution = Execution::new(workflow_name.to_string(), input);
         execution.state = ExecutionState::Running;
-
-        // Initialize workflow context from input
-        let mut wf_ctx = WorkflowContext::new(input.clone());
-
-        // Copy workflow variables into context (variables are flat strings)
-        for (k, v) in &workflow.variables {
-            wf_ctx.set_var(k, v);
-        }
 
         // Store execution in memory
         {
@@ -259,6 +253,40 @@ impl WorkflowEngine {
 
         // Persist initial state
         self.persist_execution(&execution).await;
+
+        Ok(execution)
+    }
+
+    /// Run an existing execution (created via `create_execution` or one of the
+    /// convenience wrappers) to completion.
+    ///
+    /// Performs: workflow lookup, context initialization, scheduler invocation,
+    /// state transition, node-result collection, and final persistence. The
+    /// cancellation token is removed from the engine's map when this call
+    /// returns (successfully or otherwise), so `cancel_execution` will be a
+    /// no-op for this execution afterwards.
+    pub async fn run_async(&self, execution_id: &str) -> Result<Execution, EngineError> {
+        if *self.closed.read().await {
+            return Err(EngineError::InvalidState("engine is closed".to_string()));
+        }
+
+        // Load the execution snapshot we will mutate.
+        let mut execution = {
+            let execs = self.executions.read().await;
+            execs.get(execution_id)
+                .cloned()
+                .ok_or_else(|| EngineError::ExecutionNotFound(execution_id.to_string()))?
+        };
+
+        let workflow = self
+            .get_workflow(&execution.workflow_name)
+            .ok_or_else(|| EngineError::WorkflowNotFound(execution.workflow_name.clone()))?;
+
+        // Initialize workflow context from execution input
+        let mut wf_ctx = WorkflowContext::new(execution.input.clone());
+        for (k, v) in &workflow.variables {
+            wf_ctx.set_var(k, v);
+        }
 
         // Create cancellation token for this execution. Stored in cancel_tokens
         // so cancel_execution(id) can trigger it; removed on completion.
@@ -272,7 +300,7 @@ impl WorkflowEngine {
             &workflow.edges,
             &self.node_executors,
             &mut wf_ctx,
-            cancel_token.clone(),
+            cancel_token,
         )
         .await;
 
@@ -306,8 +334,7 @@ impl WorkflowEngine {
         }
 
         // Copy results from context into execution
-        let node_results = wf_ctx.get_all_node_results();
-        execution.node_results = node_results;
+        execution.node_results = wf_ctx.get_all_node_results();
 
         // Persist final state
         self.persist_execution(&execution).await;
@@ -319,6 +346,79 @@ impl WorkflowEngine {
         }
 
         Ok(execution)
+    }
+
+    /// Run a registered workflow by name (the core convenience entry point).
+    ///
+    /// Equivalent to `create_execution(name, input)` followed by
+    /// `run_async(execution_id)`. Returns the completed execution.
+    ///
+    /// This is the Rust equivalent of Go's `Engine.Run`. Prefer
+    /// [`run_blocking`](Self::run_blocking) from synchronous contexts or
+    /// [`start_async`](Self::start_async) when you need fire-and-forget
+    /// semantics with later status polling.
+    pub async fn run(
+        &self,
+        workflow_name: &str,
+        input: HashMap<String, serde_json::Value>,
+    ) -> Result<Execution, EngineError> {
+        let execution = self.create_execution(workflow_name, input).await?;
+        self.run_async(&execution.id).await
+    }
+
+    /// Synchronous wrapper around [`run`](Self::run).
+    ///
+    /// Builds a single-threaded tokio runtime and blocks the calling thread
+    /// until the workflow completes. **Panics** if called from within an
+    /// existing tokio runtime context (use [`run`](Self::run) from inside
+    /// async code instead).
+    ///
+    /// Intended for CLI entry points and other inherently synchronous
+    /// callers. The runtime is dropped (and its threads released) when this
+    /// function returns.
+    pub fn run_blocking(
+        &self,
+        workflow_name: &str,
+        input: HashMap<String, serde_json::Value>,
+    ) -> Result<Execution, EngineError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::InvalidState(format!("runtime creation failed: {}", e)))?;
+        rt.block_on(self.run(workflow_name, input))
+    }
+
+    /// Fire-and-forget entry point for async callers.
+    ///
+    /// Creates an execution record, spawns a background tokio task to run it,
+    /// and returns the execution ID immediately. The caller can poll
+    /// [`get_execution`](Self::get_execution) to observe progress.
+    ///
+    /// Requires `Arc<WorkflowEngine>` because the spawned task holds an
+    /// engine reference. Use [`WorkflowEngine::new_arc`] or
+    /// [`WorkflowEngine::with_persistence_arc`] to obtain a suitable handle.
+    ///
+    /// Returns `Err` synchronously if the workflow is unknown or the engine
+    /// is closed; errors raised by the background task itself are logged and
+    /// surfaced via the eventual execution state (Failed), not through this
+    /// return value.
+    pub async fn start_async(
+        self: Arc<Self>,
+        workflow_name: &str,
+        input: HashMap<String, serde_json::Value>,
+    ) -> Result<String, EngineError> {
+        let execution = self.create_execution(workflow_name, input).await?;
+        let execution_id = execution.id.clone();
+        let engine = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = engine.run_async(&execution_id).await {
+                warn!(
+                    "[Workflow] Background execution {} failed: {}",
+                    execution_id, e
+                );
+            }
+        });
+        Ok(execution.id)
     }
 
     /// Start a new execution for the named workflow.

@@ -733,3 +733,180 @@ async fn test_close_cancels_all_in_flight() {
     assert_eq!(outcome.state, ExecutionState::Cancelled);
     assert!(engine.cancel_tokens.get(&id).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Dual-mode entry points: run_blocking + start_async (1a-C1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_run_blocking_completes() {
+    // run_blocking creates a current-thread runtime and blocks until done.
+    // Verifies the synchronous entry point can execute a simple workflow
+    // without an externally provided tokio runtime.
+    let engine = WorkflowEngine::new();
+    let nodes = vec![
+        make_node("n1", "llm", vec![]),
+        make_node("n2", "tool", vec!["n1"]),
+    ];
+    engine
+        .register_workflow(make_workflow("blocking_wf", nodes))
+        .unwrap();
+
+    let execution = engine.run_blocking("blocking_wf", HashMap::new()).unwrap();
+
+    assert_eq!(execution.state, ExecutionState::Completed);
+    assert_eq!(execution.node_results.len(), 2);
+    assert!(execution.node_results.contains_key("n1"));
+    assert!(execution.node_results.contains_key("n2"));
+    assert!(execution.ended_at.is_some());
+}
+
+#[test]
+fn test_run_blocking_unknown_workflow() {
+    // Synchronous entry point surfaces WorkflowNotFound synchronously
+    // rather than panicking or hanging.
+    let engine = WorkflowEngine::new();
+    let result = engine.run_blocking("does_not_exist", HashMap::new());
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, EngineError::WorkflowNotFound(_)));
+}
+
+#[tokio::test]
+async fn test_start_async_returns_id_quickly() {
+    // start_async spawns a background task and returns an execution ID
+    // without waiting for the workflow to complete. We verify the ID is
+    // well-formed and that an execution record exists for it.
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new_arc());
+    let nodes = vec![
+        make_node("n1", "llm", vec![]),
+        make_node("n2", "tool", vec!["n1"]),
+    ];
+    engine
+        .register_workflow(make_workflow("async_wf", nodes))
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let execution_id = WorkflowEngine::start_async(
+        Arc::clone(&engine),
+        "async_wf",
+        HashMap::new(),
+    )
+    .await
+    .expect("start_async should return execution id");
+    let elapsed = start.elapsed();
+
+    // ID format check (UUID v4: 8-4-4-4-12)
+    let parts: Vec<&str> = execution_id.split('-').collect();
+    assert_eq!(parts.len(), 5);
+    assert_eq!(parts[0].len(), 8);
+
+    // Should return well before nodes complete under any reasonable load.
+    // The mock llm+tool executors are sub-millisecond, but allow generous
+    // headroom for slow CI machines.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "start_async took too long: {:?}",
+        elapsed
+    );
+
+    // Execution record must exist immediately after start_async returns.
+    let execution = engine
+        .get_execution(&execution_id)
+        .await
+        .expect("execution should exist after start_async");
+    assert_eq!(execution.id, execution_id);
+    assert_eq!(execution.workflow_name, "async_wf");
+}
+
+#[tokio::test]
+async fn test_start_async_unknown_workflow() {
+    // start_async surfaces WorkflowNotFound synchronously (without spawning).
+    use std::sync::Arc;
+
+    let engine = Arc::new(WorkflowEngine::new_arc());
+    let result = WorkflowEngine::start_async(Arc::clone(&engine), "nope", HashMap::new()).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, EngineError::WorkflowNotFound(_)));
+    // No execution record should have been minted.
+    assert!(engine.list_executions(None).await.is_empty());
+}
+
+#[tokio::test]
+async fn test_start_async_eventually_completes() {
+    // Polls get_execution until the background task reaches a terminal state,
+    // verifying that start_async actually drives the workflow to completion.
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = Arc::new(WorkflowEngine::new_arc());
+    let nodes = vec![
+        make_node("n1", "llm", vec![]),
+        make_node("n2", "tool", vec!["n1"]),
+    ];
+    engine
+        .register_workflow(make_workflow("poll_wf", nodes))
+        .unwrap();
+
+    let execution_id = WorkflowEngine::start_async(
+        Arc::clone(&engine),
+        "poll_wf",
+        HashMap::new(),
+    )
+    .await
+    .unwrap();
+
+    // Poll up to 2 seconds for completion.
+    let mut final_state: Option<ExecutionState> = None;
+    for _ in 0..200 {
+        if let Some(execution) = engine.get_execution(&execution_id).await {
+            match execution.state {
+                ExecutionState::Completed
+                | ExecutionState::Failed
+                | ExecutionState::Cancelled => {
+                    final_state = Some(execution.state);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(
+        final_state,
+        Some(ExecutionState::Completed),
+        "background execution did not reach Completed within 2s"
+    );
+}
+
+#[tokio::test]
+async fn test_create_execution_then_run_async_separately() {
+    // Verifies the two-step internal API: create_execution mints the record,
+    // run_async drives it. Useful for callers that need the ID before the
+    // workflow starts (e.g., to register a progress channel).
+    let engine = WorkflowEngine::new();
+    engine
+        .register_workflow(make_workflow("two_step_wf", vec![make_node("n1", "llm", vec![])]))
+        .unwrap();
+
+    let execution = engine
+        .create_execution("two_step_wf", HashMap::new())
+        .await
+        .unwrap();
+    assert_eq!(execution.state, ExecutionState::Running);
+    assert!(execution.ended_at.is_none());
+
+    // Execution is queryable before run_async is called.
+    let stored = engine.get_execution(&execution.id).await.unwrap();
+    assert_eq!(stored.state, ExecutionState::Running);
+
+    let completed = engine.run_async(&execution.id).await.unwrap();
+    assert_eq!(completed.state, ExecutionState::Completed);
+    assert!(completed.ended_at.is_some());
+    assert_eq!(completed.node_results.len(), 1);
+}
