@@ -305,7 +305,7 @@ impl crate::registry::Tool for ClusterRpcTool {
     }
 
     fn description(&self) -> &str {
-        "Call other bots in the cluster via RPC. Parameters: peer_id (string, required), action (string, required), data (object, optional)"
+        "Call other bots in the cluster via RPC. Returns the remote bot's final response text — that text is the only thing you (and the user) will see from the remote side; it will NOT include tool calls, files written, or command outputs that the remote bot produced internally. If the remote bot runs a full agent loop (LLM task executor), the call may take tens of seconds to several minutes; consider telling the user you have contacted the peer and are waiting before calling. Parameters: peer_id (string, required), action (string, required), data (object, optional)"
     }
 
     fn parameters(&self) -> serde_json::Value {
