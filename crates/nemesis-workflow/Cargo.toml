@@ -7,6 +7,7 @@ edition.workspace = true
 nemesis-types = { workspace = true }
 nemesis-providers = { workspace = true }
 nemesis-tools = { workspace = true }
+nemesis-data = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

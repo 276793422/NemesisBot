@@ -3173,3 +3173,330 @@ fn test_script_interpreter_for_powershell() {
     let (interpreter2, _, _) = select_script_interpreter("pwsh");
     assert_eq!(interpreter2, interpreter);
 }
+
+// ---------------------------------------------------------------------------
+// LLM usage tracking (usage_store wiring for llm/question_classifier/
+// parameter_extractor node executors)
+// ---------------------------------------------------------------------------
+
+/// Build a tempfile-backed DataStore so tests can verify RequestLog writes
+/// without touching the user's real nemesisbot_data.db.
+fn make_test_data_store() -> Arc<nemesis_data::DataStore> {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_path = tmp.path().join("test_usage.db");
+    let store = nemesis_data::DataStore::open(&db_path).expect("DataStore::open");
+    // Leak the temp dir so the DB file survives for the test's lifetime —
+    // SQLite keeps the file handle open via the Connection inside DataStore,
+    // and the OS will reap the file when the process exits.
+    std::mem::forget(tmp);
+    Arc::new(store)
+}
+
+/// Wait for `created_at` to strictly exceed `before` so logs land in the
+/// expected second. DataStore stores `created_at` as seconds (not ms).
+fn roll_to_next_second(before: i64) {
+    let target = before + 1;
+    loop {
+        let now = chrono::Local::now().timestamp();
+        if now >= target {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[tokio::test]
+async fn llm_node_records_usage_when_store_set() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "hello"));
+    let store = make_test_data_store();
+    let slot = new_usage_store_slot();
+    {
+        let mut g = slot.write();
+        *g = Some(Arc::clone(&store));
+    }
+    let exec = RealLLMNodeExecutor::with_usage_store(
+        Arc::clone(&provider) as Arc<dyn LLMProvider>,
+        slot,
+    );
+
+    let before = chrono::Local::now().timestamp();
+    roll_to_next_second(before);
+    let started = chrono::Local::now();
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let end = started.timestamp() + 5;
+    let summary = store.query_summary(before, end).expect("query_summary");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_input_tokens, 10);
+    assert_eq!(summary.total_output_tokens, 5);
+}
+
+#[tokio::test]
+async fn llm_node_does_not_panic_without_store() {
+    // Default constructor — slot stays empty. Execution must succeed and
+    // skip recording silently.
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+}
+
+#[tokio::test]
+async fn question_classifier_records_usage_when_store_set() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "billing"));
+    let store = make_test_data_store();
+    let slot = new_usage_store_slot();
+    {
+        let mut g = slot.write();
+        *g = Some(Arc::clone(&store));
+    }
+    let exec = QuestionClassifierNodeExecutor::with_usage_store(
+        Arc::clone(&provider) as Arc<dyn LLMProvider>,
+        slot,
+    );
+
+    let before = chrono::Local::now().timestamp();
+    roll_to_next_second(before);
+    let started = chrono::Local::now();
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("refund please", &[("billing", "..."), ("support", "...")]),
+    );
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let end = started.timestamp() + 5;
+    let summary = store.query_summary(before, end).expect("query_summary");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_input_tokens, 10);
+    assert_eq!(summary.total_output_tokens, 5);
+}
+
+#[tokio::test]
+async fn parameter_extractor_records_usage_when_store_set() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Alice","age":30}"#,
+    ));
+    let store = make_test_data_store();
+    let slot = new_usage_store_slot();
+    {
+        let mut g = slot.write();
+        *g = Some(Arc::clone(&store));
+    }
+    let exec = ParameterExtractorNodeExecutor::with_usage_store(
+        Arc::clone(&provider) as Arc<dyn LLMProvider>,
+        slot,
+    );
+
+    let before = chrono::Local::now().timestamp();
+    roll_to_next_second(before);
+    let started = chrono::Local::now();
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config(
+            "Alice is 30",
+            &[("name", "string", "user name", true), ("age", "number", "user age", false)],
+        ),
+    );
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let end = started.timestamp() + 5;
+    let summary = store.query_summary(before, end).expect("query_summary");
+    assert_eq!(summary.total_requests, 1);
+    assert_eq!(summary.total_input_tokens, 10);
+    assert_eq!(summary.total_output_tokens, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: each retry attempt must produce a distinct RequestLog row with
+// its own trace_id and per-call latency. Pre-fix, both classifier and
+// extractor passed the node-level `started` into record_llm_usage inside the
+// retry loop, which made every attempt collide on trace_id and report
+// cumulative latency on later retries.
+// ---------------------------------------------------------------------------
+
+/// Stub provider that returns a different string on each successive chat()
+/// call. Used to simulate "first attempt invalid, second attempt valid" so
+/// the retry loop writes 2 RequestLog rows.
+struct SequentialStubProvider {
+    name: String,
+    default_model: String,
+    responses: std::sync::Mutex<Vec<String>>,
+}
+
+impl SequentialStubProvider {
+    fn new(name: &str, model: &str, responses: Vec<String>) -> Self {
+        Self {
+            name: name.to_string(),
+            default_model: model.to_string(),
+            responses: std::sync::Mutex::new(responses),
+        }
+    }
+}
+
+#[async_trait]
+impl LLMProvider for SequentialStubProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        let resp = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| String::from("default"));
+        Ok(LLMResponse {
+            content: resp,
+            tool_calls: Vec::new(),
+            finish_reason: "stop".to_string(),
+            usage: Some(nemesis_providers::types::UsageInfo {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            }),
+            reasoning_content: None,
+            extra: HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    fn default_model(&self) -> &str {
+        &self.default_model
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[tokio::test]
+async fn question_classifier_records_each_retry_attempt_separately() {
+    // First call returns "garbage" (not a valid class id), forcing a retry.
+    // Second call returns "billing". The Vec is treated as a stack
+    // (pop from end) so we list them in reverse order of intended delivery.
+    let provider = Arc::new(SequentialStubProvider::new(
+        "seq-stub",
+        "stub-model",
+        vec![String::from("billing"), String::from("garbage")],
+    ));
+    let store = make_test_data_store();
+    let slot = new_usage_store_slot();
+    {
+        let mut g = slot.write();
+        *g = Some(Arc::clone(&store));
+    }
+    let exec = QuestionClassifierNodeExecutor::with_usage_store(
+        Arc::clone(&provider) as Arc<dyn LLMProvider>,
+        slot,
+    );
+
+    let before = chrono::Local::now().timestamp();
+    roll_to_next_second(before);
+    let started = chrono::Local::now();
+    let node = make_node(
+        "classify",
+        "question_classifier",
+        classifier_config("refund please", &[("billing", "..."), ("support", "...")]),
+    );
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["class_id"], "billing");
+
+    let end = started.timestamp() + 5;
+    // Two LLM calls -> two rows. Pre-fix this was still 2 rows but with the
+    // same trace_id; we additionally verify distinctness below.
+    let summary = store.query_summary(before, end).expect("query_summary");
+    assert_eq!(summary.total_requests, 2);
+    assert_eq!(summary.total_input_tokens, 20);
+    assert_eq!(summary.total_output_tokens, 10);
+
+    // Verify trace_ids are distinct (the bug pre-fix: they collided).
+    let (logs, _) = store.query_logs(before, end, 1, 50).expect("query_logs");
+    assert_eq!(logs.len(), 2, "expected exactly 2 RequestLog rows");
+    assert_ne!(logs[0].trace_id, logs[1].trace_id);
+    for log in &logs {
+        assert!(
+            log.trace_id.starts_with("wf:classify:"),
+            "trace_id should be prefixed with node id, got: {}",
+            log.trace_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn parameter_extractor_records_each_retry_attempt_separately() {
+    // First call returns invalid JSON, forcing a retry. Second call returns
+    // a valid object. Stack semantics: last item is popped first.
+    let provider = Arc::new(SequentialStubProvider::new(
+        "seq-stub",
+        "stub-model",
+        vec![
+            String::from(r#"{"name":"Alice","age":30}"#),
+            String::from("not json at all"),
+        ],
+    ));
+    let store = make_test_data_store();
+    let slot = new_usage_store_slot();
+    {
+        let mut g = slot.write();
+        *g = Some(Arc::clone(&store));
+    }
+    let exec = ParameterExtractorNodeExecutor::with_usage_store(
+        Arc::clone(&provider) as Arc<dyn LLMProvider>,
+        slot,
+    );
+
+    let before = chrono::Local::now().timestamp();
+    roll_to_next_second(before);
+    let started = chrono::Local::now();
+    let node = make_node(
+        "extract",
+        "parameter_extractor",
+        extractor_config(
+            "Alice is 30",
+            &[("name", "string", "user name", true), ("age", "number", "user age", false)],
+        ),
+    );
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let end = started.timestamp() + 5;
+    let summary = store.query_summary(before, end).expect("query_summary");
+    assert_eq!(summary.total_requests, 2);
+
+    let (logs, _) = store.query_logs(before, end, 1, 50).expect("query_logs");
+    assert_eq!(logs.len(), 2);
+    assert_ne!(logs[0].trace_id, logs[1].trace_id);
+}

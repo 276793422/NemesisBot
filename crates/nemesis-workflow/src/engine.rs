@@ -319,6 +319,12 @@ pub struct WorkflowEngine {
     /// observer (take_guard + drop) share one instance without extra plumbing
     /// through AppState. See [`crate::workflow_chat_state`] for the design.
     workflow_chat_state: std::sync::Arc<crate::workflow_chat_state::WorkflowChatState>,
+    /// Shared slot for LLM usage tracking. The 3 LLM-calling node executors
+    /// (`llm`, `question_classifier`, `parameter_extractor`) hold a clone of
+    /// this slot and record a `RequestLog` per call when it's populated.
+    /// Gateway fills it via [`Self::set_usage_store`] after constructing the
+    /// `DataStore`. Empty by default so unit tests work without a database.
+    usage_store: crate::nodes::UsageStoreSlot,
 }
 
 impl WorkflowEngine {
@@ -342,6 +348,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
 
@@ -365,6 +372,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         });
 
         // Wire the engine into the sub_workflow executor. `register` works
@@ -395,6 +403,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
 
@@ -415,6 +424,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         });
 
         engine.node_executors.register(
@@ -440,6 +450,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
 
@@ -461,6 +472,7 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         }
     }
 
@@ -532,12 +544,18 @@ impl WorkflowEngine {
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
             workflow_chat_state: std::sync::Arc::new(crate::workflow_chat_state::WorkflowChatState::new()),
+            usage_store: crate::nodes::new_usage_store_slot(),
         });
 
-        // Override mock node executors with real ones.
+        // Override mock node executors with real ones. Pass the engine's
+        // shared usage slot so LLM calls get recorded into the gateway's
+        // DataStore once `set_usage_store` is called.
         engine.node_executors.register(
             "llm",
-            Arc::new(crate::nodes::RealLLMNodeExecutor::new(provider.clone())),
+            Arc::new(crate::nodes::RealLLMNodeExecutor::with_usage_store(
+                provider.clone(),
+                engine.usage_store.clone(),
+            )),
         );
         engine.node_executors.register(
             "tool",
@@ -545,11 +563,17 @@ impl WorkflowEngine {
         );
         engine.node_executors.register(
             "question_classifier",
-            Arc::new(crate::nodes::QuestionClassifierNodeExecutor::new(provider.clone())),
+            Arc::new(crate::nodes::QuestionClassifierNodeExecutor::with_usage_store(
+                provider.clone(),
+                engine.usage_store.clone(),
+            )),
         );
         engine.node_executors.register(
             "parameter_extractor",
-            Arc::new(crate::nodes::ParameterExtractorNodeExecutor::new(provider)),
+            Arc::new(crate::nodes::ParameterExtractorNodeExecutor::with_usage_store(
+                provider,
+                engine.usage_store.clone(),
+            )),
         );
         engine.node_executors.register(
             "sub_workflow",
@@ -590,6 +614,16 @@ impl WorkflowEngine {
         executor: Arc<dyn crate::nodes::NodeExecutor>,
     ) {
         self.node_executors.register(node_type, executor);
+    }
+
+    /// Wire an LLM usage `DataStore` so the `llm`, `question_classifier`,
+    /// and `parameter_extractor` node executors record a `RequestLog` per
+    /// LLM call. No-op if never called (slot stays empty, executors skip
+    /// recording). Should be called once by the gateway after the DataStore
+    /// is constructed.
+    pub fn set_usage_store(&self, store: Arc<nemesis_data::DataStore>) {
+        let mut guard = self.usage_store.write();
+        *guard = Some(store);
     }
 
     /// Scan a directory for workflow definition files and register each one.

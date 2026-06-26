@@ -3728,6 +3728,7 @@ dependencies = [
  "chrono",
  "croner",
  "dashmap",
+ "nemesis-data",
  "nemesis-providers",
  "nemesis-tools",
  "nemesis-types",

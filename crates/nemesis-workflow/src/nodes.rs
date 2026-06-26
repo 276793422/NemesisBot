@@ -4,6 +4,7 @@
 //! llm, tool, condition, parallel, loop, sub_workflow, transform, http, script, delay, human_review.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -116,6 +117,81 @@ fn get_config_node_list(
 }
 
 // ---------------------------------------------------------------------------
+// LLM usage tracking (shared by RealLLMNodeExecutor, QuestionClassifier, ParameterExtractor)
+// ---------------------------------------------------------------------------
+
+/// Shared slot for the optional LLM usage `DataStore`. The engine owns one
+/// instance; the three LLM-calling node executors hold a clone so they can
+/// record usage when the slot is populated by the gateway.
+///
+/// The slot starts empty (so unit tests and embedded deployments work
+/// without a database) and is populated once via
+/// [`crate::engine::WorkflowEngine::set_usage_store`].
+pub type UsageStoreSlot = Arc<parking_lot::RwLock<Option<Arc<nemesis_data::DataStore>>>>;
+
+/// Construct a fresh empty slot. Used by the engine and by tests that don't
+/// care about usage tracking.
+pub fn new_usage_store_slot() -> UsageStoreSlot {
+    Arc::new(parking_lot::RwLock::new(None))
+}
+
+/// Best-effort write a `RequestLog` row for an LLM call. No-op when the slot
+/// is empty. Failures are logged at WARN but never propagated — usage
+/// tracking is observability, not business logic, and a broken stats DB
+/// must not break the workflow.
+///
+/// `trace_id` is composed as `wf:{node_id}:{started_nanos}:{counter}` so
+/// downstream consumers (UsageView, logs dashboard) can tell these calls
+/// apart from chat-driven ones (`direct-{session_key}-...`). The counter is
+/// process-wide and guarantees uniqueness even when two LLM calls land on
+/// the same nanosecond (clock granularity on some platforms is coarse).
+fn record_llm_usage(
+    slot: &UsageStoreSlot,
+    node_id: &str,
+    model: &str,
+    usage: &nemesis_providers::types::UsageInfo,
+    started_at: chrono::DateTime<Local>,
+) {
+    let guard = slot.read();
+    let Some(ds) = guard.as_ref() else {
+        return;
+    };
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = Local::now();
+    let trace_id = format!(
+        "wf:{}:{}:{}",
+        node_id,
+        started_at.timestamp_nanos_opt().unwrap_or(0),
+        counter
+    );
+    let log = nemesis_data::RequestLog {
+        id: 0,
+        trace_id,
+        model: model.to_string(),
+        provider_type: String::new(),
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
+        cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+        // Pricing is the job of the usage-pricing plan; for now the row is
+        // written with zero cost so token counts are visible.
+        total_cost_usd: 0.0,
+        latency_ms: (now - started_at).num_milliseconds() as i64,
+        status_code: 200,
+        error_message: None,
+        is_streaming: false,
+        created_at: now.timestamp(),
+    };
+    if let Err(e) = ds.insert_request_log(&log) {
+        tracing::warn!(
+            node_id = %node_id,
+            "[Workflow] Failed to record LLM usage: {e}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LLM Node
 // ---------------------------------------------------------------------------
 
@@ -184,12 +260,31 @@ impl NodeExecutor for LLMNodeExecutor {
 /// failure via standard state inspection.
 pub struct RealLLMNodeExecutor {
     provider: Arc<dyn LLMProvider>,
+    usage_store: UsageStoreSlot,
 }
 
 impl RealLLMNodeExecutor {
     /// Construct a new executor that delegates to the given provider.
+    /// No usage tracking is wired — use [`with_usage_store`] when the
+    /// executor is owned by an engine that has a `DataStore`.
     pub fn new(provider: Arc<dyn LLMProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            usage_store: new_usage_store_slot(),
+        }
+    }
+
+    /// Internal constructor that shares the engine's usage slot so LLM calls
+    /// are recorded whenever the gateway populates the slot via
+    /// [`crate::engine::WorkflowEngine::set_usage_store`].
+    pub(crate) fn with_usage_store(
+        provider: Arc<dyn LLMProvider>,
+        usage_store: UsageStoreSlot,
+    ) -> Self {
+        Self {
+            provider,
+            usage_store,
+        }
     }
 
     /// Borrow the inner provider (used by tests + observers).
@@ -282,7 +377,12 @@ impl NodeExecutor for RealLLMNodeExecutor {
             .chat(&messages, &[], &model, &options)
             .await
         {
-            Ok(resp) => Ok(success_node_result(&node.id, started, &model, resp)),
+            Ok(resp) => {
+                if let Some(ref u) = resp.usage {
+                    record_llm_usage(&self.usage_store, &node.id, &model, u, started);
+                }
+                Ok(success_node_result(&node.id, started, &model, resp))
+            }
             Err(err) => Ok(failed_node_result(
                 &node.id,
                 started,
@@ -1646,11 +1746,26 @@ impl NodeExecutor for HumanReviewNodeExecutor {
 /// - `temperature` (optional, float): usually 0 for deterministic output.
 pub struct QuestionClassifierNodeExecutor {
     provider: Arc<dyn LLMProvider>,
+    usage_store: UsageStoreSlot,
 }
 
 impl QuestionClassifierNodeExecutor {
     pub fn new(provider: Arc<dyn LLMProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            usage_store: new_usage_store_slot(),
+        }
+    }
+
+    /// Internal constructor that shares the engine's usage slot.
+    pub(crate) fn with_usage_store(
+        provider: Arc<dyn LLMProvider>,
+        usage_store: UsageStoreSlot,
+    ) -> Self {
+        Self {
+            provider,
+            usage_store,
+        }
     }
 
     /// Borrow the inner provider (used by tests).
@@ -1792,8 +1907,16 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                 extra: HashMap::new(),
             };
 
+            // Capture per-call start so each retry's RequestLog has its own
+            // latency + trace_id. Using the node-level `started` would make
+            // every attempt share the same trace_id and report cumulative
+            // latency drift on later retries.
+            let call_started = Local::now();
             match self.provider.chat(&messages, &[], &model, &options).await {
                 Ok(resp) => {
+                    if let Some(ref u) = resp.usage {
+                        record_llm_usage(&self.usage_store, &node.id, &model, u, call_started);
+                    }
                     let content = resp.content;
                     let class_id = parse_classifier_output(&content);
                     if let Some(ref id) = class_id {
@@ -1897,11 +2020,26 @@ fn confidence_for(attempt: usize, _max_attempts: usize) -> f64 {
 /// - `temperature` (optional, float): usually 0 for deterministic output.
 pub struct ParameterExtractorNodeExecutor {
     provider: Arc<dyn LLMProvider>,
+    usage_store: UsageStoreSlot,
 }
 
 impl ParameterExtractorNodeExecutor {
     pub fn new(provider: Arc<dyn LLMProvider>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            usage_store: new_usage_store_slot(),
+        }
+    }
+
+    /// Internal constructor that shares the engine's usage slot.
+    pub(crate) fn with_usage_store(
+        provider: Arc<dyn LLMProvider>,
+        usage_store: UsageStoreSlot,
+    ) -> Self {
+        Self {
+            provider,
+            usage_store,
+        }
     }
 
     /// Borrow the inner provider (used by tests).
@@ -2062,8 +2200,14 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                 extra: HashMap::new(),
             };
 
+            // Capture per-call start so each retry's RequestLog has its own
+            // latency + trace_id (same rationale as the classifier executor).
+            let call_started = Local::now();
             match self.provider.chat(&messages, &[], &model, &options).await {
                 Ok(resp) => {
+                    if let Some(ref u) = resp.usage {
+                        record_llm_usage(&self.usage_store, &node.id, &model, u, call_started);
+                    }
                     let content = resp.content;
                     match parse_json_object(&content) {
                         Ok(obj) => {

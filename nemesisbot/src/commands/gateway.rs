@@ -2012,6 +2012,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
     info!("[Gateway] Workflow agent runner registered");
 
+    // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor
+    // node executors record a RequestLog per LLM call. Agent nodes are already
+    // tracked via the agent_loop's own data_store wiring.
+    if let Some(ref ds) = data_store {
+        workflow_engine.set_usage_store(ds.clone());
+        info!("[Gateway] Workflow usage store wired");
+    }
+
     // --- Inject tool capabilities into cluster for discovery broadcast ---
     if let Some((ref cluster, _, _)) = cluster_adapter_refs {
         let tool_names = agent_loop.tool_names();
