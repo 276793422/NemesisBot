@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import {
   VueFlow,
   useVueFlow,
+  MarkerType,
   type Connection,
   type NodeDragEvent,
 } from '@vue-flow/core'
@@ -21,6 +22,7 @@ import {
   type Edge as WfEdge,
 } from '../../types/workflow'
 import WorkflowNodeConfig from './WorkflowNodeConfig.vue'
+import type { VariableOption } from './node-configs/useVariablePicker'
 
 interface WfNodeData {
   label: string
@@ -58,6 +60,43 @@ const selectedNode = computed<NodeDef | null>(() => {
   if (!selectedNodeId.value || !editing.value) return null
   return editing.value.nodes.find(n => n.id === selectedNodeId.value) ?? null
 })
+
+// Built-in trigger-time variables. The backend injects these into every
+// workflow execution based on the originating trigger source (workflow_chat,
+// webhook, chat, message, etc). `input` is universal — the "main input
+// string" — and is the one users reach for most. The rest vary by trigger
+// but are harmless to always list: at runtime, unset fields resolve to
+// empty string rather than erroring, so picking a non-applicable one is a
+// no-op.
+const BUILTIN_VARIABLES: VariableOption[] = [
+  { value: 'input', label: '用户输入（主输入字符串，所有触发器都注入）', group: '内置变量' },
+  { value: 'content', label: '消息内容（input 的别名，多用于 chat 类触发）', group: '内置变量' },
+  { value: 'chat_id', label: '会话 ID（如 web:sess-xxx）', group: '内置变量' },
+  { value: 'session_key', label: '会话 key（记忆/历史的范围标识，如 wf_chat:翻译）', group: '内置变量' },
+  { value: 'workflow_name', label: '当前工作流名称', group: '内置变量' },
+  { value: 'sender_id', label: '发送者 ID（chat / message 触发）', group: '内置变量' },
+  { value: 'channel', label: '通道名（message 触发，如 telegram）', group: '内置变量' },
+  { value: 'payload', label: 'Webhook 原始 payload（webhook 触发）', group: '内置变量' },
+]
+
+// Build the @-variable list the picker shows. Built-in variables come first
+// (they're the most common), then workflow-declared variables, then each
+// node's id as an output reference (downstream nodes can interpolate
+// {{prev_node}}).
+const availableVariables = computed<VariableOption[]>(() => {
+  if (!editing.value) return []
+  const out: VariableOption[] = [...BUILTIN_VARIABLES]
+  const vars = (editing.value.variables ?? {}) as Record<string, string>
+  for (const [k, v] of Object.entries(vars)) {
+    out.push({ value: k, label: v || k, group: 'Workflow 变量' })
+  }
+  for (const n of editing.value.nodes) {
+    if (n.id === selectedNodeId.value) continue
+    out.push({ value: n.id, label: `${n.id} (${n.node_type})`, group: '节点输出' })
+  }
+  return out
+})
+
 
 const runNodeStates = computed<Record<string, string>>(() => {
   const m: Record<string, string> = {}
@@ -121,7 +160,12 @@ function syncFromEditing() {
     source: e.from_node,
     target: e.to_node,
     label: e.condition || undefined,
-    animated: false,
+    // Conditional edges animate (dashed flow) so branches are visually
+    // distinct from unconditional data flow.
+    animated: !!e.condition,
+    // Arrow at the target end so data flow direction is visible — without
+    // this Vue Flow renders a bare line and in/out degree is unreadable.
+    markerEnd: MarkerType.ArrowClosed,
   }))
 }
 
@@ -237,6 +281,9 @@ onConnect((conn: Connection) => {
     id: `e-${conn.source}-${conn.target}-${Date.now()}`,
     source: conn.source,
     target: conn.target,
+    // New connections start unconditional; the marker makes the direction
+    // obvious the moment the user draws it.
+    markerEnd: MarkerType.ArrowClosed,
   })
 })
 
@@ -562,7 +609,6 @@ const stats = computed(() => {
           :pan-on-drag="true"
           :zoom-on-scroll="true"
           :zoom-on-pinch="true"
-          :delete-key-code="'Delete'"
           class="flow"
           @node-double-click="handleNodeDoubleClick"
           @node-click="handleNodeClick"
@@ -623,6 +669,7 @@ const stats = computed(() => {
       <WorkflowNodeConfig
         v-if="showConfigPanel && selectedNode"
         :node="selectedNode"
+        :variables="availableVariables"
         @update="(patch) => updateNodeDef(selectedNode!.id, patch)"
         @close="showConfigPanel = false"
       />

@@ -34,6 +34,53 @@ function openWorkflowChat(chatIndex: string) {
   window.open('/workflow/chat/' + encodeURIComponent(chatIndex), '_blank')
 }
 
+// ---- Delete confirmation modal -------------------------------------------
+
+const deleteModal = ref<{
+  open: boolean
+  name: string
+  busy: boolean
+  error: string
+}>({
+  open: false,
+  name: '',
+  busy: false,
+  error: '',
+})
+
+function openDeleteModal(name: string) {
+  deleteModal.value = {
+    open: true,
+    name,
+    busy: false,
+    error: '',
+  }
+}
+
+function closeDeleteModal() {
+  if (deleteModal.value.busy) return
+  deleteModal.value.open = false
+}
+
+async function submitDelete() {
+  const m = deleteModal.value
+  if (m.busy) return
+  m.busy = true
+  m.error = ''
+  try {
+    const result = await store.deleteWorkflow(m.name)
+    if (result.ok) {
+      m.open = false
+    } else {
+      m.error = result.error
+    }
+  } catch (e: any) {
+    m.error = e?.message || String(e)
+  } finally {
+    m.busy = false
+  }
+}
+
 // ---- Password management modal -------------------------------------------
 
 const passwordModal = ref<{
@@ -197,6 +244,13 @@ onMounted(() => {
             >
               💬
             </button>
+            <button
+              class="btn btn-small btn-danger"
+              title="删除此工作流"
+              @click="openDeleteModal(wf.name)"
+            >
+              ×
+            </button>
           </td>
         </tr>
       </tbody>
@@ -275,6 +329,32 @@ onMounted(() => {
             :disabled="passwordModal.busy"
           >
             {{ passwordModal.busy ? '处理中...' : (passwordModal.mode === 'set' ? '保存' : '清除') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete confirmation modal -->
+    <div v-if="deleteModal.open" class="pwd-modal-overlay" @click.self="closeDeleteModal">
+      <div class="pwd-modal">
+        <h2>删除工作流</h2>
+        <p class="pwd-modal-subtitle">
+          确认删除工作流 <code class="del-name">{{ deleteModal.name }}</code> 吗？
+        </p>
+        <p class="pwd-warn">
+          此操作不可撤销。删除后磁盘上的工作流文件和历史记录都会被清除。
+        </p>
+        <p v-if="deleteModal.error" class="pwd-error">{{ deleteModal.error }}</p>
+        <div class="pwd-actions">
+          <button class="btn" @click="closeDeleteModal" :disabled="deleteModal.busy">
+            取消
+          </button>
+          <button
+            class="btn btn-danger-solid"
+            @click="submitDelete"
+            :disabled="deleteModal.busy"
+          >
+            {{ deleteModal.busy ? '处理中...' : '删除' }}
           </button>
         </div>
       </div>
@@ -510,5 +590,33 @@ onMounted(() => {
 .btn-secondary {
   background: var(--bg-secondary);
   color: var(--text);
+}
+
+.btn-danger {
+  color: var(--danger, #e74c3c);
+  border: 1px solid transparent;
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--danger, #e74c3c);
+  background: rgba(231, 76, 60, 0.08);
+}
+
+.btn-danger-solid {
+  background: var(--danger, #e74c3c);
+  color: #fff;
+  border: 1px solid var(--danger, #e74c3c);
+}
+
+.btn-danger-solid:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.del-name {
+  font-family: 'Consolas', monospace;
+  background: var(--bg-secondary);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
 }
 </style>

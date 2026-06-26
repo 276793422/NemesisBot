@@ -100,11 +100,25 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
 
 /// Build a flat context map from the workflow context.
 ///
-/// Combines workflow variables and previous node result outputs into a single
-/// HashMap suitable for passing to node executors.  For node outputs, each
-/// field is stored as `node_id.field` so downstream nodes can reference them.
+/// Combines workflow input, variables, and previous node result outputs into
+/// a single HashMap suitable for passing to node executors. For node outputs,
+/// each field is stored as `node_id.field` so downstream nodes can reference
+/// them.
+///
+/// **Merge order matters**: input < variables < node_results. If a key is
+/// claimed by multiple stores, the later store wins — so a workflow author
+/// can't accidentally shadow `node_id.field` references by naming a variable
+/// `some_node.x`, and a `set_var` call can't be silently overwritten by a
+/// stale input field of the same name. Trigger-time inputs (workflow_chat's
+/// `input`/`content`/`chat_id`/...) are the lowest-priority baseline.
 fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_json::Value> {
     let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
+
+    // Workflow input (trigger-time fields). Lowest precedence — variables
+    // and node results can override.
+    for (k, v) in wf_ctx.get_all_input() {
+        ctx.insert(k, v);
+    }
 
     // Workflow variables (already JSON-typed since 1b-B3).
     for (k, v) in wf_ctx.get_all_variables() {

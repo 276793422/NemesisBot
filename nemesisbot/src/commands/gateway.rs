@@ -2197,6 +2197,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             input.insert("sender_id".to_string(), serde_json::json!(sd));
                             input.insert("chat_id".to_string(), serde_json::json!(ct));
                             input.insert("content".to_string(), serde_json::json!(cn));
+                            // Unified `input` field: the message content is
+                            // the natural main input for `message` triggers.
+                            input.insert("input".to_string(), serde_json::json!(cn));
                             input.insert("session_key".to_string(), serde_json::json!(sk));
                             match engine.start_async(&wf_name, input, Some(trigger)).await {
                                 Ok(id) => {
@@ -2255,6 +2258,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             input.insert("event_type".to_string(), serde_json::json!(ev.event_type));
                             for (k, v) in &ev.data {
                                 input.insert(k.clone(), v.clone());
+                            }
+                            // Unified `input` field: prefer `ev.data.input`
+                            // if present (caller can set it explicitly);
+                            // otherwise JSON-serialise the whole data object.
+                            if !input.contains_key("input") {
+                                let serialized = serde_json::Value::Object(
+                                    ev.data.clone().into_iter().collect(),
+                                )
+                                .to_string();
+                                input.insert(
+                                    "input".to_string(),
+                                    serde_json::json!(serialized),
+                                );
                             }
                             if let Some(src) = &ev.source_execution_id {
                                 input.insert(
@@ -2886,12 +2902,24 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         prompt: &str,
         agent_id: &str,
         max_turns: u32,
+        model: Option<&str>,
     ) -> Result<nemesis_workflow::nodes::AgentRunResult, String> {
         // Note: max_turns is currently applied via AgentLoop's own config at
         // construction time. Once we add a per-call override on AgentLoop
         // (e.g. `process_direct_with_options`), this runner should respect
         // it explicitly to prevent runaway workflow agent loops.
         let _ = max_turns;
+        // Same applies to model: AgentLoop currently uses its configured
+        // default. Log when a override is requested but cannot be honored so
+        // the silent-drop pattern from BUG #8 (form collecting model that
+        // backend ignored) stays visible.
+        if let Some(m) = model {
+            tracing::warn!(
+                model = %m,
+                agent_id = %agent_id,
+                "workflow `agent` node requested model override but AgentLoop does not yet support per-call model switching; using default"
+            );
+        }
 
         let session_key = format!("workflow:{}", agent_id);
         let response = self

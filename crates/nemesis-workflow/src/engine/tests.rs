@@ -617,7 +617,7 @@ async fn test_engine_new_arc() {
 #[tokio::test]
 async fn test_engine_with_executors() {
     let registry = NodeExecutorRegistry::new();
-    let engine = WorkflowEngine::with_executors(registry);
+    let engine = WorkflowEngine::with_executors(Arc::new(registry));
     assert!(!engine.is_closed().await);
 }
 
@@ -702,7 +702,7 @@ async fn test_with_executors_and_persistence() {
     let dir = tempfile::tempdir().unwrap();
     let registry = NodeExecutorRegistry::new();
     let engine = WorkflowEngine::with_executors_and_persistence(
-        registry,
+        Arc::new(registry),
         dir.path().to_path_buf(),
     );
     engine
@@ -1880,4 +1880,473 @@ async fn workflow_summary_includes_chat_index() {
     let summaries = engine.list_workflows_detailed();
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].chat_index, WorkflowEngine::chat_index("summary-test"));
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end trigger-input → LLM-prompt pipeline tests.
+//
+// These exist because every prior bug in this area (BUG #10/#11 template
+// resolution; the build_executor_context bug that dropped `input` fields)
+// was missed by node-level tests that called `executor.execute(&node, &ctx)`
+// directly with a hand-built HashMap. Those tests bypass the scheduler, the
+// WorkflowContext, and the build_executor_context flatten step — i.e., they
+// skip exactly the code paths where the bugs lived.
+//
+// The tests below exercise the full chain: trigger input HashMap →
+// `engine.run` → `run_async` → `scheduler::schedule` →
+// `build_executor_context` → real `RealLLMNodeExecutor` → provider. The
+// `CaptureProvider` records what the executor actually sent; we assert the
+// prompt contains the resolved value, not the literal `{{input}}`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod e2e_input_pipeline {
+    use super::*;
+    use async_trait::async_trait;
+    use nemesis_providers::failover::FailoverError;
+    use nemesis_providers::router::LLMProvider;
+    use nemesis_providers::types::{
+        ChatOptions, LLMResponse, Message, ToolDefinition,
+    };
+    use std::sync::Mutex;
+
+    /// Provider that returns a fixed response and captures the most recent
+    /// chat() call's messages for assertions. Mirrors the StubProvider pattern
+    /// in nodes/tests.rs but local to engine tests so we don't have to plumb
+    /// cross-module test exports.
+    struct CaptureProvider {
+        last_messages: Mutex<Vec<Message>>,
+    }
+
+    impl CaptureProvider {
+        fn new() -> Self {
+            Self {
+                last_messages: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMProvider for CaptureProvider {
+        async fn chat(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model: &str,
+            _options: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            *self.last_messages.lock().unwrap() = messages.to_vec();
+            Ok(LLMResponse {
+                content: "stub-ok".to_string(),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".to_string(),
+                usage: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        fn name(&self) -> &str {
+            "capture"
+        }
+    }
+
+    /// Build an LLM node whose prompt references `{{input}}`.
+    fn llm_node_with_prompt(prompt: &str) -> NodeDef {
+        NodeDef {
+            id: "llm1".to_string(),
+            node_type: "llm".to_string(),
+            config: HashMap::from([(
+                "prompt".to_string(),
+                serde_json::json!(prompt),
+            )]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        }
+    }
+
+    /// End-to-end: a trigger-time `input` field must reach the LLM node's
+    /// prompt, replacing `{{input}}` with the actual value. Without the
+    /// `build_executor_context` fix this test would fail because `{{input}}`
+    /// would echo back verbatim — the same symptom the user saw in production.
+    #[tokio::test]
+    async fn trigger_input_field_reaches_llm_prompt() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        let wf = make_workflow(
+            "echo_input_wf",
+            vec![llm_node_with_prompt("Echo back: {{input}}")],
+        );
+        engine.register_workflow(wf).unwrap();
+
+        // Mimic what workflow_chat injects (workflow_chat.rs:117-141).
+        let mut input = HashMap::new();
+        input.insert(
+            "input".to_string(),
+            serde_json::json!("hello from trigger"),
+        );
+        input.insert(
+            "content".to_string(),
+            serde_json::json!("hello from trigger"),
+        );
+        input.insert(
+            "chat_id".to_string(),
+            serde_json::json!("web:sess-1"),
+        );
+        input.insert(
+            "session_key".to_string(),
+            serde_json::json!("wf_chat:echo_input_wf"),
+        );
+
+        let exec = engine
+            .run(
+                "echo_input_wf",
+                input,
+                Some(crate::types::TriggerSource::WebUI {
+                    session_id: "test".to_string(),
+                }),
+            )
+            .await
+            .expect("workflow should complete");
+        assert_eq!(exec.state, crate::types::ExecutionState::Completed);
+
+        let captured = provider.last_messages.lock().unwrap().clone();
+        let user_msg = captured
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("LLM provider should have received a user message");
+        assert_eq!(
+            user_msg.content,
+            "Echo back: hello from trigger",
+            "prompt must contain resolved input value, not literal {{{{input}}}}"
+        );
+        assert!(
+            !user_msg.content.contains("{{input}}"),
+            "prompt still contains literal {{input}} — build_executor_context bug regressed"
+        );
+    }
+
+    /// Same chain but with `{{content}}` instead of `{{input}}` — verifies all
+    /// trigger-time fields, not just the canonical one. Catches regressions
+    /// where someone "fixes" the `input` field but forgets `content` /
+    /// `chat_id` / `session_key` etc.
+    #[tokio::test]
+    async fn trigger_content_field_also_reaches_llm_prompt() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        let wf = make_workflow(
+            "echo_content_wf",
+            vec![llm_node_with_prompt(
+                "Channel {{chat_id}} said: {{content}}",
+            )],
+        );
+        engine.register_workflow(wf).unwrap();
+
+        let mut input = HashMap::new();
+        input.insert("content".to_string(), serde_json::json!("payload text"));
+        input.insert("chat_id".to_string(), serde_json::json!("telegram:42"));
+
+        let exec = engine
+            .run("echo_content_wf", input, None)
+            .await
+            .expect("workflow should complete");
+        assert_eq!(exec.state, crate::types::ExecutionState::Completed);
+
+        let captured = provider.last_messages.lock().unwrap().clone();
+        let user_msg = captured
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("LLM provider should have received a user message");
+        assert_eq!(
+            user_msg.content,
+            "Channel telegram:42 said: payload text",
+            "all trigger-time fields must resolve, not just {{input}}"
+        );
+    }
+
+    /// Same chain but verifying the `{{node_id.field}}` shape still works after
+    /// the input merge — we don't want input fields to shadow node outputs in
+    /// the (rare) case of a name collision.
+    #[tokio::test]
+    async fn node_output_overrides_input_field_with_same_name() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        // Two LLM nodes: the first produces an output whose field name
+        // ("content") collides with the trigger-time input field. The
+        // second references {{upstream.content}}. The downstream node must
+        // see the upstream output, not the trigger input.
+        let upstream = NodeDef {
+            id: "upstream".to_string(),
+            node_type: "llm".to_string(),
+            config: HashMap::from([(
+                "prompt".to_string(),
+                serde_json::json!("produce something"),
+            )]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        };
+        // Force the upstream's captured response (defined by CaptureProvider)
+        // to look like an output object with a `content` field. Since the
+        // LLM executor wraps the raw response as {"text": "...", ...}, we
+        // reference {{upstream.text}} instead — the actual output schema.
+        let downstream = NodeDef {
+            id: "downstream".to_string(),
+            node_type: "llm".to_string(),
+            config: HashMap::from([(
+                "prompt".to_string(),
+                serde_json::json!("Upstream said: {{upstream.text}}"),
+            )]),
+            // depend on upstream so the scheduler runs them in separate
+            // levels — guarantees upstream's output is in the context map
+            // before downstream's prompt is resolved.
+            depends_on: vec!["upstream".to_string()],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        };
+        let wf = make_workflow(
+            "chain_wf",
+            vec![upstream, downstream],
+        );
+        engine.register_workflow(wf).unwrap();
+
+        let mut input = HashMap::new();
+        // The collision: input has a "text" key. Upstream's `text` field must
+        // win when downstream references {{upstream.text}} (namespaced).
+        // We also test the bare `{{text}}` reference, which input wins.
+        input.insert(
+            "text".to_string(),
+            serde_json::json!("trigger-text-should-not-leak-into-namespaced-ref"),
+        );
+
+        let exec = engine
+            .run("chain_wf", input, None)
+            .await
+            .expect("workflow should complete");
+        assert_eq!(exec.state, crate::types::ExecutionState::Completed);
+
+        // CaptureProvider's last call is the downstream node's LLM call.
+        let captured = provider.last_messages.lock().unwrap().clone();
+        let user_msg = captured
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("downstream LLM call should have a user message");
+        // The {{upstream.text}} placeholder must be resolved to the upstream's
+        // output `text` field ("stub-ok") — not the trigger-time input.
+        assert!(
+            user_msg.content.contains("Upstream said: stub-ok"),
+            "namespaced node reference must resolve to node output, got: {:?}",
+            user_msg.content
+        );
+        assert!(
+            !user_msg
+                .content
+                .contains("{{upstream.text}}"),
+            "namespaced reference {{upstream.text}} should have been resolved"
+        );
+        assert!(
+            !user_msg
+                .content
+                .contains("trigger-text-should-not-leak"),
+            "trigger input must not leak into namespaced node reference"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Non-LLM nodes: same regression coverage.
+    //
+    // The {{input}} bug lived in build_executor_context, which feeds every
+    // node executor — not just LLM. A regression that drops or reorders
+    // the input merge would break HTTP/Script/Transform/Condition nodes
+    // just as hard. Each test below covers one node type end-to-end.
+    // -----------------------------------------------------------------
+
+    /// Transform node: `{{input}}` in its `input` config must resolve to
+    /// the trigger-time value. The original bug would have left the literal
+    /// `{{input}}` in the transform output.
+    #[tokio::test]
+    async fn transform_node_sees_trigger_input_field() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        let transform = NodeDef {
+            id: "t1".to_string(),
+            node_type: "transform".to_string(),
+            config: HashMap::from([
+                ("expression".to_string(), serde_json::json!("identity")),
+                ("input".to_string(), serde_json::json!("{{input}}")),
+            ]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        };
+        let wf = make_workflow("transform_wf", vec![transform]);
+        engine.register_workflow(wf).unwrap();
+
+        let mut input = HashMap::new();
+        input.insert(
+            "input".to_string(),
+            serde_json::json!("trigger-value-for-transform"),
+        );
+
+        let exec = engine
+            .run("transform_wf", input, None)
+            .await
+            .expect("workflow should complete");
+        assert_eq!(exec.state, crate::types::ExecutionState::Completed);
+
+        let node_result = exec
+            .node_results
+            .get("t1")
+            .expect("t1 result should be present");
+        let text = node_result.output["text"]
+            .as_str()
+            .expect("transform identity output should have text field");
+        assert_eq!(
+            text, "trigger-value-for-transform",
+            "transform must see resolved trigger input, not literal {{{{input}}}}"
+        );
+    }
+
+    /// Condition node: `{{input}}` inside the condition expression must
+    /// resolve before evaluation. The condition `{{input}} == expected`
+    /// becomes `trigger-value == expected` and evaluates true.
+    #[tokio::test]
+    async fn condition_node_sees_trigger_input_field() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        let condition = NodeDef {
+            id: "c1".to_string(),
+            node_type: "condition".to_string(),
+            config: HashMap::from([(
+                "condition".to_string(),
+                serde_json::json!("{{input}} == expected-value"),
+            )]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        };
+        let wf = make_workflow("cond_wf", vec![condition]);
+        engine.register_workflow(wf).unwrap();
+
+        let mut input = HashMap::new();
+        input.insert(
+            "input".to_string(),
+            serde_json::json!("expected-value"),
+        );
+
+        let exec = engine
+            .run("cond_wf", input, None)
+            .await
+            .expect("workflow should complete");
+
+        let node_result = exec.node_results.get("c1").expect("c1 result missing");
+        let cond_result = node_result.output["condition_result"]
+            .as_bool()
+            .expect("condition_result should be bool");
+        assert!(
+            cond_result,
+            "condition must see resolved input — literal {{{{input}}}} would fail equality check"
+        );
+    }
+
+    /// Script node: `{{input}}` in the script template must resolve before
+    /// the interpreter runs. We `echo` the input and verify stdout.
+    ///
+    /// Uses `bash` language — the existing script-node unit tests already
+    /// rely on bash being available (see test_script_node_with_context_variables
+    /// in nodes/tests.rs). Same assumption here.
+    #[tokio::test]
+    async fn script_node_sees_trigger_input_field() {
+        let provider = Arc::new(CaptureProvider::new());
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = WorkflowEngine::new_integrated(
+            provider.clone() as Arc<dyn LLMProvider>,
+            tools,
+            None,
+        );
+
+        let script = NodeDef {
+            id: "s1".to_string(),
+            node_type: "script".to_string(),
+            config: HashMap::from([
+                ("language".to_string(), serde_json::json!("bash")),
+                (
+                    "script".to_string(),
+                    serde_json::json!("echo script-got:{{input}}"),
+                ),
+            ]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        };
+        let wf = make_workflow("script_wf", vec![script]);
+        engine.register_workflow(wf).unwrap();
+
+        let mut input = HashMap::new();
+        input.insert(
+            "input".to_string(),
+            serde_json::json!("payload-for-script"),
+        );
+
+        let exec = engine
+            .run("script_wf", input, None)
+            .await
+            .expect("workflow should complete");
+        assert_eq!(exec.state, crate::types::ExecutionState::Completed);
+
+        let node_result = exec.node_results.get("s1").expect("s1 result missing");
+        let stdout = node_result.output["stdout"]
+            .as_str()
+            .expect("script output should have stdout");
+        assert!(
+            stdout.contains("script-got:payload-for-script"),
+            "script must see resolved input — literal {{{{input}}}} would echo raw template. stdout={:?}",
+            stdout
+        );
+        assert!(
+            !stdout.contains("{{input}}"),
+            "stdout should not contain literal {{{{input}}}} — build_executor_context regressed"
+        );
+    }
 }

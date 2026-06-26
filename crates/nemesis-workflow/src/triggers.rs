@@ -4,8 +4,8 @@
 //! event matching, and message patterns. Mirrors the Go `triggers.go`.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
 
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 /// Borrowed view of an inbound message — used by [`TriggerManager::match_message`]
@@ -67,7 +67,8 @@ impl CronTimezone {
 /// Manager for workflow triggers.
 ///
 /// Supports cron schedules, webhook endpoints, event matching, and message
-/// patterns. Thread-safe via RwLock.
+/// patterns. Thread-safe via RwLock (parking_lot — no poisoning if a node
+/// executor panics while a guard is held).
 pub struct TriggerManager {
     /// Maps workflow names to their trigger configs.
     triggers: RwLock<HashMap<String, Vec<TriggerConfig>>>,
@@ -102,19 +103,24 @@ impl TriggerManager {
             }
         }
 
-        // Track cron jobs separately
+        // Track cron jobs separately. Field name is `schedule` to match
+        // `engine.rs` (cron_next_fire_at_from_trigger / spawn_cron_triggers /
+        // list_cron_workflows). Older code read `expression`; that name was
+        // never honoured by the actual scheduler, so writing `expression` in
+        // YAML silently failed to schedule. Accept both keys here for
+        // backward compat, but new YAML should use `schedule`.
         if trigger.trigger_type == "cron" {
-            if let Some(expr_val) = trigger.config.get("expression") {
-                if let Some(expr) = expr_val.as_str() {
-                    let mut cron = self.cron_jobs.write().unwrap();
-                    cron.entry(workflow_name.to_string())
-                        .or_default()
-                        .push(expr.to_string());
-                }
+            let expr_val = trigger.config.get("schedule")
+                .or_else(|| trigger.config.get("expression"));
+            if let Some(v) = expr_val.and_then(|v| v.as_str()) {
+                let mut cron = self.cron_jobs.write();
+                cron.entry(workflow_name.to_string())
+                    .or_default()
+                    .push(v.to_string());
             }
         }
 
-        let mut triggers = self.triggers.write().unwrap();
+        let mut triggers = self.triggers.write();
         triggers
             .entry(workflow_name.to_string())
             .or_default()
@@ -125,8 +131,8 @@ impl TriggerManager {
 
     /// Remove all triggers for a workflow.
     pub fn remove_trigger(&self, workflow_name: &str) {
-        self.triggers.write().unwrap().remove(workflow_name);
-        self.cron_jobs.write().unwrap().remove(workflow_name);
+        self.triggers.write().remove(workflow_name);
+        self.cron_jobs.write().remove(workflow_name);
     }
 
     /// Return workflow names that should be triggered by an event.
@@ -144,7 +150,7 @@ impl TriggerManager {
         event_type: &str,
         data: &HashMap<String, serde_json::Value>,
     ) -> Vec<String> {
-        let triggers = self.triggers.read().unwrap();
+        let triggers = self.triggers.read();
         let mut matched = Vec::new();
 
         for (wf_name, wf_triggers) in triggers.iter() {
@@ -172,7 +178,7 @@ impl TriggerManager {
     ///
     /// Returns workflow names with at least one matching trigger.
     pub fn match_trigger_event(&self, event: &crate::event_dispatcher::TriggerEvent) -> Vec<String> {
-        let triggers = self.triggers.read().unwrap();
+        let triggers = self.triggers.read();
         let mut matched = Vec::new();
 
         for (wf_name, wf_triggers) in triggers.iter() {
@@ -212,7 +218,7 @@ impl TriggerManager {
     ///
     /// Returns workflow names with at least one matching trigger.
     pub fn match_message(&self, msg: &InboundMessageRef<'_>) -> Vec<String> {
-        let triggers = self.triggers.read().unwrap();
+        let triggers = self.triggers.read();
         let mut matched = Vec::new();
 
         for (wf_name, wf_triggers) in triggers.iter() {
@@ -286,12 +292,12 @@ impl TriggerManager {
 
     /// Return all workflow names that have cron triggers.
     pub fn get_cron_workflows(&self) -> HashMap<String, Vec<String>> {
-        self.cron_jobs.read().unwrap().clone()
+        self.cron_jobs.read().clone()
     }
 
     /// Return all workflow names that have webhook triggers.
     pub fn get_webhook_workflows(&self) -> Vec<String> {
-        let triggers = self.triggers.read().unwrap();
+        let triggers = self.triggers.read();
         let mut names = Vec::new();
 
         for (wf_name, wf_triggers) in triggers.iter() {
@@ -329,7 +335,6 @@ impl TriggerManager {
     pub fn list_triggers(&self, workflow_name: &str) -> Vec<TriggerConfig> {
         self.triggers
             .read()
-            .unwrap()
             .get(workflow_name)
             .cloned()
             .unwrap_or_default()
@@ -337,7 +342,7 @@ impl TriggerManager {
 
     /// Return all registered triggers across all workflows.
     pub fn list_all_triggers(&self) -> HashMap<String, Vec<TriggerConfig>> {
-        self.triggers.read().unwrap().clone()
+        self.triggers.read().clone()
     }
 
     /// Check if the event data matches the trigger's config criteria.

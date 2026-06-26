@@ -473,6 +473,79 @@ fn test_build_executor_context_with_node_results() {
     assert!(ctx.contains_key("node_a"));
 }
 
+/// Regression: trigger-time input fields (workflow_chat's `input`/`content`/
+/// `chat_id`/`session_key`/`workflow_name`, plus cron/webhook payload fields)
+/// must be visible to node executors so `{{input}}` etc. resolve. Previously
+/// `build_executor_context` only merged variables + node_results, dropping
+/// `WorkflowContext.input` on the floor — node prompts saw literal `{{input}}`
+/// and LLMs echoed it back.
+#[test]
+fn test_build_executor_context_includes_input_fields() {
+    let mut input = HashMap::new();
+    input.insert("input".to_string(), serde_json::json!("hello world"));
+    input.insert("content".to_string(), serde_json::json!("hello world"));
+    input.insert("chat_id".to_string(), serde_json::json!("web:sess-1"));
+    input.insert("session_key".to_string(), serde_json::json!("wf_chat:demo"));
+    let wf_ctx = WorkflowContext::new(input);
+
+    let ctx = build_executor_context(&wf_ctx);
+    assert_eq!(ctx.get("input").unwrap(), &serde_json::json!("hello world"));
+    assert_eq!(ctx.get("content").unwrap(), &serde_json::json!("hello world"));
+    assert_eq!(ctx.get("chat_id").unwrap(), &serde_json::json!("web:sess-1"));
+    assert_eq!(
+        ctx.get("session_key").unwrap(),
+        &serde_json::json!("wf_chat:demo")
+    );
+}
+
+/// Variables should override same-named input keys (set_var is an explicit
+/// workflow author action; input is just the trigger-time baseline).
+#[test]
+fn test_build_executor_context_variable_overrides_input() {
+    let mut input = HashMap::new();
+    input.insert("x".to_string(), serde_json::json!("from_input"));
+    input.insert("untouched_input".to_string(), serde_json::json!("input_value"));
+    let wf_ctx = WorkflowContext::new(input);
+    wf_ctx.set_var("x", "from_variable");
+    wf_ctx.set_var("untouched", "var_value");
+
+    let ctx = build_executor_context(&wf_ctx);
+    assert_eq!(ctx.get("x").unwrap(), &serde_json::json!("from_variable"));
+    assert_eq!(
+        ctx.get("untouched").unwrap(),
+        &serde_json::json!("var_value")
+    );
+    assert_eq!(
+        ctx.get("untouched_input").unwrap(),
+        &serde_json::json!("input_value")
+    );
+}
+
+/// Node result with the same key as an input field should also win — node
+/// outputs are the freshest data in the DAG.
+#[test]
+fn test_build_executor_context_node_result_overrides_input() {
+    use crate::types::NodeResult;
+    use chrono::Local;
+
+    let mut input = HashMap::new();
+    input.insert("shared".to_string(), serde_json::json!("from_input"));
+    let wf_ctx = WorkflowContext::new(input);
+    let result = NodeResult {
+        node_id: "shared".to_string(),
+        output: serde_json::json!("from_node"),
+        error: None,
+        state: ExecutionState::Completed,
+        started_at: Local::now(),
+        ended_at: Local::now(),
+        metadata: HashMap::new(),
+    };
+    wf_ctx.set_node_result("shared", result);
+
+    let ctx = build_executor_context(&wf_ctx);
+    assert_eq!(ctx.get("shared").unwrap(), &serde_json::json!("from_node"));
+}
+
 #[test]
 fn test_topological_sort_wide_parallel() {
     let nodes: Vec<NodeDef> = (0..10)

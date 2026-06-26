@@ -154,6 +154,7 @@ impl AgentRunner for StubAgentRunner {
         _prompt: &str,
         _agent_id: &str,
         _max_turns: u32,
+        _model: Option<&str>,
     ) -> Result<AgentRunResult, String> {
         Ok(AgentRunResult {
             response: self.response.clone(),

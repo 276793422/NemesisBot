@@ -366,43 +366,6 @@ fn test_registry_concurrent_access() {
 }
 
 #[tokio::test]
-async fn test_transform_node_executor_jsonpath() {
-    let exec = TransformNodeExecutor;
-    let mut config = HashMap::new();
-    config.insert("expression".to_string(), serde_json::json!("$.name"));
-    let node = make_node("n1", "transform", config);
-
-    let mut ctx = HashMap::new();
-    ctx.insert("data".to_string(), serde_json::json!({"name": "test-value"}));
-
-    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
-    assert_eq!(result.state, ExecutionState::Completed);
-}
-
-#[tokio::test]
-async fn test_transform_node_executor_template() {
-    let exec = TransformNodeExecutor;
-    let mut config = HashMap::new();
-    config.insert("template".to_string(), serde_json::json!("Hello {{name}}"));
-    let node = make_node("n1", "transform", config);
-
-    let mut ctx = HashMap::new();
-    ctx.insert("name".to_string(), serde_json::json!("World"));
-
-    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
-    assert_eq!(result.state, ExecutionState::Completed);
-}
-
-#[tokio::test]
-async fn test_transform_node_default_identity() {
-    let exec = TransformNodeExecutor;
-    let node = make_node("n1", "transform", HashMap::new());
-    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
-    // Default is identity - should pass through context
-    assert_eq!(result.state, ExecutionState::Completed);
-}
-
-#[tokio::test]
 async fn test_condition_node_false() {
     let exec = ConditionNodeExecutor;
     let mut config = HashMap::new();
@@ -608,42 +571,309 @@ async fn test_transform_node_identity() {
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert("input".to_string(), serde_json::json!("hello world"));
     let node = make_node("n1", "transform", config);
 
-    let mut ctx = HashMap::new();
-    ctx.insert("key".to_string(), serde_json::json!("value"));
-
-    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
-    let output_obj = result.output.as_object().unwrap();
-    assert_eq!(output_obj.get("key").unwrap(), "value");
+    assert_eq!(result.output["text"].as_str().unwrap(), "hello world");
 }
 
 #[tokio::test]
 async fn test_transform_node_passthrough() {
+    // `passthrough` is an alias for `identity`.
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("passthrough"));
+    config.insert("input".to_string(), serde_json::json!("raw text"));
     let node = make_node("n1", "transform", config);
     let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["text"].as_str().unwrap(), "raw text");
 }
 
 #[tokio::test]
-async fn test_transform_node_custom_expression() {
+async fn test_transform_node_default_identity() {
+    // No expression → default is identity; empty input → empty text.
+    let exec = TransformNodeExecutor;
+    let node = make_node("n1", "transform", HashMap::new());
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["text"].as_str().unwrap(), "");
+}
+
+#[tokio::test]
+async fn test_transform_node_unknown_expression_fails() {
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
     config.insert("expression".to_string(), serde_json::json!("uppercase(data)"));
     let node = make_node("n1", "transform", config);
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.unwrap().contains("unknown expression"));
+}
+
+#[tokio::test]
+async fn test_transform_node_trim_first_last_split() {
+    let exec = TransformNodeExecutor;
+
+    // trim
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("trim"));
+    config.insert("input".to_string(), serde_json::json!("  hi  \n"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "hi");
+
+    // first_line
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("first_line"));
+    config.insert("input".to_string(), serde_json::json!("\n\nfirst\nsecond\nthird"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "first");
+
+    // last_line
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("last_line"));
+    config.insert("input".to_string(), serde_json::json!("first\nsecond\nthird\n"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "third");
+
+    // split_lines
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("split_lines"));
+    config.insert("input".to_string(), serde_json::json!("a\n\nb\nc"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let lines: Vec<&str> = r.output["lines"].as_array().unwrap()
+        .iter().map(|v| v.as_str().unwrap()).collect();
+    assert_eq!(lines, vec!["a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn test_transform_node_json_extract() {
+    let exec = TransformNodeExecutor;
+
+    // Nested path with string field.
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("json_extract"));
+    config.insert("arg".to_string(), serde_json::json!("data.user.name"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!(r#"{"data": {"user": {"name": "alice", "age": 30}}}"#),
+    );
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output["text"].as_str().unwrap(), "alice");
+
+    // Numeric field → wrapped as `value`.
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("json_extract"));
+    config.insert("arg".to_string(), serde_json::json!("data.user.age"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!(r#"{"data": {"user": {"name": "alice", "age": 30}}}"#),
+    );
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["value"].as_u64().unwrap(), 30);
+
+    // Array indexing (incl. negative).
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("json_extract"));
+    config.insert("arg".to_string(), serde_json::json!("items[-1].id"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!(r#"{"items": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}"#),
+    );
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "c");
+}
+
+#[tokio::test]
+async fn test_transform_node_regex_match() {
+    let exec = TransformNodeExecutor;
+
+    // No capture group → full match.
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("regex_match"));
+    config.insert("arg".to_string(), serde_json::json!(r#"\d+"#));
+    config.insert("input".to_string(), serde_json::json!("order 42 ready"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "42");
+
+    // Capture group → first capture.
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("regex_match"));
+    config.insert("arg".to_string(), serde_json::json!(r#"key=(\w+)"#));
+    config.insert("input".to_string(), serde_json::json!("key=hello world"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "hello");
+
+    // No match → empty string.
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("regex_match"));
+    config.insert("arg".to_string(), serde_json::json!(r#"zzz"#));
+    config.insert("input".to_string(), serde_json::json!("no match here"));
+    let node = make_node("n1", "transform", config);
+    let r = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "");
+}
+
+#[tokio::test]
+async fn test_transform_node_input_var_substitution() {
+    // {{var}} in input should resolve from context.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert("input".to_string(), serde_json::json!("hello {{name}}"));
+    let node = make_node("n1", "transform", config);
 
     let mut ctx = HashMap::new();
-    ctx.insert("data".to_string(), serde_json::json!("hello"));
+    ctx.insert("name".to_string(), serde_json::json!("world"));
+    let r = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(r.output["text"].as_str().unwrap(), "hello world");
+}
 
-    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
-    assert_eq!(result.state, ExecutionState::Completed);
-    assert_eq!(result.output["transformed"].as_str().unwrap(), "uppercase(data)");
-    let keys = result.output["input_keys"].as_array().unwrap();
-    assert!(keys.iter().any(|k| k.as_str() == Some("data")));
+#[tokio::test]
+async fn test_transform_output_type_text_unwraps_bare_string() {
+    // output_type=text must produce a bare JSON string, not {text: "..."}.
+    // This is what makes workflow_chat replies show clean text instead of
+    // JSON envelopes.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert("input".to_string(), serde_json::json!("hello world"));
+    config.insert("output_type".to_string(), serde_json::json!("text"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output.as_str().unwrap(), "hello world");
+}
+
+#[tokio::test]
+async fn test_transform_output_type_markdown_unwraps_bare_string() {
+    // markdown behaves like text at the data level — bare string. The
+    // distinction is semantic, surfaced to the chat UI for rendering.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!("**bold** reply"),
+    );
+    config.insert("output_type".to_string(), serde_json::json!("markdown"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output.as_str().unwrap(), "**bold** reply");
+}
+
+#[tokio::test]
+async fn test_transform_output_type_xml_unwraps_bare_string() {
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!("<root>value</root>"),
+    );
+    config.insert("output_type".to_string(), serde_json::json!("xml"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output.as_str().unwrap(), "<root>value</root>");
+}
+
+#[tokio::test]
+async fn test_transform_output_type_json_keeps_object_shape() {
+    // output_type=json is a no-op — leaves the {text: ...} envelope in
+    // place. Same as not setting output_type at all.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert("input".to_string(), serde_json::json!("payload"));
+    config.insert("output_type".to_string(), serde_json::json!("json"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert_eq!(r.output["text"].as_str().unwrap(), "payload");
+}
+
+#[tokio::test]
+async fn test_transform_no_output_type_preserves_envelope() {
+    // Backward compat: without output_type, behavior is identical to today.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("identity"));
+    config.insert("input".to_string(), serde_json::json!("payload"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(r.state, ExecutionState::Completed);
+    assert!(r.output.is_object());
+    assert_eq!(r.output["text"].as_str().unwrap(), "payload");
+}
+
+#[tokio::test]
+async fn test_transform_output_type_text_with_incompatible_expression_falls_back() {
+    // output_type=text tries to unwrap {text: "..."}, but split_lines
+    // produces {lines: array}. Rather than failing the workflow, the
+    // node returns the original output as-is — the workflow_chat reply
+    // observer then JSON-dumps it via the existing fallback path.
+    // Same effective behavior as if output_type had not been set.
+    let exec = TransformNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("expression".to_string(), serde_json::json!("split_lines"));
+    config.insert("input".to_string(), serde_json::json!("line1\nline2"));
+    config.insert("output_type".to_string(), serde_json::json!("text"));
+    let node = make_node("n1", "transform", config);
+
+    let r = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        r.state,
+        ExecutionState::Completed,
+        "best-effort unwrap should not fail the node, got state {:?} error {:?}",
+        r.state,
+        r.error
+    );
+    // Output preserves the original {lines: [...]} shape.
+    let lines = r
+        .output
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .expect("fallback should preserve the {lines: array} envelope");
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].as_str(), Some("line1"));
+    assert_eq!(lines[1].as_str(), Some("line2"));
 }
 
 #[tokio::test]
@@ -654,7 +884,8 @@ async fn test_delay_node_with_seconds() {
     let node = make_node("n1", "delay", config);
     let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
-    assert_eq!(result.output["delayed_ms"].as_u64().unwrap(), 0);
+    // Field is named `delayed_seconds` (was `delayed_ms` before BUG #2 fix).
+    assert_eq!(result.output["delayed_seconds"].as_u64().unwrap(), 0);
 }
 
 #[tokio::test]
@@ -971,6 +1202,9 @@ async fn test_human_review_with_message() {
 
 #[tokio::test]
 async fn test_inline_node_execution_for_unknown_type() {
+    // Unknown node types must surface as Failed (not silently Completed) so
+    // tests built on the stub path blow up loudly. The "type not registered"
+    // scenario in production is a real bug, not a soft skip.
     let node = NodeDef {
         id: "test".to_string(),
         node_type: "custom_unknown".to_string(),
@@ -981,9 +1215,11 @@ async fn test_inline_node_execution_for_unknown_type() {
     is_terminal: false,
     };
     let result = execute_inline_node(&node, &HashMap::new()).await.unwrap();
-    assert_eq!(result.state, ExecutionState::Completed);
-    assert_eq!(result.output["status"].as_str().unwrap(), "skipped");
-    assert!(result.output["reason"].as_str().unwrap().contains("inline execution not supported"));
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(
+        result.error.expect("Failed state must carry error").contains("custom_unknown"),
+        "error should mention the unknown node type"
+    );
 }
 
 #[tokio::test]
@@ -1050,10 +1286,27 @@ fn test_evaluate_condition_truthy_values() {
 fn test_evaluate_condition_equality_different_value() {
     let mut ctx = HashMap::new();
     ctx.insert("count".to_string(), serde_json::json!(5));
-    let result = evaluate_condition("count == 5", &ctx);
-    // Note: ctx value is Number(5) but comparison creates String("5")
-    // so they won't be equal - this tests the == path returning false
-    assert!(!result);
+    // Numeric comparison: count (=5) == 5 → true.
+    assert!(evaluate_condition("count == 5", &ctx));
+    // Also works via {{var}} form.
+    assert!(evaluate_condition("{{count}} == 5", &ctx));
+    // Mismatched numeric comparison → false.
+    assert!(!evaluate_condition("count == 6", &ctx));
+}
+
+#[test]
+fn test_evaluate_condition_numeric_comparisons() {
+    let mut ctx = HashMap::new();
+    ctx.insert("count".to_string(), serde_json::json!(5));
+
+    assert!(evaluate_condition("count > 3", &ctx));
+    assert!(!evaluate_condition("count > 5", &ctx));
+    assert!(evaluate_condition("count >= 5", &ctx));
+    assert!(evaluate_condition("count <= 5", &ctx));
+    assert!(evaluate_condition("count < 10", &ctx));
+    assert!(!evaluate_condition("count < 5", &ctx));
+    // {{var}} form.
+    assert!(evaluate_condition("{{count}} > 3", &ctx));
 }
 
 #[test]
@@ -2292,6 +2545,7 @@ struct CapturedCall {
     prompt: String,
     agent_id: String,
     max_turns: u32,
+    model: Option<String>,
 }
 
 /// Test runner that returns a queued response and remembers the last call.
@@ -2336,12 +2590,14 @@ impl AgentRunner for StubAgentRunner {
         prompt: &str,
         agent_id: &str,
         max_turns: u32,
+        model: Option<&str>,
     ) -> Result<AgentRunResult, String> {
         self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_call.lock().unwrap() = Some(CapturedCall {
             prompt: prompt.to_string(),
             agent_id: agent_id.to_string(),
             max_turns,
+            model: model.map(|s| s.to_string()),
         });
         if let Some(e) = &self.fail_with {
             return Err(e.clone());
@@ -2449,4 +2705,471 @@ async fn test_agent_node_resolves_template_in_prompt() {
 
     let captured = runner.last_call.lock().unwrap().clone().unwrap();
     assert_eq!(captured.prompt, "Tell Alice about quantum physics");
+}
+
+// ===========================================================================
+// Regression tests for audit-2026-06-26 bug fixes
+// ===========================================================================
+
+/// BUG #2: Delay executor must use seconds (not millis) for the `seconds`
+/// field — the form label is "等待秒数" and the previous `from_millis(secs)`
+/// made `seconds=2` wait only 2ms.
+#[tokio::test]
+async fn test_delay_uses_seconds_unit_for_output_field() {
+    let exec = DelayNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("seconds".to_string(), serde_json::json!(3));
+    let node = make_node("delay", "delay", config);
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+
+    // Field name + value both reflect "seconds" semantics.
+    assert_eq!(result.output["delayed_seconds"].as_u64().unwrap(), 3);
+    // Old (buggy) field name must NOT be present — tests following this
+    // contract shouldn't see ghost data from the millis era.
+    assert!(result.output.get("delayed_ms").is_none());
+}
+
+/// BUG #4: Script executor must route "bat" / "cmd" languages to cmd.exe,
+/// not fall through to bash. Verified at the pure helper level so the test
+/// doesn't need to actually spawn cmd.exe.
+#[test]
+fn test_script_interpreter_for_bat_language() {
+    let (interpreter, ext, flag) = select_script_interpreter("bat");
+    assert_eq!(interpreter, "cmd");
+    assert_eq!(ext, ".bat");
+    assert_eq!(flag, "/C");
+
+    // "cmd" spelling should also work.
+    let (interpreter2, _, _) = select_script_interpreter("cmd");
+    assert_eq!(interpreter2, "cmd");
+}
+
+/// BUG #5: HumanReview executor must resolve `{{var}}` in the `message`
+/// field so reviewers see actual content (placeholder shows
+/// `请审核是否发送给客户：{{draft}}`).
+#[tokio::test]
+async fn test_human_review_resolves_template_in_message() {
+    let exec = HumanReviewNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "message".to_string(),
+        serde_json::json!("Review draft: {{draft}}"),
+    );
+    let node = make_node("review", "human_review", config);
+    let ctx = HashMap::from([("draft".to_string(), serde_json::json!("hello world"))]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Waiting);
+    assert_eq!(
+        result.output["message"].as_str().unwrap(),
+        "Review draft: hello world"
+    );
+}
+
+/// BUG #7: RealLLMNodeExecutor must resolve `{{var}}` in system_prompt
+/// (form provides a variable picker on the system_prompt field).
+#[tokio::test]
+async fn test_real_llm_executor_resolves_system_prompt_template() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    let mut config = HashMap::new();
+    config.insert("prompt".to_string(), serde_json::json!("Hi"));
+    config.insert(
+        "system_prompt".to_string(),
+        serde_json::json!("You are talking to {{user_name}}"),
+    );
+    let node = make_node("n1", "llm", config);
+    let ctx = HashMap::from([("user_name".to_string(), serde_json::json!("Alice"))]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    // First message should be the resolved system prompt.
+    let messages = provider.last_messages.lock().unwrap();
+    assert_eq!(messages[0].role, "system");
+    assert_eq!(messages[0].content, "You are talking to Alice");
+}
+
+/// BUG #6: SubWorkflowNodeExecutor must resolve `{{var}}` inside string
+/// values of the `input` config map (form placeholder is `{{user_input}}`).
+/// Older code did exact-key lookup so `{{user_input}}` never matched.
+#[tokio::test]
+async fn test_sub_workflow_resolves_template_in_input_values() {
+    use crate::engine::WorkflowEngine;
+    use crate::types::Workflow;
+
+    let engine = WorkflowEngine::new();
+    let child_wf = Workflow {
+        name: "child".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![NodeDef {
+            id: "delay1".to_string(),
+            node_type: "delay".to_string(),
+            config: HashMap::from([("seconds".to_string(), serde_json::json!(0))]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        }],
+        edges: vec![],
+        variables: HashMap::new(),
+        metadata: HashMap::new(),
+    };
+    engine.register_workflow(child_wf).unwrap();
+
+    // Wrap engine in Arc once — WorkflowEngine doesn't impl Clone.
+    let engine_arc = Arc::new(engine);
+    let sub_exec = SubWorkflowNodeExecutor::new(engine_arc.clone());
+
+    // input map: { topic: "{{user_input}}" } — placeholder syntax.
+    let mut config = HashMap::new();
+    config.insert("workflow".to_string(), serde_json::json!("child"));
+    config.insert(
+        "input".to_string(),
+        serde_json::json!({ "topic": "{{user_input}}" }),
+    );
+    let node = make_node("call", "sub_workflow", config);
+    let parent_ctx = HashMap::from([("user_input".to_string(), serde_json::json!("alice"))]);
+
+    let result = sub_exec.execute(&node, &parent_ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    // Verify the child execution received the resolved value in its input
+    // map (sub_input → engine.run → Execution.input).
+    let exec_id = result.metadata.get("execution_id").unwrap().as_str().unwrap();
+    let child_exec = engine_arc.get_execution(exec_id).await.unwrap();
+    assert_eq!(
+        child_exec.input.get("topic"),
+        Some(&serde_json::json!("alice")),
+        "input map values must resolve {{var}} placeholders against parent context"
+    );
+}
+
+/// BUG #8: AgentNodeExecutor must pass the optional `model` config field
+/// through to the runner. Previously the form collected it but the trait
+/// signature didn't accept it.
+#[tokio::test]
+async fn test_agent_node_passes_model_to_runner() {
+    let runner = Arc::new(StubAgentRunner::success("ok", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+
+    let mut config = agent_config("Hi");
+    config.insert("model".to_string(), serde_json::json!("zhipu/glm-4.7"));
+    let node = make_node("agent", "agent", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert_eq!(captured.model.as_deref(), Some("zhipu/glm-4.7"));
+}
+
+/// BUG #8 corollary: empty model field should pass None (not Some("")).
+#[tokio::test]
+async fn test_agent_node_omits_empty_model() {
+    let runner = Arc::new(StubAgentRunner::success("ok", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+
+    let mut config = agent_config("Hi");
+    config.insert("model".to_string(), serde_json::json!(""));
+    let node = make_node("agent", "agent", config);
+
+    let _ = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    let captured = runner.last_call.lock().unwrap().clone().unwrap();
+    assert!(captured.model.is_none());
+}
+
+/// BUG #3: Loop executor must publish `{{i}}` so condition expressions like
+/// `{{i}} < 3` actually iterate the right number of times. Previously only
+/// `loop_index` was inserted, so `{{i}} < 3` never resolved and the loop
+/// bailed out after iter 0.
+#[tokio::test]
+async fn test_loop_resolves_i_template_in_condition() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    // No max_iterations → rely solely on condition; safety cap is 100.
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{i}} < 3"),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("loop1", "loop", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    // iter 0 runs unconditionally (i=0, condition skipped on i==0).
+    // iter 1: i=1, cond `1 < 3` true → run.
+    // iter 2: i=2, cond `2 < 3` true → run.
+    // iter 3: i=3, cond `3 < 3` false → break.
+    // → 3 iterations total.
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 3);
+}
+
+/// BUG #3 (stub path): same regression check for LoopNodeStub, since both
+/// executors must honour the form contract.
+#[tokio::test]
+async fn test_loop_stub_resolves_i_template_in_condition() {
+    let exec = LoopNodeStub;
+    let mut config = HashMap::new();
+    config.insert("condition".to_string(), serde_json::json!("{{i}} < 2"));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("loop1", "loop", config);
+
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
+}
+
+/// BUG #1: `WorkflowEngine::new_integrated` (the gateway's entry point)
+/// must register REAL parallel/loop executors that dispatch children
+/// through the registry. The previous wiring left the stubs in place,
+/// causing child nodes of type llm/tool/agent/etc to be silently skipped
+/// with a `"status":"skipped"` marker.
+///
+/// We verify by inserting a custom marker executor and checking the
+/// parallel child runs through it (real) vs. producing a skip marker (stub).
+#[tokio::test]
+async fn test_new_integrated_wires_real_parallel_executor() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let marker_calls = Arc::new(AtomicUsize::new(0));
+    let marker_calls_clone = Arc::clone(&marker_calls);
+
+    struct MarkerExec {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl NodeExecutor for MarkerExec {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: "marker".to_string(),
+                output: serde_json::json!({ "marker_ran": true }),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: Local::now(),
+                ended_at: Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
+    let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let engine = WorkflowEngine::new_integrated(provider, tools, None);
+
+    // Register our marker node type on the engine's registry.
+    engine.node_executors.register(
+        "marker",
+        Arc::new(MarkerExec { calls: marker_calls_clone }),
+    );
+
+    // Get the parallel executor the engine actually uses.
+    let parallel_exec = engine.node_executors.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "m1", "node_type": "marker", "config": {} }
+        ]),
+    );
+    let node = make_node("par", "parallel", config);
+
+    let result = parallel_exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    // Real executor dispatched via registry → marker was called.
+    // Stub would have called execute_inline_node which has no "marker" arm
+    // and would have returned {status:"skipped"} without touching the
+    // marker executor.
+    assert_eq!(marker_calls.load(Ordering::SeqCst), 1);
+    let branch_out = result.output.get("branch_0").unwrap();
+    assert_eq!(branch_out["marker_ran"].as_bool().unwrap(), true);
+}
+
+/// BUG #1 corollary: same wiring check for loop.
+#[tokio::test]
+async fn test_new_integrated_wires_real_loop_executor() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let marker_calls = Arc::new(AtomicUsize::new(0));
+    let marker_calls_clone = Arc::clone(&marker_calls);
+
+    struct MarkerExec {
+        calls: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl NodeExecutor for MarkerExec {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: "marker".to_string(),
+                output: serde_json::json!({ "marker_ran": true }),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: Local::now(),
+                ended_at: Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "ok")) as Arc<dyn LLMProvider>;
+    let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let engine = WorkflowEngine::new_integrated(provider, tools, None);
+    engine.node_executors.register(
+        "marker",
+        Arc::new(MarkerExec { calls: marker_calls_clone }),
+    );
+
+    let loop_exec = engine.node_executors.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(2));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "m", "node_type": "marker", "config": {} }
+        ]),
+    );
+    let node = make_node("loop1", "loop", config);
+
+    let result = loop_exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    // 2 iterations × 1 marker child = 2 calls.
+    assert_eq!(marker_calls.load(Ordering::SeqCst), 2);
+}
+
+/// BUG #10: QuestionClassifier system_prompt must resolve `{{var}}` so user
+/// overrides can reference context (same pattern as BUG #7 — the executor
+/// previously read system_prompt but skipped `resolve_prompt_template`).
+#[tokio::test]
+async fn test_question_classifier_resolves_template_in_system_prompt() {
+    let provider = Arc::new(StubProvider::success("stub", "stub-model", "support"));
+    let exec = QuestionClassifierNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = classifier_config("the app crashed", &[("support", "...")]);
+    config.insert(
+        "system_prompt".to_string(),
+        serde_json::json!("Classify for tenant {{tenant_id}}"),
+    );
+    let node = make_node("classify", "question_classifier", config);
+    let ctx = HashMap::from([(
+        "tenant_id".to_string(),
+        serde_json::json!("acme-corp"),
+    )]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let captured = provider.last_messages.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].role, "system");
+    assert_eq!(captured[0].content, "Classify for tenant acme-corp");
+}
+
+/// BUG #11: ParameterExtractor system_prompt must resolve `{{var}}` so user
+/// overrides can reference context (same pattern as BUG #7).
+#[tokio::test]
+async fn test_parameter_extractor_resolves_template_in_system_prompt() {
+    let provider = Arc::new(StubProvider::success(
+        "stub",
+        "stub-model",
+        r#"{"name":"Alice"}"#,
+    ));
+    let exec = ParameterExtractorNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = extractor_config(
+        "Hi, I'm Alice",
+        &[("name", "string", "user's name", true)],
+    );
+    config.insert(
+        "system_prompt".to_string(),
+        serde_json::json!("Extract for locale {{locale}}"),
+    );
+    let node = make_node("extract", "parameter_extractor", config);
+    let ctx = HashMap::from([("locale".to_string(), serde_json::json!("en-US"))]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let captured = provider.last_messages.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].role, "system");
+    assert_eq!(captured[0].content, "Extract for locale en-US");
+}
+
+/// BUG #12: HTTP executor must apply a timeout so a hung URL doesn't block
+/// the workflow forever. We hit a non-routable TEST-NET-1 address that
+/// won't respond, then check the executor returns within roughly the
+/// configured `timeout_secs` (not the OS default ~75s). The return value
+/// may be Ok or Err depending on platform — what matters is the wall clock.
+#[tokio::test]
+async fn test_http_executor_accepts_timeout_secs_config() {
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!("http://192.0.2.1/example"),
+    );
+    config.insert("method".to_string(), serde_json::json!("GET"));
+    config.insert("timeout_secs".to_string(), serde_json::json!(1));
+    let node = make_node("http", "http", config);
+
+    let started = std::time::Instant::now();
+    let _ = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await;
+    let elapsed = started.elapsed();
+
+    // timeout_secs=1 should fire well under the OS-default ~75s. We allow
+    // up to 5s as headroom for connection-setup latency on slow CI.
+    assert!(
+        elapsed.as_secs() < 5,
+        "HTTP executor did not honor timeout_secs=1 — elapsed {:?}",
+        elapsed
+    );
+}
+
+/// BUG #13: On Windows, "powershell" / "pwsh" config MUST map to
+/// `powershell.exe` (always pre-installed) rather than `pwsh.exe` (PowerShell
+/// Core, requires separate download). Non-Windows keeps `pwsh` since that's
+/// the only way to get PowerShell there.
+#[test]
+fn test_script_interpreter_for_powershell() {
+    let (interpreter, ext, flag) = select_script_interpreter("powershell");
+    assert_eq!(ext, ".ps1");
+    assert_eq!(flag, "-Command");
+    #[cfg(windows)]
+    assert_eq!(interpreter, "powershell");
+    #[cfg(not(windows))]
+    assert_eq!(interpreter, "pwsh");
+
+    // "pwsh" spelling also routes through the same arm.
+    let (interpreter2, _, _) = select_script_interpreter("pwsh");
+    assert_eq!(interpreter2, interpreter);
 }

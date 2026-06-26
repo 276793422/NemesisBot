@@ -119,6 +119,14 @@ async fn handle_send(
         "content".to_string(),
         serde_json::Value::String(data.content.clone()),
     );
+    // Unified `input` field — the "main input string" for this trigger.
+    // Lets workflow authors write `{{input}}` in node prompts regardless
+    // of which trigger source fired the workflow. For workflow_chat the
+    // main input is the user-typed chat content.
+    input.insert(
+        "input".to_string(),
+        serde_json::Value::String(data.content.clone()),
+    );
     input.insert(
         "chat_id".to_string(),
         serde_json::Value::String(chat_id.clone()),

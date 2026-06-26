@@ -359,6 +359,14 @@ async fn trigger_workflow_via_webhook(
     let arc_engine = Arc::clone(engine);
     let mut input = HashMap::new();
     input.insert("payload".to_string(), payload.clone());
+    // Unified `input` field: the "main input string". For webhooks the main
+    // input is the payload — if it's already a string use as-is, otherwise
+    // JSON-serialise so downstream `{{input}}` always resolves to a string.
+    let input_str = match &payload {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    input.insert("input".to_string(), serde_json::Value::String(input_str));
     WorkflowEngine::start_async(
         arc_engine,
         name,
@@ -562,6 +570,27 @@ fn parse_input_object(raw: Option<&serde_json::Value>) -> HashMap<String, serde_
         }
         None => HashMap::new(),
     }
+}
+
+/// Ensure the unified `input` field exists in the map.
+///
+/// Workflows reference the trigger's main input via `{{input}}`. If the
+/// caller already set `input` (e.g. `parse_input_object` saw a non-object
+/// value and wrapped it), leave it alone. Otherwise synthesise one from
+/// the rest of the map so `{{input}}` always resolves to something.
+fn ensure_unified_input(map: &mut HashMap<String, serde_json::Value>) {
+    if map.contains_key("input") {
+        return;
+    }
+    let obj: serde_json::Map<String, serde_json::Value> = map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let serialized = serde_json::Value::Object(obj).to_string();
+    map.insert(
+        "input".to_string(),
+        serde_json::Value::String(serialized),
+    );
 }
 
 /// Build a detailed JSON view of an Execution for the status endpoint.
@@ -998,7 +1027,8 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: name")?
                     .to_string();
-                let input = parse_input_object(data.get("input"));
+                let mut input = parse_input_object(data.get("input"));
+                ensure_unified_input(&mut input);
                 let exec_id = WorkflowEngine::start_async(
                     Arc::clone(engine),
                     &name,
@@ -1023,7 +1053,8 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .and_then(|v| v.as_str())
                     .ok_or("missing field: name")?
                     .to_string();
-                let input = parse_input_object(data.get("input"));
+                let mut input = parse_input_object(data.get("input"));
+                ensure_unified_input(&mut input);
                 let exec_id = WorkflowEngine::start_async(
                     Arc::clone(engine),
                     &name,

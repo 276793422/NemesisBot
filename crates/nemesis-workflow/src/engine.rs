@@ -274,7 +274,11 @@ pub struct WorkflowEngine {
     /// Active and completed executions (execution ID -> Execution).
     executions: RwLock<HashMap<String, Execution>>,
     /// Node executor registry for looking up executors by type.
-    node_executors: NodeExecutorRegistry,
+    /// Wrapped in Arc so composite executors (parallel/loop) can hold a
+    /// back-reference for dispatching to their own children — without this,
+    /// parallel/loop children silently fall back to the inline-node stub
+    /// which skips LLM/tool/agent/etc types (BUG #1).
+    pub(crate) node_executors: Arc<NodeExecutorRegistry>,
     /// Optional persistence directory. If empty, persistence is disabled.
     persistence_dir: Option<PathBuf>,
     /// Optional workflow definitions directory. When set, workflow
@@ -328,7 +332,7 @@ impl WorkflowEngine {
         Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
-            node_executors: NodeExecutorRegistry::new(),
+            node_executors: Arc::new(NodeExecutorRegistry::new()),
             persistence_dir: None,
             workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
@@ -351,7 +355,7 @@ impl WorkflowEngine {
         let engine = Arc::new(Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
-            node_executors: NodeExecutorRegistry::new(),
+            node_executors: Arc::new(NodeExecutorRegistry::new()),
             persistence_dir: None,
             workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
@@ -381,7 +385,7 @@ impl WorkflowEngine {
         Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
-            node_executors: NodeExecutorRegistry::new(),
+            node_executors: Arc::new(NodeExecutorRegistry::new()),
             persistence_dir: Some(persistence_dir),
             workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
@@ -401,7 +405,7 @@ impl WorkflowEngine {
         let engine = Arc::new(Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
-            node_executors: NodeExecutorRegistry::new(),
+            node_executors: Arc::new(NodeExecutorRegistry::new()),
             persistence_dir: Some(persistence_dir),
             workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(None),
@@ -422,7 +426,7 @@ impl WorkflowEngine {
     }
 
     /// Create a new engine with custom node executors.
-    pub fn with_executors(node_executors: NodeExecutorRegistry) -> Self {
+    pub fn with_executors(node_executors: Arc<NodeExecutorRegistry>) -> Self {
         Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
@@ -441,7 +445,7 @@ impl WorkflowEngine {
 
     /// Create a new engine with custom node executors and persistence.
     pub fn with_executors_and_persistence(
-        node_executors: NodeExecutorRegistry,
+        node_executors: Arc<NodeExecutorRegistry>,
         persistence_dir: PathBuf,
     ) -> Self {
         Self {
@@ -518,7 +522,7 @@ impl WorkflowEngine {
         let engine = Arc::new(Self {
             workflows: DashMap::new(),
             executions: RwLock::new(HashMap::new()),
-            node_executors: NodeExecutorRegistry::new(),
+            node_executors: Arc::new(NodeExecutorRegistry::new()),
             persistence_dir: executions_dir,
             workflow_defs_dir: parking_lot::RwLock::new(None),
             checkpoint_store: parking_lot::RwLock::new(checkpoint_store),
@@ -551,6 +555,14 @@ impl WorkflowEngine {
             "sub_workflow",
             Arc::new(SubWorkflowNodeExecutor::new(engine.clone())),
         );
+
+        // Upgrade parallel/loop stubs to real composite executors that
+        // dispatch children through this same registry. Without this, the
+        // gateway would run ParallelNodeStub / LoopNodeStub which call
+        // execute_inline_node() and silently skip LLM/tool/agent/etc
+        // children — they'd report Completed with a "skipped" marker while
+        // doing none of the actual work (BUG #1).
+        NodeExecutorRegistry::install_composite_executors(&engine.node_executors);
 
         engine
     }
@@ -695,9 +707,20 @@ impl WorkflowEngine {
                     .get("input")
                     .and_then(|v| v.as_object())
                     .map(|m| {
-                        m.iter()
+                        let mut map: HashMap<String, serde_json::Value> = m
+                            .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<HashMap<_, _>>()
+                            .collect();
+                        // Backfill the unified `input` string so `{{input}}`
+                        // in prompts resolves even when the cron config
+                        // doesn't explicitly declare an `input` field.
+                        if !map.contains_key("input") {
+                            let obj: serde_json::Map<String, serde_json::Value> =
+                                map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            let serialized = serde_json::Value::Object(obj).to_string();
+                            map.insert("input".to_string(), serde_json::Value::String(serialized));
+                        }
+                        map
                     })
                     .unwrap_or_default();
                 out.push((wf.name.clone(), schedule, timezone, input));
@@ -1759,6 +1782,12 @@ impl WorkflowEngine {
     /// and executes nodes in dependency order without the full scheduler.
     /// Prefer `run` for full-featured execution; this method provides the
     /// simpler inline execution path used by existing tests.
+    ///
+    /// **Deprecated**: this code path bypasses the scheduler — no retry,
+    /// per-node timeout, conditional edges, cancellation token, or hooks.
+    /// Production code should call `run` / `run_async` / `start_async`. This
+    /// method is retained only because legacy tests build on it.
+    #[deprecated(since = "0.1.0", note = "use `run` / `run_async` / `start_async` instead — this path skips retry/timeout/conditional-edges/cancellation")]
     pub async fn start_execution(
         &self,
         workflow_name: &str,
@@ -2328,4 +2357,5 @@ fn validate_dag(nodes: &[NodeDef]) -> Result<(), EngineError> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests;

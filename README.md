@@ -270,6 +270,14 @@ nemesisbot cluster disable
 
 ---
 
+## 工作流示例
+
+就一个图，功能是两轮 LLM 调用，翻译成鸟语再翻译成人话：
+
+![工作流](test-tools/resource/workflow/workflow.png)
+
+---
+
 ## 身份系统
 
 可主动配置，也可初始化后第一次对话教AI来自己配置。

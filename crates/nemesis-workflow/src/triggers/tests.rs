@@ -14,11 +14,25 @@ fn make_trigger(trigger_type: &str, config: HashMap<&str, &str>) -> TriggerConfi
 #[test]
 fn test_register_cron_trigger() {
     let mgr = TriggerManager::new();
-    let trigger = make_trigger("cron", HashMap::from([("expression", "0 * * * *")]));
+    let trigger = make_trigger("cron", HashMap::from([("schedule", "0 * * * *")]));
     mgr.register_trigger("test_wf", trigger).unwrap();
 
     let cron = mgr.get_cron_workflows();
     assert!(cron.contains_key("test_wf"));
+    assert_eq!(cron["test_wf"], vec!["0 * * * *"]);
+}
+
+#[test]
+fn test_register_cron_trigger_legacy_expression_field_still_tracked() {
+    // Old YAML files may have written `expression:` instead of `schedule:`.
+    // register_trigger accepts both so the cron cache stays populated even
+    // when the wrong field name was used. The actual scheduler (engine.rs)
+    // only honours `schedule`; this cache entry is informational.
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("cron", HashMap::from([("expression", "0 * * * *")]));
+    mgr.register_trigger("test_wf", trigger).unwrap();
+
+    let cron = mgr.get_cron_workflows();
     assert_eq!(cron["test_wf"], vec!["0 * * * *"]);
 }
 
@@ -125,7 +139,7 @@ fn test_trigger_config_serialization() {
         trigger_type: "cron".to_string(),
         config: {
             let mut m = HashMap::new();
-            m.insert("expression".to_string(), serde_json::json!("0 * * * *"));
+            m.insert("schedule".to_string(), serde_json::json!("0 * * * *"));
             m
         },
     };
@@ -169,10 +183,10 @@ fn test_value_to_string() {
 #[test]
 fn test_register_multiple_triggers_same_workflow() {
     let mgr = TriggerManager::new();
-    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("expression", "0 * * * *")])))
+    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("schedule", "0 * * * *")])))
         .unwrap();
     // Re-registering should update
-    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("expression", "0 0 * * *")])))
+    mgr.register_trigger("wf1", make_trigger("cron", HashMap::from([("schedule", "0 0 * * *")])))
         .unwrap();
     let cron = mgr.get_cron_workflows();
     assert!(cron.contains_key("wf1"));

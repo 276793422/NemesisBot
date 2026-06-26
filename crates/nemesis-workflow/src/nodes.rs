@@ -243,7 +243,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
             .config
             .get("system_prompt")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(|s| resolve_prompt_template(s, context));
 
         // ---- Build chat request ----
         let mut messages: Vec<Message> = Vec::new();
@@ -728,11 +728,14 @@ impl NodeExecutor for DelayNodeExecutor {
             .config
             .get("seconds")
             .and_then(|v| v.as_u64())
-            .unwrap_or(1);
-        tokio::time::sleep(std::time::Duration::from_millis(secs)).await;
+            .unwrap_or(0);
+        // Form label is "等待秒数" — treat the value as seconds, not millis.
+        // (Earlier code used `from_millis(secs)` which made a `seconds=2` config
+        // delay for 2ms, contradicting every form placeholder.)
+        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
         Ok(NodeResult {
             node_id: node.id.clone(),
-            output: serde_json::json!({ "delayed_ms": secs }),
+            output: serde_json::json!({ "delayed_seconds": secs }),
             error: None,
             state: ExecutionState::Completed,
             started_at: now,
@@ -747,6 +750,16 @@ impl NodeExecutor for DelayNodeExecutor {
 // ---------------------------------------------------------------------------
 
 /// Built-in transform node executor.
+///
+/// Applies a named transform to `config.input`. Available expressions:
+/// - `identity` — return input unchanged
+/// - `trim` — strip leading/trailing whitespace
+/// - `first_line` / `last_line` — first/last non-empty line of input
+/// - `split_lines` — split input into an array of lines
+/// - `json_extract` — extract a field from a JSON document via dotted path
+///   (`arg` = path, e.g. `data.user.name`); supports array index `data[0].id`
+/// - `regex_match` — apply a regex (`arg` = pattern); if the pattern has a
+///   capture group, returns the first capture, otherwise the full match
 pub struct TransformNodeExecutor;
 
 #[async_trait]
@@ -757,32 +770,250 @@ impl NodeExecutor for TransformNodeExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let now = Local::now();
+        let started = Local::now();
+
         let expression = node
             .config
             .get("expression")
             .and_then(|v| v.as_str())
-            .unwrap_or("identity");
+            .unwrap_or("identity")
+            .to_string();
 
-        let output = if expression == "identity" || expression == "passthrough" {
-            serde_json::json!(context)
-        } else {
-            serde_json::json!({
-                "transformed": expression,
-                "input_keys": context.keys().collect::<Vec<_>>(),
-            })
+        let input_raw = node
+            .config
+            .get("input")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // Resolve {{var}} in the input before transforming.
+        let input = resolve_prompt_template(&input_raw, context);
+
+        let arg = node
+            .config
+            .get("arg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let output = match expression.as_str() {
+            "identity" | "passthrough" => serde_json::json!({ "text": input }),
+
+            "trim" => serde_json::json!({ "text": input.trim() }),
+
+            "first_line" => {
+                let line = input
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                serde_json::json!({ "text": line })
+            }
+
+            "last_line" => {
+                let line = input
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .last()
+                    .unwrap_or("")
+                    .to_string();
+                serde_json::json!({ "text": line })
+            }
+
+            "split_lines" => {
+                let lines: Vec<&str> = input
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                serde_json::json!({ "lines": lines })
+            }
+
+            "json_extract" => {
+                let trimmed = input.trim();
+                let parsed: serde_json::Value = if trimmed.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    match serde_json::from_str(trimmed) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Ok(failed_node_result(
+                                &node.id,
+                                started,
+                                &format!("json_extract: input is not valid JSON: {}", e),
+                            ));
+                        }
+                    }
+                };
+                let extracted = json_path_lookup(&parsed, arg);
+                match extracted {
+                    serde_json::Value::String(s) => serde_json::json!({ "text": s }),
+                    other => serde_json::json!({ "value": other }),
+                }
+            }
+
+            "regex_match" => {
+                if arg.is_empty() {
+                    return Ok(failed_node_result(
+                        &node.id,
+                        started,
+                        "regex_match: 'arg' (pattern) is required",
+                    ));
+                }
+                let re = match regex::Regex::new(arg) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(failed_node_result(
+                            &node.id,
+                            started,
+                            &format!("regex_match: invalid pattern '{}': {}", arg, e),
+                        ));
+                    }
+                };
+                let matched = match re.captures(&input) {
+                    Some(caps) => {
+                        // If pattern has a capture group, return the first
+                        // capture; otherwise return the full match.
+                        if caps.len() > 1 {
+                            caps.get(1).map(|m| m.as_str().to_string())
+                        } else {
+                            caps.get(0).map(|m| m.as_str().to_string())
+                        }
+                    }
+                    None => None,
+                };
+                serde_json::json!({ "text": matched.unwrap_or_default() })
+            }
+
+            other => {
+                return Ok(failed_node_result(
+                    &node.id,
+                    started,
+                    &format!("transform: unknown expression '{}'", other),
+                ));
+            }
         };
+
+        // If output_type is text/markdown/xml, unwrap {"text": "..."} into
+        // a bare JSON string so downstream observers (workflow_chat reply)
+        // can pass it through as the user-facing reply without JSON-dumping.
+        // json/unset/incompatible-shape: leave the object shape unchanged
+        // (best-effort; observer JSON-dumps as fallback).
+        let output = unwrap_text_output_if_requested(output, node);
 
         Ok(NodeResult {
             node_id: node.id.clone(),
             output,
             error: None,
             state: ExecutionState::Completed,
-            started_at: now,
+            started_at: started,
             ended_at: Local::now(),
             metadata: HashMap::new(),
         })
     }
+}
+
+/// If the node declared `output_type: text|markdown|xml`, convert the
+/// `{"text": "..."}` envelope into a bare JSON string. Returns the original
+/// output unchanged for any other case (no output_type, output_type=json,
+/// or the expression produced a shape we don't know how to unwrap).
+///
+/// Best-effort: when output_type is text/markdown/xml but the expression
+/// produced a different shape (e.g. `split_lines` → `{lines: [...]}`),
+/// the original output is returned as-is. The workflow_chat reply observer
+/// will then JSON-dump it via the existing fallback path — same behavior
+/// as if output_type had not been set.
+fn unwrap_text_output_if_requested(
+    output: serde_json::Value,
+    node: &NodeDef,
+) -> serde_json::Value {
+    let output_type = match node.config.get("output_type").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return output,
+    };
+    match output_type {
+        "text" | "markdown" | "xml" => {}
+        // json or anything else: leave as-is.
+        _ => return output,
+    }
+    match output.get("text").and_then(|v| v.as_str()) {
+        Some(s) => serde_json::Value::String(s.to_string()),
+        // Can't unwrap (e.g. split_lines → {lines: [...]}, or json_extract
+        // hit a non-string). Leave as-is; observer's JSON-dump fallback
+        // handles it.
+        None => output,
+    }
+}
+
+/// Look up a dotted path inside a JSON value.
+///
+/// Supports:
+/// - Field access: `data.name`, `data.user.id`
+/// - Array indexing: `items[0]`, `data.users[2].name`
+/// - Negative indices: `items[-1]` (last element)
+///
+/// Missing keys / out-of-range indices resolve to `Value::Null`.
+fn json_path_lookup(root: &serde_json::Value, path: &str) -> serde_json::Value {
+    if path.is_empty() {
+        return root.clone();
+    }
+    let mut current = root.clone();
+    // Tokenise: split on '.' but keep bracketed indices attached to the
+    // preceding key (so `data.users[0].name` → ["data", "users[0]", "name"]).
+    for raw in path.split('.') {
+        // Extract a leading key (may be empty if path starts with [0]).
+        let bytes = raw.as_bytes();
+        let key_end = bytes
+            .iter()
+            .position(|&b| b == b'[')
+            .unwrap_or(raw.len());
+        if key_end > 0 {
+            let key = &raw[..key_end];
+            current = match &current {
+                serde_json::Value::Object(obj) => obj
+                    .get(key)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+                _ => serde_json::Value::Null,
+            };
+        }
+        // Apply each `[index]` after the key.
+        let rest = &raw[key_end..];
+        let mut idx = 0;
+        while idx < rest.len() {
+            let bytes = rest.as_bytes();
+            if bytes[idx] != b'[' {
+                break;
+            }
+            let close = rest[idx..].find(']').map(|p| p + idx);
+            let close = match close {
+                Some(p) => p,
+                None => break,
+            };
+            let inner = &rest[idx + 1..close];
+            let i: isize = match inner.parse() {
+                Ok(n) => n,
+                Err(_) => return serde_json::Value::Null,
+            };
+            current = match &current {
+                serde_json::Value::Array(arr) => {
+                    let real_idx = if i < 0 {
+                        (arr.len() as isize + i) as usize
+                    } else {
+                        i as usize
+                    };
+                    arr.get(real_idx).cloned().unwrap_or(serde_json::Value::Null)
+                }
+                _ => serde_json::Value::Null,
+            };
+            idx = close + 1;
+            // Skip optional UTF-8 whitespace.
+            while idx < rest.len() && rest.as_bytes()[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+        }
+    }
+    current
 }
 
 // ---------------------------------------------------------------------------
@@ -852,6 +1083,13 @@ impl NodeExecutor for LoopNodeExecutor {
         let mut loop_error: Option<String> = None;
 
         for i in 0..safety_cap {
+            // Insert iteration index BEFORE condition check and child execution
+            // so both `{{i}}` (form-placeholder syntax) and `{{loop_index}}`
+            // (legacy) resolve correctly. Inserting at the start also means
+            // iter-0 children see `i=0` instead of having no key available.
+            local_ctx.insert("i".to_string(), serde_json::json!(i));
+            local_ctx.insert("loop_index".to_string(), serde_json::json!(i));
+
             // Check loop condition (if provided) after the first iteration
             if !cond_expr.is_empty() && i > 0 {
                 let cond_result = evaluate_condition(cond_expr, &local_ctx);
@@ -908,11 +1146,6 @@ impl NodeExecutor for LoopNodeExecutor {
             }
 
             actual_iterations = i + 1;
-            // Set loop_index variable in context
-            local_ctx.insert(
-                "loop_index".to_string(),
-                serde_json::json!(i),
-            );
         }
 
         Ok(NodeResult {
@@ -986,15 +1219,24 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
 
         let mut sub_input: HashMap<String, serde_json::Value> = HashMap::new();
         for (k, v) in &sub_input_config {
-            // If the value is a string, try to resolve it from the context
             if let Some(s) = v.as_str() {
+                // Two supported syntaxes (form placeholder shows {{var}}):
+                //   1. Bare variable name (legacy/convenience): if the string
+                //      is itself a context key, substitute the context value.
+                //   2. {{var}} template: resolve placeholders inside the
+                //      string — matches what the form placeholder promises.
                 if let Some(resolved) = context.get(s) {
                     sub_input.insert(k.clone(), resolved.clone());
                 } else {
-                    sub_input.insert(k.clone(), serde_json::json!(s));
+                    sub_input.insert(
+                        k.clone(),
+                        serde_json::Value::String(resolve_prompt_template(s, context)),
+                    );
                 }
             } else {
-                sub_input.insert(k.clone(), v.clone());
+                // Arrays / objects: recurse so {{var}} inside nested values
+                // also resolves.
+                sub_input.insert(k.clone(), resolve_template_value(v, context));
             }
         }
 
@@ -1057,16 +1299,18 @@ impl NodeExecutor for HTTPNodeExecutor {
     async fn execute(
         &self,
         node: &NodeDef,
-        _context: &HashMap<String, serde_json::Value>,
+        context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
 
-        let url = node
+        let url_raw = node
             .config
             .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // Resolve {{var}} in URL against context.
+        let url = resolve_prompt_template(url_raw, context);
 
         let method = node
             .config
@@ -1087,35 +1331,55 @@ impl NodeExecutor for HTTPNodeExecutor {
             });
         }
 
-        let body = node
+        let body_raw = node
             .config
             .get("body")
             .and_then(|v| v.as_str())
             .unwrap_or("");
+        // Resolve {{var}} in body against context.
+        let body = resolve_prompt_template(body_raw, context);
 
         // Build the request
         let client = reqwest::Client::new();
         let req_builder = match method.as_str() {
-            "POST" => client.post(url),
-            "PUT" => client.put(url),
-            "PATCH" => client.patch(url),
-            "DELETE" => client.delete(url),
-            "HEAD" => client.head(url),
-            _ => client.get(url),
+            "POST" => client.post(&url),
+            "PUT" => client.put(&url),
+            "PATCH" => client.patch(&url),
+            "DELETE" => client.delete(&url),
+            "HEAD" => client.head(&url),
+            _ => client.get(&url),
         };
 
-        // Set headers
-        let headers = node
+        // Optional per-request timeout (default 30s). Without this, a slow
+        // or unresponsive endpoint would hang the entire workflow indefinitely.
+        // `timeout_secs: 0` is treated as "use default" since 0 isn't a useful
+        // timeout for an actual HTTP round-trip.
+        let timeout_secs = node
+            .config
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .unwrap_or(30);
+        let req_builder = req_builder.timeout(std::time::Duration::from_secs(timeout_secs));
+
+        // Resolve {{var}} in headers (values only; keys are static).
+        let headers_raw = node
             .config
             .get("headers")
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
+        let resolved_headers = resolve_template_value(
+            &serde_json::Value::Object(headers_raw),
+            context,
+        );
 
         let mut req_builder = req_builder;
-        for (k, v) in &headers {
-            if let Some(s) = v.as_str() {
-                req_builder = req_builder.header(k.as_str(), s);
+        if let Some(obj) = resolved_headers.as_object() {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    req_builder = req_builder.header(k.as_str(), s);
+                }
             }
         }
 
@@ -1170,6 +1434,38 @@ impl NodeExecutor for HTTPNodeExecutor {
 // Script Node
 // ---------------------------------------------------------------------------
 
+/// Pick the interpreter binary, file extension, and argv flag for a given
+/// `language` config value. Pure function so tests can verify language→binary
+/// mapping without spawning processes (BUG #4 + BUG #13 regression tests).
+///
+/// "bat" / "cmd" route to Windows `cmd.exe /C` — anything else would run
+/// batch syntax under bash and fail immediately on Windows hosts.
+///
+/// "powershell" / "pwsh" route to `powershell.exe` on Windows (always
+/// pre-installed) and `pwsh` elsewhere (user-installed PowerShell Core).
+/// Mapping both to `pwsh` silently broke Windows users who only had
+/// built-in Windows PowerShell 5.1.
+fn select_script_interpreter(language: &str) -> (&'static str, &'static str, &'static str) {
+    match language {
+        "python" | "python3" => ("python3", ".py", "-c"),
+        "python2" => ("python2", ".py", "-c"),
+        "node" | "javascript" | "js" => ("node", ".js", "-e"),
+        "powershell" | "pwsh" => {
+            #[cfg(windows)]
+            {
+                ("powershell", ".ps1", "-Command")
+            }
+            #[cfg(not(windows))]
+            {
+                ("pwsh", ".ps1", "-Command")
+            }
+        }
+        "sh" => ("sh", ".sh", "-c"),
+        "bat" | "cmd" => ("cmd", ".bat", "/C"),
+        _ => ("bash", ".sh", "-c"), // default to bash
+    }
+}
+
 /// Built-in script node executor.
 ///
 /// Executes a script using the system shell. The script content is written
@@ -1214,15 +1510,11 @@ impl NodeExecutor for ScriptNodeExecutor {
         // Resolve template variables from context
         let resolved_script = resolve_template(script, context);
 
-        // Determine the interpreter and file extension based on language
-        let (interpreter, _ext, flag) = match language {
-            "python" | "python3" => ("python3", ".py", "-c"),
-            "python2" => ("python2", ".py", "-c"),
-            "node" | "javascript" | "js" => ("node", ".js", "-e"),
-            "powershell" | "pwsh" => ("pwsh", ".ps1", "-Command"),
-            "sh" => ("sh", ".sh", "-c"),
-            _ => ("bash", ".sh", "-c"), // default to bash
-        };
+        // Determine the interpreter and file extension based on language.
+        // "bat"/"cmd" map to cmd.exe so Windows users actually get batch
+        // semantics — falling through to bash would run bat syntax under
+        // bash and immediately fail.
+        let (interpreter, _ext, flag) = select_script_interpreter(language);
 
         // Execute the script using the interpreter
         let output = tokio::process::Command::new(interpreter)
@@ -1301,16 +1593,20 @@ impl NodeExecutor for HumanReviewNodeExecutor {
     async fn execute(
         &self,
         node: &NodeDef,
-        _context: &HashMap<String, serde_json::Value>,
+        context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
 
-        let message = node
+        let raw_message = node
             .config
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("Human review required");
+        // Form placeholder is `请审核是否发送给客户：{{draft}}` — resolve
+        // {{var}} placeholders against the execution context so reviewers
+        // see the actual content, not literal `{{draft}}`.
+        let message = resolve_prompt_template(raw_message, context);
 
         Ok(NodeResult {
             node_id: node.id.clone(),
@@ -1455,7 +1751,7 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
             .config
             .get("system_prompt")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| resolve_prompt_template(s, context))
             .unwrap_or_else(|| {
                 let classes_block: String = classes
                     .iter()
@@ -1719,7 +2015,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
             .config
             .get("system_prompt")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(|s| resolve_prompt_template(s, context))
             .unwrap_or_else(|| {
                 let params_block: String = params
                     .iter()
@@ -1969,11 +2265,15 @@ pub trait AgentRunner: Send + Sync {
     ///   this workflow run).
     /// - `max_turns`: safety cap on LLM ↔ tool iteration. The runner SHOULD
     ///   refuse to run more than this many rounds to prevent token blowups.
+    /// - `model`: optional model override (e.g. `zhipu/glm-4.7`). Runners
+    ///   that don't support per-call model switching SHOULD log a warning
+    ///   and fall back to their default model rather than failing.
     async fn run_direct(
         &self,
         prompt: &str,
         agent_id: &str,
         max_turns: u32,
+        model: Option<&str>,
     ) -> Result<AgentRunResult, String>;
 }
 
@@ -2039,7 +2339,16 @@ impl NodeExecutor for AgentNodeExecutor {
             .and_then(|v| v.as_u64())
             .unwrap_or(5) as u32;
 
-        match self.runner.run_direct(&prompt, &agent_id, max_turns).await {
+        // Optional model override (form exposes a "模型" field). The runner
+        // is responsible for honoring it; GatewayAgentRunner currently logs
+        // and falls back to the default model — same pattern as max_turns.
+        let model = node
+            .config
+            .get("model")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+
+        match self.runner.run_direct(&prompt, &agent_id, max_turns, model).await {
             Ok(result) => Ok(NodeResult {
                 node_id: node.id.clone(),
                 output: serde_json::json!({
@@ -2150,6 +2459,28 @@ impl NodeExecutorRegistry {
             );
             execs.insert("loop".to_string(), Arc::new(LoopNodeExecutor::new(strong)));
         }
+    }
+
+    /// Replace the parallel/loop stubs with real composite executors using
+    /// an externally-provided `Arc<Self>`. Use this when the registry is
+    /// owned as `Arc<NodeExecutorRegistry>` inside another struct (e.g.
+    /// `WorkflowEngine`) and the parent can hand a clone of the Arc to its
+    /// own registry. Idempotent — overwrites any existing parallel/loop
+    /// entries.
+    ///
+    /// This is what makes `WorkflowEngine::new_integrated_with_dirs` (the
+    /// gateway's entry point) wire real parallel/loop executors instead of
+    /// leaving them as stubs that silently skip LLM/tool/agent children.
+    pub fn install_composite_executors(self_arc: &Arc<Self>) {
+        let mut execs = self_arc.executors.write();
+        execs.insert(
+            "parallel".to_string(),
+            Arc::new(ParallelNodeExecutor::new(Arc::clone(self_arc))),
+        );
+        execs.insert(
+            "loop".to_string(),
+            Arc::new(LoopNodeExecutor::new(Arc::clone(self_arc))),
+        );
     }
 
     /// Register a custom executor for a node type. Overwrites any existing
@@ -2335,6 +2666,12 @@ impl NodeExecutor for LoopNodeStub {
         let mut loop_error: Option<String> = None;
 
         for i in 0..safety_cap {
+            // Insert iteration index BEFORE condition check and child execution
+            // so both `{{i}}` (form-placeholder syntax) and `{{loop_index}}`
+            // (legacy) resolve correctly. Mirrors the real LoopNodeExecutor.
+            local_ctx.insert("i".to_string(), serde_json::json!(i));
+            local_ctx.insert("loop_index".to_string(), serde_json::json!(i));
+
             // Check loop condition (if provided) after the first iteration
             if !cond_expr.is_empty() && i > 0 {
                 let cond_result = evaluate_condition(cond_expr, &local_ctx);
@@ -2379,11 +2716,6 @@ impl NodeExecutor for LoopNodeStub {
             }
 
             actual_iterations = i + 1;
-            // Set loop_index variable in context
-            local_ctx.insert(
-                "loop_index".to_string(),
-                serde_json::json!(i),
-            );
         }
 
         Ok(NodeResult {
@@ -2502,18 +2834,23 @@ async fn execute_inline_node(
         "script" => ScriptNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
         "human_review" => HumanReviewNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
         // For complex types (llm, tool, parallel, loop, sub_workflow),
-        // return a placeholder since they need external dependencies
+        // surface a Failed result so tests built on the stub executors
+        // blow up loudly instead of silently producing a "skipped"
+        // output that looks like success. Production deployments wire
+        // the real executors via WorkflowEngine::new_integrated_with_dirs
+        // and never hit this branch.
         _ => {
             let now = Local::now();
             Ok(NodeResult {
                 node_id: node_def.id.clone(),
-                output: serde_json::json!({
-                    "type": node_def.node_type,
-                    "status": "skipped",
-                    "reason": format!("inline execution not supported for '{}' type", node_def.node_type),
-                }),
-                error: None,
-                state: ExecutionState::Completed,
+                output: serde_json::Value::Null,
+                error: Some(format!(
+                    "node type '{}' requires an executor that is not registered \
+                     (WorkflowEngine::new() default does not include llm/tool/parallel/loop/sub_workflow); \
+                     use new_integrated_with_dirs or install the executor manually",
+                    node_def.node_type
+                )),
+                state: ExecutionState::Failed,
                 started_at: now,
                 ended_at: Local::now(),
                 metadata: HashMap::new(),
@@ -2526,49 +2863,128 @@ async fn execute_inline_node(
 // Condition evaluation helper
 // ---------------------------------------------------------------------------
 
-/// Evaluate a simple condition string against the context.
+/// Evaluate a condition string against the context.
 ///
 /// Supports:
-/// - `"variable == value"` -- equality check
-/// - `"variable != value"` -- inequality check
-/// - `"variable"` -- truthy check
-/// - `"true"` / `"false"` -- literal booleans
+/// - `{{var}}` template substitution OR bare variable names
+///   (both `{{count}} > 5` and `count > 5` work)
+/// - `==`, `!=`, `>`, `<`, `>=`, `<=` operators
+///   (numeric comparison when both sides parse as numbers,
+///   otherwise lexicographic string comparison)
+/// - Bare variable name — truthy check against the context value
+///   (numbers: non-zero; strings: non-empty; etc.)
+/// - Literal `"true"` / `"false"` — boolean
 pub fn evaluate_condition(
     condition: &str,
     context: &HashMap<String, serde_json::Value>,
 ) -> bool {
     let condition = condition.trim();
-
-    if condition.eq_ignore_ascii_case("true") {
-        return true;
-    }
-    if condition.eq_ignore_ascii_case("false") {
+    if condition.is_empty() {
         return false;
     }
 
-    if let Some((left, right)) = condition.split_once("==") {
-        let left = left.trim();
-        let right = right.trim();
-        if let Some(val) = context.get(left) {
-            return val == &serde_json::Value::String(right.to_string());
-        }
+    // Step 1: Resolve {{var}} placeholders. After this the condition is a
+    // literal expression like `5 > 3` or `hello == hello`.
+    let resolved = resolve_prompt_template(condition, context);
+    let resolved = resolved.trim();
+
+    // Step 2: Literal booleans (also covers cases where {{var}} resolved to
+    // a boolean JSON value, which `resolve_prompt_template` stringifies as
+    // "true"/"false").
+    if resolved.eq_ignore_ascii_case("true") {
+        return true;
+    }
+    if resolved.eq_ignore_ascii_case("false") {
         return false;
     }
 
-    if let Some((left, right)) = condition.split_once("!=") {
-        let left = left.trim();
-        let right = right.trim();
-        if let Some(val) = context.get(left) {
-            return val != &serde_json::Value::String(right.to_string());
+    // Step 3: Comparison operators. Try longest-match first so `>=` doesn't
+    // accidentally match the `>` inside `a >= b`.
+    for op in [">=", "<=", "==", "!=", ">", "<"] {
+        if let Some((left, right)) = resolved.split_once(op) {
+            return compare_values(left.trim(), right.trim(), op, context);
         }
-        return true;
     }
 
-    if let Some(val) = context.get(condition) {
+    // Step 4: No operator — truthy check. If the expression is a bare
+    // variable name, look it up in context and use the JSON value's
+    // truthiness. Otherwise fall back to string truthiness.
+    if let Some(val) = context.get(resolved) {
         return is_truthy(val);
     }
+    is_truthy_str(resolved)
+}
 
-    false
+fn compare_values(
+    left: &str,
+    right: &str,
+    op: &str,
+    context: &HashMap<String, serde_json::Value>,
+) -> bool {
+    let lv = resolve_operand(left, context);
+    let rv = resolve_operand(right, context);
+
+    // Numeric comparison when both sides parse as numbers.
+    if let (Some(a), Some(b)) = (lv.as_f64(), rv.as_f64()) {
+        return match op {
+            ">=" => a >= b,
+            "<=" => a <= b,
+            "==" => a == b,
+            "!=" => a != b,
+            ">"  => a > b,
+            "<"  => a < b,
+            _ => false,
+        };
+    }
+
+    // Fall back to string comparison.
+    let ls = match &lv { serde_json::Value::String(s) => s.clone(), o => o.to_string() };
+    let rs = match &rv { serde_json::Value::String(s) => s.clone(), o => o.to_string() };
+    match op {
+        ">=" => ls >= rs,
+        "<=" => ls <= rs,
+        "==" => ls == rs,
+        "!=" => ls != rs,
+        ">"  => ls > rs,
+        "<"  => ls < rs,
+        _ => false,
+    }
+}
+
+/// Resolve one operand (left or right side of a comparison) to a JSON value.
+///
+/// - `"quoted"` / `'quoted'` → unquoted literal string
+/// - bare name in context → context value (variable lookup)
+/// - numeric/bool/null literal → corresponding JSON value
+/// - anything else → unquoted literal string
+fn resolve_operand(s: &str, context: &HashMap<String, serde_json::Value>) -> serde_json::Value {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return serde_json::Value::Null;
+    }
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+        || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        return serde_json::Value::String(trimmed[1..trimmed.len() - 1].to_string());
+    }
+    if let Some(v) = context.get(trimmed) {
+        return v.clone();
+    }
+    if let Ok(n) = trimmed.parse::<f64>() {
+        if let Some(num) = serde_json::Number::from_f64(n) {
+            return serde_json::Value::Number(num);
+        }
+    }
+    if trimmed == "true" { return serde_json::Value::Bool(true); }
+    if trimmed == "false" { return serde_json::Value::Bool(false); }
+    if trimmed == "null" { return serde_json::Value::Null; }
+    serde_json::Value::String(trimmed.to_string())
+}
+
+fn is_truthy_str(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && !t.eq_ignore_ascii_case("false") && t != "0" && t != "0.0"
 }
 
 fn is_truthy(val: &serde_json::Value) -> bool {

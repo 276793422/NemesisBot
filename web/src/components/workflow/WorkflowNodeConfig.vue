@@ -1,10 +1,43 @@
 <script setup lang="ts">
+/**
+ * Dispatcher for node config forms.
+ *
+ * Routes to a per-type form component in `./node-configs/`. Each form:
+ *   - declares `defineProps<{ config, variables }>()`
+ *   - emits `update` with a patch of `Record<string, unknown>` (config keys only)
+ *
+ * For unknown types, falls back to a raw JSON textarea (power-user escape hatch).
+ *
+ * `embedded: true` suppresses the outer card/header/footer — used when this
+ * component is rendered inline by NodeChildrenEditor (recursion).
+ */
 import { ref, watch, computed } from 'vue'
 import type { NodeDef } from '../../types/workflow'
 import { NODE_CATALOG } from '../../types/workflow'
+import type { VariableOption } from './node-configs/useVariablePicker'
+import LiveJsonPreview from './node-configs/LiveJsonPreview.vue'
+
+import DelayNodeForm from './node-configs/DelayNodeForm.vue'
+import ScriptNodeForm from './node-configs/ScriptNodeForm.vue'
+import ConditionNodeForm from './node-configs/ConditionNodeForm.vue'
+import LLMNodeForm from './node-configs/LLMNodeForm.vue'
+import TransformNodeForm from './node-configs/TransformNodeForm.vue'
+import HumanReviewNodeForm from './node-configs/HumanReviewNodeForm.vue'
+import HttpNodeForm from './node-configs/HttpNodeForm.vue'
+import ToolNodeForm from './node-configs/ToolNodeForm.vue'
+import AgentNodeForm from './node-configs/AgentNodeForm.vue'
+import SubWorkflowNodeForm from './node-configs/SubWorkflowNodeForm.vue'
+import QuestionClassifierNodeForm from './node-configs/QuestionClassifierNodeForm.vue'
+import ParameterExtractorNodeForm from './node-configs/ParameterExtractorNodeForm.vue'
+import LoopNodeForm from './node-configs/LoopNodeForm.vue'
+import ParallelNodeForm from './node-configs/ParallelNodeForm.vue'
 
 const props = defineProps<{
   node: NodeDef
+  /** Suppress outer chrome when nested inside NodeChildrenEditor. */
+  embedded?: boolean
+  /** Available @-variables for the picker (workflow vars + sibling node outputs). */
+  variables?: VariableOption[]
 }>()
 
 const emit = defineEmits<{
@@ -16,10 +49,33 @@ const catalogEntry = computed(() =>
   NODE_CATALOG.find(e => e.type === props.node.node_type),
 )
 
+// Map node_type → form component. Unknown types resolve to null (raw JSON path).
+const FORM_MAP: Record<string, unknown> = {
+  delay: DelayNodeForm,
+  script: ScriptNodeForm,
+  condition: ConditionNodeForm,
+  llm: LLMNodeForm,
+  transform: TransformNodeForm,
+  human_review: HumanReviewNodeForm,
+  http: HttpNodeForm,
+  tool: ToolNodeForm,
+  agent: AgentNodeForm,
+  sub_workflow: SubWorkflowNodeForm,
+  question_classifier: QuestionClassifierNodeForm,
+  parameter_extractor: ParameterExtractorNodeForm,
+  loop: LoopNodeForm,
+  parallel: ParallelNodeForm,
+}
+
+const formComponent = computed<unknown>(() => FORM_MAP[props.node.node_type] ?? null)
+const hasForm = computed(() => formComponent.value !== null)
+
+// Basic-fields mirror. We track these locally and emit on change.
 const local = ref<NodeDef>({ ...props.node })
+
+// Raw JSON fallback state.
 const configJson = ref(JSON.stringify(props.node.config ?? {}, null, 2))
 const configError = ref<string | null>(null)
-const condition = ref<string>('')
 
 watch(() => props.node, (n) => {
   local.value = { ...n }
@@ -27,16 +83,17 @@ watch(() => props.node, (n) => {
   configError.value = null
 }, { deep: true })
 
-function applyConfig() {
-  configError.value = null
-  try {
-    const parsed = JSON.parse(configJson.value || '{}')
-    emit('update', { config: parsed })
-  } catch (e: any) {
-    configError.value = `JSON 解析错误：${e?.message || e}`
+// Per-form update: patch is config-only Record<string, unknown>.
+function applyFormPatch(patch: Record<string, unknown>) {
+  const nextConfig = { ...(props.node.config ?? {}), ...patch }
+  // Drop keys explicitly set to undefined so they don't clutter the JSON.
+  for (const [k, v] of Object.entries(nextConfig)) {
+    if (v === undefined) delete nextConfig[k]
   }
+  emit('update', { config: nextConfig })
 }
 
+// Basic-fields handlers (id, label, depends_on, retry, timeout, is_terminal).
 function applyBasic() {
   const patch: Partial<NodeDef> = {
     id: local.value.id,
@@ -49,13 +106,8 @@ function applyBasic() {
   emit('update', patch)
 }
 
-function applyAll() {
-  applyBasic()
-  applyConfig()
-}
-
 function setLabel(label: string) {
-  const cfg = { ...local.value.config, label }
+  const cfg = { ...(local.value.config ?? {}), label }
   emit('update', { config: cfg })
 }
 
@@ -65,19 +117,31 @@ function setDepends(value: string) {
 }
 
 const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
+
+function applyRawJson() {
+  configError.value = null
+  try {
+    const parsed = JSON.parse(configJson.value || '{}')
+    emit('update', { config: parsed })
+  } catch (e: any) {
+    configError.value = `JSON 解析错误：${e?.message || e}`
+  }
+}
 </script>
 
 <template>
-  <div class="node-config">
-    <div class="config-header">
-      <div class="config-title">
-        <span :class="`cat-tag cat-${catalogEntry?.category ?? 'basic'}`">
-          {{ catalogEntry?.label ?? node.node_type }}
-        </span>
-        <span class="config-id">{{ node.id }}</span>
+  <div class="node-config" :class="{ embedded }">
+    <template v-if="!embedded">
+      <div class="config-header">
+        <div class="config-title">
+          <span :class="`cat-tag cat-${catalogEntry?.category ?? 'basic'}`">
+            {{ catalogEntry?.label ?? node.node_type }}
+          </span>
+          <span class="config-id">{{ node.id }}</span>
+        </div>
+        <button class="btn-close" @click="emit('close')">✕</button>
       </div>
-      <button class="btn-close" @click="emit('close')">✕</button>
-    </div>
+    </template>
 
     <div class="config-body">
       <div class="config-section">
@@ -89,7 +153,7 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
         <div class="form-row">
           <label>显示名称</label>
           <input
-            :value="(local.config?.label as string) || ''"
+            :value="((local.config?.label as string | undefined) ?? '') as string"
             class="form-input"
             placeholder="（可选）"
             @input="setLabel(($event.target as HTMLInputElement).value)"
@@ -144,24 +208,37 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
 
       <div class="config-section">
         <div class="section-title">
-          配置 (config JSON)
-          <button class="btn-apply" @click="applyConfig">应用</button>
+          配置
+          <span v-if="!hasForm" class="fallback-hint">未识别类型，使用 JSON 模式</span>
         </div>
-        <textarea
-          v-model="configJson"
-          class="config-textarea"
-          spellcheck="false"
-          rows="10"
-        ></textarea>
-        <div v-if="configError" class="config-error">⚠ {{ configError }}</div>
+
+        <component
+          v-if="hasForm"
+          :is="formComponent"
+          :config="(node.config ?? {})"
+          :variables="(props.variables ?? [])"
+          @update="applyFormPatch"
+        />
+
+        <template v-else>
+          <textarea
+            v-model="configJson"
+            class="config-textarea"
+            spellcheck="false"
+            rows="10"
+          ></textarea>
+          <button class="btn-apply" @click="applyRawJson">应用 JSON</button>
+          <div v-if="configError" class="config-error">⚠ {{ configError }}</div>
+        </template>
+
         <div v-if="catalogEntry" class="config-hint">
           {{ catalogEntry.description }}
         </div>
       </div>
-    </div>
 
-    <div class="config-footer">
-      <button class="btn btn-primary" @click="applyAll">应用全部</button>
+      <div class="config-section">
+        <LiveJsonPreview :config="(node.config ?? {})" empty-hint="(尚未配置)" />
+      </div>
     </div>
   </div>
 </template>
@@ -174,6 +251,12 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.node-config.embedded {
+  width: 100%;
+  border-left: none;
+  background: transparent;
 }
 
 .config-header {
@@ -241,6 +324,13 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.fallback-hint {
+  font-weight: 400;
+  font-style: italic;
+  text-transform: none;
+  color: var(--text-muted);
 }
 
 .form-row {
@@ -319,7 +409,8 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
 }
 
 .btn-apply {
-  padding: 1px var(--space-2);
+  margin-top: var(--space-1);
+  padding: 2px var(--space-2);
   font-size: var(--text-xs);
   background: transparent;
   border: 1px solid var(--border);
@@ -331,12 +422,5 @@ const dependsText = computed(() => (local.value.depends_on ?? []).join(', '))
 .btn-apply:hover {
   background: var(--bg-primary);
   color: var(--accent);
-}
-
-.config-footer {
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: flex-end;
 }
 </style>
