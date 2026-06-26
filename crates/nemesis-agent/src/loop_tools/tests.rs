@@ -2145,14 +2145,24 @@ async fn test_cluster_rpc_tool_stored_context_fallback() {
         Box::pin(async move { Ok(serde_json::json!({"content": format!("ch={}, cid={}", ch, cid)})) })
     }));
 
-    // Empty context channel/chat_id -> should fall back to stored
+    // Empty context channel/chat_id -> should fall back to stored.
+    // chat_id is propagated through cluster_rpc with a "cluster:{local_node_id}:"
+    // prefix (prevents multi-hop session_key collisions), so the assertion is
+    // on the stored value appearing inside the propagated string, not on the
+    // raw `cid=stored-cid` form.
     let ctx = RequestContext::new("", "", "user1", "sess1");
     let result = tool
         .execute(r#"{"target_node": "node-2", "message": "test"}"#, &ctx)
         .await
         .unwrap();
-    assert!(result.contains("ch=stored-ch"));
-    assert!(result.contains("cid=stored-cid"));
+    assert!(
+        result.contains("ch=stored-ch"),
+        "expected channel fallback, got: {result}"
+    );
+    assert!(
+        result.contains("stored-cid"),
+        "expected propagated chat_id to contain stored cid, got: {result}"
+    );
 }
 
 #[tokio::test]
@@ -3384,14 +3394,20 @@ async fn test_cluster_rpc_execute_sync_response() {
 
 #[test]
 fn test_cluster_rpc_description() {
-    // Verify the static description string
+    // Verify the static description string starts with the expected prefix.
+    // The full text includes guidance about timeouts and remote-node visibility
+    // limits; only assert the opening so this test doesn't break on copy edits.
     let config = ClusterRpcConfig {
         local_node_id: "node-1".to_string(),
         timeout_secs: 60,
         local_rpc_port: 21949,
     };
     let tool = ClusterRpcTool::new(config);
-    assert_eq!(tool.description(), "Send a message to ANOTHER bot in the cluster (never yourself)");
+    assert!(
+        tool.description().starts_with(
+            "Send a message to ANOTHER bot in the cluster (never yourself)"
+        )
+    );
 }
 
 #[test]
@@ -3661,6 +3677,7 @@ impl AgentRunner for StubAgentRunner {
         _prompt: &str,
         _agent_id: &str,
         _max_turns: u32,
+        _model: Option<&str>,
     ) -> Result<AgentRunResult, String> {
         // Snapshot the call stack at agent invocation time. This proves the
         // agent_node is running inside the outer workflow's frame.
