@@ -129,15 +129,58 @@ pub fn memory_tool_definitions() -> Vec<MemoryTool> {
 // Tool Executor
 // ---------------------------------------------------------------------------
 
+/// Approval gate for agent-initiated memory writes/deletes. Implemented by the
+/// agent/gateway layer (which owns the approval middleware) and injected into
+/// `MemoryToolExecutor`. YOLO/auto modes must NOT bypass this — memory is a
+/// high-trust surface, so every agent store/forget needs a fresh human approval.
+/// When no gate is attached, store/forget run ungated (backward compatible).
+#[async_trait::async_trait]
+pub trait MemoryApprovalGate: Send + Sync {
+    /// Approve a `memory_store` call. `preview` is a short human-readable summary
+    /// (type + key fields + content snippet) shown in the approval prompt.
+    async fn approve_store(&self, preview: &str) -> bool;
+    /// Approve a `memory_forget` call. `preview` describes what will be removed.
+    async fn approve_forget(&self, preview: &str) -> bool;
+}
+
 /// Executes a memory tool by name, delegating to the MemoryManager.
 pub struct MemoryToolExecutor {
     manager: Arc<MemoryManager>,
+    approval_gate: parking_lot::Mutex<Option<Arc<dyn MemoryApprovalGate>>>,
 }
 
 impl MemoryToolExecutor {
-    /// Create a new executor backed by the given MemoryManager.
+    /// Create a new executor backed by the given MemoryManager (no approval gate).
     pub fn new(manager: Arc<MemoryManager>) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            approval_gate: parking_lot::Mutex::new(None),
+        }
+    }
+
+    /// Attach an approval gate (called by the gateway after wiring the approval
+    /// middleware). After this, agent `memory_store`/`memory_forget` calls require
+    /// human approval via the gate.
+    pub fn set_approval_gate(&self, gate: Arc<dyn MemoryApprovalGate>) {
+        *self.approval_gate.lock() = Some(gate);
+    }
+
+    /// Returns true if the store is approved (or no gate is attached). The lock is
+    /// released before awaiting so the gate can itself await user input safely.
+    async fn check_store_approved(&self, preview: &str) -> bool {
+        let gate = self.approval_gate.lock().as_ref().map(Arc::clone);
+        match gate {
+            Some(g) => g.approve_store(preview).await,
+            None => true,
+        }
+    }
+
+    async fn check_forget_approved(&self, preview: &str) -> bool {
+        let gate = self.approval_gate.lock().as_ref().map(Arc::clone);
+        match gate {
+            Some(g) => g.approve_forget(preview).await,
+            None => true,
+        }
     }
 
     /// Execute a tool by name with the provided arguments.
@@ -288,6 +331,21 @@ impl MemoryToolExecutor {
     async fn execute_store(&self, args: &serde_json::Value) -> MemoryToolResult {
         let memory_type = args["memory_type"].as_str().unwrap_or("episodic").to_string();
 
+        // Approval gate — never bypassed by YOLO/auto (enforced by the gate impl).
+        let store_preview = format!(
+            "store {} memory: {}",
+            memory_type,
+            args["content"]
+                .as_str()
+                .or_else(|| args["entity_name"].as_str())
+                .unwrap_or("(graph triple)")
+        );
+        if !self.check_store_approved(&store_preview).await {
+            return MemoryToolResult::err(
+                "memory_store denied: pending human approval (not approved)",
+            );
+        }
+
         match memory_type.as_str() {
             "episodic" => self.store_episodic(args).await,
             "graph" => self.store_graph(args).await,
@@ -433,6 +491,21 @@ impl MemoryToolExecutor {
         let action = args["action"].as_str().unwrap_or("").to_string();
         if action.is_empty() {
             return MemoryToolResult::err("action is required");
+        }
+
+        // Approval gate — never bypassed by YOLO/auto (enforced by the gate impl).
+        let mut forget_preview = format!("forget memory (action={}", action);
+        if let Some(s) = args["session_key"].as_str() {
+            forget_preview.push_str(&format!(", session={}", s));
+        }
+        if let Some(i) = args["id"].as_str() {
+            forget_preview.push_str(&format!(", id={}", i));
+        }
+        forget_preview.push(')');
+        if !self.check_forget_approved(&forget_preview).await {
+            return MemoryToolResult::err(
+                "memory_forget denied: pending human approval (not approved)",
+            );
         }
 
         match action.as_str() {

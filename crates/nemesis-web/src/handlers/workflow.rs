@@ -1696,6 +1696,109 @@ mod tests {
         assert!(err.contains("not configured"), "got: {}", err);
     }
 
+    // --- Coverage gap: previously-untested commands (update/delete + error paths) ---
+
+    #[tokio::test]
+    async fn wsapi_update_overwrites_existing_workflow() {
+        let engine = build_test_engine();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx_with_engine_and_defs_dir(engine, dir.path());
+        let handler = WorkflowHandler;
+        let data = serde_json::json!({
+            "name": "wf_up",
+            "workflow": sample_workflow_def("wf_up"),
+        });
+        let r = handler.handle_cmd("update", Some(data), &ctx).await.unwrap().unwrap();
+        assert_eq!(r["updated"], true);
+        assert_eq!(r["name"], "wf_up");
+    }
+
+    #[tokio::test]
+    async fn wsapi_update_missing_data() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler.handle_cmd("update", None, &ctx).await.unwrap_err();
+        assert_eq!(err, "missing data");
+    }
+
+    #[tokio::test]
+    async fn wsapi_update_missing_workflow_field() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler
+            .handle_cmd("update", Some(serde_json::json!({"name": "x"})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: workflow"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_delete_removes_workflow() {
+        let engine = build_test_engine();
+        let dir = tempfile::tempdir().unwrap();
+        engine.set_workflow_defs_dir(dir.path().to_path_buf());
+        // Persist first so delete has something to remove.
+        engine
+            .persist_workflow(serde_json::from_value(sample_workflow_def("wf_del")).unwrap())
+            .map_err(|e| e.to_string())
+            .unwrap();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let r = handler
+            .handle_cmd("delete", Some(serde_json::json!({"name": "wf_del"})), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn wsapi_delete_missing_data() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler.handle_cmd("delete", None, &ctx).await.unwrap_err();
+        assert_eq!(err, "missing data");
+    }
+
+    #[tokio::test]
+    async fn wsapi_delete_missing_name() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler
+            .handle_cmd("delete", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: name"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_set_chat_password_missing_chat_index() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler
+            .handle_cmd("set_chat_password", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing") || err.contains("chat_index") || err.contains("password"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_verify_chat_password_missing_fields() {
+        let engine = build_test_engine();
+        let ctx = make_ctx_with_engine(engine);
+        let handler = WorkflowHandler;
+        let err = handler
+            .handle_cmd("verify_chat_password", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing") || err.contains("chat_index") || err.contains("password"));
+    }
+
     #[tokio::test]
     async fn wsapi_status_returns_execution_not_found_for_unknown_id() {
         let engine = build_test_engine();
@@ -2004,6 +2107,370 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("workflow_defs_dir"), "got: {}", err);
+    }
+
+    // Helper: build + register a single-node workflow on the engine.
+    fn reg_workflow(engine: &Arc<nemesis_workflow::engine::WorkflowEngine>, name: &str, node_type: &str) {
+        let wf = nemesis_workflow::types::Workflow {
+            name: name.to_string(),
+            description: format!("desc for {}", name),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "n1".to_string(),
+                node_type: node_type.to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        engine.register_workflow(wf).unwrap();
+    }
+
+    fn ctx_with_dashboard(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> RequestContext {
+        let mut ctx = make_ctx_with_engine(engine);
+        ctx.auth_method = crate::session::AuthMethod::Dashboard;
+        ctx
+    }
+
+    // ---- fire_event ----
+
+    #[tokio::test]
+    async fn wsapi_fire_event_missing_data() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler.handle_cmd("fire_event", None, &ctx).await.unwrap_err();
+        assert!(err.contains("missing data"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_fire_event_missing_event_type() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("fire_event", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: event_type"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_fire_event_publishes_and_reports_matches() {
+        let engine = build_test_engine();
+        // A workflow whose trigger listens for "ops.deploy" events.
+        let wf = nemesis_workflow::types::Workflow {
+            name: "reactor".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![nemesis_workflow::types::TriggerConfig {
+                trigger_type: "event".to_string(),
+                config: {
+                    let mut m = HashMap::new();
+                    m.insert("event_type".to_string(), serde_json::json!("ops.deploy"));
+                    m
+                },
+            }],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "n1".to_string(),
+                node_type: "delay".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        };
+        engine.register_workflow(wf).unwrap();
+        let ctx = make_ctx_with_engine(engine.clone());
+        let r = WorkflowHandler
+            .handle_cmd(
+                "fire_event",
+                Some(serde_json::json!({
+                    "event_type": "ops.deploy",
+                    "data": { "region": "us-east" }
+                })),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["published"], true);
+        assert_eq!(r["event_type"], "ops.deploy");
+        assert_eq!(r["matched_workflows"][0], "reactor");
+    }
+
+    // ---- resolve_chat_target ----
+
+    #[tokio::test]
+    async fn wsapi_resolve_chat_target_missing_data() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler.handle_cmd("resolve_chat_target", None, &ctx).await.unwrap_err();
+        assert!(err.contains("missing data"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_resolve_chat_target_missing_index() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("resolve_chat_target", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: index"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_resolve_chat_target_not_found() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let r = WorkflowHandler
+            .handle_cmd(
+                "resolve_chat_target",
+                Some(serde_json::json!({"index": "deadbeef"})),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["found"], false);
+        assert_eq!(r["chat_eligible"], false);
+    }
+
+    #[tokio::test]
+    async fn wsapi_resolve_chat_target_eligible() {
+        let engine = build_test_engine();
+        reg_workflow(&engine, "chatable", "delay");
+        let index = nemesis_workflow::engine::WorkflowEngine::chat_index("chatable");
+        let ctx = make_ctx_with_engine(engine);
+        let r = WorkflowHandler
+            .handle_cmd("resolve_chat_target", Some(serde_json::json!({"index": index})), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["found"], true);
+        assert_eq!(r["workflow_name"], "chatable");
+        assert_eq!(r["chat_eligible"], true);
+        assert!(r["reason"].is_null());
+    }
+
+    #[tokio::test]
+    async fn wsapi_resolve_chat_target_human_review_ineligible() {
+        let engine = build_test_engine();
+        reg_workflow(&engine, "reviewy", "human_review");
+        let index = nemesis_workflow::engine::WorkflowEngine::chat_index("reviewy");
+        let ctx = make_ctx_with_engine(engine);
+        let r = WorkflowHandler
+            .handle_cmd("resolve_chat_target", Some(serde_json::json!({"index": index})), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["found"], true);
+        assert_eq!(r["chat_eligible"], false);
+        assert!(r["reason"].as_str().unwrap().contains("human_review"));
+    }
+
+    // ---- cancel / resume (unknown execution_id → engine error) ----
+
+    #[tokio::test]
+    async fn wsapi_cancel_missing_data() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler.handle_cmd("cancel", None, &ctx).await.unwrap_err();
+        assert!(err.contains("missing data"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_cancel_missing_exec_id() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("cancel", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: execution_id"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_cancel_unknown_id_errors() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("cancel", Some(serde_json::json!({"execution_id": "nope"})), &ctx)
+            .await
+            .unwrap_err();
+        // cancel_execution surfaces an EngineError string for unknown ids.
+        assert!(!err.is_empty());
+    }
+
+    #[tokio::test]
+    async fn wsapi_resume_missing_exec_id() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("resume", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: execution_id"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_resume_unknown_id_errors() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("resume", Some(serde_json::json!({"execution_id": "ghost"})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(!err.is_empty());
+    }
+
+    // ---- get_checkpoint (engine has no store → unavailable) ----
+
+    #[tokio::test]
+    async fn wsapi_get_checkpoint_missing_data() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler.handle_cmd("get_checkpoint", None, &ctx).await.unwrap_err();
+        assert!(err.contains("missing data"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_get_checkpoint_missing_checkpoint_id() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd("get_checkpoint", Some(serde_json::json!({"execution_id": "e1"})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("missing field: checkpoint_id"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_get_checkpoint_no_store_configured() {
+        let ctx = make_ctx_with_engine(build_test_engine());
+        let err = WorkflowHandler
+            .handle_cmd(
+                "get_checkpoint",
+                Some(serde_json::json!({"execution_id": "e1", "checkpoint_id": "c1"})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("checkpoint_store_unavailable"));
+    }
+
+    // ---- chat password CRUD ----
+
+    #[tokio::test]
+    async fn wsapi_set_chat_password_requires_dashboard() {
+        // WorkflowChat auth (standalone page) must NOT mutate passwords.
+        let mut ctx = make_ctx_with_engine(build_test_engine());
+        ctx.auth_method = crate::session::AuthMethod::WorkflowChat;
+        let err = WorkflowHandler
+            .handle_cmd("set_chat_password", Some(serde_json::json!({"index": "x", "password": "p"})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("permission_denied"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_set_chat_password_empty_rejected() {
+        let engine = build_test_engine();
+        let ctx = ctx_with_dashboard(engine);
+        let err = WorkflowHandler
+            .handle_cmd("set_chat_password", Some(serde_json::json!({"index": "x", "password": ""})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_set_then_verify_chat_password_roundtrip() {
+        let engine = build_test_engine();
+        reg_workflow(&engine, "secret_wf", "delay");
+        let index = nemesis_workflow::engine::WorkflowEngine::chat_index("secret_wf");
+        // Dashboard session sets the password.
+        let ctx = ctx_with_dashboard(engine.clone());
+        let r = WorkflowHandler
+            .handle_cmd(
+                "set_chat_password",
+                Some(serde_json::json!({"index": index, "password": "s3cret"})),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["set"], true);
+
+        // Wrong password is rejected.
+        let err = WorkflowHandler
+            .handle_cmd(
+                "verify_chat_password",
+                Some(serde_json::json!({"index": index, "password": "nope"})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, "unauthorized");
+
+        // Correct password resolves to the workflow metadata.
+        let r = WorkflowHandler
+            .handle_cmd(
+                "verify_chat_password",
+                Some(serde_json::json!({"index": index, "password": "s3cret"})),
+                &ctx,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["verified"], true);
+        assert_eq!(r["workflow_name"], "secret_wf");
+    }
+
+    #[tokio::test]
+    async fn wsapi_verify_chat_password_correct_but_no_workflow() {
+        // Password is set for an index, but no workflow is registered for it →
+        // verify returns workflow_not_found.
+        let engine = build_test_engine();
+        let ctx = ctx_with_dashboard(engine.clone());
+        WorkflowHandler
+            .handle_cmd(
+                "set_chat_password",
+                Some(serde_json::json!({"index": "orphan", "password": "pw"})),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let err = WorkflowHandler
+            .handle_cmd(
+                "verify_chat_password",
+                Some(serde_json::json!({"index": "orphan", "password": "pw"})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("workflow_not_found_for_index"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_clear_chat_password_requires_dashboard() {
+        let mut ctx = make_ctx_with_engine(build_test_engine());
+        ctx.auth_method = crate::session::AuthMethod::WorkflowChat;
+        let err = WorkflowHandler
+            .handle_cmd("clear_chat_password", Some(serde_json::json!({"index": "x"})), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.contains("permission_denied"));
+    }
+
+    #[tokio::test]
+    async fn wsapi_clear_chat_password_success() {
+        let engine = build_test_engine();
+        let ctx = ctx_with_dashboard(engine);
+        let r = WorkflowHandler
+            .handle_cmd("clear_chat_password", Some(serde_json::json!({"index": "idx1"})), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r["cleared"], true);
+        assert_eq!(r["index"], "idx1");
     }
 }
 

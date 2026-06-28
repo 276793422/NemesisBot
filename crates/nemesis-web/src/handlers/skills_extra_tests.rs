@@ -55,6 +55,7 @@ use super::*;
             workspace: Some(ws.clone()),
             home: Some(ws),
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 
@@ -94,6 +95,7 @@ use super::*;
             workspace: None,
             home: None,
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 

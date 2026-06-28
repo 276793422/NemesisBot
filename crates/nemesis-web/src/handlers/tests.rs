@@ -4135,6 +4135,113 @@ address = "192.168.1.11:5000"
     }
 
     #[tokio::test]
+    async fn test_logs_session_list_reads_files_without_memory_manager() {
+        // P1 e2e: no memory_manager (memory disabled), but session_logs files
+        // exist → session_list must read them directly (the decoupling fix).
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let session_dir = dir.path().join("logs/session_logs");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("web_chat1.jsonl"),
+            "{\"role\":\"user\",\"content\":\"hello\",\"timestamp\":\"2026-06-27T10:00:00+08:00\"}\n\
+             {\"role\":\"assistant\",\"content\":\"hi there\",\"timestamp\":\"2026-06-27T10:00:01+08:00\"}\n",
+        )
+        .unwrap();
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler
+            .handle_cmd("session_list", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let sessions = res["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0]["id"], "web_chat1");
+        assert_eq!(sessions[0]["messageCount"], 2);
+        assert_eq!(sessions[0]["firstMessage"], "hello");
+        assert_eq!(sessions[0]["channel"], "web");
+    }
+
+    #[tokio::test]
+    async fn test_logs_session_detail_reads_file_without_memory_manager() {
+        // P1 e2e: session_detail reads the JSONL file directly without memory.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let session_dir = dir.path().join("logs/session_logs");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s1.jsonl"),
+            "{\"role\":\"user\",\"content\":\"q\",\"timestamp\":\"t1\"}\n\
+             {\"role\":\"assistant\",\"content\":\"a\",\"timestamp\":\"t2\"}\n",
+        )
+        .unwrap();
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let data = serde_json::json!({"session": "s1"});
+        let res = handler
+            .handle_cmd("session_detail", Some(data), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let msgs = res["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["content"], "a");
+    }
+
+    #[tokio::test]
+    async fn test_logs_session_list_skips_corrupt_jsonl_lines() {
+        // Boundary: corrupt lines / blank lines in a session file must be
+        // skipped, not break the list or panic.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let session_dir = dir.path().join("logs/session_logs");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("s1.jsonl"),
+            "THIS IS NOT JSON\n\
+             {\"role\":\"user\",\"content\":\"ok\",\"timestamp\":\"t\"}\n\
+             \n\
+             {bad brace\n",
+        )
+        .unwrap();
+
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let res = handler
+            .handle_cmd("session_list", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let sessions = res["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1, "file with >=1 valid line is listed");
+        assert_eq!(
+            sessions[0]["messageCount"], 1,
+            "only the one valid line is counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_logs_session_detail_missing_file_returns_empty() {
+        // Boundary: session_detail for a non-existent session returns empty
+        // messages (no panic, no error) — graceful degradation.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path());
+        let ctx = make_ctx(&dir);
+        let handler = LogsHandler;
+        let data = serde_json::json!({"session": "ghost"});
+        let res = handler
+            .handle_cmd("session_detail", Some(data), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(res["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_logs_session_detail_empty_when_no_memory_manager() {
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path());

@@ -1638,3 +1638,172 @@ async fn test_refresh_access_token_network_failure() {
     let result = cfg.refresh_access_token(&cred).await;
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// wiremock-backed tests for the async HTTP flows (refresh / exchange / poll).
+// These exercise the real reqwest call paths against an in-process mock
+// server — covering the success + error-status branches that the network-
+// failure tests above can't reach.
+// ---------------------------------------------------------------------------
+
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn cfg_for(server: &MockServer) -> OAuthProviderConfig {
+    OAuthProviderConfig {
+        issuer: server.uri(),
+        client_id: "test-client".to_string(),
+        scopes: "openid".to_string(),
+        originator: "".to_string(),
+        port: 1455,
+    }
+}
+
+fn cred_with_refresh(rt: &str) -> AuthCredential {
+    AuthCredential {
+        access_token: "old_at".to_string(),
+        refresh_token: Some(rt.to_string()),
+        expires_at: None,
+        provider: "openai".to_string(),
+        auth_method: "oauth".to_string(),
+        account_id: Some("acct_old".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn refresh_access_token_success_returns_new_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new_at",
+            "refresh_token": "new_rt",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let refreshed = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap();
+    assert_eq!(refreshed.access_token, "new_at");
+    assert_eq!(refreshed.refresh_token.as_deref(), Some("new_rt"));
+}
+
+#[tokio::test]
+async fn refresh_access_token_preserves_refresh_token_when_omitted() {
+    // Server returns a new access token but no refresh_token — the old one
+    // must be carried forward so the credential stays refreshable.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new_at",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let refreshed = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap();
+    assert_eq!(refreshed.access_token, "new_at");
+    assert_eq!(refreshed.refresh_token.as_deref(), Some("rt_old"));
+    // account_id is also preserved when the response omits it.
+    assert_eq!(refreshed.account_id.as_deref(), Some("acct_old"));
+}
+
+#[tokio::test]
+async fn refresh_access_token_error_status_returns_err() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant"))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let err = cfg.refresh_access_token(&cred_with_refresh("rt_old")).await.unwrap_err();
+    assert!(err.contains("token refresh failed"));
+    assert!(err.contains("invalid_grant"));
+}
+
+#[tokio::test]
+async fn exchange_code_for_tokens_success() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "exch_at",
+            "refresh_token": "exch_rt",
+            "expires_in": 7200,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = exchange_code_for_tokens(&cfg, "the_code", "the_verifier", "http://localhost/cb")
+        .await
+        .unwrap();
+    assert_eq!(cred.access_token, "exch_at");
+    assert_eq!(cred.refresh_token.as_deref(), Some("exch_rt"));
+}
+
+#[tokio::test]
+async fn exchange_code_for_tokens_error_status() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("bad_code"))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let err = exchange_code_for_tokens(&cfg, "bad", "v", "http://localhost/cb")
+        .await
+        .unwrap_err();
+    assert!(err.contains("token exchange failed"));
+    assert!(err.contains("bad_code"));
+}
+
+#[tokio::test]
+async fn poll_device_code_pending_returns_none() {
+    // A non-success status means the user hasn't authorized yet → Ok(None).
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(400))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let res = poll_device_code(&cfg, "dev_auth_1", "USER-CODE").await.unwrap();
+    assert!(res.is_none());
+}
+
+#[tokio::test]
+async fn poll_device_code_success_returns_credential() {
+    // deviceauth/token returns an authorization_code + verifier, then the
+    // standard /oauth/token exchange returns the final tokens.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/accounts/deviceauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "authorization_code": "auth_code_1",
+            "code_verifier": "verifier_1",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "final_at",
+            "refresh_token": "final_rt",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let cfg = cfg_for(&server);
+    let cred = poll_device_code(&cfg, "dev_auth_1", "USER-CODE").await.unwrap().unwrap();
+    assert_eq!(cred.access_token, "final_at");
+    assert_eq!(cred.refresh_token.as_deref(), Some("final_rt"));
+}

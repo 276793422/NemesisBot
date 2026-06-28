@@ -3927,3 +3927,40 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
         "outer is top-level, must have no parent"
     );
 }
+
+// ===========================================================================
+// Coverage gap: exercise every cli_detail match arm (the existing
+// specific_command test only covered one command out of sixteen).
+// ===========================================================================
+
+#[tokio::test]
+async fn test_cli_reference_tool_all_command_arms() {
+    let tool = CliReferenceTool::new();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let commands = [
+        "model", "mcp", "channel", "cluster", "skills", "forge", "cron", "security",
+        "scanner", "log", "auth", "memory", "workflow", "cors", "status", "version",
+    ];
+    for cmd in commands {
+        let args = format!(r#"{{"command": "{}"}}"#, cmd);
+        let result = tool.execute(&args, &ctx).await.expect(cmd);
+        assert!(
+            result.contains("##"),
+            "command '{}' should return markdown help with a header",
+            cmd
+        );
+        // Deepened assertion: the response must be for THIS command (header is
+        // `## {cmd} — ...`), not just any markdown blob.
+        assert!(
+            result.contains(&format!("## {}", cmd)),
+            "command '{}' response should be headed by its own name",
+            cmd
+        );
+    }
+
+    // Uppercase input is normalized via to_lowercase (covers that branch).
+    let upper = tool.execute(r#"{"command": "SCANNER"}"#, &ctx).await;
+    assert!(upper.is_ok(), "uppercase command should normalize to lowercase");
+    assert!(upper.unwrap().contains("scanner"));
+}

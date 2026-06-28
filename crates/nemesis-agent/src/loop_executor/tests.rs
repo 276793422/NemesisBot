@@ -1791,3 +1791,149 @@ fn test_fallback_executor_clears_cooldown_on_success() {
     }));
     assert!(result2.is_ok());
 }
+
+// ===========================================================================
+// Coverage gap: to_callback_json (legacy callback serialization) for all
+// ObserverEvent variants, plus to_conversation_event with usage populated.
+// ===========================================================================
+
+#[test]
+fn test_to_callback_json_conversation_start() {
+    let e = ObserverEvent::ConversationStart {
+        trace_id: "t1".into(),
+        session_key: "s:k".into(),
+        channel: "web".into(),
+        chat_id: "c1".into(),
+        sender_id: "u1".into(),
+        content: "hi".into(),
+    };
+    let (ty, json) = e.to_callback_json();
+    assert_eq!(ty, "conversation_start");
+    assert_eq!(json["type"], "conversation_start");
+    assert_eq!(json["trace_id"], "t1");
+    assert_eq!(json["session_key"], "s:k");
+    assert_eq!(json["sender_id"], "u1");
+    assert_eq!(json["content"], "hi");
+}
+
+#[test]
+fn test_to_callback_json_conversation_end() {
+    let e = ObserverEvent::ConversationEnd {
+        trace_id: "t2".into(),
+        session_key: "s:k".into(),
+        total_rounds: 3,
+        duration_ms: 2500,
+        content: "done".into(),
+        channel: "web".into(),
+        chat_id: "c".into(),
+    };
+    let (ty, json) = e.to_callback_json();
+    assert_eq!(ty, "conversation_end");
+    assert_eq!(json["total_rounds"], 3);
+    assert_eq!(json["duration_ms"], 2500);
+}
+
+#[test]
+fn test_to_callback_json_llm_request() {
+    let e = ObserverEvent::LlmRequest {
+        trace_id: "t3".into(),
+        round: 1,
+        model: "gpt".into(),
+        messages: vec![serde_json::json!({"role": "user"})],
+        tools: vec![serde_json::json!({"name": "t"})],
+        messages_count: 1,
+        tools_count: 1,
+        provider_name: "openai".into(),
+        api_key: "k".into(),
+        api_base: "b".into(),
+    };
+    let (ty, json) = e.to_callback_json();
+    assert_eq!(ty, "llm_request");
+    assert_eq!(json["round"], 1);
+    assert_eq!(json["model"], "gpt");
+    assert_eq!(json["provider_name"], "openai");
+    assert_eq!(json["messages_count"], 1);
+}
+
+#[test]
+fn test_to_callback_json_llm_response_with_usage() {
+    let e = ObserverEvent::LlmResponse {
+        trace_id: "t4".into(),
+        round: 1,
+        duration_ms: 100,
+        has_tool_calls: true,
+        content: "ans".into(),
+        tool_calls: vec![serde_json::json!({"id": "x"})],
+        tool_calls_count: 1,
+        finish_reason: Some("tool_calls".into()),
+        usage: Some(ObserverUsageInfo {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+            cached_tokens: Some(3),
+            cache_creation_tokens: Some(1),
+            cache_read_tokens: None,
+        }),
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let (ty, json) = e.to_callback_json();
+    assert_eq!(ty, "llm_response");
+    assert_eq!(json["has_tool_calls"], true);
+    assert_eq!(json["usage"]["prompt_tokens"], 10);
+    assert_eq!(json["usage"]["cached_tokens"], 3);
+    assert_eq!(json["usage"]["cache_creation_tokens"], 1);
+}
+
+#[test]
+fn test_to_callback_json_tool_call() {
+    let e = ObserverEvent::ToolCall {
+        trace_id: "t5".into(),
+        tool_name: "search".into(),
+        success: false,
+        duration_ms: 50,
+        round: 1,
+        arguments: r#"{"q":"x"}"#.into(),
+        result: "err".into(),
+    };
+    let (ty, json) = e.to_callback_json();
+    assert_eq!(ty, "tool_call");
+    assert_eq!(json["tool_name"], "search");
+    assert_eq!(json["success"], false);
+    assert_eq!(json["result"], "err");
+}
+
+#[test]
+fn test_to_conversation_event_llm_response_maps_usage() {
+    // Covers the usage.as_ref().map(...) branch in to_conversation_event.
+    let e = ObserverEvent::LlmResponse {
+        trace_id: "t".into(),
+        round: 1,
+        duration_ms: 100,
+        has_tool_calls: false,
+        content: "x".into(),
+        tool_calls: vec![],
+        tool_calls_count: 0,
+        finish_reason: Some("stop".into()),
+        usage: Some(ObserverUsageInfo {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            total_tokens: 120,
+            cached_tokens: Some(50),
+            cache_creation_tokens: None,
+            cache_read_tokens: None,
+        }),
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let ce = e.to_conversation_event();
+    match ce.data {
+        nemesis_observer::EventData::LlmResponse(d) => {
+            let u = d.usage.expect("usage should map");
+            assert_eq!(u.prompt_tokens, 100);
+            assert_eq!(u.total_tokens, 120);
+            assert_eq!(u.cached_tokens, Some(50));
+        }
+        _ => panic!("expected LlmResponse"),
+    }
+}

@@ -89,6 +89,10 @@ pub struct SecurityPlugin {
     audit_logger: RwLock<Option<AuditLogger>>,
     enabled: RwLock<bool>,
     config_path: RwLock<Option<String>>,
+    /// Optional LLM safety judge (guardian) for CRITICAL-op semantic review.
+    /// When attached, CRITICAL operations that pass the rule layers get a second
+    /// opinion from an LLM reading the action as evidence (anti-injection).
+    judge: RwLock<Option<Arc<dyn crate::guardian::LlmJudge>>>,
 }
 
 impl SecurityPlugin {
@@ -197,6 +201,7 @@ impl SecurityPlugin {
             audit_logger: RwLock::new(audit_logger),
             enabled: RwLock::new(enabled),
             config_path: RwLock::new(None),
+            judge: RwLock::new(None),
         };
 
         // Register rules from config
@@ -213,6 +218,29 @@ impl SecurityPlugin {
         let plugin = Self::new(config);
         *plugin.config_path.write() = Some(config_path.to_string());
         plugin
+    }
+
+    /// Attach an LLM safety judge (guardian). After this, CRITICAL operations
+    /// that pass the rule layers are reviewed by the judge before being allowed.
+    pub fn set_judge(&self, judge: Arc<dyn crate::guardian::LlmJudge>) {
+        *self.judge.write() = Some(judge);
+    }
+
+    /// Returns true if the tool maps to a CRITICAL operation, so the agent loop
+    /// can route it through the guardian judge. Uses Display output to avoid
+    /// depending on the `RiskLevel` enum's visibility.
+    pub fn is_critical_tool(&self, tool_name: &str) -> bool {
+        match tool_to_operation(tool_name) {
+            Some(op) => get_danger_level(op).to_string() == "CRITICAL",
+            None => false,
+        }
+    }
+
+    /// Returns a clone of the attached judge (if any). The agent loop calls this
+    /// and awaits the judge asynchronously — `execute` itself is sync and cannot
+    /// await, so the guardian review happens just after `execute` returns allow.
+    pub fn judge(&self) -> Option<Arc<dyn crate::guardian::LlmJudge>> {
+        self.judge.read().clone()
     }
 
     /// Register ABAC rules from the internal configuration into the auditor.

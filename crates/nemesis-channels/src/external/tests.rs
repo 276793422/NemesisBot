@@ -610,3 +610,146 @@ fn test_new_valid_config() {
     assert_eq!(ch.output_exe(), "/usr/bin/output");
     assert_eq!(ch.chat_id(), "chat-1");
 }
+
+// ============================================================
+// Additional coverage tests (round 3): cancel-tx stop path, helpers
+// ============================================================
+
+#[tokio::test]
+async fn test_stop_takes_cancel_tx_after_start() {
+    // After start(), spawn_input_reader() installs a cancel_tx sender. Calling
+    // stop() must take() it (Some) and send the cancellation signal without
+    // error. This exercises the cancel path of stop().
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "stop-test".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    ch.start().await.unwrap();
+
+    // The cancel_tx slot should be populated after start.
+    assert!(ch.cancel_tx.lock().is_some());
+
+    ch.stop().await.unwrap();
+
+    // After stop, the cancel_tx sender has been taken out (None).
+    assert!(ch.cancel_tx.lock().is_none());
+    // input_child slot stays None (spawn_input_reader never populated it).
+    assert!(ch.input_child.lock().is_none());
+}
+
+#[tokio::test]
+async fn test_stop_without_start_takes_none_cancel_tx() {
+    // stop() called before start(): cancel_tx slot is None, take() yields None,
+    // and input_child is also None. Must still return Ok.
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "nostart".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    assert!(ch.cancel_tx.lock().is_none());
+
+    ch.stop().await.unwrap();
+    assert!(!ch.running.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_process_input_line_single_char() {
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "c".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    let (s, c, content) = ch.process_input_line("x").unwrap();
+    assert_eq!(s, "c");
+    assert_eq!(c, "c");
+    assert_eq!(content, "x");
+}
+
+#[test]
+fn test_process_input_line_null_byte_preserved() {
+    // A NUL byte inside the (non-empty after trim) content is preserved.
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "c".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    let (_, _, content) = ch.process_input_line("a\u{0}b").unwrap();
+    assert_eq!(content, "a\u{0}b");
+}
+
+#[test]
+fn test_format_output_preserves_existing_trailing_newline() {
+    // format_output appends exactly one '\n' regardless of existing newlines.
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "c".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    assert_eq!(ch.format_output("already\n"), "already\n\n");
+    assert_eq!(ch.format_output("multi\n\n\n"), "multi\n\n\n\n");
+}
+
+#[test]
+fn test_process_input_line_preserves_internal_spaces() {
+    // Internal (non-edge) whitespace must be preserved, only edges trimmed.
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "c".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    let (_, _, content) = ch.process_input_line("  a   b\tc  ").unwrap();
+    assert_eq!(content, "a   b\tc");
+}
+
+#[test]
+fn test_external_config_clone_is_equal() {
+    // ExternalConfig derives Clone; verify a clone matches field-for-field.
+    let config = ExternalConfig {
+        input_exe: "/in".to_string(),
+        output_exe: "/out".to_string(),
+        chat_id: "chat".to_string(),
+        sync_to: vec!["web".to_string()],
+        allow_from: vec!["u1".to_string()],
+    };
+    let cloned = config.clone();
+    assert_eq!(cloned.input_exe, config.input_exe);
+    assert_eq!(cloned.output_exe, config.output_exe);
+    assert_eq!(cloned.chat_id, config.chat_id);
+    assert_eq!(cloned.sync_to, config.sync_to);
+    assert_eq!(cloned.allow_from, config.allow_from);
+}
+
+#[test]
+fn test_process_input_line_returns_same_chat_id_in_both_slots() {
+    // The first two tuple slots are both chat_id (sender == chat for external).
+    let config = ExternalConfig {
+        input_exe: "/bin/echo".to_string(),
+        output_exe: "/bin/cat".to_string(),
+        chat_id: "dup-check".to_string(),
+        sync_to: Vec::new(),
+        allow_from: Vec::new(),
+    };
+    let ch = ExternalChannel::new(config).unwrap();
+    let (a, b, _) = ch.process_input_line("payload").unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a, "dup-check");
+}

@@ -15,6 +15,7 @@ pub mod graph;
 pub mod manager;
 pub mod memory_tools;
 pub mod vector;
+pub mod retrieval;
 
 #[cfg(any(test, feature = "test-fixture"))]
 #[doc(hidden)]

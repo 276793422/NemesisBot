@@ -194,3 +194,28 @@ pub fn require_home(ctx: &crate::ws_router::RequestContext) -> Result<&str, Stri
 
 #[cfg(test)]
 mod tests;
+
+// Previously-written extra/more coverage modules were never `mod`-declared, so
+// they silently did not compile or run. Wire them in here.
+#[cfg(test)]
+mod cluster_extra_tests;
+#[cfg(test)]
+mod cluster_more_tests;
+#[cfg(test)]
+mod forge_extra_tests;
+#[cfg(test)]
+mod memory_extra_tests;
+#[cfg(test)]
+mod persona_extra_tests;
+#[cfg(test)]
+mod persona_more_tests;
+#[cfg(test)]
+mod scanner_extra_tests;
+#[cfg(test)]
+mod scanner_more_tests;
+#[cfg(test)]
+mod skills_extra_tests;
+#[cfg(test)]
+mod skills_more_tests;
+#[cfg(test)]
+mod voice_extra_tests;

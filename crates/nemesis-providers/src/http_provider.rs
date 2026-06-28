@@ -637,3 +637,6 @@ impl LLMProvider for HttpProvider {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod http_provider_extra_tests;

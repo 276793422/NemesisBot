@@ -694,3 +694,278 @@ use super::*;
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&lt;img"));
     }
+
+    // --- render_approval_html: remaining risk-level branches ---
+
+    fn approval_with_risk(level: &str) -> ApprovalWindowData {
+        ApprovalWindowData {
+            request_id: "req".to_string(),
+            operation: "file_write".to_string(),
+            operation_name: "Op".to_string(),
+            target: "target".to_string(),
+            risk_level: level.to_string(),
+            reason: "r".to_string(),
+            timeout_seconds: 30,
+            context: HashMap::new(),
+            timestamp: 1,
+        }
+    }
+
+    #[test]
+    fn test_render_approval_html_medium_risk() {
+        let html = render_approval_html(&approval_with_risk("MEDIUM"));
+        // MEDIUM risk color (yellow) should be used in the badge
+        assert!(html.contains("#ffc107"));
+    }
+
+    #[test]
+    fn test_render_approval_html_low_risk() {
+        let html = render_approval_html(&approval_with_risk("LOW"));
+        // LOW risk color (green) should be used in the badge
+        assert!(html.contains("#28a745"));
+    }
+
+    #[test]
+    fn test_render_approval_html_unknown_risk_falls_back() {
+        // Unknown level falls back to the default grey color
+        let html = render_approval_html(&approval_with_risk("nonexistent_level"));
+        assert!(html.contains("#6c757d"));
+    }
+
+    #[test]
+    fn test_render_approval_html_timeout_clamped_to_min() {
+        // timeout_seconds below 30 must be clamped up to 30
+        let mut data = approval_with_risk("HIGH");
+        data.timeout_seconds = 5;
+        let html = render_approval_html(&data);
+        assert!(html.contains("TIMEOUT = 30"));
+    }
+
+    #[test]
+    fn test_render_approval_html_timeout_above_min_preserved() {
+        // timeout_seconds above 30 should be preserved as-is
+        let mut data = approval_with_risk("HIGH");
+        data.timeout_seconds = 120;
+        let html = render_approval_html(&data);
+        assert!(html.contains("TIMEOUT = 120"));
+    }
+
+    #[test]
+    fn test_render_approval_html_escapes_reason() {
+        let mut data = approval_with_risk("LOW");
+        data.reason = "broken <b>tag</b> & stuff".to_string();
+        let html = render_approval_html(&data);
+        assert!(!html.contains("<b>tag</b>"));
+        assert!(html.contains("&lt;b&gt;tag&lt;/b&gt;"));
+        assert!(html.contains("&amp; stuff"));
+    }
+
+    #[test]
+    fn test_render_approval_html_includes_doctype() {
+        let html = render_approval_html(&approval_with_risk("LOW"));
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<html lang=\"en\">"));
+    }
+
+    // --- build_plugin_config: error-fallback and edge branches ---
+
+    #[test]
+    fn test_build_plugin_config_unknown_window_type() {
+        let config = build_plugin_config("mystery", &serde_json::json!({"a": 1}));
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        // Unknown type only emits the window_type field
+        assert_eq!(parsed["window_type"], "mystery");
+        assert!(parsed.get("title").is_none());
+        assert!(parsed.get("html").is_none());
+    }
+
+    #[test]
+    fn test_build_plugin_config_dashboard_invalid_data_fallback() {
+        // Invalid dashboard data (missing required fields) triggers the
+        // serde error fallback, which emits only window_type + title.
+        let config = build_plugin_config("dashboard", &serde_json::json!({"unrelated": true}));
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["window_type"], "dashboard");
+        assert_eq!(parsed["title"], "NemesisBot Dashboard");
+        // Fallback path does NOT emit url / init_script
+        assert!(parsed.get("url").is_none());
+        assert!(parsed.get("init_script").is_none());
+    }
+
+    #[test]
+    fn test_build_plugin_config_approval_invalid_data_fallback() {
+        // Invalid approval data triggers the serde error fallback.
+        let config = build_plugin_config("approval", &serde_json::json!({"unrelated": true}));
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["window_type"], "approval");
+        assert_eq!(parsed["title"], "Security Approval - NemesisBot");
+        assert!(parsed.get("html").is_none());
+        assert!(parsed.get("timeout_seconds").is_none());
+    }
+
+    #[test]
+    fn test_build_plugin_config_dashboard_token_sanitization() {
+        // Backslashes and double quotes in the token must be escaped so the
+        // generated init_script stays valid JS.
+        let data = serde_json::json!({
+            "token": r#"a"b\c"#,
+            "web_port": 49000,
+            "web_host": "127.0.0.1",
+        });
+        let config = build_plugin_config("dashboard", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        let init = parsed["init_script"].as_str().unwrap();
+        // The raw unescaped token substring must NOT appear
+        assert!(!init.contains(r#"__DASHBOARD_TOKEN__="a"b\c""#));
+        // Escaped forms should be present
+        assert!(init.contains("\\\""));
+        assert!(init.contains("\\\\"));
+    }
+
+    #[test]
+    fn test_build_plugin_config_approval_timeout_clamped() {
+        // Approval config clamps timeout_seconds to the 30s minimum.
+        let data = serde_json::json!({
+            "request_id": "r1",
+            "operation": "file_write",
+            "operation_name": "Write",
+            "target": "t",
+            "risk_level": "LOW",
+            "reason": "r",
+            "timeout_seconds": 1,
+            "context": {},
+            "timestamp": 1,
+        });
+        let config = build_plugin_config("approval", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["timeout_seconds"], 30);
+    }
+
+    #[test]
+    fn test_build_plugin_config_approval_timeout_preserved() {
+        // Approval config keeps a timeout above the 30s minimum.
+        let data = serde_json::json!({
+            "request_id": "r1",
+            "operation": "file_write",
+            "operation_name": "Write",
+            "target": "t",
+            "risk_level": "LOW",
+            "reason": "r",
+            "timeout_seconds": 99,
+            "context": {},
+            "timestamp": 1,
+        });
+        let config = build_plugin_config("approval", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["timeout_seconds"], 99);
+    }
+
+    #[test]
+    fn test_build_plugin_config_dashboard_url_format() {
+        // Verify the assembled URL host:port string.
+        let data = serde_json::json!({
+            "token": "tok",
+            "web_port": 12345,
+            "web_host": "example.com",
+        });
+        let config = build_plugin_config("dashboard", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["url"], "http://example.com:12345");
+        assert!(parsed["init_script"].as_str().unwrap().contains("example.com:12345"));
+    }
+
+    #[test]
+    fn test_build_plugin_config_dashboard_dimensions() {
+        let data = serde_json::json!({
+            "token": "tok",
+            "web_port": 1,
+            "web_host": "h",
+        });
+        let config = build_plugin_config("dashboard", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["width"], 1280.0);
+        assert_eq!(parsed["height"], 800.0);
+    }
+
+    #[test]
+    fn test_build_plugin_config_approval_dimensions_and_html() {
+        let data = serde_json::json!({
+            "request_id": "r1",
+            "operation": "file_write",
+            "operation_name": "Write",
+            "target": "t",
+            "risk_level": "HIGH",
+            "reason": "r",
+            "timeout_seconds": 60,
+            "context": {},
+            "timestamp": 1,
+        });
+        let config = build_plugin_config("approval", &data);
+        let parsed: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(parsed["width"], 750.0);
+        assert_eq!(parsed["height"], 700.0);
+        assert!(parsed["html"].is_string());
+        assert!(parsed["html"].as_str().unwrap().contains("Security Approval"));
+    }
+
+    // --- PipeReader / PipeWriter additional edge cases ---
+
+    #[test]
+    fn test_pipe_reader_skips_leading_whitespace() {
+        // Leading/trailing whitespace around the JSON line should be trimmed.
+        let input = Cursor::new("   {\"type\":\"ack\",\"version\":\"1.0\",\"data\":{}}   \n".to_string());
+        let mut reader = PipeReader::new(input);
+        let msg = reader.read_message().unwrap();
+        assert!(msg.is_ack());
+    }
+
+    #[test]
+    fn test_pipe_writer_serializes_full_message_fields() {
+        let mut output = Vec::new();
+        let mut writer = PipeWriter::new(&mut output);
+        let msg = PipeMessage::ws_key("k", 7000, "/path");
+        writer.write_message(&msg).unwrap();
+        let s = String::from_utf8(output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(s.trim()).unwrap();
+        assert_eq!(parsed["type"], "ws_key");
+        assert_eq!(parsed["version"], "1.0");
+        assert_eq!(parsed["data"]["key"], "k");
+        assert_eq!(parsed["data"]["port"], 7000);
+        assert_eq!(parsed["data"]["path"], "/path");
+    }
+
+    #[test]
+    fn test_receive_ws_key_extra_fields_ignored() {
+        // Unknown data fields should be silently ignored.
+        let ws_msg = r#"{"type":"ws_key","version":"1.0","data":{"key":"abc","port":1,"path":"/ws","extra":"ignored"}}"#;
+        let mut input = Cursor::new(ws_msg.to_string());
+        let mut output = Vec::new();
+        let (key, port, path) = receive_ws_key(&mut input, &mut output).unwrap();
+        assert_eq!(key, "abc");
+        assert_eq!(port, 1);
+        assert_eq!(path, "/ws");
+    }
+
+    #[test]
+    fn test_send_window_data_then_receive_roundtrip() {
+        // End-to-end: parent writes window_data, child reads it back.
+        let mut pipe = Vec::new();
+        let payload = serde_json::json!({"hello": "world", "n": 42});
+
+        // Parent side: write then read an ACK
+        let mut ack_input = Cursor::new(r#"{"type":"ack","version":"1.0","data":{}}"#.to_string());
+        send_window_data(&mut pipe, &mut ack_input, &payload).unwrap();
+
+        // Child side: read the window_data, then send back an ACK
+        let mut child_input = Cursor::new(String::from_utf8(pipe.clone()).unwrap());
+        let mut child_output = Vec::new();
+        let data = receive_window_data(&mut child_input, &mut child_output).unwrap();
+        assert_eq!(data["hello"], "world");
+        assert_eq!(data["n"], 42);
+
+        // Child's ACK is written out
+        let ack: PipeMessage = serde_json::from_str(
+            String::from_utf8(child_output).unwrap().trim(),
+        ).unwrap();
+        assert!(ack.is_ack());
+    }

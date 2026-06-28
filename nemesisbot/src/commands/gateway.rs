@@ -55,6 +55,102 @@ fn plugin_ui_library_exists() -> bool {
     nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
 
+/// Adapter bridging the agent's memory write/forget gate (P2) to the interactive
+/// approval popup. When attached, agent `memory_store`/`memory_forget` calls pop
+/// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
+/// timeout/error so a memory write never silently succeeds unapproved.
+struct GatewayMemoryGate {
+    approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
+}
+
+impl GatewayMemoryGate {
+    fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
+        Self { approval }
+    }
+
+    /// Request interactive approval. Returns true only if explicitly approved.
+    /// Runs the blocking `request_approval_sync` on a spawn_blocking thread (it
+    /// spawns a popup child process and waits for the user).
+    async fn request(&self, operation: &str, preview: &str) -> bool {
+        let am = self.approval.clone();
+        let operation = operation.to_string();
+        let preview = preview.to_string();
+        let req_id = uuid::Uuid::new_v4().to_string();
+        match tokio::task::spawn_blocking(move || {
+            am.request_approval_sync(&req_id, &operation, "memory", "MEDIUM", &preview, 30)
+        })
+        .await
+        {
+            Ok(Ok(true)) => true,
+            _ => false, // denied / expired / errored → treat as not approved
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
+    async fn approve_store(&self, preview: &str) -> bool {
+        self.request("memory_store", preview).await
+    }
+    async fn approve_forget(&self, preview: &str) -> bool {
+        self.request("memory_forget", preview).await
+    }
+}
+
+/// LLM safety judge (guardian) backed by the gateway's LLM provider. Calls the
+/// model with GUARDIAN_PROMPT + the action as evidence, parses the JSON verdict.
+/// Used only for CRITICAL operations (cost-bounded by the agent loop).
+struct GatewayLlmJudge {
+    provider: Arc<dyn nemesis_providers::router::LLMProvider>,
+    model: String,
+}
+
+#[async_trait::async_trait]
+impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
+    async fn judge(
+        &self,
+        req: &nemesis_security::guardian::JudgeRequest,
+    ) -> Result<nemesis_security::guardian::JudgeVerdict, String> {
+        let user = format!(
+            "Proposed action: {}\nAssigned risk level: {}\n\nTranscript (untrusted evidence):\n{}\n\nOutput the JSON verdict now.",
+            req.action, req.risk_level, req.transcript
+        );
+        let messages = vec![
+            nemesis_providers::types::Message {
+                role: "system".into(),
+                content: nemesis_security::guardian::GUARDIAN_PROMPT.to_string(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+            },
+            nemesis_providers::types::Message {
+                role: "user".into(),
+                content: user,
+                tool_calls: vec![],
+                tool_call_id: None,
+                timestamp: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+            },
+        ];
+        let opts = nemesis_providers::types::ChatOptions {
+            temperature: Some(0.0),
+            max_tokens: Some(256),
+            top_p: None,
+            stop: None,
+            extra: std::collections::HashMap::new(),
+        };
+        let resp = self
+            .provider
+            .chat(&messages, &[], &self.model, &opts)
+            .await
+            .map_err(|e| format!("guardian LLM call failed: {}", e))?;
+        nemesis_security::guardian::parse_verdict(&resp.content)
+    }
+}
+
 /// Adapter connecting ProcessManager to the security auditor's ApprovalManager trait.
 ///
 /// When a tool call triggers an "ask" security rule, the auditor calls
@@ -2060,7 +2156,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Passes the initial AgentLoop directly — no double construction.
     // The adapter manages the inbound bridge + agent spawn internally.
     let agent_adapter = Arc::new(adapters::AgentLoopServiceAdapter::new(
-        agent_loop,
+        agent_loop.clone(),
         shared_resources.clone(),
         bus.clone(),
         agent_loop_ref.clone(),
@@ -2691,8 +2787,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // request_approval_sync() which spawns an approval popup child process.
     if let Some(ref plugin) = security_plugin {
         let auditor = plugin.auditor();
-        let adapter = Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
-        auditor.set_approval_manager(adapter);
+        let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
+            Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
+        auditor.set_approval_manager(adapter.clone());
+        // P2: bridge the same approval manager to the agent's memory write/forget
+        // gate — agent memory_store/forget now pop up for approval, never
+        // bypassed by YOLO/auto. No-op if no memory executor was stashed.
+        agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+        // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
+        plugin.set_judge(Arc::new(GatewayLlmJudge {
+            provider: llm_provider.clone(),
+            model: model_name.clone(),
+        }));
+        info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
         info!("[Gateway] Approval manager wired (popup via ProcessManager)");
     }
 

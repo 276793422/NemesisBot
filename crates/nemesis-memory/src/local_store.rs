@@ -106,6 +106,18 @@ impl TfIdfLocalStore {
 
         Ok(())
     }
+
+    /// Sidecar archive path for forgotten entries (`<stem>.archive.jsonl` next
+    /// to the store file). Written by `delete`; never loaded back into the store.
+    fn archive_path(&self) -> PathBuf {
+        let dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let stem = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("store");
+        dir.join(format!("{}.archive.jsonl", stem))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,11 +204,29 @@ impl MemoryStore for TfIdfLocalStore {
     }
 
     async fn delete(&self, id: &str) -> Result<bool, String> {
-        let removed = self.entries.write().remove(id).is_some();
-        if removed {
+        let removed = self.entries.write().remove(id);
+        if let Some(entry) = removed {
+            // Archive-on-forget: append the removed entry to a sidecar archive
+            // file before flushing, so a forgotten memory stays inspectable and
+            // recoverable rather than being hard-deleted. The archive file is
+            // never loaded back into the active store on restart.
+            let line = serde_json::to_string(&entry).unwrap_or_default();
+            if !line.is_empty() {
+                if let Ok(mut f) = tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.archive_path())
+                    .await
+                {
+                    let _ = f.write_all(line.as_bytes()).await;
+                    let _ = f.write_all(b"\n").await;
+                }
+            }
             self.flush().await?;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(removed)
     }
 
     async fn list(

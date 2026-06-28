@@ -36,6 +36,7 @@ pub mod merkle;
 pub mod classifier;
 pub mod resolver;
 pub mod clamav;
+pub mod guardian;
 
 pub use types::*;
 pub use auditor::SecurityAuditor;

@@ -87,6 +87,27 @@ pub trait LlmProvider: Send + Sync {
     ) -> Result<LlmResponse, String>;
 }
 
+/// A previewable file change, used by the checkpoint (edit safety net) to
+/// snapshot a file's pre-edit state so a `/rewind` can restore it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileChange {
+    /// Path the tool will modify (as given in args; resolved against workspace
+    /// root at snapshot/restore time).
+    pub path: String,
+    /// Kind of change — determines how a rewind restores it.
+    pub kind: FileChangeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FileChangeKind {
+    /// File did not exist before the edit; rewind deletes it.
+    Create,
+    /// File existed and is being modified; rewind restores old content.
+    Modify,
+    /// File existed and is being deleted; rewind restores old content.
+    Delete,
+}
+
 /// Trait for tools that can be executed by the agent loop.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -113,6 +134,16 @@ pub trait Tool: Send + Sync {
     /// JSON Schema object (e.g., {"type": "object", "properties": {...}}).
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
+    }
+
+    /// Preview the file change this call would make, for checkpointing (the edit
+    /// safety net). Synchronous — parse `args` (the same JSON string passed to
+    /// `execute`) to determine the target path and change kind only; the
+    /// checkpoint store reads the file's current content separately (async).
+    /// Returns `None` for read-only tools or non-file tools (default), so only
+    /// writer tools opt in. Never panic on malformed args — return `None`.
+    fn preview(&self, _args: &str) -> Option<FileChange> {
+        None
     }
 }
 
@@ -375,6 +406,18 @@ pub struct AgentLoop {
     /// the token for the corresponding session is cancelled, causing the
     /// LLM loop to break at the next check point.
     cancel_tokens: dashmap::DashMap<String, tokio_util::sync::CancellationToken>,
+    /// Checkpoint store for the edit safety net. When attached, every writer
+    /// tool call snapshots the file's pre-edit content before execution, so a
+    /// rewind can restore it. RwLock so it can be attached from `&self` (the
+    /// gateway sets it after construction).
+    checkpoint_store: parking_lot::RwLock<Option<Arc<crate::checkpoint::CheckpointStore>>>,
+    /// Monotonic turn counter for checkpoints (one per inbound message). Global
+    /// across sessions in this MVP — adequate for single-session deployments;
+    /// multi-session isolation is a documented follow-up.
+    turn_counter: std::sync::atomic::AtomicUsize,
+    /// Memory tool executor reference, so the gateway can attach an approval
+    /// gate post-construction (memory_store/forget require interactive approval).
+    memory_executor: parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
 }
 
 impl AgentLoop {
@@ -410,6 +453,60 @@ impl AgentLoop {
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
+            checkpoint_store: parking_lot::RwLock::new(None),
+            turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            memory_executor: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Attach a checkpoint store for the edit safety net. When set, every writer
+    /// tool call (write_file/edit_file/append_file/delete_file) snapshots the
+    /// file's pre-edit content before execution, so a rewind can restore it.
+    pub fn set_checkpoint_store(&self, store: Arc<crate::checkpoint::CheckpointStore>) {
+        *self.checkpoint_store.write() = Some(store);
+    }
+
+    /// Stash the memory tool executor so the gateway can later attach an approval
+    /// gate via `set_memory_approval_gate`. Called by the factory after building
+    /// the shared tool config.
+    pub fn set_memory_executor(&self, exec: Arc<nemesis_memory::memory_tools::MemoryToolExecutor>) {
+        *self.memory_executor.write() = Some(exec);
+    }
+
+    /// Attach an approval gate to the memory executor (if one was stashed). After
+    /// this, agent `memory_store`/`memory_forget` calls require approval.
+    pub fn set_memory_approval_gate(
+        &self,
+        gate: Arc<dyn nemesis_memory::memory_tools::MemoryApprovalGate>,
+    ) {
+        if let Some(ref exec) = *self.memory_executor.read() {
+            exec.set_approval_gate(gate);
+        }
+    }
+
+    /// Rewind the workspace to the start of turn `from_turn`: restores every file
+    /// changed at or after that turn to its pre-edit content (the edit safety
+    /// net). Returns `(written, deleted)` paths. Errors if no checkpoint store is
+    /// attached. Conversation rewinding (truncating session history) is handled
+    /// by the caller — this only restores code.
+    pub async fn rewind(
+        &self,
+        from_turn: usize,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let cp = self
+            .checkpoint_store
+            .read()
+            .as_ref()
+            .cloned()
+            .ok_or("checkpoint store not attached")?;
+        Ok(cp.restore_code(from_turn).await)
+    }
+
+    /// List checkpoint turns (for a rewind picker UI). Empty if no store attached.
+    pub fn checkpoint_list(&self) -> Vec<crate::checkpoint::CheckpointMeta> {
+        match self.checkpoint_store.read().as_ref() {
+            Some(cp) => cp.list_meta(),
+            None => Vec::new(),
         }
     }
 
@@ -483,6 +580,9 @@ impl AgentLoop {
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
+            checkpoint_store: parking_lot::RwLock::new(None),
+            turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            memory_executor: parking_lot::RwLock::new(None),
         }
     }
 
@@ -1282,6 +1382,16 @@ impl AgentLoop {
         msg: &nemesis_types::channel::InboundMessage,
     ) -> (String, String, Option<String>) {
         let content_preview = truncate(&msg.content, 80);
+
+        // Open a checkpoint turn for the edit safety net (so writer-tool changes
+        // during this message can be rewound). No-op when no store is attached.
+        let cp_turn = self.turn_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            let cp = self.checkpoint_store.read().as_ref().cloned();
+            if let Some(cp) = cp {
+                cp.begin(cp_turn, &msg.content);
+            }
+        }
 
         info!(
             "[AgentLoop] Processing message from {}:{}: {}",
@@ -2702,6 +2812,31 @@ impl AgentLoop {
                     reason_str
                 );
             }
+            // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
+            // after the rule layers allow, and only for CRITICAL operations (cost
+            // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
+            // only escalates — rules already denied cases returned above).
+            if security.is_critical_tool(&tool_call.name) {
+                if let Some(judge) = security.judge() {
+                    let req = nemesis_security::guardian::JudgeRequest {
+                        action: tool_call.name.clone(),
+                        risk_level: "critical".to_string(),
+                        transcript: tool_call.arguments.clone(),
+                    };
+                    if let Ok(v) = judge.judge(&req).await {
+                        if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
+                            warn!(
+                                "[AgentLoop] Guardian denied critical tool {}: {}",
+                                tool_call.name, v.rationale
+                            );
+                            return format!(
+                                "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
+                                v.rationale
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // Inject channel/chat_id into context-aware tools before execution.
@@ -2715,6 +2850,22 @@ impl AgentLoop {
 
         let tool_start = std::time::Instant::now();
         let tool_opt = self.tools.read().get(&tool_call.name).cloned();
+        // Checkpoint capture: if the tool previews a file change, snapshot its
+        // pre-edit content (the edit safety net) before execution modifies it.
+        // Read-only / non-file tools return None from preview and are skipped.
+        if let Some(ref tool) = tool_opt {
+            if let Some(change) = tool.preview(&tool_call.arguments) {
+                // Drop the read guard before awaiting so the future stays Send
+                // (RwLockReadGuard is not Send and cannot cross an await point).
+                let cp_opt = {
+                    let guard = self.checkpoint_store.read();
+                    guard.as_ref().cloned()
+                };
+                if let Some(cp) = cp_opt {
+                    cp.snapshot(&change).await;
+                }
+            }
+        }
         let result = match tool_opt {
             Some(tool) => match tool.execute(&tool_call.arguments, context).await {
                 Ok(result) => {

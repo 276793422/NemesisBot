@@ -95,6 +95,53 @@ async fn test_delete_removes_entry() {
 }
 
 #[tokio::test]
+async fn test_delete_archives_to_sidecar() {
+    // P2 archive-on-forget: delete must NOT hard-delete — it appends the entry
+    // to <stem>.archive.jsonl so a forgotten memory stays inspectable/recoverable.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.jsonl");
+    let store = TfIdfLocalStore::new(&path).await.unwrap();
+
+    let id = store
+        .store(make_entry(MemoryType::LongTerm, "important durable fact"))
+        .await
+        .unwrap();
+    assert!(store.delete(&id).await.unwrap());
+
+    // Archive sidecar must exist and contain the deleted entry.
+    let archive_path = dir.path().join("store.archive.jsonl");
+    assert!(archive_path.exists(), "archive sidecar must exist after delete");
+    let archived = tokio::fs::read_to_string(&archive_path).await.unwrap();
+    assert!(
+        archived.contains(&id),
+        "archive must contain the deleted entry's id"
+    );
+
+    // Reloading must NOT bring the archived entry back into the active set.
+    let store2 = TfIdfLocalStore::new(&path).await.unwrap();
+    assert!(
+        store2.get(&id).await.unwrap().is_none(),
+        "archived entry must stay inactive on reload"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_nonexistent_does_not_create_archive() {
+    // Boundary: deleting an id that was never stored must not create an archive
+    // file (and must return false, not panic).
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store.jsonl");
+    let store = TfIdfLocalStore::new(&path).await.unwrap();
+
+    let deleted = store.delete("ghost-id").await.unwrap();
+    assert!(!deleted);
+    assert!(
+        !dir.path().join("store.archive.jsonl").exists(),
+        "no archive must be created when nothing was deleted"
+    );
+}
+
+#[tokio::test]
 async fn test_query_finds_relevant() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.jsonl");

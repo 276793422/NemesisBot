@@ -25,6 +25,65 @@ fn test_parse_host_port_no_port() {
     assert_eq!(port, 0);
 }
 
+// -------------------------------------------------------------------------
+// P2: GatewayMemoryGate (memory approval bridge) — mock ApprovalManager tests
+// Covers the three boundary cases: user approves, user denies, popup
+// times out / errors (must be treated as deny — never let a memory write
+// through silently on failure).
+// -------------------------------------------------------------------------
+
+use nemesis_memory::memory_tools::MemoryApprovalGate;
+
+/// Mock approval manager returning a canned decision.
+struct MockApproval {
+    decision: Result<bool, String>,
+}
+
+impl nemesis_security::auditor::ApprovalManager for MockApproval {
+    fn is_running(&self) -> bool {
+        true
+    }
+    fn request_approval_sync(
+        &self,
+        _request_id: &str,
+        _operation: &str,
+        _target: &str,
+        _risk_level: &str,
+        _reason: &str,
+        _timeout_secs: u64,
+    ) -> Result<bool, String> {
+        self.decision.clone()
+    }
+}
+
+fn mock_memory_gate(decision: Result<bool, String>) -> GatewayMemoryGate {
+    let am: std::sync::Arc<dyn nemesis_security::auditor::ApprovalManager> =
+        std::sync::Arc::new(MockApproval { decision });
+    GatewayMemoryGate::new(am)
+}
+
+#[tokio::test]
+async fn memory_gate_approves_when_user_approves() {
+    let g = mock_memory_gate(Ok(true));
+    assert!(g.approve_store("store fact X").await);
+    assert!(g.approve_forget("forget session Y").await);
+}
+
+#[tokio::test]
+async fn memory_gate_denies_when_user_denies() {
+    let g = mock_memory_gate(Ok(false));
+    assert!(!g.approve_store("x").await, "denied store must be blocked");
+    assert!(!g.approve_forget("y").await, "denied forget must be blocked");
+}
+
+#[tokio::test]
+async fn memory_gate_denies_on_timeout_or_error() {
+    // Popup timeout / IPC error → request_approval_sync returns Err → must deny.
+    let g = mock_memory_gate(Err("popup timed out".into()));
+    assert!(!g.approve_store("x").await, "error must be treated as deny");
+    assert!(!g.approve_forget("y").await);
+}
+
 #[test]
 fn test_parse_host_port_ipv6_like() {
     // With rfind(':'), last colon is used

@@ -68,6 +68,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 

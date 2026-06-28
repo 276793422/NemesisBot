@@ -908,3 +908,280 @@ fn test_build_command_empty_message() {
     let json = serde_json::to_string(&cmd).unwrap();
     assert!(json.contains("\"message\":\"\""));
 }
+
+// ============================================================
+// Data-coercion default coverage (as_f64 / as_str unwrap_or arms)
+// ============================================================
+
+#[test]
+fn test_person_detected_score_as_integer_defaults_to_zero() {
+    // score provided as a JSON integer (not float): as_f64() still works for
+    // integers, so this confirms integer scores are accepted.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("score".to_string(), serde_json::json!(1)); // integer
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { content, .. } => {
+            // Integer 1 coerces to 1.0 -> 100.00%
+            assert!(content.contains("100.00%"));
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_person_detected_score_as_string_defaults_to_zero() {
+    // score provided as a string cannot be coerced via as_f64 -> defaults 0.0.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("score".to_string(), serde_json::json!("0.9")); // string
+    data.insert("class_name".to_string(), serde_json::json!("dog"));
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+            // String score falls back to 0.0 -> 0.00%
+            assert!(content.contains("0.00%"));
+            assert_eq!(metadata.get("score").unwrap(), "0.00");
+            assert_eq!(metadata.get("class_name").unwrap(), "dog");
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_person_detected_class_name_as_non_string_defaults_to_person() {
+    // class_name provided as a number cannot be coerced via as_str -> "person".
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("class_name".to_string(), serde_json::json!(42)); // number
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { content, metadata, .. } => {
+            assert!(content.contains("person"));
+            assert_eq!(metadata.get("class_name").unwrap(), "person");
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_person_detected_coordinates_as_strings_default_to_zero() {
+    // x/y/w/h as strings -> as_f64 None -> all default to 0.0.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("class_name".to_string(), serde_json::json!("person"));
+    data.insert("score".to_string(), serde_json::json!(0.5));
+    data.insert("x".to_string(), serde_json::json!("100"));
+    data.insert("y".to_string(), serde_json::json!("200"));
+    data.insert("w".to_string(), serde_json::json!("50"));
+    data.insert("h".to_string(), serde_json::json!("80"));
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { content, .. } => {
+            // Coordinates default to 0; position line shows (0, 0) and size 0x0.
+            assert!(content.contains("Position: (0, 0)"));
+            assert!(content.contains("Size: 0x0"));
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_person_detected_timestamp_negative_excluded_from_metadata() {
+    // timestamp of Some(...) is always inserted; None is always skipped.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: None,
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { metadata, .. } => {
+            assert!(!metadata.contains_key("timestamp"));
+            // score + class_name are always present regardless of timestamp.
+            assert!(metadata.contains_key("score"));
+            assert!(metadata.contains_key("class_name"));
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_person_detected_full_metadata_keys() {
+    // When all fields are present, metadata has exactly timestamp/class_name/score.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("class_name".to_string(), serde_json::json!("cat"));
+    data.insert("score".to_string(), serde_json::json!(0.42));
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: Some(1700000123.0),
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { metadata, .. } => {
+            assert_eq!(metadata.len(), 3);
+            assert_eq!(metadata.get("class_name").unwrap(), "cat");
+            assert_eq!(metadata.get("score").unwrap(), "0.42");
+            assert_eq!(metadata.get("timestamp").unwrap(), "1700000123");
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}
+
+#[test]
+fn test_status_update_includes_data_debug_repr() {
+    // StatusUpdate formats the data HashMap with {:?}; verify the key appears.
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("battery".to_string(), serde_json::json!(87));
+    let msg = MaixCamMessage {
+        msg_type: Some("status".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::StatusUpdate(s) => {
+            assert!(s.contains("battery"));
+        }
+        _ => panic!("expected StatusUpdate"),
+    }
+}
+
+#[test]
+fn test_deserialize_message_unknown_extra_fields_ignored() {
+    // Unknown JSON fields must be ignored (no #[serde(deny_unknown_fields)]).
+    let json = r#"{"type":"heartbeat","unexpected_field":true,"another":[1,2,3]}"#;
+    let msg: MaixCamMessage = serde_json::from_str(json).unwrap();
+    assert_eq!(msg.msg_type.as_deref(), Some("heartbeat"));
+}
+
+#[test]
+fn test_deserialize_message_null_type() {
+    // Explicit null for "type" -> Option<String> = None -> Unknown("").
+    let json = r#"{"type":null}"#;
+    let msg: MaixCamMessage = serde_json::from_str(json).unwrap();
+    assert!(msg.msg_type.is_none());
+}
+
+#[test]
+fn test_deserialize_message_with_nested_data() {
+    let json = r#"{"type":"status","data":{"obj":{"nested":true},"arr":[1,2]}}"#;
+    let msg: MaixCamMessage = serde_json::from_str(json).unwrap();
+    let data = msg.data.unwrap();
+    assert!(data.get("obj").is_some());
+    assert!(data.get("arr").unwrap().is_array());
+}
+
+#[test]
+fn test_maixcam_config_default_eq_manual_construction() {
+    // Default impl must match the documented defaults (0.0.0.0:8888, empty allow_from).
+    let default = MaixCamConfig::default();
+    let manual = MaixCamConfig {
+        host: "0.0.0.0".to_string(),
+        port: 8888,
+        allow_from: Vec::new(),
+    };
+    assert_eq!(default.host, manual.host);
+    assert_eq!(default.port, manual.port);
+    assert_eq!(default.allow_from.len(), manual.allow_from.len());
+}
+
+#[test]
+fn test_build_command_serialization_has_timestamp_field() {
+    // The serialized command must include the timestamp key (even though it's 0.0).
+    let cmd = MaixCamChannel::build_command("c1", "hi");
+    let json = serde_json::to_string(&cmd).unwrap();
+    assert!(json.contains("\"timestamp\":0"));
+    // Round-trip via Value to confirm structural correctness.
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["type"], "command");
+    assert_eq!(v["timestamp"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn test_listen_addr_with_ipv6_host() {
+    let config = MaixCamConfig {
+        host: "::1".to_string(),
+        port: 1234,
+        allow_from: Vec::new(),
+    };
+    let ch = MaixCamChannel::new(config).unwrap();
+    assert_eq!(ch.listen_addr(), "::1:1234");
+}
+
+#[test]
+fn test_process_message_person_detected_full_content_format() {
+    // Verify the full content template (all six fields formatted).
+    let config = MaixCamConfig::default();
+    let ch = MaixCamChannel::new(config).unwrap();
+
+    let mut data = HashMap::new();
+    data.insert("class_name".to_string(), serde_json::json!("vehicle"));
+    data.insert("score".to_string(), serde_json::json!(0.875));
+    data.insert("x".to_string(), serde_json::json!(12.0));
+    data.insert("y".to_string(), serde_json::json!(34.0));
+    data.insert("w".to_string(), serde_json::json!(56.0));
+    data.insert("h".to_string(), serde_json::json!(78.0));
+    let msg = MaixCamMessage {
+        msg_type: Some("person_detected".to_string()),
+        tips: None,
+        timestamp: None,
+        data: Some(data),
+    };
+    let event = ch.process_message(&msg);
+    match event {
+        MaixCamEvent::PersonDetected { content, .. } => {
+            assert!(content.contains("Class: vehicle"));
+            assert!(content.contains("Confidence: 87.50%"));
+            assert!(content.contains("Position: (12, 34)"));
+            assert!(content.contains("Size: 56x78"));
+        }
+        _ => panic!("expected PersonDetected"),
+    }
+}

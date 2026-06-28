@@ -1203,3 +1203,624 @@ fn test_flatten_single_top_dir_nonexistent_dir() {
     // Should return the path as-is since read_dir fails
     assert_eq!(result, std::path::PathBuf::from("/tmp/nonexistent_flat_dir_xyz"));
 }
+
+// ============================================================
+// wiremock-based HTTP tests for async functions
+//
+// Covers the success + error paths of the async HTTP functions:
+//   - search (search_query via ClawHub search API + search_list via convex)
+//   - get_skill_meta (convex skills:getBySlug)
+//   - get_skill_content (ClawHub file API + convex/github fallback)
+//   - browse (ClawHub REST /api/v1/skills)
+//   - download_and_install (ZIP download + github fallback)
+// Each test starts its own MockServer to avoid cross-test interference.
+// ============================================================
+
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Build a Convex-shaped response envelope for wiremock.
+fn convex_body(status: &str, value: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "status": status, "value": value })
+}
+
+// --- search (non-empty query → ClawHub search API) ---
+
+#[tokio::test]
+async fn test_search_query_success_parses_results() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let body = serde_json::json!({
+        "results": [
+            {"score": 4.5, "slug": "pdf", "displayName": "PDF Tool", "summary": "Converts PDFs"},
+            {"score": 0.8, "slug": "csv", "displayName": "CSV Tool", "summary": "Converts CSV"}
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .and(query_param("q", "pdf"))
+        .and(query_param("limit", "10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let results = registry.search("pdf", 10).await.expect("search should succeed");
+    assert_eq!(results.len(), 2);
+    // score 4.5 > 1.0 -> normalized to 4.5 / 5.0 = 0.9
+    assert!((results[0].score - 0.9).abs() < 1e-9);
+    assert_eq!(results[0].slug, "pdf");
+    assert_eq!(results[0].display_name, "PDF Tool");
+    assert_eq!(results[0].summary, "Converts PDFs");
+    assert_eq!(results[0].registry_name, "clawhub");
+    assert_eq!(results[0].version, "latest");
+    // score 0.8 <= 1.0 -> kept as-is, not normalized
+    assert!((results[1].score - 0.8).abs() < 1e-9);
+    assert_eq!(results[1].slug, "csv");
+}
+
+#[tokio::test]
+async fn test_search_query_marks_truncation_when_full_limit() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // Exactly `limit` (2) results -> last entry truncated = true.
+    let body = serde_json::json!({
+        "results": [
+            {"score": 0.5, "slug": "a", "displayName": "A", "summary": "a"},
+            {"score": 0.4, "slug": "b", "displayName": "B", "summary": "b"}
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let results = registry.search("anything", 2).await.unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(!results[0].truncated);
+    assert!(results.last().unwrap().truncated);
+}
+
+#[tokio::test]
+async fn test_search_query_http_error_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+        .mount(&server)
+        .await;
+
+    let err = registry.search("pdf", 10).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("status 500") || msg.contains("500"), "msg: {}", msg);
+}
+
+#[tokio::test]
+async fn test_search_query_malformed_json_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json {"))
+        .mount(&server)
+        .await;
+
+    let err = registry.search("pdf", 10).await.unwrap_err();
+    assert!(err.to_string().contains("parse search response"));
+}
+
+// --- search (empty query → convex skills:list) ---
+
+#[tokio::test]
+async fn test_search_list_success_parses_results() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let value = serde_json::json!([
+        {"slug": "pdf", "displayName": "PDF", "summary": "s1", "stats": {"downloads": 42.0}},
+        {"slug": "csv", "displayName": "CSV", "summary": "s2", "stats": {"downloads": 7.0}}
+    ]);
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let results = registry.search("", 10).await.expect("list should succeed");
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].slug, "pdf");
+    assert_eq!(results[0].downloads, 42);
+    assert!((results[0].score - 1.0).abs() < 1e-9);
+    assert_eq!(results[1].slug, "csv");
+    assert_eq!(results[1].downloads, 7);
+}
+
+#[tokio::test]
+async fn test_search_list_convex_error_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let body = serde_json::json!({
+        "status": "error",
+        "value": null,
+        "errorMessage": "rate limited"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let err = registry.search("", 10).await.unwrap_err();
+    assert!(err.to_string().contains("convex error") && err.to_string().contains("rate limited"));
+}
+
+#[tokio::test]
+async fn test_search_list_malformed_value_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // value is a string, not an array -> deserialization of Vec fails.
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", serde_json::json!("not-an-array"))))
+        .mount(&server)
+        .await;
+
+    assert!(registry.search("", 10).await.is_err());
+}
+
+// --- get_skill_meta (convex skills:getBySlug) ---
+
+#[tokio::test]
+async fn test_get_skill_meta_success() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "PDF Tool", "summary": "Converts PDFs",
+                   "stats": {"downloads": 1234.0}},
+        "latestVersion": {"version": "2.0.0"},
+        "resolvedSlug": "pdf"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let meta = registry.get_skill_meta("pdf").await.expect("meta should succeed");
+    assert_eq!(meta.slug, "pdf");
+    assert_eq!(meta.display_name, "PDF Tool");
+    assert_eq!(meta.summary, "Converts PDFs");
+    assert_eq!(meta.latest_version, "2.0.0");
+    assert_eq!(meta.author, "alice");
+    assert_eq!(meta.downloads, 1234);
+    assert_eq!(meta.registry_name, "clawhub");
+    assert!(!meta.is_malware_blocked);
+}
+
+#[tokio::test]
+async fn test_get_skill_meta_empty_version_defaults_to_latest() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let value = serde_json::json!({
+        "owner": {"handle": "bob"},
+        "skill": {"slug": "", "displayName": "", "summary": "",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "fallback-slug"
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let meta = registry.get_skill_meta("fallback-slug").await.unwrap();
+    // Empty skill.slug falls back to resolved_slug.
+    assert_eq!(meta.slug, "fallback-slug");
+    // Empty version defaults to "latest".
+    assert_eq!(meta.latest_version, "latest");
+}
+
+#[tokio::test]
+async fn test_get_skill_meta_both_slugs_empty_returns_not_found() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let value = serde_json::json!({
+        "owner": {"handle": "x"},
+        "skill": {"slug": "", "displayName": "", "summary": "",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": ""
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let err = registry.get_skill_meta("missing").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("not found") || msg.contains("missing"), "msg: {}", msg);
+}
+
+#[tokio::test]
+async fn test_get_skill_meta_convex_error_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "error", "value": null, "errorMessage": "no such skill"
+        })))
+        .mount(&server)
+        .await;
+
+    let err = registry.get_skill_meta("pdf").await.unwrap_err();
+    assert!(err.to_string().contains("convex error"));
+}
+
+// --- get_skill_content (ClawHub file API primary path) ---
+
+#[tokio::test]
+async fn test_get_skill_content_file_api_success() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .and(query_param("path", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("# PDF Skill\nbody"))
+        .mount(&server)
+        .await;
+
+    let content = registry.get_skill_content("pdf").await.expect("content should succeed");
+    assert_eq!(content.slug, "pdf");
+    assert_eq!(content.filename, "SKILL.md");
+    assert!(content.content.contains("PDF Skill"));
+}
+
+#[tokio::test]
+async fn test_get_skill_content_file_api_404_falls_back_through_convex_to_github() {
+    let server = MockServer::start().await;
+    // base_url + convex_url pointed at the mock; github raw URL is hardcoded in
+    // the source (https://raw.githubusercontent.com/...) and cannot be
+    // redirected, so the fallback reaches the real host and fails there.
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // Strategy 1: file API returns 404 -> fallback path triggered.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("no file api"))
+        .mount(&server)
+        .await;
+
+    // Strategy 2: convex returns owner handle (proving the fallback reached
+    // convex and parsed it successfully).
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "PDF", "summary": "s",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .named("convex-by-slug")
+        .mount(&server)
+        .await;
+
+    // The github raw call hits the real internet and fails; the overall result
+    // is Err with an HTTP status message. This proves the fallback chain
+    // advanced past both mocked stages (file API -> convex) to the final
+    // github raw fetch.
+    let err = registry.get_skill_content("pdf").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("HTTP") || msg.contains("request failed"),
+        "expected github raw fetch error, got: {}",
+        msg
+    );
+    // Verify convex was actually consulted during the fallback.
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn test_get_skill_content_fallback_owner_empty_returns_not_found() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // file API fails.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    // convex returns empty owner -> NotFound error.
+    let value = serde_json::json!({
+        "owner": {"handle": ""},
+        "skill": {"slug": "pdf", "displayName": "", "summary": "",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let err = registry.get_skill_content("pdf").await.unwrap_err();
+    assert!(err.to_string().contains("owner handle not found"));
+}
+
+#[tokio::test]
+async fn test_get_skill_content_invalid_slug_returns_validation_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let err = registry.get_skill_content("bad/slug").await.unwrap_err();
+    assert!(err.to_string().contains("invalid skill slug"));
+}
+
+// --- browse (ClawHub REST /api/v1/skills) ---
+
+#[tokio::test]
+async fn test_browse_success_parses_items_and_cursor() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    let body = serde_json::json!({
+        "items": [
+            {"slug": "a", "displayName": "A", "summary": "sa", "stats": {"downloads": 10.0}},
+            {"slug": "b", "displayName": "B", "summary": "sb", "stats": {"downloads": 5.0}}
+        ],
+        "nextCursor": "cursor-123"
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .and(query_param("sort", "trending"))
+        .and(query_param("limit", "20"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let result = registry
+        .browse(&BrowseSort::Trending, 0, "")
+        .await
+        .expect("browse should succeed");
+    assert_eq!(result.items.len(), 2);
+    assert_eq!(result.items[0].slug, "a");
+    assert_eq!(result.items[0].downloads, 10);
+    assert_eq!(result.items[1].slug, "b");
+    assert_eq!(result.next_cursor.as_deref(), Some("cursor-123"));
+}
+
+#[tokio::test]
+async fn test_browse_includes_cursor_param_when_provided() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .and(query_param("cursor", "page2"))
+        .and(query_param("sort", "downloads"))
+        .and(query_param("limit", "5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "items": [],
+            "nextCursor": null
+        })))
+        .mount(&server)
+        .await;
+
+    let result = registry.browse(&BrowseSort::Downloads, 5, "page2").await.unwrap();
+    assert!(result.items.is_empty());
+    assert!(result.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn test_browse_http_error_returns_err_with_status() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden body"))
+        .mount(&server)
+        .await;
+
+    let err = registry.browse(&BrowseSort::Stars, 10, "").await.unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("browse failed") && msg.contains("403"), "msg: {}", msg);
+}
+
+#[tokio::test]
+async fn test_browse_malformed_json_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("garbage"))
+        .mount(&server)
+        .await;
+
+    let err = registry.browse(&BrowseSort::Updated, 10, "").await.unwrap_err();
+    assert!(err.to_string().contains("parse browse response"));
+}
+
+#[tokio::test]
+async fn test_browse_limit_clamped_to_100() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // Request 500 -> clamped to 100.
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills"))
+        .and(query_param("limit", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items": []})))
+        .mount(&server)
+        .await;
+
+    let result = registry.browse(&BrowseSort::Rating, 500, "").await.unwrap();
+    assert!(result.items.is_empty());
+}
+
+// --- download_and_install (ZIP path) ---
+
+#[tokio::test]
+async fn test_download_and_install_zip_success() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    // 1. convex get-by-slug returns owner + version.
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "PDF", "summary": "Converts PDFs",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": "1.2.0"},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    // 2. ZIP download returns a real zip containing a single top-level dir.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("installed");
+    let mut zip_buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("pdf/SKILL.md", options).unwrap();
+        writer.write_all(b"# PDF Skill").unwrap();
+        writer.finish().unwrap();
+    }
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .and(query_param("slug", "pdf"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "application/zip")
+                .set_body_bytes(zip_buf.clone()),
+        )
+        .mount(&server)
+        .await;
+
+    let result = registry
+        .download_and_install("pdf", "1.0", &target.to_string_lossy())
+        .await
+        .expect("install should succeed");
+    assert_eq!(result.version, "1.2.0");
+    assert_eq!(result.summary, "Converts PDFs");
+    // File extracted (top-level dir flattened).
+    assert!(target.join("SKILL.md").exists());
+}
+
+#[tokio::test]
+async fn test_download_and_install_convex_error_returns_err() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "error", "value": null, "errorMessage": "db down"
+        })))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .download_and_install("pdf", "1.0", "/tmp/whatever")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("convex error"));
+}
+
+#[tokio::test]
+async fn test_download_and_install_empty_owner_returns_not_found() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    let value = serde_json::json!({
+        "owner": {"handle": ""},
+        "skill": {"slug": "pdf", "displayName": "", "summary": "",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": ""},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .download_and_install("pdf", "1.0", "/tmp/whatever")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("owner handle not found"));
+}
+
+#[tokio::test]
+async fn test_download_and_install_zip_wrong_content_type_falls_back_to_github() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), &server.uri());
+
+    // convex returns owner.
+    let value = serde_json::json!({
+        "owner": {"handle": "alice"},
+        "skill": {"slug": "pdf", "displayName": "", "summary": "s",
+                   "stats": {"downloads": 0.0}},
+        "latestVersion": {"version": "1.0.0"},
+        "resolvedSlug": "pdf"
+    });
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(convex_body("success", value)))
+        .mount(&server)
+        .await;
+
+    // ZIP download returns 200 but a non-zip content type -> download_skill_zip
+    // returns Err -> download_and_install falls back to GitHub Trees API, which
+    // hits /repos/.../git/trees/main on api.github.com. Since we don't mock that
+    // real host, the fallback network call fails, producing an Err (not a panic).
+    Mock::given(method("GET"))
+        .and(path("/api/v1/download"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/html")
+                .set_body_string("<html>not a zip</html>"),
+        )
+        .mount(&server)
+        .await;
+
+    let result = registry
+        .download_and_install("pdf", "1.0", "/tmp/nemesis_test_install")
+        .await;
+    assert!(result.is_err(), "expected github fallback to fail without network");
+}

@@ -1372,3 +1372,100 @@ fn test_spi_parameters_json_structure() {
     assert!(enum_values.contains(&serde_json::json!("transfer")));
     assert!(enum_values.contains(&serde_json::json!("read")));
 }
+
+// ============================================================
+// Deeper coverage for pure helper edge cases
+// ============================================================
+
+#[test]
+fn test_i2c_parse_address_float_rejected() {
+    // A floating-point number is not a u64; as_u64() returns None.
+    let tool = I2CTool::new();
+    let result = tool.parse_address(&serde_json::json!({"address": 56.5}));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_i2c_parse_address_string_rejected() {
+    // A string (even numeric-looking) is not accepted by as_u64().
+    let tool = I2CTool::new();
+    let result = tool.parse_address(&serde_json::json!({"address": "0x38"}));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_i2c_parse_bus_numeric_string_with_leading_zeros() {
+    // Leading zeros are still all-digits -> valid.
+    let tool = I2CTool::new();
+    assert!(tool.parse_bus(&serde_json::json!({"bus": "007"})).is_ok());
+}
+
+#[test]
+fn test_i2c_parse_bus_non_string_type_rejected() {
+    // bus given as an integer (not string) is rejected by as_str().
+    let tool = I2CTool::new();
+    assert!(tool.parse_bus(&serde_json::json!({"bus": 1})).is_err());
+}
+
+#[test]
+fn test_spi_parse_device_negative_part_rejected() {
+    // Negative sign is not a digit -> rejected.
+    let tool = SPITool::new();
+    assert!(tool.parse_device(&serde_json::json!({"device": "-1.0"})).is_err());
+    assert!(tool.parse_device(&serde_json::json!({"device": "1.-0"})).is_err());
+}
+
+#[test]
+fn test_spi_validate_params_float_speed_ignored() {
+    // A float speed does not match as_u64(), so validation is skipped (Ok).
+    let tool = SPITool::new();
+    assert!(tool.validate_spi_params(&serde_json::json!({"speed": 1.5})).is_ok());
+}
+
+#[test]
+fn test_spi_validate_params_string_mode_ignored() {
+    // A string mode does not match as_u64(), so validation is skipped (Ok).
+    let tool = SPITool::new();
+    assert!(tool.validate_spi_params(&serde_json::json!({"mode": "fast"})).is_ok());
+}
+
+#[test]
+fn test_i2c_tool_metadata_consistent() {
+    let tool = I2CTool::new();
+    // Description must mention the Linux-only constraint and the 4 actions.
+    let desc = tool.description();
+    assert!(desc.contains("Linux"));
+    for action in ["detect", "scan", "read", "write"] {
+        assert!(desc.contains(action), "description should mention {}", action);
+    }
+}
+
+#[test]
+fn test_spi_tool_metadata_consistent() {
+    let tool = SPITool::new();
+    let desc = tool.description();
+    assert!(desc.contains("Linux"));
+    for action in ["list", "transfer", "read"] {
+        assert!(desc.contains(action), "description should mention {}", action);
+    }
+}
+
+#[test]
+fn test_i2c_parameters_required_field() {
+    let tool = I2CTool::new();
+    let params = tool.parameters();
+    let required = params["required"].as_array().unwrap();
+    assert!(required.contains(&serde_json::json!("action")));
+    // confirm must be documented for write
+    assert!(params["properties"]["confirm"].is_object());
+}
+
+#[test]
+fn test_spi_parameters_required_and_confirm() {
+    let tool = SPITool::new();
+    let params = tool.parameters();
+    let required = params["required"].as_array().unwrap();
+    assert!(required.contains(&serde_json::json!("action")));
+    // confirm must be documented for transfer
+    assert!(params["properties"]["confirm"].is_object());
+}

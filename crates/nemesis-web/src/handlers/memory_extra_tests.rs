@@ -63,6 +63,7 @@ mod memory_extra_tests {
             workspace: Some(ws.clone()),
             home: Some(ws),
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 
@@ -102,6 +103,7 @@ mod memory_extra_tests {
             workspace: None,
             home: None,
             state,
+            auth_method: crate::session::AuthMethod::default(),
         }
     }
 

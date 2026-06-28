@@ -1353,3 +1353,238 @@ fn test_window_info_default_fields() {
     assert!(info.hwnd.is_empty());
     assert_eq!(info.width, 0);
 }
+
+// ============================================================
+// Additional branch coverage for get_window_text and screenshot
+// ============================================================
+
+#[tokio::test]
+async fn test_get_window_text_prefers_hwnd_over_title() {
+    // When both hwnd and title are supplied, the hwnd branch is used and
+    // find_window_by_title should NOT be invoked.
+    struct MockMCPCaller {
+        called: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl crate::browser::MCPToolCaller for MockMCPCaller {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let name = tool_name.to_string();
+            self.called.lock().unwrap().push(name.clone());
+            Box::pin(async move {
+                if name == "get_window_text" {
+                    Ok("text via hwnd".to_string())
+                } else {
+                    // find_window_by_title must not be called when hwnd is present
+                    Err("find should not be called".to_string())
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let called = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool = DesktopTool::new(
+        PathBuf::from("."),
+        Some(Arc::new(MockMCPCaller { called: called.clone() })),
+    );
+    let result = tool
+        .execute(&serde_json::json!({
+            "action": "get_window_text",
+            "hwnd": "HWND(0x123)",
+            "title": "Something"
+        }))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("text via hwnd"));
+    let calls = called.lock().unwrap();
+    assert!(
+        !calls.iter().any(|c| c == "find_window_by_title"),
+        "find_window_by_title must not be called when hwnd is supplied"
+    );
+}
+
+#[tokio::test]
+async fn test_get_window_text_find_returns_json_array_no_hwnd() {
+    // find_window_by_title returns valid JSON that is an array (not an object),
+    // so parsed["hwnd"].as_str() is None -> resolved_hwnd empty -> error.
+    struct MockMCPCaller;
+    impl crate::browser::MCPToolCaller for MockMCPCaller {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let name = tool_name.to_string();
+            Box::pin(async move {
+                if name == "find_window_by_title" {
+                    Ok(r#"[{"title":"a"},{"title":"b"}]"#.to_string())
+                } else {
+                    Err("unknown".to_string())
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "X"}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("could not resolve"));
+}
+
+#[tokio::test]
+async fn test_get_window_text_find_returns_invalid_json() {
+    // find_window_by_title returns non-JSON text -> from_str fails -> empty hwnd.
+    struct MockMCPCaller;
+    impl crate::browser::MCPToolCaller for MockMCPCaller {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let name = tool_name.to_string();
+            Box::pin(async move {
+                if name == "find_window_by_title" {
+                    Ok("not valid json at all".to_string())
+                } else {
+                    Err("unknown".to_string())
+                }
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(MockMCPCaller)));
+    let result = tool
+        .execute(&serde_json::json!({"action": "get_window_text", "title": "X"}))
+        .await;
+    assert!(result.is_error);
+    assert!(result.for_llm.contains("could not resolve"));
+}
+
+#[tokio::test]
+async fn test_screenshot_mcp_with_partial_region_fields() {
+    // Only some of x/y/width/height present -> those that are present get
+    // forwarded to the MCP args.
+    struct ScreenshotMCPCaller;
+    impl crate::browser::MCPToolCaller for ScreenshotMCPCaller {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let tool_name = tool_name.to_string();
+            let args = args.clone();
+            Box::pin(async move {
+                assert_eq!(tool_name, "capture_screenshot_to_file");
+                // x and width provided, y and height absent
+                assert_eq!(args["x"], 5);
+                assert_eq!(args["width"], 50);
+                assert!(args.get("y").is_none());
+                assert!(args.get("height").is_none());
+                Ok("ok".to_string())
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ScreenshotMCPCaller)));
+    let result = tool
+        .execute(&serde_json::json!({"action": "take_screenshot", "x": 5, "width": 50}))
+        .await;
+    assert!(!result.is_error);
+}
+
+#[tokio::test]
+async fn test_click_at_default_button_is_left() {
+    // No button specified -> defaults to "left".
+    struct ClickMCPCaller;
+    impl crate::browser::MCPToolCaller for ClickMCPCaller {
+        fn call_tool(
+            &self,
+            tool_name: &str,
+            args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let tool_name = tool_name.to_string();
+            let args = args.clone();
+            Box::pin(async move {
+                assert_eq!(tool_name, "click_window");
+                assert_eq!(args["button"], "left");
+                assert_eq!(args["x"], 10);
+                assert_eq!(args["y"], 20);
+                Ok("ok".to_string())
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ClickMCPCaller)));
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 10, "y": 20}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("left"));
+}
+
+#[tokio::test]
+async fn test_click_at_middle_button_forwarded() {
+    struct ClickMCPCaller;
+    impl crate::browser::MCPToolCaller for ClickMCPCaller {
+        fn call_tool(
+            &self,
+            _tool_name: &str,
+            args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let args = args.clone();
+            Box::pin(async move {
+                assert_eq!(args["button"], "middle");
+                Ok("ok".to_string())
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ClickMCPCaller)));
+    let result = tool
+        .execute(&serde_json::json!({"action": "click_at", "x": 1, "y": 2, "button": "middle"}))
+        .await;
+    assert!(!result.is_error);
+    assert!(result.for_llm.contains("middle"));
+}
+
+#[tokio::test]
+async fn test_list_windows_no_title_does_not_set_title_contains() {
+    // list_windows without title -> mcp_args has filter_visible but no title_contains.
+    struct ListMCPCaller;
+    impl crate::browser::MCPToolCaller for ListMCPCaller {
+        fn call_tool(
+            &self,
+            _tool_name: &str,
+            args: &serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+            let args = args.clone();
+            Box::pin(async move {
+                assert_eq!(args["filter_visible"], true);
+                assert!(args.get("title_contains").is_none());
+                Ok(r#"[{"hwnd":"1","title":"w"}]"#.to_string())
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(ListMCPCaller)));
+    let result = tool.execute(&serde_json::json!({"action": "list_windows"})).await;
+    assert!(!result.is_error);
+}

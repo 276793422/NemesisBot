@@ -46,3 +46,14 @@ pub use ws_router::ModuleHandler;
 pub use ws_router::RequestContext;
 pub use cors::CORSConfig;
 pub use cors::CORSManager;
+
+// Previously-written extra coverage modules for the top-level handlers were
+// never `mod`-declared, so they did not compile or run.
+#[cfg(test)]
+mod api_usage_extra_tests;
+#[cfg(test)]
+mod llm_bridge_extra_tests;
+#[cfg(test)]
+mod sse_chat_extra_tests;
+#[cfg(test)]
+mod workflow_chat_extra_tests;

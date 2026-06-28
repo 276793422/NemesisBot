@@ -15,3 +15,4 @@ zip = "2"
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"

@@ -1712,6 +1712,157 @@ async fn test_handle_tool_call_with_security_block() {
     assert!(result.contains("Error") || result.contains("denied") || result.contains("not allowed"));
 }
 
+#[tokio::test]
+async fn test_checkpoint_e2e_write_then_rewind_restores() {
+    // P3 AgentLoop-level e2e: write_file snapshots pre-edit content via the
+    // capture seam in handle_tool_call, then rewind restores it. Verifies the
+    // full flow: set_checkpoint_store → preview → snapshot → execute → rewind.
+    use crate::checkpoint::CheckpointStore;
+    use crate::loop_tools::WriteFileTool;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = Arc::new(CheckpointStore::new(Some(root.join(".ck")), root.clone()));
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_checkpoint_store(store.clone());
+    agent_loop.register_tool("write_file".to_string(), Box::new(WriteFileTool));
+
+    // Pre-existing file whose turn-start content must be captured.
+    let file = root.join("target.txt");
+    tokio::fs::write(&file, "ORIGINAL").await.unwrap();
+    store.begin(0, "edit the file"); // simulate process_inbound_message opening a turn
+
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let tc = ToolCallInfo {
+        id: "tc1".to_string(),
+        name: "write_file".to_string(),
+        arguments: serde_json::json!({ "path": file.to_str().unwrap(), "content": "CHANGED" })
+            .to_string(),
+    };
+    let _ = agent_loop.handle_tool_call(&tc, &context).await;
+    // write_file executed and overwrote the file.
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "CHANGED",
+        "write_file should have overwritten"
+    );
+
+    // Rewind turn 0 restores the turn-start content (ORIGINAL).
+    let (written, _) = agent_loop.rewind(0).await.unwrap();
+    assert!(!written.is_empty(), "rewind should restore at least one file");
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "ORIGINAL",
+        "rewind must restore pre-edit content"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_guardian_e2e_critical_op_denied_by_judge() {
+    // P5 AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
+    // blocked by the guardian judge. Verifies: set_judge → security allow →
+    // is_critical_tool → judge → deny → block, in the real handle_tool_call path.
+    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    struct DenyJudge;
+    #[async_trait]
+    impl LlmJudge for DenyJudge {
+        async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
+            Ok(JudgeVerdict {
+                risk_level: "critical".into(),
+                user_authorization: "unknown".into(),
+                outcome: JudgeOutcome::Deny,
+                rationale: "destructive without explicit auth".into(),
+            })
+        }
+    }
+
+    // Rules allow everything (default allow, no guards) so the guardian is the
+    // only thing that can block.
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    }));
+    plugin.set_judge(Arc::new(DenyJudge));
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(plugin);
+    agent_loop.register_tool(
+        "shell".to_string(),
+        Box::new(MockTool { result: "ok".to_string() }),
+    );
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let tc = ToolCallInfo {
+        id: "tc1".to_string(),
+        name: "shell".to_string(),
+        arguments: r#"{"command":"rm -rf /"}"#.to_string(),
+    };
+    let result = agent_loop.handle_tool_call(&tc, &context).await;
+    assert!(
+        result.contains("GUARDIAN DENIED"),
+        "critical op must be blocked by guardian judge: {}",
+        result
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_guardian_e2e_allows_when_judge_approves() {
+    // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
+    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    struct AllowJudge;
+    #[async_trait]
+    impl LlmJudge for AllowJudge {
+        async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
+            Ok(JudgeVerdict {
+                risk_level: "high".into(),
+                user_authorization: "high".into(),
+                outcome: JudgeOutcome::Allow,
+                rationale: "user explicitly requested".into(),
+            })
+        }
+    }
+
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    }));
+    plugin.set_judge(Arc::new(AllowJudge));
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(plugin);
+    agent_loop.register_tool(
+        "shell".to_string(),
+        Box::new(MockTool { result: "executed".to_string() }),
+    );
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let tc = ToolCallInfo {
+        id: "tc1".to_string(),
+        name: "shell".to_string(),
+        arguments: r#"{"command":"ls"}"#.to_string(),
+    };
+    let result = agent_loop.handle_tool_call(&tc, &context).await;
+    assert!(
+        !result.contains("GUARDIAN DENIED"),
+        "approved op must proceed: {}",
+        result
+    );
+}
+
 #[test]
 fn test_build_messages_with_tool_history() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
@@ -4167,4 +4318,93 @@ async fn test_forge_no_experience_without_forge() {
         _ => None,
     }).collect();
     assert_eq!(done.len(), 1);
+}
+
+// ===========================================================================
+// Coverage gap: summarize_history_owned batch / multipart / omitted branches.
+// The existing tests only covered the short-history and all-filtered (None)
+// paths. These exercise the LLM-calling paths via block_on_llm_chat.
+// ===========================================================================
+
+fn turn(role: &str, content: &str) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+    }
+}
+
+fn llm_text(content: &str) -> LlmResponse {
+    LlmResponse {
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }
+}
+
+#[test]
+fn test_summarize_history_owned_batch_returns_summary() {
+    let provider = MockLlmProvider::new(vec![llm_text("Batch summary")]);
+    // 6 turns (>4) → to_summarize = first 2 (<=10 → batch path).
+    let history: Vec<crate::types::ConversationTurn> = (0..6)
+        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .collect();
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    assert!(result.is_some(), "batch summarize should return a summary");
+    assert!(result.unwrap().contains("Batch summary"));
+}
+
+#[test]
+fn test_summarize_history_owned_multipart_merges() {
+    // 16 turns → to_summarize = 12 (>10 → multipart: 2 batches + 1 merge = 3 calls).
+    let provider = MockLlmProvider::new(vec![
+        llm_text("part one"),
+        llm_text("part two"),
+        llm_text("merged summary"),
+    ]);
+    let history: Vec<crate::types::ConversationTurn> = (0..16)
+        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .collect();
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    assert!(result.is_some(), "multipart summarize should return a summary");
+    assert!(result.unwrap().contains("merged summary"));
+}
+
+#[test]
+fn test_summarize_history_owned_omits_oversized_messages() {
+    // One oversized message in to_summarize triggers the omitted-note branch.
+    let provider = MockLlmProvider::new(vec![llm_text("Short summary")]);
+    let mut history: Vec<crate::types::ConversationTurn> = (0..6)
+        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
+        .collect();
+    // history[0] is in to_summarize (first 2); make it oversized.
+    history[0].content = "x".repeat(10_000);
+    // context_window=100 → max_msg_tokens=50 → the 10000-char msg is oversized.
+    let result = summarize_history_owned(&history, "", 100, &provider, "test-model", None);
+    assert!(result.is_some());
+    assert!(
+        result.unwrap().contains("omitted"),
+        "summary should note that oversized messages were omitted"
+    );
+}
+
+#[test]
+fn test_summarize_history_owned_with_observer_manager() {
+    // Passing observer_manager = Some covers the emit_observer_events_around_llm
+    // observer branches (ConversationStart / LlmResponse / ConversationEnd emit).
+    let provider = MockLlmProvider::new(vec![llm_text("observed summary")]);
+    let observer = Arc::new(nemesis_observer::Manager::new());
+    let history: Vec<crate::types::ConversationTurn> = (0..6)
+        .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{}", i)))
+        .collect();
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", Some(observer));
+    assert!(result.is_some());
+    assert!(result.unwrap().contains("observed summary"));
 }

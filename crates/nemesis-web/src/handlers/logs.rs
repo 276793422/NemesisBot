@@ -81,7 +81,12 @@ impl ModuleHandler for LogsHandler {
             "session_list" => {
                 let limit = opt_u64(&data, "limit", 50);
                 let offset = opt_u64(&data, "offset", 0);
-                self.session_list(ctx, workspace, limit, offset).await
+                let query = data
+                    .as_ref()
+                    .and_then(|d| d.get("query"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                self.session_list(ctx, workspace, query, limit, offset).await
             }
             "session_detail" => {
                 let data = data.ok_or("missing data")?;
@@ -115,6 +120,79 @@ fn cluster_log_dir(workspace: &str) -> PathBuf {
 
 fn security_log_dir(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join("logs/security_logs")
+}
+
+fn session_log_dir(workspace: &str) -> PathBuf {
+    PathBuf::from(workspace).join("logs/session_logs")
+}
+
+/// Read all lines of a JSONL file as JSON values; malformed/blank lines skipped.
+fn read_jsonl_lines(path: &Path) -> Vec<serde_json::Value> {
+    use std::io::{BufRead, BufReader};
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for line in BufReader::new(file).lines().flatten() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(t) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// Scan session_logs/*.jsonl on disk → one summary entry per file (messages are
+/// loaded on demand by `session_detail`). This is the file-based source that does
+/// NOT depend on the memory manager, so the dashboard's "对话历史" tab works even
+/// when enhanced memory is disabled (ONNX unavailable). Each file's lines are
+/// `{role, content, timestamp}` written by `chat_log::append_chat_log`.
+fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
+    let dir = session_log_dir(workspace);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut sessions = Vec::new();
+    for ent in entries.flatten() {
+        let path = ent.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let id = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let lines = read_jsonl_lines(&path);
+        if lines.is_empty() {
+            continue;
+        }
+        let first = &lines[0];
+        let last = lines.last().unwrap();
+        let channel = id.split(['_', ':']).next().unwrap_or(&id).to_string();
+        let first_message = first["content"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect::<String>();
+        sessions.push(serde_json::json!({
+            "id": id,
+            "channel": channel,
+            "startTime": first["timestamp"].as_str().unwrap_or(""),
+            "lastTime": last["timestamp"].as_str().unwrap_or(""),
+            "messageCount": lines.len(),
+            "model": "",
+            "firstMessage": first_message,
+            "triggerCluster": false,
+            "messages": [],
+        }));
+    }
+    sessions
 }
 
 fn audit_chain_path(workspace: &str) -> PathBuf {
@@ -782,61 +860,77 @@ impl LogsHandler {
     async fn session_list(
         &self,
         ctx: &RequestContext,
-        _workspace: &str,
+        workspace: &str,
+        query: Option<String>,
         limit: usize,
         offset: usize,
     ) -> Result<Option<serde_json::Value>, String> {
-        let Some(ref mgr) = ctx.state.memory_manager else {
-            return Ok(Some(serde_json::json!({
-                "sessions": [],
-                "total": 0,
-                "limit": limit,
-                "offset": offset,
-            })));
-        };
+        // File-based scan is the primary source — works even without the memory
+        // manager (when enhanced memory / ONNX is disabled). Each *.jsonl is one
+        // session. This decouples the dashboard's "对话历史" from the vector stack.
+        let mut sessions = scan_session_logs(workspace);
 
-        let store = mgr.get_episodic_store();
-        let keys = store
-            .list_sessions()
-            .await
-            .map_err(|e| format!("list_sessions failed: {}", e))?;
-
-        let mut sessions: Vec<serde_json::Value> = Vec::new();
-        for key in &keys {
-            let episodes = match store.get_session(key).await {
-                Ok(eps) => eps,
-                Err(_) => continue,
-            };
-            if episodes.is_empty() {
-                continue;
+        // When episodic memory is available, enrich file entries with metadata
+        // (model, triggerCluster) the raw chat log does not carry. Match by both
+        // the file-stem id and its ':'-restored form (chat_log replaces ':' → '_').
+        if let Some(ref mgr) = ctx.state.memory_manager {
+            let store = mgr.get_episodic_store();
+            for s in sessions.iter_mut() {
+                let id = s["id"].as_str().unwrap_or("").to_string();
+                for key in [id.clone(), id.replace('_', ":")] {
+                    if let Ok(eps) = store.get_session(&key).await {
+                        if let Some(first) = eps.first() {
+                            if let Some(m) = first.metadata.get("model").cloned() {
+                                s["model"] = serde_json::Value::String(m);
+                            }
+                            if eps.iter().any(|e| e.tags.iter().any(|t| t == "cluster")) {
+                                s["triggerCluster"] = serde_json::Value::Bool(true);
+                            }
+                        }
+                        break;
+                    }
+                }
             }
-            let first = episodes.first().unwrap();
-            let last = episodes.last().unwrap();
-            let channel = key.split([':', '_']).next().unwrap_or(key).to_string();
+        }
 
-            let first_message = first.content.chars().take(100).collect::<String>();
-
-            let model = first
-                .metadata
-                .get("model")
-                .cloned()
-                .unwrap_or_default();
-
-            let trigger_cluster = episodes
-                .iter()
-                .any(|e| e.tags.iter().any(|t| t == "cluster"));
-
-            sessions.push(serde_json::json!({
-                "id": key,
-                "channel": channel,
-                "startTime": first.timestamp.to_rfc3339(),
-                "lastTime": last.timestamp.to_rfc3339(),
-                "messageCount": episodes.len(),
-                "model": model,
-                "firstMessage": first_message,
-                "triggerCluster": trigger_cluster,
-                "messages": [],
-            }));
+        // Optional BM25 keyword filter/rank over session summaries (lexical,
+        // independent of the memory manager). Drops non-matching sessions and
+        // ranks the rest by relevance when `query` is supplied.
+        if let Some(q) = query.as_deref() {
+            let qterms = nemesis_memory::retrieval::query_terms(q);
+            if !qterms.is_empty() {
+                let docs: Vec<_> = sessions
+                    .iter()
+                    .map(|s| {
+                        let text = format!(
+                            "{} {} {}",
+                            s["id"].as_str().unwrap_or(""),
+                            s["firstMessage"].as_str().unwrap_or(""),
+                            s["channel"].as_str().unwrap_or("")
+                        );
+                        nemesis_memory::retrieval::term_counts(&nemesis_memory::retrieval::tokens(&text))
+                    })
+                    .collect();
+                let df = nemesis_memory::retrieval::document_frequency(&docs);
+                let total = docs.len();
+                let avg_len = if total == 0 {
+                    0.0
+                } else {
+                    docs.iter().map(|d| d.values().sum::<usize>() as f64).sum::<f64>() / total as f64
+                };
+                let mut scored: Vec<_> = sessions
+                    .into_iter()
+                    .zip(docs.into_iter())
+                    .map(|(s, dc)| {
+                        let len: usize = dc.values().sum();
+                        let sc = nemesis_memory::retrieval::bm25_score(&dc, len, &qterms, &df, total, avg_len);
+                        (s, sc)
+                    })
+                    .filter(|(_, sc)| *sc > 0.0)
+                    .collect();
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                sessions = scored.into_iter().map(|(s, _)| s).collect();
+            }
         }
 
         sessions.sort_by(|a, b| {
@@ -858,40 +952,46 @@ impl LogsHandler {
     async fn session_detail(
         &self,
         ctx: &RequestContext,
-        _workspace: &str,
+        workspace: &str,
         session: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let Some(ref mgr) = ctx.state.memory_manager else {
-            return Ok(Some(serde_json::json!({
-                "session": session,
-                "messages": [],
-            })));
-        };
-        let store = mgr.get_episodic_store();
-        let episodes = store
-            .get_session(session)
-            .await
-            .map_err(|e| format!("get_session failed: {}", e))
-            .unwrap_or_default();
-
-        let messages: Vec<serde_json::Value> = episodes
-            .iter()
-            .map(|ep| {
-                let mut obj = serde_json::json!({
-                    "role": ep.role,
-                    "content": ep.content,
-                    "timestamp": ep.timestamp.to_rfc3339(),
-                });
-                let trigger_cluster = ep.tags.iter().any(|t| t == "cluster");
-                if trigger_cluster {
-                    obj["triggerCluster"] = serde_json::Value::Bool(true);
-                }
-                if let Some(n) = ep.metadata.get("tool_calls").and_then(|s| s.parse::<u32>().ok()) {
-                    obj["toolCalls"] = serde_json::Value::Number(n.into());
-                }
-                obj
-            })
+        // Primary: read the session_logs file directly (decoupled from memory manager).
+        let path = session_log_dir(workspace).join(format!("{}.jsonl", session));
+        let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
+            .into_iter()
+            .map(|ln| serde_json::json!({
+                "role": ln["role"].as_str().unwrap_or("user"),
+                "content": ln["content"].as_str().unwrap_or(""),
+                "timestamp": ln["timestamp"].as_str().unwrap_or(""),
+            }))
             .collect();
+
+        // Best-effort: enrich messages with episodic tags (triggerCluster, toolCalls)
+        // by index, when episodic memory is available and the session key matches.
+        if let Some(ref mgr) = ctx.state.memory_manager {
+            let store = mgr.get_episodic_store();
+            for key in [session.to_string(), session.replace('_', ":")] {
+                if let Ok(eps) = store.get_session(&key).await {
+                    if !eps.is_empty() {
+                        for (i, ep) in eps.iter().enumerate() {
+                            if let Some(msg) = messages.get_mut(i) {
+                                if ep.tags.iter().any(|t| t == "cluster") {
+                                    msg["triggerCluster"] = serde_json::Value::Bool(true);
+                                }
+                                if let Some(n) = ep
+                                    .metadata
+                                    .get("tool_calls")
+                                    .and_then(|s| s.parse::<u32>().ok())
+                                {
+                                    msg["toolCalls"] = serde_json::Value::Number(n.into());
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
 
         Ok(Some(serde_json::json!({
             "session": session,
@@ -1545,4 +1645,279 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
         );
     }
     out
+}
+
+#[cfg(test)]
+mod logs_pure_helpers_tests {
+    use super::*;
+
+    // ---- opt_u64 ----
+
+    #[test]
+    fn opt_u64_returns_default_when_missing() {
+        let data = Some(serde_json::json!({"limit": 5}));
+        assert_eq!(opt_u64(&data, "offset", 99), 99);
+    }
+
+    #[test]
+    fn opt_u64_returns_value_when_present() {
+        let data = Some(serde_json::json!({"limit": 5}));
+        assert_eq!(opt_u64(&data, "limit", 99), 5);
+    }
+
+    #[test]
+    fn opt_u64_returns_default_when_none_data() {
+        assert_eq!(opt_u64(&None, "limit", 42), 42);
+    }
+
+    #[test]
+    fn opt_u64_returns_default_when_non_number() {
+        let data = Some(serde_json::json!({"limit": "many"}));
+        assert_eq!(opt_u64(&data, "limit", 7), 7);
+    }
+
+    // ---- file_type_name ----
+
+    #[test]
+    fn file_type_name_strips_first_segment() {
+        // "01.AI.Request.raw.json" → "AI.Request.raw.json"
+        assert_eq!(file_type_name("01.AI.Request.raw.json"), "AI.Request.raw.json");
+    }
+
+    #[test]
+    fn file_type_name_returns_whole_when_no_dot() {
+        assert_eq!(file_type_name("README"), "README");
+    }
+
+    // ---- sanitize_session_key ----
+
+    #[test]
+    fn sanitize_session_key_replaces_path_and_special_chars() {
+        let cleaned = sanitize_session_key("web://user/chat|file?x");
+        assert!(!cleaned.contains(':'));
+        assert!(!cleaned.contains('/'));
+        assert!(!cleaned.contains('?'));
+        assert!(!cleaned.contains('|'));
+        assert_eq!(cleaned, "web___user_chat_file_x");
+    }
+
+    #[test]
+    fn sanitize_session_key_passes_through_plain_text() {
+        assert_eq!(sanitize_session_key("plain-key_123"), "plain-key_123");
+    }
+
+    // ---- parse_duration_seconds ----
+
+    #[test]
+    fn parse_duration_seconds_whole_seconds() {
+        assert_eq!(parse_duration_seconds("30s"), Some(30000));
+    }
+
+    #[test]
+    fn parse_duration_seconds_fractional() {
+        assert_eq!(parse_duration_seconds("0.022s"), Some(22));
+    }
+
+    #[test]
+    fn parse_duration_seconds_zero() {
+        assert_eq!(parse_duration_seconds("0s"), Some(0));
+    }
+
+    #[test]
+    fn parse_duration_seconds_rejects_non_numeric_unit() {
+        // "5m" → not a valid f64 → None (this helper only handles plain seconds)
+        assert_eq!(parse_duration_seconds("5m"), None);
+    }
+
+    #[test]
+    fn parse_duration_seconds_rejects_negative() {
+        assert_eq!(parse_duration_seconds("-5s"), None);
+    }
+
+    #[test]
+    fn parse_duration_seconds_rejects_garbage() {
+        assert_eq!(parse_duration_seconds("abc"), None);
+    }
+
+    // ---- stringify_message_content ----
+
+    #[test]
+    fn stringify_message_content_none_is_empty() {
+        assert_eq!(stringify_message_content(None), "");
+    }
+
+    #[test]
+    fn stringify_message_content_plain_string() {
+        assert_eq!(
+            stringify_message_content(Some(&serde_json::json!("hello world"))),
+            "hello world"
+        );
+    }
+
+    #[test]
+    fn stringify_message_content_array_of_text_parts() {
+        let content = serde_json::json!([
+            { "text": "line1" },
+            { "text": "line2" },
+        ]);
+        assert_eq!(stringify_message_content(Some(&content)), "line1\nline2");
+    }
+
+    #[test]
+    fn stringify_message_content_array_of_content_parts() {
+        let content = serde_json::json!([{ "content": "alt" }]);
+        assert_eq!(stringify_message_content(Some(&content)), "alt");
+    }
+
+    #[test]
+    fn stringify_message_content_other_value_stringified() {
+        let content = serde_json::json!(42);
+        assert_eq!(stringify_message_content(Some(&content)), "42");
+    }
+
+    // ---- compute_audit_hash ----
+
+    #[test]
+    fn compute_audit_hash_is_deterministic() {
+        let ev = nemesis_security::integrity::AuditEvent {
+            id: "e1".into(),
+            timestamp: "2026-06-29T00:00:00Z".into(),
+            operation: "file_write".into(),
+            tool_name: "filesystem".into(),
+            user: "alice".into(),
+            source: "web".into(),
+            target: "/tmp/f".into(),
+            decision: "allow".into(),
+            reason: "ok".into(),
+            hash: String::new(),
+            prev_hash: "genesis".into(),
+            sign: None,
+        };
+        let h1 = compute_audit_hash(&ev);
+        let h2 = compute_audit_hash(&ev);
+        assert_eq!(h1, h2);
+        assert!(!h1.is_empty());
+    }
+
+    #[test]
+    fn compute_audit_hash_changes_with_field() {
+        let base = || nemesis_security::integrity::AuditEvent {
+            id: "e1".into(),
+            timestamp: "t".into(),
+            operation: "op".into(),
+            tool_name: "tn".into(),
+            user: "u".into(),
+            source: "s".into(),
+            target: "tgt".into(),
+            decision: "allow".into(),
+            reason: "r".into(),
+            hash: String::new(),
+            prev_hash: "p".into(),
+            sign: None,
+        };
+        let mut ev = base();
+        let h1 = compute_audit_hash(&ev);
+        ev.operation = "file_delete".into();
+        let h2 = compute_audit_hash(&ev);
+        assert_ne!(h1, h2);
+    }
+
+    // ---- parse_local_tool_results ----
+
+    #[test]
+    fn parse_local_tool_results_empty() {
+        assert!(parse_local_tool_results("").is_empty());
+        assert!(parse_local_tool_results("no operations here").is_empty());
+    }
+
+    #[test]
+    fn parse_local_tool_results_success_with_args_and_duration() {
+        let md = "\
+## Operation 1: Tool Execution
+
+**Name**: read_file
+**Status**: success
+
+### Arguments
+{\"path\": \"/tmp/a\"}
+
+### Result
+hello contents
+
+### Duration 0.022s
+
+---
+";
+        let out = parse_local_tool_results(md);
+        assert_eq!(out.len(), 1);
+        let op = &out[0];
+        assert_eq!(op["name"], "read_file");
+        assert_eq!(op["callId"], "read_file");
+        assert_eq!(op["result"]["status"], "success");
+        assert_eq!(op["result"]["output"], "hello contents\n\n");
+        assert_eq!(op["args"]["path"], "/tmp/a");
+        assert_eq!(op["duration_ms"], 22);
+    }
+
+    #[test]
+    fn parse_local_tool_results_error_branch() {
+        let md = "\
+## Operation 2: Tool Execution
+
+**Name**: write_file
+**Status**: error
+
+### Error
+permission denied
+
+### Duration 0.005s
+";
+        let out = parse_local_tool_results(md);
+        assert_eq!(out.len(), 1);
+        let op = &out[0];
+        assert_eq!(op["name"], "write_file");
+        assert_eq!(op["result"]["status"], "error");
+        assert_eq!(op["result"]["error"], "permission denied\n\n");
+        // No `output` key on the error branch.
+        assert!(op["result"].get("output").is_none());
+    }
+
+    #[test]
+    fn parse_local_tool_results_args_not_json_falls_back_to_string() {
+        let md = "\
+## Operation 1: Tool Execution
+
+**Name**: shell
+**Status**: success
+
+### Arguments
+not a json blob
+
+### Result
+done
+";
+        let out = parse_local_tool_results(md);
+        assert_eq!(out.len(), 1);
+        // Non-JSON args become a JSON string value.
+        assert_eq!(out[0]["args"], "not a json blob");
+    }
+
+    #[test]
+    fn parse_local_tool_results_multiple_operations_flush() {
+        let md = "\
+## Operation 1: Tool Execution
+
+**Name**: a
+**Status**: success
+
+## Operation 2: Tool Execution
+
+**Name**: b
+**Status**: success
+";
+        let out = parse_local_tool_results(md);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["name"], "a");
+        assert_eq!(out[1]["name"], "b");
+    }
 }

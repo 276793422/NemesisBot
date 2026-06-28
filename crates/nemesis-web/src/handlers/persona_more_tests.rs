@@ -94,6 +94,7 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         workspace: Some(ws.to_string()),
         home: Some(ws.to_string()),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -623,6 +624,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         workspace: None,
         home: None,
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 

@@ -987,3 +987,108 @@ fn test_spawn_child_multiple_invocations_unique_ids() {
     // All fail during handshake, so active_count should be 0
     assert_eq!(mgr.active_count(), 0);
 }
+// ============================================================
+// State isolation: independent managers must not share state.
+// ============================================================
+
+#[test]
+fn test_two_managers_independent_state() {
+    let a = ProcessManager::new();
+    let b = ProcessManager::new();
+
+    {
+        let mut state = a.state.lock();
+        let child = ChildProcess::new("child-A".to_string(), 100, "dashboard".to_string());
+        state.children.insert("child-A".to_string(), child);
+    }
+    // a has one child, b still empty
+    assert_eq!(a.active_count(), 1);
+    assert_eq!(b.active_count(), 0);
+
+    // b cannot see or terminate a's child
+    assert!(b.terminate_child("child-A").is_err());
+    assert_eq!(a.active_count(), 1);
+
+    // a can terminate its own child
+    assert!(a.terminate_child("child-A").is_ok());
+    assert_eq!(a.active_count(), 0);
+    assert_eq!(b.active_count(), 0);
+}
+
+#[test]
+fn test_with_executor_does_not_share_state_with_new() {
+    let executor = Arc::new(DefaultPlatformExecutor::with_defaults());
+    let mgr = ProcessManager::with_executor(executor);
+    // Fresh manager has no children regardless of how it was constructed.
+    assert_eq!(mgr.active_count(), 0);
+    // And no result channels resolve.
+    assert!(!mgr.submit_result("any", serde_json::json!({})));
+}
+
+#[test]
+fn test_independent_result_channels_across_managers() {
+    let a = ProcessManager::new();
+    let b = ProcessManager::new();
+
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    {
+        let mut state = a.state.lock();
+        state.result_channels.insert("c1".to_string(), tx);
+    }
+    // b has no such channel, so submit fails and does not drain a's channel.
+    assert!(!b.submit_result("c1", serde_json::json!({})));
+    // a still owns the live channel.
+    assert!(a.submit_result("c1", serde_json::json!({"v": 7})));
+    assert_eq!(rx.try_recv().unwrap()["v"], 7);
+}
+
+#[test]
+fn test_ws_server_is_stable_reference() {
+    // ws_server() returns a reference to the owned server; calling it
+    // repeatedly yields the same underlying port state.
+    let mgr = ProcessManager::new();
+    let port1 = mgr.ws_server().get_port();
+    let port2 = mgr.ws_server().get_port();
+    assert_eq!(port1, port2);
+    assert_eq!(mgr.ws_port(), port1);
+}
+
+#[test]
+fn test_terminate_all_variants_in_one_manager() {
+    // Insert children of every window type and ensure stop() clears them all.
+    let mgr = ProcessManager::new();
+    {
+        let mut state = mgr.state.lock();
+        for (i, wt) in ["dashboard", "approval", "headless", "unknown"].iter().enumerate() {
+            let child = ChildProcess::new(format!("c{}", i), 100 + i as u32, wt.to_string());
+            state.children.insert(format!("c{}", i), child);
+        }
+    }
+    assert_eq!(mgr.active_count(), 4);
+    // get_child_by_type finds the typed ones
+    assert_eq!(mgr.get_child_by_type("dashboard"), Some("c0".to_string()));
+    assert_eq!(mgr.get_child_by_type("approval"), Some("c1".to_string()));
+    assert_eq!(mgr.get_child_by_type("headless"), Some("c2".to_string()));
+    assert_eq!(mgr.get_child_by_type("unknown"), Some("c3".to_string()));
+
+    mgr.stop().unwrap();
+    assert_eq!(mgr.active_count(), 0);
+    // After stop, none are findable.
+    assert!(mgr.get_child_by_type("dashboard").is_none());
+}
+
+#[test]
+fn test_active_count_reflects_direct_inserts_and_removals() {
+    let mgr = ProcessManager::new();
+    assert_eq!(mgr.active_count(), 0);
+    {
+        let mut state = mgr.state.lock();
+        state.children.insert("x".to_string(), ChildProcess::new("x".to_string(), 1, "t".to_string()));
+    }
+    assert_eq!(mgr.active_count(), 1);
+    {
+        let mut state = mgr.state.lock();
+        state.children.remove("x");
+    }
+    assert_eq!(mgr.active_count(), 0);
+}

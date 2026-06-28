@@ -62,6 +62,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -104,6 +105,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -143,6 +145,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         workspace: None,
         home: None,
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -183,6 +186,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         workspace: Some(ws),
         home: None,
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -1530,6 +1534,7 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 
@@ -1576,6 +1581,7 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         workspace: Some(ws.clone()),
         home: Some(ws),
         state,
+        auth_method: crate::session::AuthMethod::default(),
     }
 }
 

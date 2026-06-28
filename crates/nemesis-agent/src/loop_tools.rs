@@ -24,7 +24,7 @@ use tokio::time::sleep;
 use tracing::info;
 
 use crate::context::RequestContext;
-use crate::r#loop::Tool;
+use crate::r#loop::{FileChange, FileChangeKind, Tool};
 // ===========================================================================
 // Basic file/message tools
 // ===========================================================================
@@ -235,6 +235,16 @@ impl Tool for WriteFileTool {
 
         Ok(format!("Successfully wrote {} bytes to {}", content.len(), path.display()))
     }
+
+    fn preview(&self, args: &str) -> Option<FileChange> {
+        let (path, _content) = extract_path_and_content(args).ok()?;
+        let kind = if Path::new(&path).exists() {
+            FileChangeKind::Modify
+        } else {
+            FileChangeKind::Create
+        };
+        Some(FileChange { path, kind })
+    }
 }
 
 /// A tool that lists the contents of a directory.
@@ -412,6 +422,12 @@ impl Tool for EditFileTool {
 
         Ok(format!("File edited: {}", path.display()))
     }
+
+    fn preview(&self, args: &str) -> Option<FileChange> {
+        let (path, _old_text, _new_text) = extract_edit_args(args).ok()?;
+        // edit_file requires the file to exist (execute errors otherwise).
+        Some(FileChange { path, kind: FileChangeKind::Modify })
+    }
 }
 
 /// A tool that appends content to the end of a file.
@@ -453,6 +469,16 @@ impl Tool for AppendFileTool {
 
         Ok(format!("Appended {} bytes to {}", content.len(), path.display()))
     }
+
+    fn preview(&self, args: &str) -> Option<FileChange> {
+        let (path, _content) = extract_path_and_content(args).ok()?;
+        let kind = if Path::new(&path).exists() {
+            FileChangeKind::Modify
+        } else {
+            FileChangeKind::Create
+        };
+        Some(FileChange { path, kind })
+    }
 }
 
 /// A tool that deletes a file from disk.
@@ -485,6 +511,11 @@ impl Tool for DeleteFileTool {
             .map_err(|e| format!("Failed to delete file: {}", e))?;
 
         Ok(format!("Deleted file: {}", path.display()))
+    }
+
+    fn preview(&self, args: &str) -> Option<FileChange> {
+        let path = extract_path(args).ok()?;
+        Some(FileChange { path, kind: FileChangeKind::Delete })
     }
 }
 
@@ -1850,7 +1881,7 @@ impl Tool for ClusterRpcTool {
         //
         // 下游节点 peer_chat_handler 用 `cluster_rpc:{source_node_id}/{chat_id}` 组 session_key，
         // 多跳链路（A→B→C→D）中 C 端 session_key 会含原始 A 的 node_id，跟 Q→B→C→D 链的
-        // C 端 session_key 自然区分开（参考计划文档第十一节撞车分析）。
+        // C 端 session_key 自然区分开。
         let propagated_chat_id = if chat_id.starts_with("cluster:") || chat_id.is_empty() {
             chat_id
         } else {
@@ -3763,3 +3794,5 @@ pub fn register_extended_tools(
 mod tests;
 #[cfg(test)]
 mod coverage_boost_tests;
+#[cfg(test)]
+mod loop_tools_extra_tests;

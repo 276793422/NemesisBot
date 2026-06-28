@@ -197,6 +197,13 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     );
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
 
+    // Stash the memory executor so the gateway can attach an approval gate
+    // post-construction (P2: agent memory_store/forget require interactive
+    // approval, never bypassed by YOLO/auto).
+    if let Some(ref exec) = tool_config.memory_executor {
+        agent_loop.set_memory_executor(exec.clone());
+    }
+
     // 8. Register ClusterRpcTool (using shared call_fn + peers_fn).
     if let (Some(config), Some(call_fn)) =
         (&shared.cluster_rpc_config, &shared.cluster_rpc_call_fn)
@@ -227,6 +234,16 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     }
     if let Some(ref plugin) = shared.security_plugin {
         agent_loop.set_security_plugin(plugin.clone());
+    }
+    // Checkpoint store (edit safety net): snapshots writer-tool file changes so
+    // a rewind can restore them. One per agent loop under {workspace}/.checkpoints/.
+    {
+        let ws = shared.home.join("workspace");
+        let store = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new(
+            Some(ws.join(".checkpoints")),
+            ws,
+        ));
+        agent_loop.set_checkpoint_store(store);
     }
     if let Some(ref mgr) = shared.observer_manager {
         agent_loop.set_observer_manager(mgr.clone());
@@ -553,6 +570,13 @@ pub fn build_cluster_agent_loop(
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
 
+    // Stash the memory executor so the gateway can attach an approval gate
+    // post-construction (P2: agent memory_store/forget require interactive
+    // approval, never bypassed by YOLO/auto).
+    if let Some(ref exec) = tool_config.memory_executor {
+        agent_loop.set_memory_executor(exec.clone());
+    }
+
     // 6b. Attach a dedicated SessionStore so cluster peer_chat can persist and
     // restore conversation history per (source_node_id, chat_id) pair.
     //
@@ -584,6 +608,16 @@ pub fn build_cluster_agent_loop(
             dir = %cluster_sessions_dir.display(),
             "[AgentFactory] Cluster SessionStore attached (for peer_chat history)"
         );
+    }
+
+    // 6b. Checkpoint store (edit safety net) for the cluster agent too.
+    {
+        let ws = shared.home.join("workspace");
+        let store = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new(
+            Some(ws.join(".checkpoints")),
+            ws,
+        ));
+        agent_loop.set_checkpoint_store(store);
     }
 
     // 7. Register cluster_rpc with call_fn + peers_fn (if available).

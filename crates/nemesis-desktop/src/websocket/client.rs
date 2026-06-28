@@ -489,3 +489,5 @@ impl WebSocketClient {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod extra_tests;

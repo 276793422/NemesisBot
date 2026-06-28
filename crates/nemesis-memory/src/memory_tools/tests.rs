@@ -1,5 +1,105 @@
 use super::*;
 
+// ===== Approval gate tests =====
+
+/// A gate that denies every store/forget (simulates the user rejecting approval).
+struct DenyGate;
+#[async_trait::async_trait]
+impl MemoryApprovalGate for DenyGate {
+    async fn approve_store(&self, _preview: &str) -> bool {
+        false
+    }
+    async fn approve_forget(&self, _preview: &str) -> bool {
+        false
+    }
+}
+
+/// A gate that approves every store/forget.
+struct AllowGate;
+#[async_trait::async_trait]
+impl MemoryApprovalGate for AllowGate {
+    async fn approve_store(&self, _preview: &str) -> bool {
+        true
+    }
+    async fn approve_forget(&self, _preview: &str) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn test_store_denied_when_gate_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+    executor.set_approval_gate(Arc::new(DenyGate));
+
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(result.content.contains("denied"), "got: {}", result.content);
+}
+
+#[tokio::test]
+async fn test_forget_denied_when_gate_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+    executor.set_approval_gate(Arc::new(DenyGate));
+
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_session", "session_key": "s1"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(result.content.contains("denied"), "got: {}", result.content);
+}
+
+#[tokio::test]
+async fn test_store_ungated_when_no_gate_attached() {
+    // Backward compat: no gate → store proceeds (must not say "denied").
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+        )
+        .await;
+    assert!(
+        !result.content.contains("denied"),
+        "ungated store must not be denied: {}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn test_store_allowed_by_gate_proceeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    let executor = MemoryToolExecutor::new(mgr);
+    executor.set_approval_gate(Arc::new(AllowGate));
+
+    let result = executor
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+        )
+        .await;
+    assert!(result.success, "allowed store should succeed: {}", result.content);
+}
+
 #[test]
 fn test_memory_tool_definitions() {
     let tools = memory_tool_definitions();

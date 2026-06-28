@@ -1651,6 +1651,78 @@ fn register_accepts_message_trigger_without_error() {
 }
 
 // ---------------------------------------------------------------------------
+// workflows_matching_event / workflows_matching_message (trigger routing)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn workflows_matching_event_fires_for_matching_type() {
+    use crate::event_dispatcher::TriggerEvent;
+    use crate::types::TriggerConfig;
+    let mut wf = make_workflow("evt_wf", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "event".to_string(),
+        config: HashMap::from([(
+            "event_type".to_string(),
+            serde_json::json!("forge.pattern_created"),
+        )]),
+    }];
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).expect("register");
+
+    let event = TriggerEvent {
+        event_type: "forge.pattern_created".to_string(),
+        data: HashMap::new(),
+        timestamp: chrono::Utc::now(),
+        source_execution_id: None,
+    };
+    let matched = engine.workflows_matching_event(&event);
+    assert!(
+        matched.contains(&"evt_wf".to_string()),
+        "matching event should fire the workflow, got {:?}",
+        matched
+    );
+
+    // Non-matching event type → no match
+    let other = TriggerEvent {
+        event_type: "other.thing".to_string(),
+        ..event
+    };
+    assert!(!engine.workflows_matching_event(&other).contains(&"evt_wf".to_string()));
+}
+
+#[test]
+fn workflows_matching_message_fires_for_message_trigger() {
+    use crate::types::TriggerConfig;
+    let mut wf = make_workflow("msg_wf", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "message".to_string(),
+        config: HashMap::new(),
+    }];
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).expect("register");
+
+    let matched = engine.workflows_matching_message("web", "user1", "chat1", "hello");
+    assert!(
+        matched.contains(&"msg_wf".to_string()),
+        "message trigger should match, got {:?}",
+        matched
+    );
+}
+
+#[test]
+fn workflows_matching_event_empty_when_no_workflows() {
+    use crate::event_dispatcher::TriggerEvent;
+    let engine = WorkflowEngine::new();
+    let event = TriggerEvent {
+        event_type: "any.thing".to_string(),
+        data: HashMap::new(),
+        timestamp: chrono::Utc::now(),
+        source_execution_id: None,
+    };
+    assert!(engine.workflows_matching_event(&event).is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // Auto-checkpoint tests (1b-A1 step 6)
 // ---------------------------------------------------------------------------
 

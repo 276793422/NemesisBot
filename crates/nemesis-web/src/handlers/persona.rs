@@ -1544,4 +1544,132 @@ mod tests {
         // Test remove default fails
         assert!(handler.cmd_remove(&ws, "default").is_err());
     }
+
+    // ---- pure conversion-engine helpers ----
+
+    #[test]
+    fn extract_identity_info_parses_name_and_emoji() {
+        let md = "**姓名：** Alice\nsome text\n**表情符号：** 🎯\n";
+        let (name, emoji) = extract_identity_info(md);
+        assert_eq!(name, "Alice");
+        assert_eq!(emoji, "🎯");
+    }
+
+    #[test]
+    fn extract_identity_info_defaults_when_missing() {
+        let (name, emoji) = extract_identity_info("no identity info here");
+        assert_eq!(name, "default");
+        assert_eq!(emoji, "🤖");
+    }
+
+    #[test]
+    fn parse_frontmatter_full() {
+        let md = "---\nname: \"Bot\"\nemoji: 🤖\ndescription: desc\ncolor: red\ntools: web\nvibe: chill\n---\nbody";
+        let fm = parse_frontmatter(md).expect("frontmatter");
+        assert_eq!(fm.name, "Bot");
+        assert_eq!(fm.emoji, "🤖");
+        assert_eq!(fm.description, "desc");
+        assert_eq!(fm.color, "red");
+        assert_eq!(fm.tools, "web");
+        assert_eq!(fm.vibe, "chill");
+    }
+
+    #[test]
+    fn parse_frontmatter_none_without_marker() {
+        assert!(parse_frontmatter("no frontmatter").is_none());
+    }
+
+    #[test]
+    fn parse_frontmatter_none_without_name() {
+        // name is required — empty name → None.
+        assert!(parse_frontmatter("---\nemoji: 🤖\n---\n").is_none());
+    }
+
+    #[test]
+    fn strip_emoji_removes_emoji_and_lowercases() {
+        assert_eq!(strip_emoji("🎯 Target"), "target");
+        assert_eq!(strip_emoji("Plain"), "plain");
+    }
+
+    #[test]
+    fn is_emoji_char_classifies_correctly() {
+        assert!(is_emoji_char('🎯'));
+        assert!(!is_emoji_char('a'));
+        assert!(!is_emoji_char(' '));
+    }
+
+    #[test]
+    fn classify_section_routes_by_keyword() {
+        assert!(matches!(classify_section("🪪 Identity"), SectionTarget::Identity));
+        assert!(matches!(classify_section("Memory"), SectionTarget::Identity));
+        assert!(matches!(classify_section("⚠️ Critical Rules"), SectionTarget::Soul));
+        assert!(matches!(classify_section("Communication Style"), SectionTarget::Soul));
+        assert!(matches!(classify_section("🔧 Tools"), SectionTarget::Tools));
+        assert!(matches!(classify_section("Integrations"), SectionTarget::Tools));
+        // Everything else → Agent.
+        assert!(matches!(classify_section("Core Mission"), SectionTarget::Agent));
+    }
+
+    #[test]
+    fn build_persona_json_with_frontmatter() {
+        let fm = Frontmatter {
+            name: "Bot".into(),
+            emoji: "🤖".into(),
+            description: "d".into(),
+            vibe: "v".into(),
+            color: "c".into(),
+            tools: "t".into(),
+            raw_yaml: "name: Bot".into(),
+        };
+        let obj = build_persona_json(Some(&fm));
+        assert_eq!(obj["name"], "Bot");
+        assert_eq!(obj["color"], "c");
+        assert_eq!(obj["tools"], "t");
+        assert_eq!(obj["vibe"], "v");
+        assert_eq!(obj["frontmatter"], "name: Bot");
+    }
+
+    #[test]
+    fn build_persona_json_without_frontmatter_uses_defaults() {
+        let obj = build_persona_json(None);
+        assert_eq!(obj["name"], "Unknown");
+        assert_eq!(obj["emoji"], "🤖");
+        assert_eq!(obj["description"], "");
+        // No optional keys when frontmatter absent.
+        assert!(obj.get("color").is_none());
+    }
+
+    #[test]
+    fn parse_sections_splits_preamble_and_h2() {
+        let md = "---\nname: X\n---\n\nI am the preamble.\n\n## Section A\n\ncontent a\n\n## Section B\n\ncontent b\n";
+        let parsed = parse_sections(md);
+        assert!(parsed.preamble.contains("I am the preamble"));
+        assert_eq!(parsed.sections.len(), 2);
+        assert_eq!(parsed.sections[0].title, "Section A");
+        assert_eq!(parsed.sections[1].title, "Section B");
+    }
+
+    #[test]
+    fn convert_agent_md_routes_sections_to_files() {
+        let md = "---\nname: TestBot\nemoji: 🤖\ndescription: a test bot\nvibe: friendly\ncolor: blue\ntools: web\n---\n\nI am a helpful assistant.\n\n## 🪪 Identity\n\nMy name is TestBot.\n\n## ⚠️ Critical Rules\n\nBe safe.\n\n## 🔧 Tools\n\nUse web search.\n";
+        let files = convert_agent_md(md);
+        // Identity file gets the Identity section + 基本信息 block.
+        assert!(files.identity.contains("TestBot"));
+        assert!(files.identity.contains("基本信息"));
+        assert!(files.identity.contains("My name is TestBot."));
+        // Soul file gets Critical Rules.
+        assert!(files.soul.contains("Critical Rules"));
+        assert!(files.soul.contains("Be safe."));
+        // Tools extra gets the Tools section.
+        assert!(files.tools_extra.contains("Use web search."));
+        // Preamble is folded into identity.
+        assert!(files.identity.contains("I am a helpful assistant."));
+    }
+
+    #[test]
+    fn convert_agent_md_empty_tools_when_no_tools_section() {
+        let md = "---\nname: Minimal\n---\n\n## Identity\n\njust identity\n";
+        let files = convert_agent_md(md);
+        assert!(files.tools_extra.is_empty());
+    }
 }

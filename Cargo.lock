@@ -3650,6 +3650,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "wiremock",
  "zip",
 ]
 
