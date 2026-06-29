@@ -74,7 +74,7 @@ impl LlmProvider for ProviderAdapter {
         model: &str,
         messages: Vec<LlmMessage>,
         options: Option<nemesis_agent::types::ChatOptions>,
-        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+        tools: Vec<nemesis_agent::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
         let model_to_use = if model.is_empty() {
             &self.default_model
@@ -110,6 +110,22 @@ impl LlmProvider for ProviderAdapter {
             })
             .collect();
 
+        // Convert agent ToolDefinition → provider ToolDefinition.
+        // (Previously this was dropped — `_tools` + `&[]` — which meant the CLI agent
+        // never sent any tools to the LLM, so the model could only fake tool calls
+        // as text. Gateway used a different adapter that did forward tools.)
+        let provider_tools: Vec<nemesis_providers::types::ToolDefinition> = tools
+            .into_iter()
+            .map(|t| nemesis_providers::types::ToolDefinition {
+                tool_type: t.tool_type,
+                function: nemesis_providers::types::ToolFunctionDefinition {
+                    name: t.function.name,
+                    description: t.function.description,
+                    parameters: t.function.parameters,
+                },
+            })
+            .collect();
+
         // Convert agent ChatOptions → provider ChatOptions, using defaults when None.
         let provider_options = match options {
             Some(opts) => nemesis_providers::types::ChatOptions {
@@ -130,7 +146,7 @@ impl LlmProvider for ProviderAdapter {
 
         match self
             .inner
-            .chat(&provider_messages, &[], model_to_use, &provider_options)
+            .chat(&provider_messages, &provider_tools, model_to_use, &provider_options)
             .await
         {
             Ok(resp) => {
@@ -178,7 +194,7 @@ impl LlmProvider for ProviderAdapter {
 // ===========================================================================
 
 /// Build a fully-configured AgentLoop from the config file.
-fn build_agent_loop(
+pub(crate) fn build_agent_loop(
     cfg: &nemesis_config::Config,
     home: &std::path::Path,
 ) -> Result<AgentLoop> {
@@ -217,10 +233,29 @@ fn build_agent_loop(
     // 3. Wrap in adapter
     let adapter = ProviderAdapter::new(provider, model_name.clone());
 
-    // 4. Build AgentConfig
+    // 4. Build system prompt from workspace files (IDENTITY.md, SOUL.md, AGENT.md, ...).
+    //    Mirrors gateway/agent_factory. Without it the agent has no "Always use tools"
+    //    instruction, and weaker models (e.g. deepseek-v4-flash) fall back to chat mode
+    //    and won't issue tool_calls — they hallucinate tool use in plain text instead.
+    let workspace_dir = home.join("workspace");
+    let system_prompt = {
+        let mut context_builder = nemesis_agent::context::ContextBuilder::new(&workspace_dir);
+        let skills_dir = workspace_dir.join("skills");
+        if skills_dir.exists() {
+            context_builder.load_skills(&skills_dir);
+        }
+        context_builder.build_system_prompt(false)
+    };
+    info!("[Agent] System prompt built ({} chars)", system_prompt.len());
+
+    // 5. Build AgentConfig
     let agent_config = AgentConfig {
-        model: model_name,
-        system_prompt: None, // Will be built by ContextBuilder from workspace files
+        model: model_name.clone(),
+        system_prompt: if system_prompt.is_empty() {
+            None
+        } else {
+            Some(system_prompt)
+        },
         max_turns: cfg.agents.defaults.max_tool_iterations.max(1) as u32,
         tools: Vec::new(),
     };
@@ -228,10 +263,116 @@ fn build_agent_loop(
     // 5. Create AgentLoop (standalone mode for CLI)
     let mut agent_loop = AgentLoop::new(Box::new(adapter), agent_config);
 
-    // 6. Register default tools
-    let default_tools = nemesis_agent::register_default_tools();
-    for (name, tool) in default_tools {
+    // 6. Register shared tools — match the gateway's full set (39 tools). With
+    //    a slim tool set deepseek-v4-flash degrades to XML-tag pseudo-calls
+    //    instead of standard tool_calls; the full set keeps it stable. All
+    //    dependencies are constructed minimally (no background tasks): the
+    //    standalone CLI agent is short-lived and won't actually drive
+    //    forge/workflow/cron — they just need to register so the tool count
+    //    (and thus deepseek's tool-calling behavior) matches the gateway.
+    let workspace_dir = home.join("workspace");
+    let workspace_str = workspace_dir.to_string_lossy().to_string();
+    let global_skills_str = workspace_dir.join("skills").to_string_lossy().to_string();
+    let skills_loader = std::sync::Arc::new(
+        nemesis_skills::loader::SkillsLoader::new(&workspace_str, &global_skills_str, ""),
+    );
+
+    // Minimal cron service — new() only loads jobs from disk; no set_on_job/start.
+    let cron_store_path = common::cron_store_path(&home);
+    let cron_service = std::sync::Arc::new(std::sync::Mutex::new(
+        nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
+    ));
+
+    // Skills registry from config (light; network only on actual search/install).
+    let skills_registry = {
+        let p = workspace_dir.join("config").join("config.skills.json");
+        if p.exists() {
+            std::fs::read_to_string(&p)
+                .ok()
+                .and_then(|c| {
+                    serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&c).ok()
+                })
+                .map(|rc| {
+                    std::sync::Arc::new(nemesis_skills::registry::RegistryManager::from_config(rc))
+                })
+        } else {
+            None
+        }
+    };
+
+    // Minimal forge — Forge::new only; no init_reflector/pipeline/learning/start
+    // (those spawn background work). The forge tools still register.
+    let forge = std::sync::Arc::new(nemesis_forge::forge::Forge::new(
+        nemesis_forge::config::ForgeConfig::default(),
+        workspace_dir.clone(),
+    ));
+    let forge_executor = std::sync::Arc::new(
+        nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
+    );
+
+    // Minimal workflow engine — no load_workflows/spawn_cron (no background).
+    let workflow_engine = std::sync::Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+
+    let shared_cfg = nemesis_agent::SharedToolConfig {
+        workspace: Some(workspace_str),
+        skills_loader: Some(skills_loader),
+        skills_registry,
+        cron_service: Some(cron_service),
+        forge: Some(forge),
+        forge_executor: Some(forge_executor),
+        workflow_engine: Some(workflow_engine),
+        spawn: Some(nemesis_agent::loop_tools::SpawnConfig {
+            default_model: model_name.clone(),
+            max_concurrent: 4,
+        }),
+        skills_manage_approval: cfg
+            .skills
+            .as_ref()
+            .map(|s| s.manage_approval)
+            .unwrap_or(false),
+        ..Default::default()
+    };
+    let shared_tools = nemesis_agent::register_shared_tools(&shared_cfg);
+    for (name, tool) in shared_tools {
         agent_loop.register_tool(name, tool);
+    }
+
+    // 7. Attach RequestLoggerObserver if logging.llm.enabled, so CLI agent
+    //    sessions also write raw LLM request/response logs (same as gateway).
+    if let Some(ref logging_cfg) = cfg.logging {
+        if let Some(llm_cfg) = &logging_cfg.llm {
+            if llm_cfg.enabled {
+                let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
+                    enabled: true,
+                    detail_level: match llm_cfg.detail_level.as_str() {
+                        "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
+                        _ => nemesis_agent::request_logger::DetailLevel::Full,
+                    },
+                    log_dir: if llm_cfg.log_dir.is_empty() {
+                        "logs/request_logs".to_string()
+                    } else {
+                        llm_cfg.log_dir.clone()
+                    },
+                    save_raw: llm_cfg.save_raw,
+                };
+                let workspace_path = home.join("workspace");
+                let rl_observer = std::sync::Arc::new(
+                    nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
+                        rl_logging_config,
+                        &workspace_path,
+                    ),
+                );
+                let observer_mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+                let mgr = observer_mgr.clone();
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        mgr.register(rl_observer).await;
+                    })
+                });
+                agent_loop.set_observer_manager(observer_mgr);
+                info!("[Agent] RequestLoggerObserver registered (logging.llm.enabled = true)");
+            }
+        }
     }
 
     Ok(agent_loop)

@@ -2409,18 +2409,28 @@ impl AgentLoop {
 
             // Build tool definitions from registered tools for LLM function calling.
             // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
-            let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
-                .map(|(name, tool)| {
-                    crate::types::ToolDefinition {
-                        tool_type: "function".to_string(),
-                        function: crate::types::ToolFunctionDef {
-                            name: name.clone(),
-                            description: tool.description(),
-                            parameters: tool.parameters(),
-                        },
-                    }
-                })
-                .collect();
+            // Sort by name so the order is stable across runs — some models (e.g. deepseek-v4-flash,
+            // which has a known tool-calling reliability bug) are sensitive to tool ordering, and a
+            // random HashMap order intermittently makes them emit tool calls as plain text instead of
+            // the standard tool_calls structure.
+            let tool_defs: Vec<crate::types::ToolDefinition> = {
+                let tools_guard = self.tools.read();
+                let mut names: Vec<&String> = tools_guard.keys().collect();
+                names.sort();
+                names.into_iter()
+                    .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
+                    .map(|(name, tool)| {
+                        crate::types::ToolDefinition {
+                            tool_type: "function".to_string(),
+                            function: crate::types::ToolFunctionDef {
+                                name: name.clone(),
+                                description: tool.description(),
+                                parameters: tool.parameters(),
+                            },
+                        }
+                    })
+                    .collect()
+            };
             debug!("[AgentLoop] Sending {} tool definitions to LLM", tool_defs.len());
 
             // Emit LLM request observer event.

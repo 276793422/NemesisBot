@@ -658,6 +658,8 @@ pub struct MemoryFlagConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillsConfig {
     #[serde(default)] pub enabled: bool,
+    /// Whether `skill_manage` writes require interactive approval (default false).
+    #[serde(default)] pub manage_approval: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

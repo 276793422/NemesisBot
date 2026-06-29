@@ -52,6 +52,9 @@ pub struct SharedResources {
     /// Workflow engine reference — when set, registers the `workflow_run`
     /// agent tool. None keeps the tool absent (e.g., during tests).
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    /// Approval manager slot, filled by the gateway after the agent loop is
+    /// built. Lets `skill_manage` request interactive approval when enabled.
+    pub approval_slot: nemesis_agent::loop_tools::ApprovalManagerSlot,
 
     // Cluster RPC closure (Cluster itself is mem::forget'd, but rpc_call_fn must survive)
     pub cluster_rpc_call_fn: Option<
@@ -332,6 +335,12 @@ fn build_shared_tool_config(
         cluster_rpc: None, // Registered separately with call_fn
         mcp_tool_snapshot,
         workflow_engine: shared.workflow_engine.clone(),
+        approval_manager: Some(shared.approval_slot.clone()),
+        skills_manage_approval: cfg
+            .skills
+            .as_ref()
+            .map(|s| s.manage_approval)
+            .unwrap_or(false),
     }
 }
 

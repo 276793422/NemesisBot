@@ -2093,6 +2093,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
+        approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
+            None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
+        )),
     };
 
     let shared_resources = Arc::new(shared_resources);
@@ -2790,6 +2793,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
             Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
         auditor.set_approval_manager(adapter.clone());
+        // Bridge the same approval manager to `skill_manage` write approval.
+        *shared_resources.approval_slot.write() = Some(adapter.clone());
         // P2: bridge the same approval manager to the agent's memory write/forget
         // gate — agent memory_store/forget now pop up for approval, never
         // bypassed by YOLO/auto. No-op if no memory executor was stashed.

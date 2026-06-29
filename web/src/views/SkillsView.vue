@@ -75,6 +75,12 @@ const sources = ref<Source[]>([])
 const sourcesLoading = ref(false)
 const showAddDialog = ref(false)
 const showManualDialog = ref(false)
+
+// Learn skill (distill a source into a skill)
+const showLearnDialog = ref(false)
+const learnSource = ref('')
+const learnName = ref('')
+const learning = ref(false)
 const addUrl = ref('')
 const adding = ref(false)
 const partialData = ref<any>(null)
@@ -90,6 +96,27 @@ async function loadInstalled() {
     toast.error('加载失败: ' + e)
   }
   loading.value = false
+}
+
+async function learnSkill() {
+  if (!learnSource.value.trim()) return
+  learning.value = true
+  try {
+    const data = await request('skills', 'learn', {
+      source: learnSource.value.trim(),
+      name: learnName.value.trim() || undefined,
+    })
+    toast.success(data?.message || '已开始学习，请在对话窗口查看进度')
+    showLearnDialog.value = false
+    learnSource.value = ''
+    learnName.value = ''
+    // The agent runs asynchronously and writes the skill via skill_manage.
+    // Refresh the installed list shortly after so the new skill appears.
+    setTimeout(() => { loadInstalled() }, 8000)
+  } catch (e: any) {
+    toast.error('学习失败: ' + e)
+  }
+  learning.value = false
 }
 
 async function showDetail(name: string) {
@@ -407,6 +434,9 @@ onMounted(loadInstalled)
 
       <!-- Installed tab -->
       <div v-if="activeTab === 'installed'">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: var(--space-3);">
+          <button class="btn btn-sm btn-primary" @click="showLearnDialog = true">＋ 学习技能</button>
+        </div>
         <div v-if="loading" style="text-align: center; padding: var(--space-8);">
           <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
         </div>
@@ -688,6 +718,37 @@ onMounted(loadInstalled)
             <button class="btn btn-sm" @click="showAddDialog = false">取消</button>
             <button class="btn btn-sm btn-primary" @click="addSource" :disabled="adding || !addUrl.trim()">
               {{ adding ? '探测中...' : '添加' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Learn skill dialog -->
+      <div v-if="showLearnDialog" class="modal-backdrop" @click.self="showLearnDialog = false">
+        <div class="modal" style="max-width: 520px;">
+          <div class="modal-header">
+            <h3>学习技能</h3>
+            <button class="modal-close" @click="showLearnDialog = false">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label class="form-label">来源（本地目录 / URL / 操作笔记）</label>
+              <textarea class="form-input" v-model="learnSource" rows="4"
+                placeholder="例如：~/projects/acme-sdk 的 REST 客户端，关注 auth 与分页；或 https://docs.example.com/api/quickstart；或粘贴一个操作流程"
+                style="width: 100%; min-height: 96px; resize: vertical; font-family: inherit;"></textarea>
+            </div>
+            <div class="form-group">
+              <label class="form-label">技能名（可选，留空自动生成）</label>
+              <input class="form-input" v-model="learnName" placeholder="my-skill" style="width: 100%;">
+            </div>
+            <p style="font-size: var(--text-xs); color: var(--text-muted); margin-top: var(--space-2);">
+              Agent 会读取来源、按规范生成 SKILL.md 并保存为可复用技能。处理进度在对话窗口查看。
+            </p>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-sm" @click="showLearnDialog = false">取消</button>
+            <button class="btn btn-sm btn-primary" @click="learnSkill" :disabled="learning || !learnSource.trim()">
+              {{ learning ? '提交中...' : '开始学习' }}
             </button>
           </div>
         </div>

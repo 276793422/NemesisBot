@@ -1227,18 +1227,25 @@ impl AgentLoopExecutor {
             debug!("[AgentLoopExecutor] Sending {} messages to LLM", messages.len());
 
             // Build tool definitions from registered tools for LLM function calling.
-            let tool_defs: Vec<crate::types::ToolDefinition> = self.tools.iter()
-                .map(|(name, tool)| {
-                    crate::types::ToolDefinition {
-                        tool_type: "function".to_string(),
-                        function: crate::types::ToolFunctionDef {
-                            name: name.clone(),
-                            description: tool.description(),
-                            parameters: tool.parameters(),
-                        },
-                    }
-                })
-                .collect();
+            // Sort by name for a stable order — see loop.rs for rationale (model tool-order
+            // sensitivity on deepseek-v4-flash).
+            let tool_defs: Vec<crate::types::ToolDefinition> = {
+                let mut names: Vec<&String> = self.tools.keys().collect();
+                names.sort();
+                names.into_iter()
+                    .filter_map(|name| self.tools.get(name).map(|tool| (name, tool)))
+                    .map(|(name, tool)| {
+                        crate::types::ToolDefinition {
+                            tool_type: "function".to_string(),
+                            function: crate::types::ToolFunctionDef {
+                                name: name.clone(),
+                                description: tool.description(),
+                                parameters: tool.parameters(),
+                            },
+                        }
+                    })
+                    .collect()
+            };
 
             // Emit LLM request event (asynchronous).
             let msg_values: Vec<serde_json::Value> = messages.iter()

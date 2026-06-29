@@ -14,7 +14,7 @@
 //! - Skills tools
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2520,6 +2520,309 @@ impl Tool for InstallSkillTool {
 }
 
 // ===========================================================================
+// Skill manage tool (agent-authored skills / procedural memory)
+// ===========================================================================
+
+/// Skill manage tool — the agent's procedural memory.
+///
+/// Lets the agent author reusable SKILL.md skills under `workspace/skills/<name>/`,
+/// so a workflow it just learned (or distilled from reference material via the
+/// `learn` skill) becomes a reusable slash command. Mirrors Hermes Agent's
+/// `skill_manage`. Actions: `create` (full SKILL.md incl. frontmatter), `patch`/
+/// `edit` (replace `old`->`new` text), `write_file`/`remove_file` (supporting
+/// files inside the skill dir), `delete` (remove whole skill). All writes are
+/// security-checked before landing.
+/// Shareable slot holding an optional approval manager, filled in later by the
+/// gateway (after the agent loop is built). Lets `skill_manage` request
+/// interactive approval for writes when `skills.manage_approval` is enabled.
+pub type ApprovalManagerSlot =
+    Arc<parking_lot::RwLock<Option<Arc<dyn nemesis_security::auditor::ApprovalManager>>>>;
+
+pub struct SkillManageTool {
+    workspace: String,
+    /// Optional approval manager slot (filled later by the gateway). When
+    /// `require_approval` is true and this slot is populated, writes prompt.
+    approval_manager: Option<ApprovalManagerSlot>,
+    /// Whether writes require interactive approval (config: skills.manage_approval).
+    require_approval: bool,
+}
+
+impl SkillManageTool {
+    /// Create a new skill manage tool writing under `<workspace>/skills/`.
+    pub fn new(
+        workspace: String,
+        approval_manager: Option<ApprovalManagerSlot>,
+        require_approval: bool,
+    ) -> Self {
+        Self {
+            workspace,
+            approval_manager,
+            require_approval,
+        }
+    }
+
+    fn skill_dir(&self, name: &str) -> PathBuf {
+        Path::new(&self.workspace).join("skills").join(name)
+    }
+
+    /// Request interactive approval for a write action. No-op when approval is
+    /// disabled. When enabled but no manager is running, refuse the write (safe
+    /// default). Runs the blocking popup on a `spawn_blocking` thread.
+    async fn check_approval(
+        &self,
+        operation: &str,
+        target: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        if !self.require_approval {
+            return Ok(());
+        }
+        let slot = match &self.approval_manager {
+            Some(s) => s.clone(),
+            None => {
+                return Err(
+                    "skill write requires approval but no approval manager is configured"
+                        .to_string(),
+                )
+            }
+        };
+        let am = {
+            let guard = slot.read();
+            match guard.as_ref() {
+                Some(m) if m.is_running() => m.clone(),
+                _ => {
+                    return Err(
+                        "skill write requires approval but no approval manager is running"
+                            .to_string(),
+                    )
+                }
+            }
+        };
+        let req_id = format!("skill_manage:{}:{}", operation, target);
+        let op = format!("skill_manage.{}", operation);
+        let target = target.to_string();
+        let reason = reason.to_string();
+        match tokio::task::spawn_blocking(move || {
+            am.request_approval_sync(&req_id, &op, &target, "MEDIUM", &reason, 30)
+        })
+        .await
+        {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => Err(format!("skill write '{}' denied by user", operation)),
+            Ok(Err(e)) => Err(format!("approval request failed: {}", e)),
+            Err(e) => Err(format!("approval task failed: {}", e)),
+        }
+    }
+
+    fn do_create(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+        let content = v["content"]
+            .as_str()
+            .ok_or_else(|| "'content' is required for create".to_string())?;
+        let overwrite = v["overwrite"].as_bool().unwrap_or(false);
+        let skill_md = skill_dir.join("SKILL.md");
+        if skill_md.exists() && !overwrite {
+            return Err(format!(
+                "skill '{}' already exists at {}. Set overwrite=true to replace.",
+                name,
+                skill_md.display()
+            ));
+        }
+        let check = nemesis_skills::security_check::check_skill_security(content, name, "");
+        if check.blocked {
+            return Err(format!(
+                "skill content blocked by security check: {}",
+                check.block_reason
+            ));
+        }
+        std::fs::create_dir_all(skill_dir)
+            .map_err(|e| format!("failed to create skill dir: {}", e))?;
+        if let Err(e) = std::fs::write(&skill_md, content) {
+            let _ = std::fs::remove_dir_all(skill_dir);
+            return Err(format!("failed to write SKILL.md: {}", e));
+        }
+        Ok(format!(
+            "Skill '{}' created at {} (lint {:.0}/100{}).",
+            name,
+            skill_md.display(),
+            check.lint_result.score * 100.0,
+            check
+                .quality_score
+                .as_ref()
+                .map(|q| format!(", quality {:.0}/100", q.overall))
+                .unwrap_or_default()
+        ))
+    }
+
+    fn do_patch(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+        let old = v["old"].as_str().unwrap_or("");
+        let new = v["new"]
+            .as_str()
+            .ok_or_else(|| "'new' is required for patch/edit".to_string())?;
+        let skill_md = skill_dir.join("SKILL.md");
+        let mut content = std::fs::read_to_string(&skill_md)
+            .map_err(|e| format!("failed to read SKILL.md for '{}': {}", name, e))?;
+        if old.is_empty() {
+            content.push_str(new);
+        } else if let Some(idx) = content.find(old) {
+            content.replace_range(idx..idx + old.len(), new);
+        } else {
+            return Err(format!("'old' text not found in SKILL.md for skill '{}'", name));
+        }
+        let check = nemesis_skills::security_check::check_skill_security(&content, name, "");
+        if check.blocked {
+            return Err(format!("edited content blocked by security check: {}", check.block_reason));
+        }
+        std::fs::write(&skill_md, &content)
+            .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
+        Ok(format!("Skill '{}' updated (lint {:.0}/100).", name, check.lint_result.score * 100.0))
+    }
+
+    fn do_write_file(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+        if !skill_dir.exists() {
+            return Err(format!(
+                "skill '{}' has no directory yet; create it first",
+                name
+            ));
+        }
+        let path = v["path"]
+            .as_str()
+            .ok_or_else(|| "'path' is required for write_file".to_string())?;
+        let content = v["content"]
+            .as_str()
+            .ok_or_else(|| "'content' is required for write_file".to_string())?;
+        let overwrite = v["overwrite"].as_bool().unwrap_or(false);
+        let target = resolve_within(skill_dir, path)?;
+        if target.exists() && !overwrite {
+            return Err(format!("file already exists at {}. Set overwrite=true.", target.display()));
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
+        }
+        std::fs::write(&target, content).map_err(|e| format!("failed to write file: {}", e))?;
+        Ok(format!("Wrote {} ({} bytes) in skill '{}'.", target.display(), content.len(), name))
+    }
+
+    fn do_remove_file(&self, skill_dir: &Path, name: &str, v: &serde_json::Value) -> Result<String, String> {
+        if !skill_dir.exists() {
+            return Err(format!("skill '{}' has no directory yet", name));
+        }
+        let path = v["path"]
+            .as_str()
+            .ok_or_else(|| "'path' is required for remove_file".to_string())?;
+        let target = resolve_within(skill_dir, path)?;
+        if !target.exists() {
+            return Err(format!("file not found: {}", target.display()));
+        }
+        std::fs::remove_file(&target).map_err(|e| format!("failed to remove file: {}", e))?;
+        Ok(format!("Removed {} from skill '{}'.", target.display(), name))
+    }
+
+    fn do_delete(&self, skill_dir: &Path, name: &str) -> Result<String, String> {
+        if !skill_dir.exists() {
+            return Err(format!("skill '{}' not found at {}", name, skill_dir.display()));
+        }
+        std::fs::remove_dir_all(skill_dir).map_err(|e| format!("failed to delete skill: {}", e))?;
+        Ok(format!("Skill '{}' deleted.", name))
+    }
+}
+
+#[async_trait]
+impl Tool for SkillManageTool {
+    fn description(&self) -> String {
+        "Create, update, or delete reusable skills (the agent's procedural memory). \
+         Persists a SKILL.md to workspace/skills/<name>/ so a workflow can be reused later \
+         as a slash command. Actions: create (full SKILL.md incl. --- frontmatter ---), \
+         patch/edit (replace old->new), write_file/remove_file (supporting files under the \
+         skill dir), delete (remove whole skill). Security-checked before writing."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "patch", "edit", "write_file", "remove_file", "delete"],
+                    "description": "Operation to perform"
+                },
+                "name": {"type": "string", "description": "Skill slug (lowercase, digits, hyphens, <64 chars)"},
+                "content": {"type": "string", "description": "Full SKILL.md (create) or file content (write_file)"},
+                "path": {"type": "string", "description": "Sub-path within skill dir, e.g. references/api.md (write_file/remove_file)"},
+                "old": {"type": "string", "description": "Exact text to replace (patch/edit)"},
+                "new": {"type": "string", "description": "Replacement text (patch/edit)"},
+                "overwrite": {"type": "boolean", "default": false, "description": "Allow overwriting an existing file"}
+            },
+            "required": ["action", "name"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let v: serde_json::Value = serde_json::from_str(args)
+            .map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+
+        let action = v["action"]
+            .as_str()
+            .ok_or_else(|| "missing required 'action' field".to_string())?;
+        let name = v["name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "missing required 'name' field".to_string())?;
+
+        // Path-traversal protection on the skill name.
+        nemesis_skills::types::validate_skill_identifier(name)
+            .map_err(|e| format!("invalid skill name '{}': {}", name, e))?;
+
+        let skill_dir = self.skill_dir(name);
+
+        // Approval gate for any write action (no-op unless manage_approval is on).
+        if matches!(
+            action,
+            "create" | "patch" | "edit" | "write_file" | "remove_file" | "delete"
+        ) {
+            self.check_approval(
+                action,
+                &skill_dir.display().to_string(),
+                &format!("skill '{}' — {}", name, action),
+            )
+            .await?;
+        }
+
+        match action {
+            "create" => self.do_create(&skill_dir, name, &v),
+            "patch" | "edit" => self.do_patch(&skill_dir, name, &v),
+            "write_file" => self.do_write_file(&skill_dir, name, &v),
+            "remove_file" => self.do_remove_file(&skill_dir, name, &v),
+            "delete" => self.do_delete(&skill_dir, name),
+            other => Err(format!(
+                "unknown action '{}' (valid: create, patch, edit, write_file, remove_file, delete)",
+                other
+            )),
+        }
+    }
+}
+
+/// Resolve a relative path inside `base`, rejecting absolute paths and `..`
+/// traversal so write_file/remove_file cannot escape the skill directory.
+fn resolve_within(base: &Path, rel: &str) -> Result<PathBuf, String> {
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute() || rel.contains("..") {
+        return Err(format!(
+            "path must be a relative path within the skill dir, with no '..': {}",
+            rel
+        ));
+    }
+    let canon_base = base
+        .canonicalize()
+        .map_err(|e| format!("cannot canonicalize skill dir: {}", e))?;
+    let canon_target = canon_base.join(rel_path);
+    if !canon_target.starts_with(&canon_base) {
+        return Err(format!("path escapes skill directory: {}", rel));
+    }
+    Ok(canon_target)
+}
+
+// ===========================================================================
 // Hardware tools (I2C / SPI)
 // ===========================================================================
 
@@ -3416,6 +3719,10 @@ pub struct SharedToolConfig {
     /// Workflow engine reference for the `workflow_run` agent tool.
     /// `None` means workflows aren't wired in (tool stays unregistered).
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    /// Optional approval manager slot for skill_manage write approval.
+    pub approval_manager: Option<ApprovalManagerSlot>,
+    /// Whether skill_manage writes require interactive approval.
+    pub skills_manage_approval: bool,
 }
 
 impl Default for SharedToolConfig {
@@ -3433,6 +3740,8 @@ impl Default for SharedToolConfig {
             memory_executor: None,
             mcp_tool_snapshot: None,
             workflow_engine: None,
+            approval_manager: None,
+            skills_manage_approval: false,
         }
     }
 }
@@ -3449,6 +3758,8 @@ impl std::fmt::Debug for SharedToolConfig {
             .field("memory_executor", &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"))
             .field("mcp_tool_snapshot", &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"))
             .field("workflow_engine", &self.workflow_engine.as_ref().map(|_| "WorkflowEngine"))
+            .field("approval_manager", &self.approval_manager.as_ref().map(|_| "ApprovalManagerSlot"))
+            .field("skills_manage_approval", &self.skills_manage_approval)
             .finish()
     }
 }
@@ -3537,6 +3848,18 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 Box::new(InstallSkillTool::new(registry.clone(), workspace.clone())),
             );
         }
+    }
+
+    // Skill manage tool — agent-authored skills (procedural memory).
+    if let Some(ref workspace) = config.workspace {
+        tools.insert(
+            "skill_manage".to_string(),
+            Box::new(SkillManageTool::new(
+                workspace.clone(),
+                config.approval_manager.clone(),
+                config.skills_manage_approval,
+            )),
+        );
     }
 
     // Hardware tools (I2C / SPI - Linux only, no-op on other platforms).
@@ -3786,6 +4109,8 @@ pub fn register_extended_tools(
         memory_executor: None,
         mcp_tool_snapshot: None,
         workflow_engine: None,
+        approval_manager: None,
+        skills_manage_approval: false,
     };
     register_shared_tools(&shared_config)
 }
@@ -3796,3 +4121,5 @@ mod tests;
 mod coverage_boost_tests;
 #[cfg(test)]
 mod loop_tools_extra_tests;
+#[cfg(test)]
+mod skill_manage_tests;

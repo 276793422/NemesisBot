@@ -71,6 +71,14 @@ pub enum SkillsAction {
         /// Output directory name (defaults to skill_name)
         output_name: Option<String>,
     },
+    /// Learn from a directory/URL/conversation/notes and create a skill
+    Learn {
+        /// Source: a local directory/file path, a URL, or pasted notes
+        source: String,
+        /// Optional skill name (auto-chosen if omitted)
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -1013,6 +1021,62 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         SkillsAction::ListBuiltin => cmd_list_builtin()?,
         SkillsAction::InstallClawhub { author, skill_name, output_name } => {
             cmd_install_clawhub(&skills_dir, &author, &skill_name, output_name.as_deref())?
+        }
+        SkillsAction::Learn { source, name } => {
+            let result = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(cmd_learn(&home, &source, name.as_deref()))
+            })?;
+            result
+        }
+    }
+    Ok(())
+}
+
+/// Learn from a source (directory/URL/conversation/notes) by running the agent
+/// with the built-in `learn` skill, which distills the source into a SKILL.md
+/// persisted via the `skill_manage` tool. The CLI entry only composes the
+/// prompt and runs one agent turn; the agent does the sourcing and the write.
+async fn cmd_learn(home: &std::path::Path, source: &str, name: Option<&str>) -> Result<()> {
+    let cfg_path = common::config_path(home);
+    if !cfg_path.exists() {
+        anyhow::bail!(
+            "Configuration not found: {}. Run 'nemesisbot onboard default' first.",
+            cfg_path.display()
+        );
+    }
+    let cfg = nemesis_config::load_config(&cfg_path)?;
+
+    let agent_loop = match crate::commands::agent::build_agent_loop(&cfg, home) {
+        Ok(al) => al,
+        Err(e) => {
+            anyhow::bail!(
+                "Failed to initialize agent (configure an LLM with 'nemesisbot model add'): {}",
+                e
+            );
+        }
+    };
+
+    let name_hint = name
+        .map(|n| format!(" Use '{}' as the skill name (hyphen-case).", n))
+        .unwrap_or_default();
+    let prompt = format!(
+        "Use the 'learn' skill. Read it first via skills_info if you need the full authoring \
+         standard. Distill the following source into a reusable SKILL.md and persist it with the \
+         skill_manage tool (action=create, content=full SKILL.md incl. YAML frontmatter). Follow \
+         the learn skill's standard exactly.{} Pick a sensible hyphen-case name if none is given. \
+         Do not ask follow-up questions.\n\nSource:\n{}",
+        name_hint, source
+    );
+
+    println!("Learning from source: {}", source);
+    match agent_loop.process_direct(&prompt, "skills-learn").await {
+        Ok(response) => {
+            println!();
+            println!("{}", response);
+        }
+        Err(e) => {
+            anyhow::bail!("Agent error: {}", e);
         }
     }
     Ok(())

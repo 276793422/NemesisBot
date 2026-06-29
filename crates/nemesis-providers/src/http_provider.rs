@@ -212,6 +212,18 @@ impl HttpProvider {
             body["stop"] = serde_json::json!(stop);
         }
 
+        // DeepSeek V4 defaults to thinking mode. In thinking mode the model emits
+        // tool calls in its internal DSML markup, which the API normally rewrites
+        // into the standard `tool_calls` structure — but deepseek-v4-flash
+        // intermittently fails to and returns DSML as plain `content` (community
+        // reports / GitHub deepseek-ai #1244). When tools are present, disable
+        // thinking so tool calls come back as standard tool_calls. Non-thinking
+        // mode fully supports tool calls per the official docs.
+        let lower = normalized.to_lowercase();
+        if lower.contains("deepseek") && !tools.is_empty() {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+
         body
     }
 

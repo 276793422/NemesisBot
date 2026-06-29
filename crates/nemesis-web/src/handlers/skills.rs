@@ -98,9 +98,58 @@ impl ModuleHandler for SkillsHandler {
                 let data = data.ok_or("missing data")?;
                 self.browse(&data, workspace).await
             }
+            "learn" => {
+                let data = data.ok_or("missing data")?;
+                learn(&data, ctx).await
+            }
             _ => Err(format!("unknown command: skills.{}", cmd)),
         }
     }
+}
+
+/// Trigger a `/learn` run: compose the authoring prompt and enqueue it as a
+/// normal chat message so the agent (with the `learn` + `skill_manage` tools)
+/// distills the source into a SKILL.md. Progress flows back via the regular
+/// conversation event stream (same chat_id).
+async fn learn(
+    data: &serde_json::Value,
+    ctx: &RequestContext,
+) -> Result<Option<serde_json::Value>, String> {
+    let source = crate::handlers::get_str(data, "source")?;
+    let name = data.get("name").and_then(|v| v.as_str());
+    let name_hint = name
+        .map(|n| format!(" Use '{}' as the skill name (hyphen-case).", n))
+        .unwrap_or_default();
+    let prompt = format!(
+        "Use the 'learn' skill. Read it first via skills_info if you need the full authoring \
+         standard. Distill the following source into a reusable SKILL.md and persist it with the \
+         skill_manage tool (action=create, content=full SKILL.md incl. YAML frontmatter). Follow \
+         the learn skill's standard exactly.{} Pick a sensible hyphen-case name if none is given. \
+         Do not ask follow-up questions.\n\nSource:\n{}",
+        name_hint, source
+    );
+
+    let tx = ctx
+        .state
+        .inbound_tx
+        .as_ref()
+        .ok_or("agent chat bridge is not available")?;
+    let incoming = crate::websocket_handler::IncomingMessage {
+        session_id: ctx.session_id.clone(),
+        sender_id: ctx.session_id.clone(),
+        chat_id: ctx.chat_id.clone(),
+        content: prompt,
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    tx.send(incoming)
+        .map_err(|_| "failed to enqueue learn request".to_string())?;
+
+    Ok(Some(serde_json::json!({
+        "status": "started",
+        "chat_id": ctx.chat_id,
+        "message": "Agent is learning from the source. Watch the conversation for progress."
+    })))
 }
 
 fn skills_config_path(workspace: &str) -> PathBuf {
