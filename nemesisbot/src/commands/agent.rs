@@ -258,6 +258,7 @@ pub(crate) fn build_agent_loop(
         },
         max_turns: cfg.agents.defaults.max_tool_iterations.max(1) as u32,
         tools: Vec::new(),
+        models: std::collections::HashMap::new(),
     };
 
     // 5. Create AgentLoop (standalone mode for CLI)

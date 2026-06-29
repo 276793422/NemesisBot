@@ -147,6 +147,7 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         },
         max_turns: cfg.agents.defaults.max_tool_iterations.max(1) as u32,
         tools: Vec::new(),
+        models: std::collections::HashMap::new(),
     };
 
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;

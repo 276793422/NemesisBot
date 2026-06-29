@@ -35,6 +35,7 @@ pub mod loop_continuation;
 pub mod mcp_bridge;
 pub mod chat_log;
 pub mod checkpoint;
+pub mod message_preprocess;
 
 pub use types::*;
 pub use instance::AgentInstance;

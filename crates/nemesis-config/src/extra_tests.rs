@@ -5,6 +5,13 @@
 
 use super::*;
 use std::io::Write;
+use std::sync::Mutex;
+
+/// Global lock to serialize tests that mutate process-wide state (CWD, env vars).
+/// Without this, parallel test execution causes data races between tests that
+/// call `std::env::set_current_dir()` or `std::env::set_var()` — these are
+/// process-global and cannot be isolated per-thread.
+static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
 
 // ============================================================================
 // deserialize_flexible_string_vec: visitor branches
@@ -90,6 +97,7 @@ fn extra_agent_model_config_visit_map_with_missing_fields() {
 
 #[test]
 fn extra_agent_model_config_invalid_type_array() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Passing an array should produce a deserialization error.
     let json = r#"[1,2,3]"#;
     let res: std::result::Result<AgentModelConfig, _> = serde_json::from_str(json);
@@ -102,6 +110,7 @@ fn extra_agent_model_config_invalid_type_array() {
 
 #[test]
 fn extra_set_embedded_defaults_missing_security() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let cdir = dir.path();
     std::fs::write(cdir.join("config.default.json"), "{}").unwrap();
@@ -115,6 +124,7 @@ fn extra_set_embedded_defaults_missing_security() {
 
 #[test]
 fn extra_set_embedded_defaults_missing_cluster() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let cdir = dir.path();
     std::fs::write(cdir.join("config.default.json"), "{}").unwrap();
@@ -128,6 +138,7 @@ fn extra_set_embedded_defaults_missing_cluster() {
 
 #[test]
 fn extra_set_embedded_defaults_missing_skills() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let cdir = dir.path();
     std::fs::write(cdir.join("config.default.json"), "{}").unwrap();
@@ -142,6 +153,7 @@ fn extra_set_embedded_defaults_missing_skills() {
 
 #[test]
 fn extra_set_embedded_defaults_optional_scanner_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // scanner.default.json is optional — should succeed without it.
     let dir = tempfile::tempdir().unwrap();
     let cdir = dir.path();
@@ -164,6 +176,7 @@ fn extra_set_embedded_defaults_optional_scanner_missing() {
 
 #[test]
 fn extra_load_config_embedded_invalid_json_falls_through() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Inject an invalid embedded config — should fall through to hardcoded default.
     set_embedded_defaults(
         b"not valid json".to_vec(),
@@ -184,6 +197,7 @@ fn extra_load_config_embedded_invalid_json_falls_through() {
 
 #[test]
 fn extra_load_config_valid_embedded_is_used() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         br#"{"gateway":{"host":"embedded-host","port":7654}}"#.to_vec(),
         Vec::new(),
@@ -204,6 +218,7 @@ fn extra_load_config_valid_embedded_is_used() {
 
 #[test]
 fn extra_load_config_reads_existing_file_with_env_override() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, r#"{"gateway":{"host":"from-file","port":1111}}"#).unwrap();
@@ -222,6 +237,7 @@ fn extra_load_config_reads_existing_file_with_env_override() {
 
 #[test]
 fn extra_save_config_local_mode_tilde_workspace() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Test the `~/` branch in local-mode workspace normalization.
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
@@ -246,6 +262,7 @@ fn extra_save_config_local_mode_tilde_workspace() {
 
 #[test]
 fn extra_save_config_local_mode_empty_llm_log_dir() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -278,6 +295,7 @@ fn extra_save_config_local_mode_empty_llm_log_dir() {
 
 #[test]
 fn extra_save_config_non_local_mode_writes_directly() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // No `.nemesisbot` in cwd -> not local mode -> simple write.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
@@ -297,6 +315,7 @@ fn extra_save_config_non_local_mode_writes_directly() {
 
 #[test]
 fn extra_load_embedded_config_unavailable_error() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let res = load_embedded_config();
     assert!(res.is_err());
@@ -305,6 +324,7 @@ fn extra_load_embedded_config_unavailable_error() {
 
 #[test]
 fn extra_load_embedded_config_invalid_json_error() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         b"invalid".to_vec(),
         Vec::new(),
@@ -325,6 +345,7 @@ fn extra_load_embedded_config_invalid_json_error() {
 
 #[test]
 fn extra_load_mcp_config_embedded_used_when_file_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         br#"{"enabled":true,"servers":[],"timeout":99}"#.to_vec(),
@@ -344,6 +365,7 @@ fn extra_load_mcp_config_embedded_used_when_file_missing() {
 
 #[test]
 fn extra_load_mcp_config_embedded_invalid_falls_to_hardcoded() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         b"invalid".to_vec(),
@@ -363,6 +385,7 @@ fn extra_load_mcp_config_embedded_invalid_falls_to_hardcoded() {
 
 #[test]
 fn extra_load_security_config_embedded_used_when_file_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -381,6 +404,7 @@ fn extra_load_security_config_embedded_used_when_file_missing() {
 
 #[test]
 fn extra_load_security_config_embedded_invalid_falls_to_hardcoded() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -399,6 +423,7 @@ fn extra_load_security_config_embedded_invalid_falls_to_hardcoded() {
 
 #[test]
 fn extra_load_scanner_config_embedded_used_when_file_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -417,6 +442,7 @@ fn extra_load_scanner_config_embedded_used_when_file_missing() {
 
 #[test]
 fn extra_load_scanner_config_embedded_invalid_falls_to_hardcoded() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -435,6 +461,7 @@ fn extra_load_scanner_config_embedded_invalid_falls_to_hardcoded() {
 
 #[test]
 fn extra_load_skills_config_embedded_used_when_file_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -453,6 +480,7 @@ fn extra_load_skills_config_embedded_used_when_file_missing() {
 
 #[test]
 fn extra_load_skills_config_embedded_invalid_falls_to_hardcoded() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         Vec::new(),
         Vec::new(),
@@ -693,7 +721,8 @@ fn extra_workspace_resolver_local_flag_true_returns_relative() {
 
 #[test]
 fn extra_workspace_resolver_env_var_with_absolute_no_tilde() {
-    // SAFETY: test single-threaded.
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    // SAFETY: serialized via GLOBAL_STATE_LOCK.
     unsafe { std::env::set_var("NEMESISBOT_HOME", "/opt/nemesis"); }
     let p = WorkspaceResolver::resolve(false);
     // No tilde; expansion returns the path as-is, joined with .nemesisbot.
@@ -704,6 +733,7 @@ fn extra_workspace_resolver_env_var_with_absolute_no_tilde() {
 
 #[test]
 fn extra_workspace_resolver_env_var_with_relative() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // A relative path is not expanded by expand_tilde — passed through as-is.
     unsafe { std::env::set_var("NEMESISBOT_HOME", "relative/path"); }
     let p = WorkspaceResolver::resolve(false);
@@ -927,6 +957,7 @@ fn extra_embedded_defaults_default_struct_all_empty() {
 
 #[test]
 fn extra_set_embedded_defaults_roundtrip_all_fields() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     set_embedded_defaults(
         b"c".to_vec(),
         b"m".to_vec(),
@@ -968,6 +999,7 @@ fn extra_config_loader_save_to_file_no_parent() {
 
 #[test]
 fn extra_config_loader_load_embedded_default_success() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let cfg = ConfigLoader::load_embedded_default().unwrap();
     assert!(cfg.gateway.port > 0);
 }
@@ -978,6 +1010,7 @@ fn extra_config_loader_load_embedded_default_success() {
 
 #[test]
 fn extra_is_local_mode_returns_false_when_local_dir_missing() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // cwd is the workspace root which (typically) has no .nemesisbot at the root.
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
@@ -991,6 +1024,7 @@ fn extra_is_local_mode_returns_false_when_local_dir_missing() {
 
 #[test]
 fn extra_is_local_mode_returns_true_with_local_dir() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -1113,6 +1147,7 @@ fn extra_session_config_with_identity_links() {
 
 #[test]
 fn extra_save_config_to_readonly_directory_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Try to save into a path whose parent is a file (cannot be created as dir).
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("blocker");
@@ -1207,6 +1242,7 @@ fn extra_smoke_write_then_read_temp() {
 
 #[test]
 fn extra_load_config_directory_as_path_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     // Pass the directory itself as the config path — read_to_string fails.
     let res = load_config(dir.path());
@@ -1216,6 +1252,7 @@ fn extra_load_config_directory_as_path_errors() {
 
 #[test]
 fn extra_load_mcp_config_directory_as_path_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let res = load_mcp_config(dir.path());
     assert!(res.is_err());
@@ -1224,6 +1261,7 @@ fn extra_load_mcp_config_directory_as_path_errors() {
 
 #[test]
 fn extra_load_security_config_directory_as_path_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let res = load_security_config(dir.path());
     assert!(res.is_err());
@@ -1232,6 +1270,7 @@ fn extra_load_security_config_directory_as_path_errors() {
 
 #[test]
 fn extra_load_scanner_config_directory_as_path_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let res = load_scanner_config(dir.path());
     assert!(res.is_err());
@@ -1240,6 +1279,7 @@ fn extra_load_scanner_config_directory_as_path_errors() {
 
 #[test]
 fn extra_load_skills_config_directory_as_path_errors() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let res = load_skills_config(dir.path());
     assert!(res.is_err());
@@ -1252,6 +1292,7 @@ fn extra_load_skills_config_directory_as_path_errors() {
 
 #[test]
 fn extra_save_config_local_mode_home_prefix_workspace() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -1282,6 +1323,7 @@ fn extra_save_config_local_mode_home_prefix_workspace() {
 
 #[test]
 fn extra_save_config_local_mode_default_workspace_path() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();

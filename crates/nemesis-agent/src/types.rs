@@ -3,7 +3,7 @@
 //! These types represent conversation turns, tool results, agent state,
 //! and events emitted during the agent loop execution.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -19,6 +19,11 @@ pub struct AgentConfig {
     pub max_turns: u32,
     /// Names of tools available to this agent.
     pub tools: Vec<String>,
+    /// Model alias → model id map for per-turn switching (Flash-first cost control).
+    /// e.g. {"flash": "deepseek-v4-flash", "pro": "deepseek-v4-pro"}.
+    /// `/model <alias>` resolves via this; an unknown alias is used as a literal model id.
+    #[serde(default)]
+    pub models: HashMap<String, String>,
 }
 
 impl Default for AgentConfig {
@@ -28,6 +33,7 @@ impl Default for AgentConfig {
             system_prompt: None,
             max_turns: 10,
             tools: Vec::new(),
+            models: HashMap::new(),
         }
     }
 }

@@ -1276,3 +1276,164 @@ fn test_stream_chunk_full_roundtrip() {
     );
     assert_eq!(deserialized.reasoning_content, original.reasoning_content);
 }
+
+// ---------------------------------------------------------------------------
+// Tool-call repair integration tests (Phase 1)
+// Mock HTTP server returns DSML/JSON-text/XML in content, no tool_calls →
+// http_provider.chat() should repair → LLMResponse.tool_calls populated.
+// ---------------------------------------------------------------------------
+
+fn tool_def(name: &str) -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: name.to_string(),
+            description: "test tool".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{}}),
+        },
+    }
+}
+
+#[tokio::test]
+async fn test_repair_dsml_in_chat_response() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // Server returns DSML in content, NO tool_calls structure, finish_reason=stop.
+    let dsml = format!(
+        "<{d}tool_calls>\n<{d}invoke name=\"read_file\">\n\
+         <{d}parameter name=\"path\" string=\"true\">/tmp/test.rs</{d}parameter>\n\
+         </{d}invoke>\n</{d}tool_calls>",
+        d = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}"
+    );
+    let response_body = serde_json::json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": dsml },
+            "finish_reason": "stop"
+        }]
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(&server)
+        .await;
+
+    let result = provider
+        .chat(&[user_message("read the file")], &[tool_def("read_file")], "deepseek-v4-flash", &ChatOptions::default())
+        .await
+        .expect("chat should succeed");
+
+    // Repair should have recovered the tool call from DSML content.
+    assert_eq!(result.finish_reason, "tool_calls");
+    assert_eq!(result.tool_calls.len(), 1, "should have 1 repaired tool call");
+    assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "read_file");
+    let args: serde_json::Value = serde_json::from_str(
+        &result.tool_calls[0].function.as_ref().unwrap().arguments
+    ).unwrap();
+    assert_eq!(args["path"], "/tmp/test.rs");
+}
+
+#[tokio::test]
+async fn test_repair_json_text_in_chat_response() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    let response_body = serde_json::json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "I'll use the tool:\n```json\n[{\"name\": \"grep\", \"arguments\": {\"pattern\": \"TODO\"}}]\n```\ndone"
+            },
+            "finish_reason": "stop"
+        }]
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(&server)
+        .await;
+
+    let result = provider
+        .chat(&[user_message("search")], &[tool_def("grep")], "deepseek-v4-flash", &ChatOptions::default())
+        .await
+        .expect("chat should succeed");
+
+    assert_eq!(result.finish_reason, "tool_calls");
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "grep");
+    let args: serde_json::Value = serde_json::from_str(
+        &result.tool_calls[0].function.as_ref().unwrap().arguments
+    ).unwrap();
+    assert_eq!(args["pattern"], "TODO");
+}
+
+#[tokio::test]
+async fn test_no_repair_when_standard_tool_calls_present() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // Standard OpenAI tool_calls → repair should NOT fire (tool_calls already populated).
+    let response_body = serde_json::json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "Let me help",
+                "tool_calls": [{
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\": \"/real.rs\"}"
+                    }
+                }]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(&server)
+        .await;
+
+    let result = provider
+        .chat(&[user_message("read")], &[tool_def("read_file")], "deepseek-v4-flash", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    // Standard tool_calls preserved as-is (not repaired).
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].id, "call_abc");
+    assert_eq!(result.tool_calls[0].function.as_ref().unwrap().name, "read_file");
+}
+
+#[tokio::test]
+async fn test_no_repair_when_content_is_plain_text() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    let response_body = serde_json::json!({
+        "choices": [{
+            "message": { "role": "assistant", "content": "Hello! I can help with that." },
+            "finish_reason": "stop"
+        }]
+    });
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+        .mount(&server)
+        .await;
+
+    let result = provider
+        .chat(&[user_message("hi")], &[tool_def("test")], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap();
+
+    // Plain text → no tool calls, no repair.
+    assert!(result.tool_calls.is_empty());
+    assert_eq!(result.finish_reason, "stop");
+}

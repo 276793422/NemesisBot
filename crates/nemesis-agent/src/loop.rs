@@ -421,6 +421,28 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
+    /// Switch the active model by alias (resolved via `config.models`) or literal
+    /// model id. Returns the resolved model id. Unknown aliases are used as-is
+    /// (so `/model deepseek-v4-pro` works even without an alias entry).
+    pub fn set_active_model(&self, alias_or_model: &str) -> String {
+        let model = self
+            .config
+            .models
+            .get(alias_or_model)
+            .cloned()
+            .unwrap_or_else(|| alias_or_model.to_string());
+        *self.active_model.write() = model.clone();
+        info!(
+            "[AgentLoop] Active model set to {} (via '{}')",
+            model, alias_or_model
+        );
+        model
+    }
+
+    /// Available model aliases (from config.models), for `/model` listing.
+    pub fn model_aliases(&self) -> Vec<String> {
+        self.config.models.keys().cloned().collect()
+    }
     /// Create a new agent loop with the given provider and configuration (standalone mode).
     pub fn new(provider: Box<dyn LlmProvider>, config: AgentConfig) -> Self {
         let model = config.model.clone();
@@ -1336,6 +1358,7 @@ impl AgentLoop {
             system_prompt: self.config.system_prompt.clone(),
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
+            models: self.config.models.clone(),
         };
         let instance = AgentInstance::new(config);
         let context = RequestContext::new(channel, chat_id, "heartbeat", "heartbeat");
@@ -1513,8 +1536,13 @@ impl AgentLoop {
 
         // Process with the loop, then release.
         let voice_playback = msg.voice_playback.unwrap_or(false);
+        // @file expansion: inline referenced file contents before sending to LLM.
+        let processed_content = crate::message_preprocess::expand_at_files(
+            &msg.content,
+            &std::env::current_dir().unwrap_or_default(),
+        );
         let result = self
-            .run_agent_loop_internal(&session_key, &msg.content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token)
+            .run_agent_loop_internal(&session_key, &processed_content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token)
             .await;
 
         // Clean up cancellation token and release session.
@@ -2166,6 +2194,7 @@ impl AgentLoop {
             system_prompt: self.config.system_prompt.clone(),
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
+            models: self.config.models.clone(),
         };
         let instance = AgentInstance::new(config);
 
@@ -2979,6 +3008,27 @@ impl AgentLoop {
         }
 
         match parts[0] {
+            "/help" => Some(
+                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /help".to_string(),
+            ),
+            "/model" => {
+                if parts.len() < 2 {
+                    let current = self.active_model.read().clone();
+                    let aliases = self.model_aliases();
+                    Some(format!(
+                        "Current model: {}\nAliases: {} (or pass any model id)",
+                        current,
+                        if aliases.is_empty() {
+                            "(none configured)".to_string()
+                        } else {
+                            aliases.join(", ")
+                        }
+                    ))
+                } else {
+                    let new_model = self.set_active_model(parts[1]);
+                    Some(format!("✓ Model switched to: {}", new_model))
+                }
+            }
             "/show" => {
                 if parts.len() < 2 {
                     return Some("Usage: /show [model|channel|agents]".to_string());

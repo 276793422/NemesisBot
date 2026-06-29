@@ -1,4 +1,8 @@
 use super::*;
+use std::sync::Mutex;
+
+/// Global lock for tests that mutate process-wide state.
+static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_default_config() {
@@ -161,6 +165,7 @@ fn test_platform_info() {
 
 #[test]
 fn test_load_mcp_config_default() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.mcp.json");
     // Write default MCP config to file to avoid dependency on embedded defaults state
@@ -174,6 +179,7 @@ fn test_load_mcp_config_default() {
 
 #[test]
 fn test_save_and_load_mcp_config() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("subdir/config.mcp.json");
     let cfg = McpConfig {
@@ -196,6 +202,7 @@ fn test_save_and_load_mcp_config() {
 
 #[test]
 fn test_load_security_config_default() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.security.json");
     // Write default config to file to avoid dependency on embedded defaults state
@@ -209,6 +216,7 @@ fn test_load_security_config_default() {
 
 #[test]
 fn test_save_and_load_security_config() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.security.json");
     let cfg = SecurityConfig {
@@ -231,6 +239,7 @@ fn test_save_and_load_security_config() {
 
 #[test]
 fn test_load_scanner_config_default() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.scanner.json");
     // Write default config to file to avoid dependency on embedded defaults state
@@ -243,6 +252,7 @@ fn test_load_scanner_config_default() {
 
 #[test]
 fn test_save_and_load_scanner_config() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.scanner.json");
     let mut engines = std::collections::HashMap::new();
@@ -259,6 +269,7 @@ fn test_save_and_load_scanner_config() {
 
 #[test]
 fn test_load_skills_config_default() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.skills.json");
     // Write default config to file to avoid dependency on embedded defaults state
@@ -272,6 +283,7 @@ fn test_load_skills_config_default() {
 
 #[test]
 fn test_save_and_load_skills_config() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.skills.json");
     let cfg = SkillsFullConfig {
@@ -430,6 +442,7 @@ fn test_get_effective_llm() {
 
 #[test]
 fn test_embedded_defaults() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let defaults = get_embedded_defaults();
     assert!(defaults.config.is_empty());
     assert!(defaults.mcp.is_empty());
@@ -1342,6 +1355,7 @@ fn test_config_workspace_path_absolute() {
 
 #[test]
 fn test_apply_env_overrides_gateway_host() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     // SAFETY: single-threaded test, no concurrent access to this env var
@@ -1354,6 +1368,7 @@ fn test_apply_env_overrides_gateway_host() {
 
 #[test]
 fn test_apply_env_overrides_gateway_port() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_GATEWAY_PORT", "9999"); }
@@ -1365,6 +1380,7 @@ fn test_apply_env_overrides_gateway_port() {
 
 #[test]
 fn test_apply_env_overrides_security_enabled() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_SECURITY_ENABLED", "true"); }
@@ -1377,6 +1393,7 @@ fn test_apply_env_overrides_security_enabled() {
 
 #[test]
 fn test_apply_env_overrides_forge_enabled() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_FORGE_ENABLED", "true"); }
@@ -1389,6 +1406,7 @@ fn test_apply_env_overrides_forge_enabled() {
 
 #[test]
 fn test_apply_env_overrides_workspace() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE", "/custom/ws"); }
@@ -1400,6 +1418,7 @@ fn test_apply_env_overrides_workspace() {
 
 #[test]
 fn test_apply_env_overrides_max_tokens() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS", "16000"); }
@@ -1411,6 +1430,7 @@ fn test_apply_env_overrides_max_tokens() {
 
 #[test]
 fn test_apply_env_overrides_temperature() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE", "0.3"); }
@@ -1422,6 +1442,7 @@ fn test_apply_env_overrides_temperature() {
 
 #[test]
 fn test_apply_env_overrides_heartbeat() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_HEARTBEAT_ENABLED", "false"); }
@@ -1436,6 +1457,7 @@ fn test_apply_env_overrides_heartbeat() {
 
 #[test]
 fn test_apply_env_overrides_session_dm_scope() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_SESSION_DM_SCOPE", "per-peer"); }
@@ -1496,6 +1518,7 @@ fn test_model_validate_empty_model() {
 
 #[test]
 fn test_apply_env_overrides_web_channel() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_CHANNELS_WEB_ENABLED", "false"); }
@@ -1514,6 +1537,7 @@ fn test_apply_env_overrides_web_channel() {
 
 #[test]
 fn test_apply_env_overrides_invalid_bool() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     // Invalid bool for restrict_to_workspace defaults to true
@@ -1526,6 +1550,7 @@ fn test_apply_env_overrides_invalid_bool() {
 
 #[test]
 fn test_apply_env_overrides_llm() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_LLM", "anthropic/claude-3"); }
@@ -1537,6 +1562,7 @@ fn test_apply_env_overrides_llm() {
 
 #[test]
 fn test_apply_env_overrides_image_model() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL", "openai/dall-e-3"); }
@@ -1548,6 +1574,7 @@ fn test_apply_env_overrides_image_model() {
 
 #[test]
 fn test_apply_env_overrides_max_tool_iterations() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS", "50"); }
@@ -1559,6 +1586,7 @@ fn test_apply_env_overrides_max_tool_iterations() {
 
 #[test]
 fn test_apply_env_overrides_concurrent_request_mode() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE", "queue"); }
@@ -1570,6 +1598,7 @@ fn test_apply_env_overrides_concurrent_request_mode() {
 
 #[test]
 fn test_apply_env_overrides_queue_size() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let mut config = Config::default();
 
     unsafe { std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE", "16"); }
@@ -1581,6 +1610,7 @@ fn test_apply_env_overrides_queue_size() {
 
 #[test]
 fn test_load_config_nonexistent_falls_through() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nonexistent.json");
     // Should not fail - falls through to default
@@ -1590,6 +1620,7 @@ fn test_load_config_nonexistent_falls_through() {
 
 #[test]
 fn test_set_embedded_defaults_from_fs_missing_dir() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let result = set_embedded_defaults_from_fs(Path::new("/nonexistent/config/dir"));
     assert!(result.is_err());
 }
@@ -1598,6 +1629,7 @@ fn test_set_embedded_defaults_from_fs_missing_dir() {
 // and verify all load_*_config functions pick them up
 #[test]
 fn test_embedded_defaults_end_to_end() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();
 
@@ -1661,6 +1693,7 @@ fn test_embedded_defaults_end_to_end() {
 
 #[test]
 fn test_save_config_local_mode() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -1792,6 +1825,7 @@ fn test_adjust_paths_for_environment_no_logging() {
 
 #[test]
 fn test_load_config_from_file_valid() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     let json = r#"{"gateway": {"host": "0.0.0.0", "port": 9999}}"#;
@@ -1969,6 +2003,7 @@ fn test_agent_model_config_visit_map() {
 
 #[test]
 fn test_save_config_invalid_json_error() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     let mut config = Config::default();
@@ -1982,6 +2017,7 @@ fn test_save_config_invalid_json_error() {
 
 #[test]
 fn test_load_embedded_config_unavailable() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Clear embedded defaults first
     set_embedded_defaults(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
@@ -1994,6 +2030,7 @@ fn test_load_embedded_config_unavailable() {
 
 #[test]
 fn test_set_embedded_defaults_from_fs_missing_config_file() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();
 
@@ -2007,6 +2044,7 @@ fn test_set_embedded_defaults_from_fs_missing_config_file() {
 
 #[test]
 fn test_set_embedded_defaults_from_fs_invalid_json() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let config_dir = dir.path();
 
@@ -2019,6 +2057,7 @@ fn test_set_embedded_defaults_from_fs_invalid_json() {
 
 #[test]
 fn test_workspace_resolver_env_var_with_tilde() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     unsafe { std::env::set_var("NEMESISBOT_HOME", "~/custom/path"); }
 
     let path = WorkspaceResolver::resolve(false);
@@ -2031,6 +2070,7 @@ fn test_workspace_resolver_env_var_with_tilde() {
 
 #[test]
 fn test_workspace_resolver_env_var_absolute() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     unsafe { std::env::set_var("NEMESISBOT_HOME", "/absolute/path"); }
 
     let path = WorkspaceResolver::resolve(false);
@@ -2042,6 +2082,7 @@ fn test_workspace_resolver_env_var_absolute() {
 
 #[test]
 fn test_workspace_resolver_auto_detect() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -2059,6 +2100,7 @@ fn test_workspace_resolver_auto_detect() {
 
 #[test]
 fn test_workspace_resolver_default_fallback() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     // Clear env var, ensure no local .nemesisbot
     unsafe { std::env::remove_var("NEMESISBOT_HOME"); }
 
@@ -2075,6 +2117,7 @@ fn test_workspace_resolver_default_fallback() {
 
 #[test]
 fn test_load_config_invalid_json_parse_error() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, "invalid {{ json").unwrap();
@@ -2085,6 +2128,7 @@ fn test_load_config_invalid_json_parse_error() {
 
 #[test]
 fn test_load_config_nonexistent_uses_embedded() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nonexistent_config.json");
 
@@ -2107,6 +2151,7 @@ fn test_load_config_nonexistent_uses_embedded() {
 
 #[test]
 fn test_load_config_invalid_json_in_file() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.json");
     std::fs::write(&path, "invalid json").unwrap();
@@ -2118,6 +2163,7 @@ fn test_load_config_invalid_json_in_file() {
 
 #[test]
 fn test_save_config_local_mode_detection() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -2138,6 +2184,7 @@ fn test_save_config_local_mode_detection() {
 
 #[test]
 fn test_save_config_creates_nested_dirs() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("level1/level2/level3/config.json");
 
@@ -2149,6 +2196,7 @@ fn test_save_config_creates_nested_dirs() {
 
 #[test]
 fn test_is_local_mode_true() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let local_dir = dir.path().join(".nemesisbot");
     std::fs::create_dir_all(&local_dir).unwrap();
@@ -2166,6 +2214,7 @@ fn test_is_local_mode_true() {
 
 #[test]
 fn test_is_local_mode_false_no_local_dir() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
 
@@ -2255,6 +2304,7 @@ fn test_config_error_workspace_not_found() {
 
 #[test]
 fn test_load_mcp_config_invalid_json() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.mcp.json");
     std::fs::write(&path, "invalid json").unwrap();
@@ -2265,6 +2315,7 @@ fn test_load_mcp_config_invalid_json() {
 
 #[test]
 fn test_load_security_config_invalid_json() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.security.json");
     std::fs::write(&path, "invalid json").unwrap();
@@ -2275,6 +2326,7 @@ fn test_load_security_config_invalid_json() {
 
 #[test]
 fn test_load_scanner_config_invalid_json() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.scanner.json");
     std::fs::write(&path, "invalid json").unwrap();
@@ -2285,6 +2337,7 @@ fn test_load_scanner_config_invalid_json() {
 
 #[test]
 fn test_load_skills_config_invalid_json() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.skills.json");
     std::fs::write(&path, "invalid json").unwrap();

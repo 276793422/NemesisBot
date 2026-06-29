@@ -2823,6 +2823,181 @@ fn resolve_within(base: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 // ===========================================================================
+// Coding tools (grep / git)
+// ===========================================================================
+
+/// Grep tool — regex search across workspace files. Returns file:line: match.
+pub struct GrepTool {
+    workspace: String,
+}
+
+impl GrepTool {
+    pub fn new(workspace: String) -> Self {
+        Self { workspace }
+    }
+}
+
+#[async_trait]
+impl Tool for GrepTool {
+    fn description(&self) -> String {
+        "Search file contents with a regex pattern across the workspace. Returns matching \
+         lines as file:line: content. Use to find code, symbols, or text. Faster and more \
+         structured than exec grep.".to_string()
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Directory to search (default: workspace root)"},
+                "glob": {"type": "string", "description": "File-name filter, e.g. *.rs (simple suffix match)"},
+                "max_results": {"type": "integer", "description": "Max matches (default 50)"}
+            },
+            "required": ["pattern"]
+        })
+    }
+    async fn execute(&self, args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON: {}", e))?;
+        let pattern = v["pattern"].as_str().ok_or("missing 'pattern'")?;
+        let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {}", e))?;
+        let root = v["path"]
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.workspace.clone());
+        let glob = v["glob"].as_str();
+        let max = v["max_results"].as_u64().unwrap_or(50) as usize;
+        let mut out: Vec<String> = Vec::new();
+        grep_recursive(Path::new(&root), &re, glob, max, &mut out);
+        if out.is_empty() {
+            Ok(format!("No matches for pattern /{}/", pattern))
+        } else {
+            Ok(format!("Found {} match(es):\n{}", out.len(), out.join("\n")))
+        }
+    }
+}
+
+/// Git tool — read-only git queries (status/diff/log/show/branch) in the workspace.
+pub struct GitTool {
+    workspace: String,
+}
+
+impl GitTool {
+    pub fn new(workspace: String) -> Self {
+        Self { workspace }
+    }
+}
+
+#[async_trait]
+impl Tool for GitTool {
+    fn description(&self) -> String {
+        "Run read-only git queries in the workspace: status, diff, log, show, branch. For \
+         writes (commit/push) or other git ops, use the exec tool.".to_string()
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "diff", "log", "show", "branch"], "description": "Git subcommand"},
+                "args": {"type": "string", "description": "Extra args, e.g. a file path for diff/show, or '-10' for log count"}
+            },
+            "required": ["action"]
+        })
+    }
+    async fn execute(&self, args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON: {}", e))?;
+        let action = v["action"].as_str().ok_or("missing 'action'")?;
+        let extra = v["args"].as_str().unwrap_or("");
+        let base: Vec<&str> = match action {
+            "status" => vec!["status", "--short", "--branch"],
+            "diff" => vec!["diff"],
+            "log" => vec!["log", "--oneline", "-20"],
+            "show" => vec!["show"],
+            "branch" => vec!["branch", "-vv"],
+            other => return Err(format!("unknown git action '{}' (use exec for others)", other)),
+        };
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&self.workspace).args(&base);
+        if !extra.is_empty() {
+            cmd.args(extra.split_whitespace());
+        }
+        let out = cmd.output().map_err(|e| format!("failed to run git: {}", e))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        if !out.status.success() && stdout.trim().is_empty() {
+            Err(format!("git {} failed: {}", action, stderr.trim()))
+        } else if stdout.trim().is_empty() {
+            Ok(format!("(no changes / empty)\n{}", stderr.trim()))
+        } else {
+            Ok(stdout)
+        }
+    }
+}
+
+/// Recursively search `dir` for regex matches, collecting file:line: content lines.
+/// Skips hidden/build/dep dirs and large or non-UTF-8 files.
+fn grep_recursive(
+    dir: &Path,
+    re: &regex::Regex,
+    glob: Option<&str>,
+    max: usize,
+    out: &mut Vec<String>,
+) {
+    if out.len() >= max {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        if out.len() >= max {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.')
+                || matches!(name, "target" | "node_modules" | "dist" | "build" | ".git")
+            {
+                continue;
+            }
+            grep_recursive(&path, re, glob, max, out);
+        } else if path.is_file() {
+            if let Some(g) = glob {
+                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                    let suffix = g.trim_start_matches('*');
+                    if !fname.ends_with(suffix) {
+                        continue;
+                    }
+                }
+            }
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > 1_000_000 {
+                    continue;
+                }
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for (i, line) in content.lines().enumerate() {
+                    if out.len() >= max {
+                        return;
+                    }
+                    if re.is_match(line) {
+                        let display = line.trim();
+                        if display.len() > 300 {
+                            out.push(format!("{}:{}: {}…", path.display(), i + 1, &display[..300]));
+                        } else {
+                            out.push(format!("{}:{}: {}", path.display(), i + 1, display));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
 // Hardware tools (I2C / SPI)
 // ===========================================================================
 
@@ -3860,6 +4035,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 config.skills_manage_approval,
             )),
         );
+    }
+
+    // Coding tools (grep / git) — read-only code search & git queries.
+    if let Some(ref workspace) = config.workspace {
+        tools.insert("grep".to_string(), Box::new(GrepTool::new(workspace.clone())));
+        tools.insert("git".to_string(), Box::new(GitTool::new(workspace.clone())));
     }
 
     // Hardware tools (I2C / SPI - Linux only, no-op on other platforms).

@@ -6,6 +6,7 @@ fn test_config() -> AgentConfig {
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
         tools: vec!["search".to_string()],
+        models: std::collections::HashMap::new(),
     }
 }
 
@@ -143,6 +144,7 @@ fn new_instance_without_system_prompt() {
         system_prompt: None,
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     assert!(instance.get_history().is_empty());
@@ -364,6 +366,7 @@ fn instance_clear_history_no_system_prompt() {
         system_prompt: None,
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     instance.add_user_message("Hello");
@@ -504,6 +507,7 @@ fn replace_tool_result_overwrites_async_placeholder() {
         system_prompt: None,
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());
@@ -525,6 +529,7 @@ fn replace_tool_result_falls_back_to_push_when_no_match() {
         system_prompt: None,
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());
@@ -546,6 +551,7 @@ fn replace_tool_result_dedupes_multiple_matches() {
         system_prompt: None,
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     instance.set_history(make_history_with_async_placeholder());

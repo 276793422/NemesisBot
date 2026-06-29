@@ -586,14 +586,14 @@ impl LLMProvider for HttpProvider {
             .unwrap_or("")
             .to_string();
 
-        let finish_reason = data["choices"][0]["finish_reason"]
+        let mut finish_reason = data["choices"][0]["finish_reason"]
             .as_str()
             .unwrap_or("stop")
             .to_string();
 
         let usage = data.get("usage").map(|u| extract_usage(u));
 
-        let tool_calls = if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
+        let mut tool_calls = if let Some(tc_array) = data["choices"][0]["message"]["tool_calls"].as_array() {
             tc_array
                 .iter()
                 .filter_map(|tc| {
@@ -612,6 +612,24 @@ impl LLMProvider for HttpProvider {
         } else {
             vec![]
         };
+
+        // Tool-call repair: some models (notably deepseek-v4-flash) intermittently
+        // emit tool calls as plain text in `content` (DSML / JSON / XML) instead of
+        // the standard `tool_calls` structure. When the standard field is empty,
+        // recover tool calls from the content so the agent loop still runs them.
+        if tool_calls.is_empty() && !content.is_empty() {
+            let repaired = crate::tool_call_repair::repair_tool_calls(&content);
+            if !repaired.is_empty() {
+                tracing::info!(
+                    provider = %self.config.name,
+                    model = model,
+                    repaired_count = repaired.len(),
+                    "[Provider] tool-call repair: recovered tool call(s) from content"
+                );
+                tool_calls = repaired;
+                finish_reason = "tool_calls".to_string();
+            }
+        }
 
         tracing::debug!(
             provider = %self.config.name,

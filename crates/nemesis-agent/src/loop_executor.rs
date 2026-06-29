@@ -818,6 +818,7 @@ impl AgentLoopExecutor {
             system_prompt: config.system_prompt.clone(),
             max_turns: config.max_turns,
             tools: Vec::new(),
+            models: std::collections::HashMap::new(),
         };
         Self {
             provider,

@@ -16,6 +16,7 @@ fn agent_config_serialization_roundtrip() {
         system_prompt: Some("You are helpful.".to_string()),
         max_turns: 5,
         tools: vec!["search".to_string(), "calculator".to_string()],
+        models: std::collections::HashMap::new(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: AgentConfig = serde_json::from_str(&json).unwrap();
@@ -113,11 +114,39 @@ fn agent_config_with_empty_tools() {
         system_prompt: None,
         max_turns: 1,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     };
     assert!(config.tools.is_empty());
     let json = serde_json::to_string(&config).unwrap();
     let back: AgentConfig = serde_json::from_str(&json).unwrap();
     assert!(back.tools.is_empty());
+}
+
+#[test]
+fn agent_config_models_serde_roundtrip() {
+    let mut models = std::collections::HashMap::new();
+    models.insert("flash".to_string(), "deepseek-v4-flash".to_string());
+    models.insert("pro".to_string(), "deepseek-v4-pro".to_string());
+    let config = AgentConfig {
+        model: "deepseek-v4-flash".to_string(),
+        system_prompt: None,
+        max_turns: 10,
+        tools: vec![],
+        models,
+    };
+    let json = serde_json::to_string(&config).unwrap();
+    let back: AgentConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.models.len(), 2);
+    assert_eq!(back.models.get("flash").unwrap(), "deepseek-v4-flash");
+    assert_eq!(back.models.get("pro").unwrap(), "deepseek-v4-pro");
+}
+
+#[test]
+fn agent_config_models_default_empty_when_missing_in_json() {
+    // A JSON config without "models" key → models should default to empty.
+    let json = r#"{"model":"gpt-4","system_prompt":null,"max_turns":5,"tools":[]}"#;
+    let config: AgentConfig = serde_json::from_str(json).unwrap();
+    assert!(config.models.is_empty());
 }
 
 #[test]

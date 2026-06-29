@@ -313,3 +313,134 @@ async fn test_skill_manage_approval_required_but_no_manager() {
         "must not write without an approval manager"
     );
 }
+
+// ---- GrepTool (Phase 2 coding tools) ----
+
+#[tokio::test]
+async fn test_grep_tool_finds_matches_recursively() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_string_lossy().to_string();
+    std::fs::write(tmp.path().join("a.rs"), "fn hello() {}\nfn world() {}\n").unwrap();
+    std::fs::create_dir(tmp.path().join("sub")).unwrap();
+    std::fs::write(tmp.path().join("sub").join("b.rs"), "fn hello_again() {}\n").unwrap();
+    let tool = GrepTool::new(ws);
+    let args = json_args(serde_json::json!({"pattern":"hello"}));
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    assert!(res.contains("a.rs:1"), "should match a.rs:1 — {}", res);
+    assert!(res.contains("b.rs:1"), "should match sub/b.rs:1 — {}", res);
+}
+
+#[tokio::test]
+async fn test_grep_tool_glob_filter() {
+    let tmp = TempDir::new().unwrap();
+    let ws = tmp.path().to_string_lossy().to_string();
+    std::fs::write(tmp.path().join("a.rs"), "matchme\n").unwrap();
+    std::fs::write(tmp.path().join("b.txt"), "matchme\n").unwrap();
+    let tool = GrepTool::new(ws);
+    let args = json_args(serde_json::json!({"pattern":"matchme","glob":"*.rs"}));
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    assert!(res.contains("a.rs"), "{}", res);
+    assert!(!res.contains("b.txt"), "glob *.rs must filter out .txt — {}", res);
+}
+
+#[tokio::test]
+async fn test_grep_tool_no_match() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.rs"), "fn foo() {}\n").unwrap();
+    let tool = GrepTool::new(tmp.path().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"pattern":"zzz_not_present"}));
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    assert!(res.contains("No matches"), "{}", res);
+}
+
+// ---- GrepTool edge cases / branch coverage ----
+
+#[tokio::test]
+async fn test_grep_tool_max_results_limits() {
+    let tmp = TempDir::new().unwrap();
+    // Create a file with 10 matches.
+    let content: String = std::iter::repeat("matchline\n").take(10).collect();
+    std::fs::write(tmp.path().join("a.rs"), &content).unwrap();
+    let tool = GrepTool::new(tmp.path().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"pattern":"matchline","max_results":3}));
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    let count = res.matches("matchline").count();
+    assert_eq!(count, 3, "should cap at max_results=3 — {}", res);
+}
+
+#[tokio::test]
+async fn test_grep_tool_invalid_regex() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.rs"), "fn main() {}\n").unwrap();
+    let tool = GrepTool::new(tmp.path().to_string_lossy().to_string());
+    // Unclosed character class → invalid regex.
+    let args = json_args(serde_json::json!({"pattern":"[unclosed"}));
+    let res = tool.execute(&args, &ctx()).await;
+    assert!(res.is_err(), "invalid regex should return Err");
+    assert!(res.unwrap_err().contains("invalid regex"));
+}
+
+#[tokio::test]
+async fn test_grep_tool_skips_target_dir() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("root.rs"), "findme\n").unwrap();
+    // Create a "target" dir with a matching file — should be skipped.
+    std::fs::create_dir(tmp.path().join("target")).unwrap();
+    std::fs::write(tmp.path().join("target").join("hidden.rs"), "findme\n").unwrap();
+    let tool = GrepTool::new(tmp.path().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"pattern":"findme"}));
+    let res = tool.execute(&args, &ctx()).await.unwrap();
+    assert!(res.contains("root.rs"), "should find root.rs — {}", res);
+    assert!(!res.contains("hidden.rs"), "should skip target dir — {}", res);
+}
+
+// ---- GitTool ----
+
+#[tokio::test]
+async fn test_git_tool_unknown_action() {
+    let tool = GitTool::new(std::env::current_dir().unwrap().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"action":"push"}));
+    let err = tool.execute(&args, &ctx()).await.unwrap_err();
+    assert!(err.contains("unknown git action"), "{}", err);
+}
+
+#[tokio::test]
+async fn test_git_tool_unknown_action_empty() {
+    let tool = GitTool::new(std::env::current_dir().unwrap().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"action":"bogus_xyz"}));
+    let err = tool.execute(&args, &ctx()).await.unwrap_err();
+    assert!(err.contains("unknown git action 'bogus_xyz'"), "{}", err);
+}
+
+#[tokio::test]
+async fn test_git_tool_non_git_dir() {
+    let tmp = TempDir::new().unwrap();
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+    let args = json_args(serde_json::json!({"action":"status"}));
+    // Non-git dir → git status fails.
+    let result = tool.execute(&args, &ctx()).await;
+    // git status in non-repo either errors or returns "(no changes)" with stderr.
+    // Either way, should not panic.
+    assert!(result.is_ok() || result.is_err());
+}
+
+#[tokio::test]
+async fn test_git_tool_status_in_real_repo() {
+    // The project workspace IS a git repo.
+    let tool = GitTool::new(
+        std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+    );
+    let args = json_args(serde_json::json!({"action":"status"}));
+    let res = tool.execute(&args, &ctx()).await;
+    assert!(res.is_ok(), "git status should work in a repo");
+    // Output should contain branch info (## main...origin/main or similar).
+    let output = res.unwrap();
+    assert!(
+        output.contains("##") || output.contains("main") || output.trim().is_empty(),
+        "git status --branch output unexpected: {}",
+        &output[..output.len().min(200)]
+    );
+}

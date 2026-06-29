@@ -6,6 +6,7 @@ pub mod types;
 pub mod failover;
 pub mod router;
 pub mod http_provider;
+pub mod tool_call_repair;
 pub mod openai_compat;
 
 pub mod model_ref;

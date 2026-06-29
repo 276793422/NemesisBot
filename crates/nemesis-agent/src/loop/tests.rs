@@ -51,6 +51,7 @@ fn test_config() -> AgentConfig {
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
         tools: vec!["calculator".to_string()],
+        models: std::collections::HashMap::new(),
     }
 }
 
@@ -1399,10 +1400,54 @@ async fn test_multiple_tool_calls_in_single_response() {
 }
 
 #[test]
-fn test_handle_command_unknown_slash_returns_none() {
+fn test_handle_command_help() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     let result = agent_loop.handle_command("/help");
-    // /help is not a recognized command, returns None
+    assert!(result.is_some());
+    assert!(result.as_ref().unwrap().contains("Commands:"));
+    assert!(result.as_ref().unwrap().contains("/model"));
+}
+
+#[test]
+fn test_handle_command_model_no_args_shows_current() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let result = agent_loop.handle_command("/model");
+    assert!(result.is_some());
+    assert!(result.as_ref().unwrap().contains("Current model:"));
+}
+
+#[test]
+fn test_handle_command_model_switch_by_literal_id() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let result = agent_loop.handle_command("/model deepseek-v4-pro");
+    assert!(result.is_some());
+    assert!(result.as_ref().unwrap().contains("Model switched to: deepseek-v4-pro"));
+    // Verify active_model actually changed.
+    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-pro");
+}
+
+#[test]
+fn test_handle_command_model_switch_by_alias() {
+    let mut config = test_config();
+    config.models.insert("pro".to_string(), "deepseek-v4-pro".to_string());
+    config.models.insert("flash".to_string(), "deepseek-v4-flash".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
+
+    let result = agent_loop.handle_command("/model pro");
+    assert!(result.is_some());
+    assert!(result.as_ref().unwrap().contains("deepseek-v4-pro"));
+    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-pro");
+
+    let result2 = agent_loop.handle_command("/model flash");
+    assert!(result2.as_ref().unwrap().contains("deepseek-v4-flash"));
+    assert_eq!(*agent_loop.active_model.read(), "deepseek-v4-flash");
+}
+
+#[test]
+fn test_handle_command_unknown_slash_returns_none() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let result = agent_loop.handle_command("/totally_bogus_unknown_cmd");
+    // Not a recognized command, returns None
     assert!(result.is_none());
 }
 
@@ -1420,6 +1465,59 @@ fn test_handle_command_list_models() {
     let result = agent_loop.handle_command("/list models");
     assert!(result.is_some());
     assert!(result.unwrap().contains("test-model"));
+}
+
+// ---- Multi-model set_active_model + model_aliases direct tests ----
+
+#[test]
+fn test_set_active_model_literal_id() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let returned = agent_loop.set_active_model("custom-model-123");
+    assert_eq!(returned, "custom-model-123");
+    assert_eq!(*agent_loop.active_model.read(), "custom-model-123");
+}
+
+#[test]
+fn test_set_active_model_alias_resolves() {
+    let mut config = test_config();
+    config.models.insert("fast".to_string(), "gpt-4o-mini".to_string());
+    config.models.insert("smart".to_string(), "o3-mini".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
+
+    let returned = agent_loop.set_active_model("fast");
+    assert_eq!(returned, "gpt-4o-mini");
+    assert_eq!(*agent_loop.active_model.read(), "gpt-4o-mini");
+
+    let returned2 = agent_loop.set_active_model("smart");
+    assert_eq!(returned2, "o3-mini");
+}
+
+#[test]
+fn test_set_active_model_unknown_alias_used_as_literal() {
+    let mut config = test_config();
+    config.models.insert("pro".to_string(), "deepseek-pro".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
+
+    let returned = agent_loop.set_active_model("random-model-id");
+    assert_eq!(returned, "random-model-id");
+    assert_eq!(*agent_loop.active_model.read(), "random-model-id");
+}
+
+#[test]
+fn test_model_aliases_returns_configured() {
+    let mut config = test_config();
+    config.models.insert("a".to_string(), "model-a".to_string());
+    config.models.insert("b".to_string(), "model-b".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config);
+    let mut aliases = agent_loop.model_aliases();
+    aliases.sort();
+    assert_eq!(aliases, vec!["a", "b"]);
+}
+
+#[test]
+fn test_model_aliases_empty_when_no_config() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    assert!(agent_loop.model_aliases().is_empty());
 }
 
 #[test]
@@ -2340,6 +2438,7 @@ fn test_force_compression_no_system_prompt() {
         system_prompt: None,
         max_turns: 5,
         tools: Vec::new(),
+        models: std::collections::HashMap::new(),
     };
     let instance = AgentInstance::new(config);
     // Add many messages without system prompt
@@ -2882,6 +2981,7 @@ fn test_build_messages_without_system_prompt() {
         system_prompt: None,
         max_turns: 5,
         tools: Vec::new(),
+        models: std::collections::HashMap::new(),
     };
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), config.clone());
     let instance = AgentInstance::new(config);
@@ -4054,6 +4154,7 @@ fn test_handle_command_show_system_prompt_with_config() {
         system_prompt: Some("You are a helpful assistant.".to_string()),
         max_turns: 5,
         tools: vec![],
+        models: std::collections::HashMap::new(),
     });
     // /show system_prompt may not be a recognized command target
     // The important thing is it doesn't panic and returns something
