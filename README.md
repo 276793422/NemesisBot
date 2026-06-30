@@ -57,6 +57,28 @@
 
 ---
 
+## 今天终于四个平台都跑起来了（这块是人写的）
+
+(感谢党感谢政府，让我能测到macos)
+
+**Windows 平台**
+
+![Windows](test-tools/resource/UI/windows_ui.png)
+
+**Linux 平台**
+
+![Linux](test-tools/resource/UI/linux_ui.png)
+
+**Android 平台**(这代码有点老)
+
+![Android](test-tools/resource/UI/android_ui.png)
+
+**MacOS 平台**
+
+![MacOS](test-tools/resource/UI/macos_ui.png)
+
+---
+
 ## 快速开始
 
 ### 环境要求
