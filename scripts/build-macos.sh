@@ -11,13 +11,12 @@
 # Output layout:
 #   bin/bin_macos/
 #   ├── nemesisbot
-#   ├── plugins/
-#   │   ├── libplugin_ui.dylib
-#   │   └── libplugin_onnx.dylib
-#   └── tests/
-#       ├── cluster-test
-#       ├── integration-test
-#       └── mcp-server
+#   └── plugins/
+#       ├── libplugin_ui.dylib
+#       └── libplugin_onnx.dylib
+#
+# Note: Only builds the main nemesisbot binary (+ its crate dependencies).
+#       Test-tools (integration-test / cluster-test / ...) are NOT compiled.
 
 set -euo pipefail
 
@@ -159,10 +158,10 @@ echo ""
 # ============================================
 # Step 3: Build main workspace (release)
 # ============================================
-echo "[Step 3/5] Building release..."
+echo "[Step 3/5] Building release (nemesisbot only, skipping test-tools)..."
 START_TIME=$SECONDS
 
-if ! cargo build --release 2>&1; then
+if ! cargo build --release -p nemesisbot 2>&1; then
     echo ""
     echo "[ERROR] Build failed!"
     exit 1
@@ -266,18 +265,6 @@ done
 if [ "$ONNX_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_onnx.dylib not found in build output"
 fi
-
-# Copy test-tools binaries to bin/bin_macos/tests/
-mkdir -p "$BIN_DIR/tests"
-for exe in cluster-test integration-test mcp-server; do
-    if [ -f "$RELEASE_DIR/$exe" ]; then
-        cp "$RELEASE_DIR/$exe" "$BIN_DIR/tests/"
-        chmod +x "$BIN_DIR/tests/$exe"
-        SIZE=$(wc -c < "$RELEASE_DIR/$exe")
-        SIZE_MB=$(( SIZE / 1048576 ))
-        COPIED+=("$exe (${SIZE_MB} MB)")
-    fi
-done
 
 echo "  OK Copied ${#COPIED[@]} file(s) to $BIN_DIR/"
 echo ""
