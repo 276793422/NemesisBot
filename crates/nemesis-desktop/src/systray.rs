@@ -301,47 +301,52 @@ enum TrayUserEvent {
 #[cfg(target_os = "macos")]
 pub mod main_thread_handoff {
     use super::{PlatformTray, TrayUserEvent};
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Mutex, OnceLock};
-    use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
     use winit::event_loop::EventLoopProxy;
 
+    // A plain std channel (not tokio::mpsc): the tray handoff is a one-shot
+    // delivery and the main thread receives it WITHOUT a tokio runtime.
+    //
     // Held in a Mutex<Option<..>> (not OnceLock) so it can be dropped via
     // [`TrayChannelGuard`] when the gateway task exits — that unblocks the main
     // thread's receiver even if the gateway errored before tray setup.
-    static TRAY_TX: Mutex<Option<UnboundedSender<PlatformTray>>> = Mutex::new(None);
+    static TRAY_TX: Mutex<Option<Sender<PlatformTray>>> = Mutex::new(None);
     static EXIT_PROXY: OnceLock<EventLoopProxy<TrayUserEvent>> = OnceLock::new();
 
     /// Create the handoff channel. Called once from macOS `main()` before the
-    /// gateway task is spawned. Returns the receiver the main thread waits on.
-    pub fn init() -> UnboundedReceiver<PlatformTray> {
-        let (tx, rx) = mpsc::unbounded_channel::<PlatformTray>();
+    /// gateway thread is spawned. Returns the receiver the main thread waits on.
+    pub fn init() -> Receiver<PlatformTray> {
+        let (tx, rx) = mpsc::channel::<PlatformTray>();
         *TRAY_TX.lock().expect("TRAY_TX lock") = Some(tx);
         rx
     }
 
     /// Deliver the configured tray to the main thread. Called from the gateway
-    /// worker at the tray-setup step. No-ops if the channel was already closed.
+    /// thread at the tray-setup step. No-ops if the channel was already closed.
     pub fn deliver(tray: PlatformTray) {
         if let Some(tx) = TRAY_TX.lock().expect("TRAY_TX lock").as_ref() {
             let _ = tx.send(tray);
         }
     }
 
-    /// Drop the handoff sender so the main thread's `recv()` returns `None`
+    /// Drop the handoff sender so the main thread's `recv()` returns `Err`
     /// (i.e. "gateway finished without starting a tray"). Called by
     /// [`TrayChannelGuard::drop`].
     fn close() {
         *TRAY_TX.lock().expect("TRAY_TX lock") = None;
     }
 
-    /// Store the event-loop proxy so the worker can request exit. Called from
-    /// `run_event_loop_native` on the main thread just before `event_loop.run()`.
-    pub fn set_exit_proxy(proxy: EventLoopProxy<TrayUserEvent>) {
+    /// Store the event-loop proxy so the gateway thread can request exit. Called
+    /// from `run_event_loop_native` on the main thread just before
+    /// `event_loop.run()`. `pub(super)` because it is only used within the
+    /// `systray` module (and exposes the private `TrayUserEvent`).
+    pub(super) fn set_exit_proxy(proxy: EventLoopProxy<TrayUserEvent>) {
         let _ = EXIT_PROXY.set(proxy);
     }
 
     /// Request the main-thread tray loop to exit. Called from the gateway
-    /// worker at the end of cleanup — covers Ctrl+C and any shutdown path,
+    /// thread at the end of cleanup — covers Ctrl+C and any shutdown path,
     /// not just the tray "Quit" menu item.
     pub fn request_exit() {
         if let Some(proxy) = EXIT_PROXY.get() {

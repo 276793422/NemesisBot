@@ -248,12 +248,18 @@ async fn main() -> Result<()> {
 /// and hand the system tray to the main thread so its event loop runs there.
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    // macOS: winit's EventLoop must run on the process main thread. We run the
+    // gateway on a dedicated OS thread with its OWN multi-thread runtime and
+    // drive it via `block_on` (NOT `tokio::spawn`), so the gateway's future
+    // does NOT have to be `Send` — preserving the same property the old
+    // `#[tokio::main]`'s `block_on` had (gateway::run holds std MutexGuards
+    // across awaits, e.g. CronService). The main thread stays free for the tray.
 
     // Child mode must run on the main thread (wry/tao also require it on macOS).
     if nemesis_desktop::child_mode::has_child_mode_flag() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
         return match rt.block_on(nemesis_desktop::child_mode::run_child_mode()) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -284,33 +290,47 @@ fn main() -> Result<()> {
 
     // Only the Gateway command needs the main-thread tray handoff.
     if matches!(&cli.command, Commands::Gateway { .. }) {
-        let mut tray_rx = nemesis_desktop::main_thread_handoff::init();
-        // Run the gateway (and all its async setup) on a worker thread.
-        let gateway_task = rt.spawn(run_command(cli));
+        let tray_rx = nemesis_desktop::main_thread_handoff::init();
 
-        // Block the main thread until the gateway hands off the tray, OR the
-        // gateway task finishes first. In the early-finish case the gateway's
-        // TrayChannelGuard has closed the channel, so recv() returns None and
-        // we skip the tray loop entirely.
-        let tray_opt = rt.block_on(tray_rx.recv());
+        // Run the gateway on a dedicated thread. It builds its own multi-thread
+        // runtime and drives run_command via `block_on`, so run_command's future
+        // need not be Send (it never had to be under the old #[tokio::main]).
+        let gateway_handle = std::thread::Builder::new()
+            .name("nemesisbot-gateway".into())
+            .spawn(move || {
+                let gw_rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()?;
+                gw_rt.block_on(run_command(cli))
+            })
+            .expect("failed to spawn gateway thread");
+
+        // Block the main thread (no runtime needed — std channel) until the
+        // gateway hands off the tray, or the gateway thread finishes first. In
+        // the early-finish case the gateway's TrayChannelGuard has closed the
+        // channel, so recv() returns Err and we skip the tray loop entirely.
+        let tray_opt = tray_rx.recv().ok();
         if let Some(tray) = tray_opt {
             // Runs the winit EventLoop on the main thread until el.exit()
-            // (quit menu item, or request_exit() from the worker after cleanup).
+            // (quit menu item, or request_exit() from the gateway after cleanup).
             tray.run_on_current_thread();
         }
 
         // Ensure gateway cleanup completes before the process exits.
-        return match rt.block_on(gateway_task) {
+        return match gateway_handle.join() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(e),
-            Err(join_err) => {
-                eprintln!("[main:macos] Gateway task failed: {:?}", join_err);
+            Err(panic_err) => {
+                eprintln!("[main:macos] Gateway thread panicked: {:?}", panic_err);
                 std::process::exit(1);
             }
         };
     }
 
-    // Non-Gateway commands: run normally on the runtime (main thread blocks).
+    // Non-Gateway commands: run normally on the main thread.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(run_command(cli))
 }
 
