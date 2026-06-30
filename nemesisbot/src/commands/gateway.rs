@@ -841,6 +841,14 @@ fn migrate_legacy_workflow_dir(
 
 /// Run the gateway command.
 pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
+    // macOS: acquire the tray-handoff channel guard first, so that ANY return
+    // path from this function (early `?` errors, normal completion) closes the
+    // channel and unblocks the main thread waiting for the tray. See
+    // nemesis_desktop::main_thread_handoff. (process::exit paths terminate the
+    // whole process, so they need no special handling here.)
+    #[cfg(target_os = "macos")]
+    let _tray_channel_guard = nemesis_desktop::main_thread_handoff::channel_guard();
+
     // Step 1: Resolve home directory
     let home = common::resolve_home(local);
 
@@ -2944,8 +2952,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             shutdown_svc.shutdown();
         }));
 
-        // Start tray on a dedicated thread (runs winit EventLoop)
-        let _tray_handle = tray.run();
+        // Start the tray.
+        //
+        // Windows: runs on a dedicated thread (winit allows off-main-thread via
+        //          with_any_thread). macOS: winit's EventLoop MUST run on the
+        //          main thread, so hand the configured tray to the main thread
+        //          (see nemesis_desktop::main_thread_handoff) which runs the
+        //          event loop there. The gateway itself continues on this worker.
+        #[cfg(target_os = "macos")]
+        {
+            nemesis_desktop::main_thread_handoff::deliver(tray);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _tray_handle = tray.run();
+        }
         info!("[Gateway] System tray started");
         println!("  OK System tray started");
     }
@@ -2986,6 +3007,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let _ = std::fs::remove_file(home.join("workspace").join("state").join("gateway.json"));
 
     println!("  OK Gateway stopped");
+
+    // macOS: tell the main-thread tray loop to exit now that cleanup is done.
+    // Covers shutdown paths that don't go through the tray "Quit" menu item
+    // (e.g. Ctrl+C) — without this the main thread would block in the tray
+    // event loop forever while the gateway worker had already finished.
+    #[cfg(target_os = "macos")]
+    nemesis_desktop::main_thread_handoff::request_exit();
 
     Ok(())
 }

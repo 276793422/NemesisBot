@@ -191,6 +191,7 @@ enum Commands {
     },
 }
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::main]
 async fn main() -> Result<()> {
     // Early check for child mode (--multiple flag) before any CLI parsing.
@@ -235,6 +236,87 @@ async fn main() -> Result<()> {
     // Instead, we use a helper function that inits a default subscriber only once
     // and is called by commands that don't have their own config-based init.
 
+    run_command(cli).await
+}
+
+/// macOS entry point.
+///
+/// winit's `EventLoop` must be created and run on the process main thread on
+/// macOS (no `with_any_thread` escape hatch). We therefore cannot use
+/// `#[tokio::main]` (which owns the main thread for its runtime): instead we
+/// build a multi-thread runtime manually, run the gateway on a worker thread,
+/// and hand the system tray to the main thread so its event loop runs there.
+#[cfg(target_os = "macos")]
+fn main() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+
+    // Child mode must run on the main thread (wry/tao also require it on macOS).
+    if nemesis_desktop::child_mode::has_child_mode_flag() {
+        return match rt.block_on(nemesis_desktop::child_mode::run_child_mode()) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("[Child] Error: {}", e);
+                std::process::exit(1);
+            }
+        };
+    }
+
+    // Same `--local` pre-parse as the non-mac entry (Go-compatible: `--local`
+    // may appear anywhere; we strip it before clap parsing).
+    let mut local_mode = false;
+    let filtered_args: Vec<String> = std::env::args()
+        .filter(|arg| {
+            if arg == "--local" {
+                local_mode = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    let mut cli = Cli::parse_from(filtered_args);
+    if local_mode {
+        cli.local = true;
+        println!("Local mode enabled: using ./.nemesisbot");
+    }
+
+    // Only the Gateway command needs the main-thread tray handoff.
+    if matches!(&cli.command, Commands::Gateway { .. }) {
+        let mut tray_rx = nemesis_desktop::main_thread_handoff::init();
+        // Run the gateway (and all its async setup) on a worker thread.
+        let gateway_task = rt.spawn(run_command(cli));
+
+        // Block the main thread until the gateway hands off the tray, OR the
+        // gateway task finishes first. In the early-finish case the gateway's
+        // TrayChannelGuard has closed the channel, so recv() returns None and
+        // we skip the tray loop entirely.
+        let tray_opt = rt.block_on(tray_rx.recv());
+        if let Some(tray) = tray_opt {
+            // Runs the winit EventLoop on the main thread until el.exit()
+            // (quit menu item, or request_exit() from the worker after cleanup).
+            tray.run_on_current_thread();
+        }
+
+        // Ensure gateway cleanup completes before the process exits.
+        return match rt.block_on(gateway_task) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(join_err) => {
+                eprintln!("[main:macos] Gateway task failed: {:?}", join_err);
+                std::process::exit(1);
+            }
+        };
+    }
+
+    // Non-Gateway commands: run normally on the runtime (main thread blocks).
+    rt.block_on(run_command(cli))
+}
+
+/// Shared command dispatch, used by both the `#[tokio::main]` entry
+/// (Windows / Linux) and the macOS manual-runtime entry.
+async fn run_command(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Onboard { default, args } => {
             // Support both `onboard default` (Go-compatible) and `onboard --default`
@@ -309,7 +391,7 @@ async fn main() -> Result<()> {
                         if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults")) {
                             if let Some(obj) = agents.as_object_mut() {
                                 obj.insert("restrict_to_workspace".to_string(), serde_json::Value::Bool(false));
-                                if local_mode {
+                                if cli.local {
                                     obj.insert("workspace".to_string(), serde_json::Value::String(".nemesisbot/workspace".to_string()));
                                 }
                             }

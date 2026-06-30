@@ -275,6 +275,95 @@ enum TrayUserEvent {
     Icon(tray_icon::TrayIconEvent),
     /// A context menu event (menu item selected).
     Menu(tray_icon::menu::MenuEvent),
+    /// External request to exit the event loop. On macOS this is sent from
+    /// the gateway worker thread after cleanup (via [`main_thread_handoff`])
+    /// so the main-thread tray loop unwinds for shutdowns that do not
+    /// originate from the tray "Quit" menu item (e.g. Ctrl+C).
+    #[cfg(target_os = "macos")]
+    Exit,
+}
+
+/// macOS main-thread tray handoff.
+///
+/// winit's `EventLoop` must be created and run on the process main thread on
+/// macOS (AppKit/NSApplication requirement; no `with_any_thread` escape hatch).
+/// The gateway, however, runs on a tokio worker thread and assembles the tray
+/// callbacks from gateway-local `Arc` state there. This module bridges the two:
+///
+/// 1. macOS `main()` calls [`main_thread_handoff::init`] to create the handoff
+///    channel, then spawns the gateway on the runtime.
+/// 2. The gateway worker, at the tray-setup step, calls
+///    [`main_thread_handoff::deliver`] with the fully-configured tray.
+/// 3. The main thread receives it and runs the event loop, which calls
+///    [`main_thread_handoff::set_exit_proxy`] to register a proxy.
+/// 4. On shutdown the worker calls [`main_thread_handoff::request_exit`] after
+///    cleanup so the main-thread loop exits even for Ctrl+C.
+#[cfg(target_os = "macos")]
+pub mod main_thread_handoff {
+    use super::{PlatformTray, TrayUserEvent};
+    use std::sync::{Mutex, OnceLock};
+    use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+    use winit::event_loop::EventLoopProxy;
+
+    // Held in a Mutex<Option<..>> (not OnceLock) so it can be dropped via
+    // [`TrayChannelGuard`] when the gateway task exits — that unblocks the main
+    // thread's receiver even if the gateway errored before tray setup.
+    static TRAY_TX: Mutex<Option<UnboundedSender<PlatformTray>>> = Mutex::new(None);
+    static EXIT_PROXY: OnceLock<EventLoopProxy<TrayUserEvent>> = OnceLock::new();
+
+    /// Create the handoff channel. Called once from macOS `main()` before the
+    /// gateway task is spawned. Returns the receiver the main thread waits on.
+    pub fn init() -> UnboundedReceiver<PlatformTray> {
+        let (tx, rx) = mpsc::unbounded_channel::<PlatformTray>();
+        *TRAY_TX.lock().expect("TRAY_TX lock") = Some(tx);
+        rx
+    }
+
+    /// Deliver the configured tray to the main thread. Called from the gateway
+    /// worker at the tray-setup step. No-ops if the channel was already closed.
+    pub fn deliver(tray: PlatformTray) {
+        if let Some(tx) = TRAY_TX.lock().expect("TRAY_TX lock").as_ref() {
+            let _ = tx.send(tray);
+        }
+    }
+
+    /// Drop the handoff sender so the main thread's `recv()` returns `None`
+    /// (i.e. "gateway finished without starting a tray"). Called by
+    /// [`TrayChannelGuard::drop`].
+    fn close() {
+        *TRAY_TX.lock().expect("TRAY_TX lock") = None;
+    }
+
+    /// Store the event-loop proxy so the worker can request exit. Called from
+    /// `run_event_loop_native` on the main thread just before `event_loop.run()`.
+    pub fn set_exit_proxy(proxy: EventLoopProxy<TrayUserEvent>) {
+        let _ = EXIT_PROXY.set(proxy);
+    }
+
+    /// Request the main-thread tray loop to exit. Called from the gateway
+    /// worker at the end of cleanup — covers Ctrl+C and any shutdown path,
+    /// not just the tray "Quit" menu item.
+    pub fn request_exit() {
+        if let Some(proxy) = EXIT_PROXY.get() {
+            let _ = proxy.send_event(TrayUserEvent::Exit);
+        }
+    }
+
+    /// RAII guard that closes the handoff channel when dropped. Create it at
+    /// the very top of the macOS gateway `run()` so that ANY exit path
+    /// (including early errors before the tray-setup step) unblocks the main
+    /// thread's receiver instead of deadlocking it.
+    pub struct TrayChannelGuard;
+    impl Drop for TrayChannelGuard {
+        fn drop(&mut self) {
+            close();
+        }
+    }
+
+    /// Acquire the [`TrayChannelGuard`] for the current gateway run.
+    pub fn channel_guard() -> TrayChannelGuard {
+        TrayChannelGuard
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +705,11 @@ impl PlatformTray {
             let _ = proxy.send_event(TrayUserEvent::Menu(event));
         }));
 
+        // macOS: register a proxy so the gateway worker can request loop exit
+        // after cleanup (covers Ctrl+C and other non-tray-initiated shutdown).
+        #[cfg(target_os = "macos")]
+        main_thread_handoff::set_exit_proxy(event_loop.create_proxy());
+
         // On Linux, initialize GTK before creating tray icon.
         // tray-icon uses libayatana-appindicator which depends on GTK,
         // and GTK must be initialized before any GTK operations.
@@ -773,9 +867,27 @@ impl PlatformTray {
                         _ => {}
                     }
                 }
+                #[cfg(target_os = "macos")]
+                Event::UserEvent(TrayUserEvent::Exit) => {
+                    tracing::info!("[Desktop] Tray exit requested, exiting event loop");
+                    el.exit();
+                }
                 _ => {}
             }
         }).expect("tray event loop error");
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl PlatformTray {
+    /// Run the tray event loop on the CURRENT thread (macOS: the main thread).
+    ///
+    /// On macOS, winit's `EventLoop` must be created and run on the process
+    /// main thread. The gateway worker hands the configured tray to the main
+    /// thread via [`main_thread_handoff`], which calls this. Blocks until the
+    /// loop exits (quit menu item, or an external `request_exit()`).
+    pub fn run_on_current_thread(self) {
+        self.run_event_loop_native();
     }
 }
 

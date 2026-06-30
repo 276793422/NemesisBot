@@ -18,4 +18,8 @@ pub use systray::PlatformTray;
 #[cfg(not(target_os = "android"))]
 pub use systray::{enable_cluster_menu_items, disable_cluster_menu_items};
 
+// macOS main-thread tray handoff (see systray::main_thread_handoff docs).
+#[cfg(target_os = "macos")]
+pub use systray::main_thread_handoff;
+
 pub use child_mode::{has_child_mode_flag, run_child_mode};
