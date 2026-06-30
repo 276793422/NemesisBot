@@ -2257,7 +2257,7 @@ fn add_platform_firewall_rules(_udp_port: u16, _tcp_port: u16) -> Result<Option<
         "tcp_rule_added": false,
         "message": "macOS pf 通常不阻止局域网流量，无需手动添加规则",
         "permission_denied": false,
-        "manual_commands": [] as Vec<&str>,
+        "manual_commands": [],
         "platform_hint": "如需配置，请编辑 /etc/pf.conf",
     })))
 }

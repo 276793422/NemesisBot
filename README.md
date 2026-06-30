@@ -72,15 +72,19 @@
 git clone https://github.com/276793422/NemesisBot_Rust.git
 cd NemesisBot_Rust
 
-# Windows 编译
-build.bat
+# Windows 编译（标准构建脚本，带版本注入 + Vue 前端 + 插件编译）
+scripts\build-windows.bat
 
 # Linux/macOS 编译
-./build.sh
+scripts/build-linux.sh        # Linux
+scripts/build-macos.sh        # macOS
 
 # Android 交叉编译（需先搭建环境）
-setup-android.bat    # 自动检测/安装 Android NDK + Rust targets
-build-android.bat    # 编译 Android arm64 版本
+scripts\setup-android.bat     # 自动检测/安装 Android NDK + Rust targets
+scripts\build-android.bat     # 编译 Android arm64 版本
+
+# 一键清理 + 构建 + 运行（Windows）
+scripts\run-demo.bat
 
 # 或手动编译
 cargo build --release -p nemesisbot
@@ -465,7 +469,7 @@ NemesisBot_Rust/
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理；Linux 通过 plugin-ui.so 运行时加载）
-│   ├── nemesis-web/                 # Web API + SSE（17 个 Handler）
+│   ├── nemesis-web/                 # Web API + SSE（19 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -500,22 +504,29 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具
-│   ├── TestAIServer/                # AI 服务器模拟器（Go）
-│   ├── mcp/                         # MCP 协议测试
-│   ├── integration-test/            # 集成测试（22 个命令，298 断言）
-│   ├── cluster-test/                # P2P 集群测试
-│   └── test-harness/                # 测试辅助工具
+├── test-tools/                      # 测试工具（19 个项目：12 workspace member + 7 独立）
+│   ├── TestAIServer/                # AI 服务器模拟器（Go，8 个测试模型）
+│   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
+│   ├── integration-test/            # CLI 集成测试（22 命令，298 断言）
+│   ├── cluster-test/                # P2P 集群测试（12+6）
+│   ├── cluster-uat/                 # 集群 UAT（T1-T14 端到端）
+│   ├── e2e-tests/                   # 端到端 AI 管线测试
+│   ├── memory-test/                 # 内存系统集成测试
+│   ├── approval-test/               # 安全审批流程测试
+│   └── ...                          # mcp / http-test-server / websocket-client / ws-send 等
 ├── docs/                            # 文档目录
 │   ├── BUG/                         # 已知问题和调查
 │   ├── INFO/                        # 技术信息和决策记录
 │   ├── PLAN/                        # 开发计划（进行中）
 │   └── REPORT/                      # 分析报告
-├── build.bat                        # Windows 构建脚本
-├── build.sh                         # Linux/macOS 构建脚本
-├── build-android.bat                # Android 交叉编译脚本
-├── setup-linux.sh                   # Linux 环境搭建脚本
-├── setup-android.bat                # Android 环境搭建脚本
+├── build.bat                        # Windows 构建入口（根目录）
+├── scripts/                         # 构建 / 环境 / 运行脚本目录
+│   ├── build-windows.bat            #   Windows 构建（版本注入 + 前端 + 插件）
+│   ├── build-linux.sh / build-macos.sh / build-wsl.sh
+│   ├── build-android.bat            #   Android 交叉编译
+│   ├── setup-linux.sh / setup-android.bat / setup-macos.sh  # 环境搭建
+│   ├── run-demo.bat                 #   一键清理 + 构建 + 运行
+│   └── coverage.sh                  #   覆盖率脚本
 └── Cargo.toml                       # Workspace 配置
 ```
 
@@ -523,9 +534,9 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **645 个 Rust 源文件** - 清晰的 workspace crate 架构  → **689 个**（持续增长）
+- **800+ Rust 源文件** - 清晰的 workspace crate 架构（其中约 460 个非测试源文件，持续增长）
 - **35 个核心 crate** - 模块化设计，职责清晰
-- **16,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
+- **17,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
@@ -598,7 +609,7 @@ nemesisbot agent            # Agent 管理
 | 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
-| 单元测试 | ~6,500 | ~16,000 |
+| 单元测试 | ~6,500 | ~17,000 |
 | 人格系统 | 无 | 有（agency-agents 仓库 + 运行时切换） |
 | Logs Dashboard | 无 | 有（SSE 实时流 + 会话/审计/审计链） |
 | 集群请求日志 | 单文件 | 按设备+任务分目录（双向视角） |
