@@ -1,7 +1,9 @@
 //! Models handler — list/add/delete/set_default/test model configurations.
 
 use crate::handlers::{mask_sensitive, require_home};
-use crate::llm_bridge::{ForgeProviderBridge, ProviderAdapter};
+use crate::llm_bridge::ProviderAdapter;
+#[cfg(feature = "forge")]
+use crate::llm_bridge::ForgeProviderBridge;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -164,10 +166,13 @@ impl ModelsHandler {
                     tracing::info!(model = %model_cfg.model, "[Models] Runtime provider swapped");
 
                     // Sync Forge's LLM provider — set_provider cascades to all subsystems.
-                    if let Some(ref forge) = ctx.state.forge {
-                        let bridge = ForgeProviderBridge::new(provider.clone(), model_cfg.model.clone());
-                        forge.set_provider(Arc::new(bridge));
-                        tracing::info!(model = %model_cfg.model, "[Models] Forge provider updated");
+                    #[cfg(feature = "forge")]
+                    {
+                        if let Some(ref forge) = ctx.state.forge {
+                            let bridge = ForgeProviderBridge::new(provider.clone(), model_cfg.model.clone());
+                            forge.set_provider(Arc::new(bridge));
+                            tracing::info!(model = %model_cfg.model, "[Models] Forge provider updated");
+                        }
                     }
                 }
                 Err(e) => {

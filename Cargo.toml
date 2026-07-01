@@ -129,14 +129,14 @@ nemesis-bus = { path = "crates/nemesis-bus" }
 nemesis-config = { path = "crates/nemesis-config" }
 nemesis-data = { path = "crates/nemesis-data" }
 nemesis-observer = { path = "crates/nemesis-observer" }
-nemesis-security = { path = "crates/nemesis-security" }
+nemesis-security = { path = "crates/nemesis-security", default-features = false }
 nemesis-providers = { path = "crates/nemesis-providers" }
 nemesis-tools = { path = "crates/nemesis-tools" }
 nemesis-memory = { path = "crates/nemesis-memory" }
 nemesis-workflow = { path = "crates/nemesis-workflow" }
-nemesis-skills = { path = "crates/nemesis-skills" }
+nemesis-skills = { path = "crates/nemesis-skills", default-features = false }
 nemesis-mcp = { path = "crates/nemesis-mcp" }
-nemesis-agent = { path = "crates/nemesis-agent" }
+nemesis-agent = { path = "crates/nemesis-agent", default-features = false }
 nemesis-channels = { path = "crates/nemesis-channels" }
 nemesis-forge = { path = "crates/nemesis-forge" }
 nemesis-cluster = { path = "crates/nemesis-cluster" }

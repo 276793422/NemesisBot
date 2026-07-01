@@ -32,13 +32,16 @@ fn test_parse_host_port_no_port() {
 // through silently on failure).
 // -------------------------------------------------------------------------
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 use nemesis_memory::memory_tools::MemoryApprovalGate;
 
 /// Mock approval manager returning a canned decision.
+#[cfg(all(feature = "desktop", feature = "memory"))]
 struct MockApproval {
     decision: Result<bool, String>,
 }
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 impl nemesis_security::auditor::ApprovalManager for MockApproval {
     fn is_running(&self) -> bool {
         true
@@ -56,12 +59,14 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
     }
 }
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 fn mock_memory_gate(decision: Result<bool, String>) -> GatewayMemoryGate {
     let am: std::sync::Arc<dyn nemesis_security::auditor::ApprovalManager> =
         std::sync::Arc::new(MockApproval { decision });
     GatewayMemoryGate::new(am)
 }
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 #[tokio::test]
 async fn memory_gate_approves_when_user_approves() {
     let g = mock_memory_gate(Ok(true));
@@ -69,6 +74,7 @@ async fn memory_gate_approves_when_user_approves() {
     assert!(g.approve_forget("forget session Y").await);
 }
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 #[tokio::test]
 async fn memory_gate_denies_when_user_denies() {
     let g = mock_memory_gate(Ok(false));
@@ -76,6 +82,7 @@ async fn memory_gate_denies_when_user_denies() {
     assert!(!g.approve_forget("y").await, "denied forget must be blocked");
 }
 
+#[cfg(all(feature = "desktop", feature = "memory"))]
 #[tokio::test]
 async fn memory_gate_denies_on_timeout_or_error() {
     // Popup timeout / IPC error → request_approval_sync returns Err → must deny.
@@ -915,6 +922,7 @@ fn test_print_gateway_banner_max_values() {
 // -------------------------------------------------------------------------
 
 /// Verify ForgeProviderBridge can be constructed (type compatibility).
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_provider_bridge_construction() {
     // We can't create a real LLMProvider in unit tests, but we can verify
@@ -927,7 +935,7 @@ fn test_forge_provider_bridge_construction() {
 // ClusterForgeBridgeAdapter tests
 // -------------------------------------------------------------------------
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_share_reflection() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -936,7 +944,7 @@ async fn test_cluster_forge_bridge_adapter_share_reflection() {
     assert_eq!(count, 0);
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -945,7 +953,7 @@ async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
     assert!(reflections.is_empty());
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_get_online_peers() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -954,7 +962,7 @@ async fn test_cluster_forge_bridge_adapter_get_online_peers() {
     assert!(peers.is_empty());
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[test]
 fn test_cluster_forge_bridge_adapter_local_node_id() {
     let bridge = ClusterForgeBridgeAdapter::new("test-node-id".to_string());
@@ -962,7 +970,7 @@ fn test_cluster_forge_bridge_adapter_local_node_id() {
     assert_eq!(bridge_ref.local_node_id(), "test-node-id");
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[test]
 fn test_cluster_forge_bridge_adapter_is_enabled() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -1104,6 +1112,7 @@ fn test_cron_job_message_construction() {
 // Forge init_trace / init_learning types test
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_trace_collector_creation() {
     let collector = nemesis_forge::trace::TraceCollector::new();
@@ -1111,6 +1120,7 @@ fn test_forge_trace_collector_creation() {
     assert!(events.is_empty());
 }
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_trace_store_creation() {
     let dir = tempfile::tempdir().unwrap();
@@ -1119,6 +1129,7 @@ fn test_forge_trace_store_creation() {
     assert!(true, "TraceStore created");
 }
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_cycle_store_creation() {
     let dir = tempfile::tempdir().unwrap();
@@ -1127,6 +1138,7 @@ fn test_forge_cycle_store_creation() {
     assert!(true, "CycleStore created");
 }
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_registry_creation() {
     let registry = nemesis_forge::registry::Registry::new(
@@ -1819,6 +1831,7 @@ fn test_context_builder_with_workspace() {
 // ForgeProviderBridge response handling logic
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_bridge_empty_content_returns_error() {
     // When content is empty AND tool_calls is empty, return Err
@@ -1832,6 +1845,7 @@ fn test_forge_bridge_empty_content_returns_error() {
     assert!(result.is_err());
 }
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_bridge_nonempty_content_returns_ok() {
     let content = "Hello from LLM";
@@ -1845,6 +1859,7 @@ fn test_forge_bridge_nonempty_content_returns_ok() {
     assert_eq!(result.unwrap(), "Hello from LLM");
 }
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_bridge_tool_calls_present_returns_ok() {
     let content = "";
@@ -1861,6 +1876,7 @@ fn test_forge_bridge_tool_calls_present_returns_ok() {
 // Forge TraceCollector operations
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_forge_trace_collector_events_empty() {
     let collector = nemesis_forge::trace::TraceCollector::new();

@@ -165,17 +165,20 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
 /// Async LLM provider adapter for Forge's Reflector + Pipeline.
 ///
 /// Implements `LLMCaller` trait by delegating to the shared LLM provider.
+#[cfg(feature = "forge")]
 pub struct ForgeProviderBridge {
     provider: Arc<dyn nemesis_providers::router::LLMProvider>,
     model: String,
 }
 
+#[cfg(feature = "forge")]
 impl ForgeProviderBridge {
     pub fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
         Self { provider, model }
     }
 }
 
+#[cfg(feature = "forge")]
 #[async_trait::async_trait]
 impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
     async fn chat(

@@ -27,11 +27,14 @@ pub mod protocol;
 pub mod session;
 pub mod sse_chat;
 pub mod websocket_handler;
+#[cfg(feature = "workflow")]
 pub mod workflow_chat;
+#[cfg(feature = "workflow")]
 pub mod workflow_chat_reply_observer;
 pub mod ws_router;
 
 pub use events::EventHub;
+#[cfg(feature = "forge")]
 pub use llm_bridge::ForgeProviderBridge;
 pub use llm_bridge::ProviderAdapter;
 pub use protocol::ProtocolMessage;
@@ -55,5 +58,5 @@ mod api_usage_extra_tests;
 mod llm_bridge_extra_tests;
 #[cfg(test)]
 mod sse_chat_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "workflow"))]
 mod workflow_chat_extra_tests;

@@ -125,6 +125,7 @@ pub struct WsQuery {
     /// `workflow.set_chat_password`.
     pub workflow_chat: Option<String>,
     /// Password for the workflow-chat session (paired with `workflow_chat`).
+    #[cfg_attr(not(feature = "workflow"), allow(dead_code))]
     pub pwd: Option<String>,
 }
 
@@ -146,17 +147,27 @@ pub async fn handle_websocket_upgrade(
         //   - If no password is configured → accept any pwd (including empty).
         // The frontend hits /api/workflow/chat/info first to learn whether
         // a password is needed and only prompts the user when it is.
-        let pwd = query.pwd.unwrap_or_default();
-        let store = state.chat_secret_store.clone();
-        let needs_pwd = store.has_password(index);
-        if needs_pwd && !store.verify_password(index, &pwd) {
-            tracing::warn!(
-                index = %index,
-                "[WebSocket] workflow_chat authentication failed (password required)"
-            );
-            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+        #[cfg(feature = "workflow")]
+        {
+            let pwd = query.pwd.unwrap_or_default();
+            let store = state.chat_secret_store.clone();
+            let needs_pwd = store.has_password(index);
+            if needs_pwd && !store.verify_password(index, &pwd) {
+                tracing::warn!(
+                    index = %index,
+                    "[WebSocket] workflow_chat authentication failed (password required)"
+                );
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+            crate::session::AuthMethod::WorkflowChat
         }
-        crate::session::AuthMethod::WorkflowChat
+        #[cfg(not(feature = "workflow"))]
+        {
+            // Workflow feature trimmed — standalone workflow-chat page is gone.
+            let _ = index;
+            tracing::warn!("[WebSocket] workflow_chat path disabled (workflow feature off)");
+            return axum::http::StatusCode::NOT_FOUND.into_response();
+        }
     } else {
         // Dashboard path: verify the dashboard token (if configured).
         if !state.auth_token.is_empty() {
@@ -272,24 +283,27 @@ pub async fn handle_websocket(
                             // workflow_chat module: dedicated chat page for testing
                             // workflows. Handled entirely async, never forwarded
                             // to the bus. Spawned so the WS loop stays responsive.
-                            if pm.msg_type == "message" && pm.module == "workflow_chat" {
-                                let state2 = state.clone();
-                                let sid = session_id.clone();
-                                let cid = chat_id.clone();
-                                let pm2 = pm.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = crate::workflow_chat::handle_workflow_chat_message(
-                                        state2, sid, cid, pm2,
-                                    )
-                                    .await
-                                    {
-                                        tracing::warn!(
-                                            error = %e,
-                                            "[WebSocket] workflow_chat handler error"
-                                        );
-                                    }
-                                });
-                                continue;
+                            #[cfg(feature = "workflow")]
+                            {
+                                if pm.msg_type == "message" && pm.module == "workflow_chat" {
+                                    let state2 = state.clone();
+                                    let sid = session_id.clone();
+                                    let cid = chat_id.clone();
+                                    let pm2 = pm.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = crate::workflow_chat::handle_workflow_chat_message(
+                                            state2, sid, cid, pm2,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "[WebSocket] workflow_chat handler error"
+                                            );
+                                        }
+                                    });
+                                    continue;
+                                }
                             }
                         }
 

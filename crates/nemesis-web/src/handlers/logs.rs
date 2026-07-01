@@ -12,7 +12,9 @@
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use chrono::NaiveDateTime;
+#[cfg(feature = "security")]
 use nemesis_security::integrity::AuditEvent;
+#[cfg(feature = "security")]
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -72,11 +74,13 @@ impl ModuleHandler for LogsHandler {
                     .map(|s| s.to_string());
                 self.security(workspace, limit, offset, risk_level.as_deref())
             }
+            #[cfg(feature = "security")]
             "chain_list" => {
                 let limit = opt_u64(&data, "limit", 100);
                 let offset = opt_u64(&data, "offset", 0);
                 self.chain_list(workspace, limit, offset)
             }
+            #[cfg(feature = "security")]
             "chain_verify" => self.chain_verify(workspace),
             "session_list" => {
                 let limit = opt_u64(&data, "limit", 50);
@@ -195,6 +199,7 @@ fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
     sessions
 }
 
+#[cfg(feature = "security")]
 fn audit_chain_path(workspace: &str) -> PathBuf {
     security_log_dir(workspace).join("audit_chain.jsonl")
 }
@@ -356,6 +361,7 @@ fn file_type_name(filename: &str) -> &str {
 // Audit chain segment collection + hashing
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "security")]
 fn collect_audit_segments(main_path: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     if main_path.exists() {
@@ -384,6 +390,7 @@ fn collect_audit_segments(main_path: &Path) -> Vec<PathBuf> {
     files
 }
 
+#[cfg(feature = "security")]
 fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
     let mut events = Vec::new();
     for path in collect_audit_segments(main_path) {
@@ -403,6 +410,7 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
 }
 
 /// SHA-256 hash using the same field order as `AuditChain::append_with_sign`.
+#[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
     let mut hasher = Sha256::new();
     hasher.update(ev.prev_hash.as_bytes());
@@ -767,6 +775,7 @@ impl LogsHandler {
         })))
     }
 
+    #[cfg(feature = "security")]
     fn chain_list(
         &self,
         workspace: &str,
@@ -824,6 +833,7 @@ impl LogsHandler {
         })))
     }
 
+    #[cfg(feature = "security")]
     fn chain_verify(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let main_path = audit_chain_path(workspace);
         let events = read_all_audit_events(&main_path);
@@ -865,6 +875,7 @@ impl LogsHandler {
         })))
     }
 
+    #[cfg_attr(not(feature = "memory"), allow(unused_variables))]
     async fn session_list(
         &self,
         ctx: &RequestContext,
@@ -881,21 +892,24 @@ impl LogsHandler {
         // When episodic memory is available, enrich file entries with metadata
         // (model, triggerCluster) the raw chat log does not carry. Match by both
         // the file-stem id and its ':'-restored form (chat_log replaces ':' → '_').
-        if let Some(ref mgr) = ctx.state.memory_manager {
-            let store = mgr.get_episodic_store();
-            for s in sessions.iter_mut() {
-                let id = s["id"].as_str().unwrap_or("").to_string();
-                for key in [id.clone(), id.replace('_', ":")] {
-                    if let Ok(eps) = store.get_session(&key).await {
-                        if let Some(first) = eps.first() {
-                            if let Some(m) = first.metadata.get("model").cloned() {
-                                s["model"] = serde_json::Value::String(m);
+        #[cfg(feature = "memory")]
+        {
+            if let Some(ref mgr) = ctx.state.memory_manager {
+                let store = mgr.get_episodic_store();
+                for s in sessions.iter_mut() {
+                    let id = s["id"].as_str().unwrap_or("").to_string();
+                    for key in [id.clone(), id.replace('_', ":")] {
+                        if let Ok(eps) = store.get_session(&key).await {
+                            if let Some(first) = eps.first() {
+                                if let Some(m) = first.metadata.get("model").cloned() {
+                                    s["model"] = serde_json::Value::String(m);
+                                }
+                                if eps.iter().any(|e| e.tags.iter().any(|t| t == "cluster")) {
+                                    s["triggerCluster"] = serde_json::Value::Bool(true);
+                                }
                             }
-                            if eps.iter().any(|e| e.tags.iter().any(|t| t == "cluster")) {
-                                s["triggerCluster"] = serde_json::Value::Bool(true);
-                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
@@ -904,40 +918,43 @@ impl LogsHandler {
         // Optional BM25 keyword filter/rank over session summaries (lexical,
         // independent of the memory manager). Drops non-matching sessions and
         // ranks the rest by relevance when `query` is supplied.
-        if let Some(q) = query.as_deref() {
-            let qterms = nemesis_memory::retrieval::query_terms(q);
-            if !qterms.is_empty() {
-                let docs: Vec<_> = sessions
-                    .iter()
-                    .map(|s| {
-                        let text = format!(
-                            "{} {} {}",
-                            s["id"].as_str().unwrap_or(""),
-                            s["firstMessage"].as_str().unwrap_or(""),
-                            s["channel"].as_str().unwrap_or("")
-                        );
-                        nemesis_memory::retrieval::term_counts(&nemesis_memory::retrieval::tokens(&text))
-                    })
-                    .collect();
-                let df = nemesis_memory::retrieval::document_frequency(&docs);
-                let total = docs.len();
-                let avg_len = if total == 0 {
-                    0.0
-                } else {
-                    docs.iter().map(|d| d.values().sum::<usize>() as f64).sum::<f64>() / total as f64
-                };
-                let mut scored: Vec<_> = sessions
-                    .into_iter()
-                    .zip(docs.into_iter())
-                    .map(|(s, dc)| {
-                        let len: usize = dc.values().sum();
-                        let sc = nemesis_memory::retrieval::bm25_score(&dc, len, &qterms, &df, total, avg_len);
-                        (s, sc)
-                    })
-                    .filter(|(_, sc)| *sc > 0.0)
-                    .collect();
-                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                sessions = scored.into_iter().map(|(s, _)| s).collect();
+        #[cfg(feature = "memory")]
+        {
+            if let Some(q) = query.as_deref() {
+                let qterms = nemesis_memory::retrieval::query_terms(q);
+                if !qterms.is_empty() {
+                    let docs: Vec<_> = sessions
+                        .iter()
+                        .map(|s| {
+                            let text = format!(
+                                "{} {} {}",
+                                s["id"].as_str().unwrap_or(""),
+                                s["firstMessage"].as_str().unwrap_or(""),
+                                s["channel"].as_str().unwrap_or("")
+                            );
+                            nemesis_memory::retrieval::term_counts(&nemesis_memory::retrieval::tokens(&text))
+                        })
+                        .collect();
+                    let df = nemesis_memory::retrieval::document_frequency(&docs);
+                    let total = docs.len();
+                    let avg_len = if total == 0 {
+                        0.0
+                    } else {
+                        docs.iter().map(|d| d.values().sum::<usize>() as f64).sum::<f64>() / total as f64
+                    };
+                    let mut scored: Vec<_> = sessions
+                        .into_iter()
+                        .zip(docs.into_iter())
+                        .map(|(s, dc)| {
+                            let len: usize = dc.values().sum();
+                            let sc = nemesis_memory::retrieval::bm25_score(&dc, len, &qterms, &df, total, avg_len);
+                            (s, sc)
+                        })
+                        .filter(|(_, sc)| *sc > 0.0)
+                        .collect();
+                    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    sessions = scored.into_iter().map(|(s, _)| s).collect();
+                }
             }
         }
 
@@ -957,6 +974,7 @@ impl LogsHandler {
         })))
     }
 
+    #[cfg_attr(not(feature = "memory"), allow(unused_variables))]
     async fn session_detail(
         &self,
         ctx: &RequestContext,
@@ -965,6 +983,7 @@ impl LogsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         // Primary: read the session_logs file directly (decoupled from memory manager).
         let path = session_log_dir(workspace).join(format!("{}.jsonl", session));
+        #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
         let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
             .into_iter()
             .map(|ln| serde_json::json!({
@@ -976,26 +995,29 @@ impl LogsHandler {
 
         // Best-effort: enrich messages with episodic tags (triggerCluster, toolCalls)
         // by index, when episodic memory is available and the session key matches.
-        if let Some(ref mgr) = ctx.state.memory_manager {
-            let store = mgr.get_episodic_store();
-            for key in [session.to_string(), session.replace('_', ":")] {
-                if let Ok(eps) = store.get_session(&key).await {
-                    if !eps.is_empty() {
-                        for (i, ep) in eps.iter().enumerate() {
-                            if let Some(msg) = messages.get_mut(i) {
-                                if ep.tags.iter().any(|t| t == "cluster") {
-                                    msg["triggerCluster"] = serde_json::Value::Bool(true);
-                                }
-                                if let Some(n) = ep
-                                    .metadata
-                                    .get("tool_calls")
-                                    .and_then(|s| s.parse::<u32>().ok())
-                                {
-                                    msg["toolCalls"] = serde_json::Value::Number(n.into());
+        #[cfg(feature = "memory")]
+        {
+            if let Some(ref mgr) = ctx.state.memory_manager {
+                let store = mgr.get_episodic_store();
+                for key in [session.to_string(), session.replace('_', ":")] {
+                    if let Ok(eps) = store.get_session(&key).await {
+                        if !eps.is_empty() {
+                            for (i, ep) in eps.iter().enumerate() {
+                                if let Some(msg) = messages.get_mut(i) {
+                                    if ep.tags.iter().any(|t| t == "cluster") {
+                                        msg["triggerCluster"] = serde_json::Value::Bool(true);
+                                    }
+                                    if let Some(n) = ep
+                                        .metadata
+                                        .get("tool_calls")
+                                        .and_then(|s| s.parse::<u32>().ok())
+                                    {
+                                        msg["toolCalls"] = serde_json::Value::Number(n.into());
+                                    }
                                 }
                             }
+                            break;
                         }
-                        break;
                     }
                 }
             }

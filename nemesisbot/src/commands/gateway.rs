@@ -52,7 +52,7 @@ pub fn is_shutdown_requested() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check if plugin-ui library exists in the `plugins/` directory next to the executable.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "security"))]
 fn plugin_ui_library_exists() -> bool {
     nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
@@ -61,12 +61,12 @@ fn plugin_ui_library_exists() -> bool {
 /// approval popup. When attached, agent `memory_store`/`memory_forget` calls pop
 /// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
 /// timeout/error so a memory write never silently succeeds unapproved.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
 struct GatewayMemoryGate {
     approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
 impl GatewayMemoryGate {
     fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
         Self { approval }
@@ -91,7 +91,7 @@ impl GatewayMemoryGate {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
 #[async_trait::async_trait]
 impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
     async fn approve_store(&self, preview: &str) -> bool {
@@ -105,11 +105,13 @@ impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
 /// LLM safety judge (guardian) backed by the gateway's LLM provider. Calls the
 /// model with GUARDIAN_PROMPT + the action as evidence, parses the JSON verdict.
 /// Used only for CRITICAL operations (cost-bounded by the agent loop).
+#[cfg(feature = "security")]
 struct GatewayLlmJudge {
     provider: Arc<dyn nemesis_providers::router::LLMProvider>,
     model: String,
 }
 
+#[cfg(feature = "security")]
 #[async_trait::async_trait]
 impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
     async fn judge(
@@ -161,19 +163,19 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
 /// When a tool call triggers an "ask" security rule, the auditor calls
 /// `request_approval_sync()` which spawns an approval popup child process
 /// via ProcessManager and blocks until the user responds.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "security"))]
 struct ApprovalPopupAdapter {
     process_manager: Arc<nemesis_desktop::process::ProcessManager>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "security"))]
 impl ApprovalPopupAdapter {
     fn new(pm: Arc<nemesis_desktop::process::ProcessManager>) -> Self {
         Self { process_manager: pm }
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", feature = "security"))]
 impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
     fn is_running(&self) -> bool {
         true
@@ -267,19 +269,19 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
 ///
 /// Enables Forge to share reflections with and receive reflections from
 /// cluster peers. Mirrors Go's `forge.NewClusterForgeBridge(cluster)`.
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 struct ClusterForgeBridgeAdapter {
     node_id: String,
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 impl ClusterForgeBridgeAdapter {
     fn new(node_id: String) -> Self {
         Self { node_id }
     }
 }
 
-#[cfg(feature = "cluster")]
+#[cfg(all(feature = "cluster", feature = "forge"))]
 #[async_trait::async_trait]
 impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     async fn share_reflection(
@@ -315,6 +317,7 @@ impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
 ///
 /// Parses the JSON config file's `file_rules`, `dir_rules`, `process_rules`, etc.
 /// and registers them as ABAC rules on the auditor. Also sets `default_action`.
+#[cfg(feature = "security")]
 fn load_security_rules(
     plugin: &Arc<nemesis_security::pipeline::SecurityPlugin>,
     config_path: &std::path::Path,
@@ -450,6 +453,7 @@ fn load_security_rules(
 /// Load scanner full config from `config.scanner.json`.
 ///
 /// Returns None if the file doesn't exist or can't be parsed.
+#[cfg(feature = "security")]
 fn load_scanner_full_config(
     config_path: &std::path::Path,
 ) -> Option<nemesis_security::scanner::ScannerFullConfig> {
@@ -771,6 +775,7 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
 /// the destination (idempotent across re-runs). Removes the legacy dir if
 /// it ends up empty. Errors are logged at warn level — gateway startup
 /// proceeds regardless, since stale data shouldn't block the service.
+#[cfg(feature = "workflow")]
 fn migrate_legacy_workflow_dir(
     home: &std::path::Path,
     new_executions_dir: &std::path::Path,
@@ -924,6 +929,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
         .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
 
+    // Build the LLM provider once. The same Arc<dyn LLMProvider> is reused by
+    // the workflow engine (milestone 1a-E1, so workflow `llm` nodes route to
+    // the same model) and the security guardian judge. The main agent loop
+    // builds its own provider, so this is only needed when workflow or security
+    // is enabled.
+    #[cfg(any(feature = "workflow", feature = "security"))]
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
@@ -933,12 +944,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
-    // Build the LLM provider once. The same Arc<dyn LLMProvider> is reused by
-    // the workflow engine (milestone 1a-E1) so workflow `llm` nodes route to
-    // the same model as the agent loop.
+    #[cfg(any(feature = "workflow", feature = "security"))]
     let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> = nemesis_providers::factory::create_provider(&factory_cfg)
         .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
-    info!("[Gateway] Provider config validated for {}", llm_ref);
+    #[cfg(any(feature = "workflow", feature = "security"))]
+    {
+        info!("[Gateway] Provider config validated for {}", llm_ref);
+    }
 
     let model_name = resolution.model_name.clone();
 
@@ -952,83 +964,89 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     //   checkpoints/  - resume snapshots for in-flight recovery
     //   executions/   - JSONL execution logs
     // Migrate any pre-refactor data from {home}/workflow/ first.
-    let workflow_root = home.join("workspace").join("workflow");
-    let workflow_executions_dir = workflow_root.join("executions");
-    let workflow_checkpoints_dir = workflow_root.join("checkpoints");
-    let workflow_defs_dir = workflow_root.join("definitions");
-    for d in [&workflow_executions_dir, &workflow_checkpoints_dir, &workflow_defs_dir] {
-        if let Err(e) = std::fs::create_dir_all(d) {
-            warn!("[Gateway] Failed to create workflow subdir {}: {}", d.display(), e);
+    #[cfg(feature = "workflow")]
+    let workflow_engine: std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>;
+    #[cfg(feature = "workflow")]
+    let chat_secret_store: std::sync::Arc<nemesis_workflow::chat_secrets::ChatSecretStore>;
+    #[cfg(feature = "workflow")]
+    {
+        let workflow_root = home.join("workspace").join("workflow");
+        let workflow_executions_dir = workflow_root.join("executions");
+        let workflow_checkpoints_dir = workflow_root.join("checkpoints");
+        let workflow_defs_dir = workflow_root.join("definitions");
+        for d in [&workflow_executions_dir, &workflow_checkpoints_dir, &workflow_defs_dir] {
+            if let Err(e) = std::fs::create_dir_all(d) {
+                warn!("[Gateway] Failed to create workflow subdir {}: {}", d.display(), e);
+            }
         }
-    }
-    migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
+        migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
 
-    let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
-    let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
-        llm_provider.clone(),
-        workflow_tool_registry.clone(),
-        Some(workflow_executions_dir.clone()),
-        Some(workflow_checkpoints_dir.clone()),
-    );
+        let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
+            llm_provider.clone(),
+            workflow_tool_registry.clone(),
+            Some(workflow_executions_dir.clone()),
+            Some(workflow_checkpoints_dir.clone()),
+        );
 
-    // Load all workflow definitions from {home}/workspace/workflow/definitions/.
-    workflow_engine.set_workflow_defs_dir(workflow_defs_dir.clone());
-    match workflow_engine.load_workflows_from_dir(&workflow_defs_dir) {
-        Ok(n) => {
+        // Load all workflow definitions from {home}/workspace/workflow/definitions/.
+        engine.set_workflow_defs_dir(workflow_defs_dir.clone());
+        match engine.load_workflows_from_dir(&workflow_defs_dir) {
+            Ok(n) => {
+                info!(
+                    "[Gateway] Workflow engine loaded {} definition(s) from {}",
+                    n,
+                    workflow_defs_dir.display()
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "[Gateway] Workflow engine load failed: {} (dir={})",
+                    e,
+                    workflow_defs_dir.display()
+                );
+            }
+        }
+
+        // Spawn cron-triggered workflows (milestone 1a-E2).
+        let _workflow_cron_handles = engine.spawn_cron_triggers();
+        let cron_wf_count = _workflow_cron_handles.len();
+        if cron_wf_count > 0 {
             info!(
-                "[Gateway] Workflow engine loaded {} definition(s) from {}",
-                n,
-                workflow_defs_dir.display()
+                "[Gateway] Workflow cron triggers registered: {}",
+                cron_wf_count
             );
         }
-        Err(e) => {
-            warn!(
-                "[Gateway] Workflow engine load failed: {} (dir={})",
-                e,
-                workflow_defs_dir.display()
-            );
-        }
-    }
 
-    // Spawn cron-triggered workflows (milestone 1a-E2).
-    let _workflow_cron_handles = workflow_engine.spawn_cron_triggers();
-    let cron_wf_count = _workflow_cron_handles.len();
-    if cron_wf_count > 0 {
-        info!(
-            "[Gateway] Workflow cron triggers registered: {}",
-            cron_wf_count
+        // Restore any in-flight executions paused at human_review nodes or
+        // interrupted by a previous crash (milestone 1b-A1 step 7). The checkpoint
+        // store lives under {home}/workspace/workflow/checkpoints/.
+        match engine.restore_incomplete_executions().await {
+            Ok(n) if n > 0 => {
+                info!(
+                    "[Gateway] Workflow engine restored {} in-flight execution(s) from checkpoints",
+                    n
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    "[Gateway] Workflow checkpoint restore failed: {} (continuing with fresh state)",
+                    e
+                );
+            }
+        }
+        workflow_engine = engine;
+
+        // Per-workflow chat password store for the standalone workflow-chat page.
+        // Loaded from {home}/workspace/workflow/chat_secrets.json — created on
+        // first set_password call. Lives outside the workflow engine because
+        // secrets shouldn't ride along with workflow YAML (which is shareable).
+        let chat_secrets_path = workflow_root.join("chat_secrets.json");
+        chat_secret_store = Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::open(chat_secrets_path),
         );
     }
-
-    // Restore any in-flight executions paused at human_review nodes or
-    // interrupted by a previous crash (milestone 1b-A1 step 7). The checkpoint
-    // store lives under {home}/workspace/workflow/checkpoints/.
-    match workflow_engine.restore_incomplete_executions().await {
-        Ok(n) if n > 0 => {
-            info!(
-                "[Gateway] Workflow engine restored {} in-flight execution(s) from checkpoints",
-                n
-            );
-        }
-        Ok(_) => {}
-        Err(e) => {
-            warn!(
-                "[Gateway] Workflow checkpoint restore failed: {} (continuing with fresh state)",
-                e
-            );
-        }
-    }
-
-    let workflow_engine: Arc<nemesis_workflow::engine::WorkflowEngine> = workflow_engine;
-
-    // Per-workflow chat password store for the standalone workflow-chat page.
-    // Loaded from {home}/workspace/workflow/chat_secrets.json — created on
-    // first set_password call. Lives outside the workflow engine because
-    // secrets shouldn't ride along with workflow YAML (which is shareable).
-    let chat_secrets_path = workflow_root.join("chat_secrets.json");
-    let chat_secret_store = Arc::new(
-        nemesis_workflow::chat_secrets::ChatSecretStore::open(chat_secrets_path),
-    );
 
     // Step 8: Create MessageBus
     let bus = Arc::new(nemesis_bus::MessageBus::new());
@@ -1105,9 +1123,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Create Forge executor (always create instance for runtime toggle support).
     // M2 + M3 + L1 + L2 + M4 all wired here.
+    #[cfg(feature = "forge")]
     let forge_enabled = cfg.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
+    #[cfg(feature = "forge")]
     let forge_for_web: Option<std::sync::Arc<nemesis_forge::forge::Forge>>;
+    #[cfg(feature = "forge")]
     let forge_executor_for_tools: Option<std::sync::Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>;
+    #[cfg(feature = "forge")]
     {
         // Load forge config from file, fall back to defaults if missing.
         let forge_config_path = home.join("workspace").join("config").join("config.forge.json");
@@ -1214,6 +1236,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     let mcp_enabled = cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false);
 
+    #[cfg(feature = "memory")]
     let mut memory_manager_for_web: Option<std::sync::Arc<nemesis_memory::manager::MemoryManager>> = None;
 
     let skills_loader_arc: Option<std::sync::Arc<nemesis_skills::loader::SkillsLoader>> = {
@@ -1258,18 +1281,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Create MemoryManager (still needed for web server injection).
     // Memory tool executor creation is now handled by the factory function.
-    if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
-        let memory_data_dir = home.join("workspace").join("memory_vector");
-        let config_dir = home.join("workspace").join("config");
-        let mgr = std::sync::Arc::new(
-            nemesis_memory::manager::MemoryManager::with_config_dir(
-                &memory_data_dir, &config_dir,
-            )
-        );
-        info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
-        memory_manager_for_web = Some(mgr);
-    } else {
-        info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
+    #[cfg(feature = "memory")]
+    {
+        if cfg.memory.as_ref().map(|m| m.enabled).unwrap_or(false) {
+            let memory_data_dir = home.join("workspace").join("memory_vector");
+            let config_dir = home.join("workspace").join("config");
+            let mgr = std::sync::Arc::new(
+                nemesis_memory::manager::MemoryManager::with_config_dir(
+                    &memory_data_dir, &config_dir,
+                )
+            );
+            info!("[Gateway] Memory manager created (data_dir={})", memory_data_dir.display());
+            memory_manager_for_web = Some(mgr);
+        } else {
+            info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");
+        }
     }
 
     // Web search config: compute for reference, but tool registration is handled by factory.
@@ -1664,10 +1690,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // --- Network components: only start when cluster is fully enabled ---
         if cluster_should_start {
             // Wire Forge-Cluster bridge
-            if let Some(ref forge_arc) = forge_for_web {
-                let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
-                forge_arc.set_bridge(Arc::new(cluster_bridge));
-                info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
+            #[cfg(feature = "forge")]
+            {
+                if let Some(ref forge_arc) = forge_for_web {
+                    let cluster_bridge = ClusterForgeBridgeAdapter::new(node_id.clone());
+                    forge_arc.set_bridge(Arc::new(cluster_bridge));
+                    info!("[Gateway] Forge-Cluster bridge wired (node_id={})", node_id);
+                }
             }
 
             // Start UDP Discovery Service (managed by Cluster)
@@ -1962,8 +1991,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 9b: Create and inject SecurityPlugin if enabled
     // Mirrors Go's SecurityPlugin registered via PluginManager in instance.go.
     // Keep a reference to the auditor so we can wire up the approval manager later.
+    #[cfg(feature = "security")]
+    let security_plugin: Option<std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>;
+    #[cfg(feature = "security")]
+    {
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
-    let security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>> = if security_enabled {
+    security_plugin = if security_enabled {
         // Read audit_chain_enabled from `config.security.json`. The file is read raw (since the
         // gateway already loads rules from it dynamically in `load_security_rules`); we read it
         // once more here to avoid reordering init (the SecurityPlugin must be constructed before
@@ -2026,6 +2059,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] Security plugin disabled by configuration");
         None
     };
+    }
+
+    #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
+    let security_plugin: Option<()> = None;
 
     // Step 9d: Setup Observer Manager for conversation lifecycle events.
     // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
@@ -2109,26 +2147,41 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         home: home.clone(),
         bus: bus.clone(),
         agent_outbound_tx,
+        #[cfg(feature = "forge")]
         forge: forge_for_web.clone(),
+        #[cfg(not(feature = "forge"))]
+        forge: None,
+        #[cfg(feature = "forge")]
         forge_executor: forge_executor_for_tools.clone(),
+        #[cfg(not(feature = "forge"))]
+        forge_executor: None,
         cron_service: cron_service.clone(),
         security_plugin: security_plugin.clone(),
         observer_manager: observer_manager.clone(),
         data_store: data_store.clone(),
         skills_loader: skills_loader_arc.clone(),
         skills_registry: skills_registry_arc.clone(),
+        #[cfg(feature = "memory")]
         memory_manager: memory_manager_for_web.clone(),
+        #[cfg(not(feature = "memory"))]
+        memory_manager: None,
         enabled_channels: enabled_channels.clone(),
+        #[cfg(feature = "workflow")]
         workflow_engine: Some(workflow_engine.clone()),
+        #[cfg(not(feature = "workflow"))]
+        workflow_engine: None,
         cluster_rpc_call_fn,
         cluster_rpc_config,
         cluster_peers_fn,
         cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
+        #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
         )),
+        #[cfg(not(feature = "security"))]
+        approval_slot: (),
     };
 
     let shared_resources = Arc::new(shared_resources);
@@ -2141,15 +2194,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // that hits an `agent` node will route through this runner, which
     // namespaces session keys under `workflow:{agent_id}` so workflow
     // sessions don't collide with human user sessions.
-    workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
-    info!("[Gateway] Workflow agent runner registered");
+    #[cfg(feature = "workflow")]
+    {
+        workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+        info!("[Gateway] Workflow agent runner registered");
 
-    // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor
-    // node executors record a RequestLog per LLM call. Agent nodes are already
-    // tracked via the agent_loop's own data_store wiring.
-    if let Some(ref ds) = data_store {
-        workflow_engine.set_usage_store(ds.clone());
-        info!("[Gateway] Workflow usage store wired");
+        // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor
+        // node executors record a RequestLog per LLM call. Agent nodes are already
+        // tracked via the agent_loop's own data_store wiring.
+        if let Some(ref ds) = data_store {
+            workflow_engine.set_usage_store(ds.clone());
+            info!("[Gateway] Workflow usage store wired");
+        }
     }
 
     // --- Inject tool capabilities into cluster for discovery broadcast ---
@@ -2239,15 +2295,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Inject MemoryManager into web server for runtime vector store control
-    if let Some(mgr) = memory_manager_for_web {
-        web_server.set_memory_manager(mgr);
-        info!("[Gateway] MemoryManager injected into web server");
+    #[cfg(feature = "memory")]
+    {
+        if let Some(mgr) = memory_manager_for_web {
+            web_server.set_memory_manager(mgr);
+            info!("[Gateway] MemoryManager injected into web server");
+        }
     }
 
     // Inject Forge into web server for runtime start/stop control
-    if let Some(forge) = forge_for_web {
-        web_server.set_forge(forge);
-        info!("[Gateway] Forge instance injected into web server");
+    #[cfg(feature = "forge")]
+    {
+        if let Some(forge) = forge_for_web {
+            web_server.set_forge(forge);
+            info!("[Gateway] Forge instance injected into web server");
+        }
     }
 
     // Inject Cluster into web server for dashboard data queries
@@ -2286,10 +2348,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     info!("[Gateway] AgentLoop ref injected into web server for model switching");
 
     // Inject WorkflowEngine into web server for /api/workflow/* endpoints
-    web_server.set_workflow_engine(workflow_engine.clone());
-    web_server.set_chat_secret_store(chat_secret_store.clone());
-    info!("[Gateway] Workflow engine injected into web server");
+    #[cfg(feature = "workflow")]
+    {
+        web_server.set_workflow_engine(workflow_engine.clone());
+        web_server.set_chat_secret_store(chat_secret_store.clone());
+        info!("[Gateway] Workflow engine injected into web server");
+    }
 
+    #[cfg(feature = "workflow")]
+    {
     // --- Workflow trigger drivers (event + message) ---
     // Two subscription tasks wire trigger configs to their data sources:
     //
@@ -2482,6 +2549,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             .register(observer as Arc<dyn nemesis_workflow::events::WorkflowObserver>)
             .await;
         info!("[Gateway] WorkflowChatReplyObserver registered");
+    }
     }
 
     info!("[Gateway] Web server components injected");
@@ -2857,6 +2925,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Wire up ApprovalManager: ProcessManager → SecurityPlugin auditor
     // When a tool call triggers an "ask" rule, the auditor will call
     // request_approval_sync() which spawns an approval popup child process.
+    #[cfg(feature = "security")]
+    {
     if let Some(ref plugin) = security_plugin {
         let auditor = plugin.auditor();
         #[cfg(feature = "desktop")]
@@ -2872,7 +2942,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // P2: bridge the same approval manager to the agent's memory write/forget
             // gate — agent memory_store/forget now pop up for approval, never
             // bypassed by YOLO/auto. No-op if no memory executor was stashed.
-            agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+            #[cfg(feature = "memory")]
+            {
+                agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+            }
             info!("[Gateway] Approval manager wired (popup via ProcessManager)");
         }
         #[cfg(not(feature = "desktop"))]
@@ -2886,6 +2959,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             model: model_name.clone(),
         }));
         info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
+    }
     }
 
     // Internal command loop: /api/internal → open_plugin_window / open_browser
@@ -3118,16 +3192,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 /// only returns the final response string. If/when we surface tool-call
 /// events, this struct can be extended to capture them without breaking the
 /// trait contract.
+#[cfg(feature = "workflow")]
 struct GatewayAgentRunner {
     agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
 }
 
+#[cfg(feature = "workflow")]
 impl GatewayAgentRunner {
     fn new(agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>) -> Self {
         Self { agent_loop }
     }
 }
 
+#[cfg(feature = "workflow")]
 #[async_trait::async_trait]
 impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
     async fn run_direct(

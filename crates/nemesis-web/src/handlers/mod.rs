@@ -9,13 +9,17 @@ pub mod channels;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod config;
+#[cfg(feature = "forge")]
 pub mod forge;
 pub mod identity;
 pub mod logs;
 pub mod mcp;
+#[cfg(feature = "memory")]
 pub mod memory;
 pub mod models;
+#[cfg(feature = "security")]
 pub mod scanner;
+#[cfg(feature = "security")]
 pub mod security;
 pub mod skills;
 pub mod system;
@@ -24,6 +28,7 @@ pub mod tools;
 #[cfg(feature = "voice")]
 pub mod voice;
 pub mod persona;
+#[cfg(feature = "workflow")]
 pub mod workflow;
 
 use std::path::PathBuf;
@@ -41,12 +46,24 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(channels::ChannelsHandler::new()));
     router.register(Arc::new(identity::IdentityHandler));
     router.register(Arc::new(tools::ToolsHandler));
-    router.register(Arc::new(scanner::ScannerHandler::new()));
-    router.register(Arc::new(memory::MemoryHandler));
+    #[cfg(feature = "security")]
+    {
+        router.register(Arc::new(scanner::ScannerHandler::new()));
+    }
+    #[cfg(feature = "memory")]
+    {
+        router.register(Arc::new(memory::MemoryHandler));
+    }
     router.register(Arc::new(skills::SkillsHandler::new()));
     router.register(Arc::new(mcp::McpHandler::new()));
-    router.register(Arc::new(security::SecurityHandler::new()));
-    router.register(Arc::new(forge::ForgeHandler::new()));
+    #[cfg(feature = "security")]
+    {
+        router.register(Arc::new(security::SecurityHandler::new()));
+    }
+    #[cfg(feature = "forge")]
+    {
+        router.register(Arc::new(forge::ForgeHandler::new()));
+    }
     router.register(Arc::new(tasks::TasksHandler));
     #[cfg(feature = "cluster")]
     {
@@ -59,7 +76,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
         router.register(Arc::new(voice::VoiceHandler::new()));
     }
     router.register(Arc::new(persona::PersonaHandler::new()));
-    router.register(Arc::new(workflow::WorkflowHandler));
+    #[cfg(feature = "workflow")]
+    {
+        router.register(Arc::new(workflow::WorkflowHandler));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,17 +229,17 @@ mod tests;
 mod cluster_extra_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "forge"))]
 mod forge_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 mod memory_extra_tests;
 #[cfg(test)]
 mod persona_extra_tests;
 #[cfg(test)]
 mod persona_more_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "security"))]
 mod scanner_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "security"))]
 mod scanner_more_tests;
 #[cfg(test)]
 mod skills_extra_tests;

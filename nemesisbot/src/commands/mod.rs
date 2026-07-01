@@ -4,11 +4,16 @@ pub mod gateway;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod model;
+#[cfg(feature = "forge")]
 pub mod forge;
+#[cfg(feature = "security")]
 pub mod security;
 pub mod skills;
+#[cfg(feature = "workflow")]
 pub mod workflow;
+#[cfg(feature = "security")]
 pub mod scanner;
+#[cfg(feature = "memory")]
 pub mod memory;
 pub mod log;
 pub mod agent;

@@ -392,7 +392,11 @@ pub struct AgentLoop {
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
     /// Security plugin for pre-execution tool safety checks.
     /// Mirrors Go's SecurityPlugin registered via PluginManager.
+    #[cfg(feature = "security")]
     security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
+    security_plugin: Option<()>,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
     /// Snapshot of registered MCP tool names and descriptions.
@@ -401,7 +405,11 @@ pub struct AgentLoop {
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Forge instance for experience collection during tool execution.
+    #[cfg(feature = "forge")]
     forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    #[cfg(not(feature = "forge"))]
+    #[allow(dead_code)] // placeholder when forge feature is off
+    forge: Option<()>,
     /// Per-session cancellation tokens. When a user requests cancellation,
     /// the token for the corresponding session is cancelled, causing the
     /// LLM loop to break at the next check point.
@@ -417,7 +425,11 @@ pub struct AgentLoop {
     turn_counter: std::sync::atomic::AtomicUsize,
     /// Memory tool executor reference, so the gateway can attach an approval
     /// gate post-construction (memory_store/forget require interactive approval).
+    #[cfg(feature = "memory")]
     memory_executor: parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)] // placeholder when memory feature is off
+    memory_executor: parking_lot::RwLock<Option<()>>,
 }
 
 impl AgentLoop {
@@ -491,12 +503,14 @@ impl AgentLoop {
     /// Stash the memory tool executor so the gateway can later attach an approval
     /// gate via `set_memory_approval_gate`. Called by the factory after building
     /// the shared tool config.
+    #[cfg(feature = "memory")]
     pub fn set_memory_executor(&self, exec: Arc<nemesis_memory::memory_tools::MemoryToolExecutor>) {
         *self.memory_executor.write() = Some(exec);
     }
 
     /// Attach an approval gate to the memory executor (if one was stashed). After
     /// this, agent `memory_store`/`memory_forget` calls require approval.
+    #[cfg(feature = "memory")]
     pub fn set_memory_approval_gate(
         &self,
         gate: Arc<dyn nemesis_memory::memory_tools::MemoryApprovalGate>,
@@ -909,6 +923,7 @@ impl AgentLoop {
 
     /// Set the security plugin for pre-execution tool safety checks.
     /// Mirrors Go's SecurityPlugin registered via PluginManager.
+    #[cfg(feature = "security")]
     pub fn set_security_plugin(&mut self, plugin: Arc<nemesis_security::pipeline::SecurityPlugin>) {
         self.security_plugin = Some(plugin);
     }
@@ -944,6 +959,7 @@ impl AgentLoop {
     }
 
     /// Set the Forge instance for experience collection.
+    #[cfg(feature = "forge")]
     pub fn set_forge(&mut self, forge: Arc<nemesis_forge::forge::Forge>) {
         self.forge = Some(forge);
     }
@@ -2829,6 +2845,8 @@ impl AgentLoop {
         info!("[AgentLoop] Executing tool: {} (id={})", tool_call.name, tool_call.id);
 
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
+        #[cfg(feature = "security")]
+        {
         if let Some(ref security) = self.security_plugin {
             let args_value = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
                 .unwrap_or(serde_json::Value::Null);
@@ -2877,6 +2895,7 @@ impl AgentLoop {
                 }
             }
         }
+        }
 
         // Inject channel/chat_id into context-aware tools before execution.
         // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
@@ -2887,6 +2906,7 @@ impl AgentLoop {
             }
         }
 
+        #[cfg(feature = "forge")]
         let tool_start = std::time::Instant::now();
         let tool_opt = self.tools.read().get(&tool_call.name).cloned();
         // Checkpoint capture: if the tool previews a file change, snapshot its
@@ -2923,20 +2943,23 @@ impl AgentLoop {
         };
 
         // Record experience for Forge self-learning (non-blocking).
-        if let Some(ref forge) = self.forge {
-            let exp = nemesis_types::forge::Experience {
-                id: uuid::Uuid::new_v4().to_string(),
-                tool_name: tool_call.name.clone(),
-                input_summary: tool_call.arguments.clone(),
-                output_summary: result.clone(),
-                success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
-                duration_ms: tool_start.elapsed().as_millis() as u64,
-                timestamp: chrono::Local::now().to_rfc3339(),
-                session_key: format!("{}:{}", context.channel, context.chat_id),
-            };
-            let args = serde_json::from_str(&tool_call.arguments)
-                .unwrap_or(serde_json::Value::Null);
-            let _ = forge.collector().record_with_args(exp, &args).await;
+        #[cfg(feature = "forge")]
+        {
+            if let Some(ref forge) = self.forge {
+                let exp = nemesis_types::forge::Experience {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    tool_name: tool_call.name.clone(),
+                    input_summary: tool_call.arguments.clone(),
+                    output_summary: result.clone(),
+                    success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
+                    duration_ms: tool_start.elapsed().as_millis() as u64,
+                    timestamp: chrono::Local::now().to_rfc3339(),
+                    session_key: format!("{}:{}", context.channel, context.chat_id),
+                };
+                let args = serde_json::from_str(&tool_call.arguments)
+                    .unwrap_or(serde_json::Value::Null);
+                let _ = forge.collector().record_with_args(exp, &args).await;
+            }
         }
 
         result

@@ -3,16 +3,26 @@ name = "nemesis-agent"
 version.workspace = true
 edition.workspace = true
 
+# Class C 子系统 feature（默认全开 = 现状；可通过 `--no-default-features` 关闭）。
+# 这些 crate 被 nemesis-agent 硬引用，所以 agent 自身也要开 feature 体系并在源码里 cfg-gate。
+# 见 docs/PLAN/2026-07-01_feature-trimming-and-build-configurator.md Phase 5。
+[features]
+default = ["forge", "memory", "workflow", "security"]
+forge = ["dep:nemesis-forge"]
+memory = ["dep:nemesis-memory"]
+workflow = ["dep:nemesis-workflow"]
+security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-skills/security"]
+
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-routing = { workspace = true }
 nemesis-skills = { workspace = true }
-nemesis-memory = { workspace = true }
+nemesis-memory = { workspace = true, optional = true }
 nemesis-mcp = { workspace = true }
 nemesis-tools = { workspace = true }
 nemesis-cron = { workspace = true }
-nemesis-forge = { workspace = true }
-nemesis-workflow = { workspace = true }
+nemesis-forge = { workspace = true, optional = true }
+nemesis-workflow = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = { workspace = true }
@@ -25,7 +35,7 @@ uuid = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 nemesis-observer = { workspace = true }
-nemesis-security = { workspace = true }
+nemesis-security = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-path = { workspace = true }

@@ -177,6 +177,10 @@ pub fn sessions_dir(home: &Path) -> PathBuf {
 }
 
 /// Print a check mark or cross.
+// Only used by the forge + memory status commands; exclude from builds where
+// both are off (e.g. minimal-iot). `, test` keeps it available for its unit
+// tests regardless of feature组合 — mirrors `constant_time_eq` below.
+#[cfg(any(feature = "forge", feature = "memory", test))]
 pub fn status_icon(ok: bool) -> &'static str {
     if ok { "OK" } else { "MISSING" }
 }

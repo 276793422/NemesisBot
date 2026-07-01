@@ -3,9 +3,17 @@ name = "nemesis-skills"
 version.workspace = true
 edition.workspace = true
 
+# `security` feature gates the skill-signing module (signer.rs → nemesis-security::signature).
+# Skill signing is a security-adjacent feature; when security is trimmed off, signer is
+# excluded so nemesis-security is not pulled in at all. The rest of nemesis-skills
+# (loader/registry/lint/installer/security_check) is always compiled.
+[features]
+default = ["security"]
+security = ["dep:nemesis-security"]
+
 [dependencies]
 nemesis-types = { workspace = true }
-nemesis-security = { workspace = true }
+nemesis-security = { workspace = true, optional = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

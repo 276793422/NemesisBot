@@ -484,6 +484,7 @@ async fn test_spawn_tool_allowlist_denied() {
     assert!(result.unwrap_err().contains("Not allowed"));
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_tools_no_executor() {
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -514,6 +515,7 @@ async fn test_memory_tools_no_executor() {
     assert!(result.unwrap_err().contains("not available"));
 }
 
+#[cfg(feature = "memory")]
 #[tokio::test]
 async fn test_memory_tools_with_executor() {
     let dir = tempfile::tempdir().unwrap();
@@ -2509,6 +2511,7 @@ fn test_web_search_tool_extract_query_method() {
 // ForgeBridgeTool via register_shared_tools
 // =========================================================================
 
+#[cfg(feature = "forge")]
 #[test]
 fn test_register_shared_tools_with_forge() {
     let tmp = tempfile::tempdir().unwrap();

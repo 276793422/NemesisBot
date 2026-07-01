@@ -121,9 +121,16 @@ pub struct WebServer {
     /// Data store for usage statistics queries.
     data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Memory manager for runtime vector store control.
+    #[cfg(feature = "memory")]
     memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)]
+    memory_manager: Option<()>,
     /// Forge self-learning instance for runtime start/stop control.
+    #[cfg(feature = "forge")]
     forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    #[cfg(not(feature = "forge"))]
+    forge: Option<()>,
     /// Agent loop for runtime model/provider switching.
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     agent_loop: Option<Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>>,
@@ -137,14 +144,26 @@ pub struct WebServer {
     /// Cluster log directory for JSONL log reader.
     cluster_log_dir: Option<String>,
     /// Workflow engine for trigger / execution APIs (milestone 1a-E3/E4).
+    #[cfg(feature = "workflow")]
     workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    workflow_engine: Option<()>,
     /// Per-workflow chat password store for the standalone workflow-chat page.
     /// Gateway constructs this from `{home}/workspace/workflow/chat_secrets.json`
     /// and shares it with handlers that verify passwords.
+    #[cfg(feature = "workflow")]
     chat_secret_store: Option<Arc<nemesis_workflow::chat_secrets::ChatSecretStore>>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    chat_secret_store: Option<()>,
     /// Per-IP rate limiter for webhook endpoints (milestone 1c-E5).
     /// Created lazily; shared with AppState.
+    #[cfg(feature = "workflow")]
     webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    webhook_rate_limiter: Arc<()>,
     /// Internal command sender for /api/internal endpoint.
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }
@@ -179,7 +198,10 @@ impl WebServer {
             cluster_log_dir: None,
             workflow_engine: None,
             chat_secret_store: None,
+            #[cfg(feature = "workflow")]
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+            #[cfg(not(feature = "workflow"))]
+            webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
         }
     }
@@ -217,11 +239,13 @@ impl WebServer {
     }
 
     /// Set the memory manager for runtime vector store control.
+    #[cfg(feature = "memory")]
     pub fn set_memory_manager(&mut self, mgr: Arc<nemesis_memory::manager::MemoryManager>) {
         self.memory_manager = Some(mgr);
     }
 
     /// Set the Forge self-learning instance for runtime start/stop control.
+    #[cfg(feature = "forge")]
     pub fn set_forge(&mut self, forge: Arc<nemesis_forge::forge::Forge>) {
         self.forge = Some(forge);
     }
@@ -248,11 +272,13 @@ impl WebServer {
     }
 
     /// Set the workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    #[cfg(feature = "workflow")]
     pub fn set_workflow_engine(&mut self, engine: Arc<nemesis_workflow::engine::WorkflowEngine>) {
         self.workflow_engine = Some(engine);
     }
 
     /// Set the per-workflow chat password store.
+    #[cfg(feature = "workflow")]
     pub fn set_chat_secret_store(
         &mut self,
         store: Arc<nemesis_workflow::chat_secrets::ChatSecretStore>,
@@ -298,10 +324,13 @@ impl WebServer {
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine: self.workflow_engine.clone(),
+            #[cfg(feature = "workflow")]
             chat_secret_store: self
                 .chat_secret_store
                 .clone()
                 .unwrap_or_else(|| Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory())),
+            #[cfg(not(feature = "workflow"))]
+            chat_secret_store: std::sync::Arc::new(()),
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
         };
@@ -321,7 +350,7 @@ impl WebServer {
             });
         }
 
-        let mut router = Router::new()
+        let router = Router::new()
             // WebSocket endpoint
             .route(&self.config.ws_path, axum::routing::get(handle_websocket_upgrade))
             // Health check
@@ -347,9 +376,13 @@ impl WebServer {
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
             // SSE chat streaming endpoint
-            .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream))
-            // Workflow REST endpoints (milestone 1a-E3/E4)
-            .merge(crate::handlers::workflow::routes())
+            .route("/api/chat/stream", axum::routing::post(crate::sse_chat::handle_chat_stream));
+
+        // Workflow REST endpoints (milestone 1a-E3/E4)
+        #[cfg(feature = "workflow")]
+        let router = router.merge(crate::handlers::workflow::routes());
+
+        let mut router = router
             // Internal control endpoint (undocumented)
             .route("/api/internal", axum::routing::post(crate::api_handlers::handle_api_internal))
             // CORS layer

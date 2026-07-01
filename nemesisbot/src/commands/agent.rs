@@ -303,15 +303,18 @@ pub(crate) fn build_agent_loop(
 
     // Minimal forge — Forge::new only; no init_reflector/pipeline/learning/start
     // (those spawn background work). The forge tools still register.
+    #[cfg(feature = "forge")]
     let forge = std::sync::Arc::new(nemesis_forge::forge::Forge::new(
         nemesis_forge::config::ForgeConfig::default(),
         workspace_dir.clone(),
     ));
+    #[cfg(feature = "forge")]
     let forge_executor = std::sync::Arc::new(
         nemesis_forge::forge_tools::ForgeToolExecutor::new(forge.clone()),
     );
 
     // Minimal workflow engine — no load_workflows/spawn_cron (no background).
+    #[cfg(feature = "workflow")]
     let workflow_engine = std::sync::Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
 
     let shared_cfg = nemesis_agent::SharedToolConfig {
@@ -319,9 +322,18 @@ pub(crate) fn build_agent_loop(
         skills_loader: Some(skills_loader),
         skills_registry,
         cron_service: Some(cron_service),
+        #[cfg(feature = "forge")]
         forge: Some(forge),
+        #[cfg(not(feature = "forge"))]
+        forge: None,
+        #[cfg(feature = "forge")]
         forge_executor: Some(forge_executor),
+        #[cfg(not(feature = "forge"))]
+        forge_executor: None,
+        #[cfg(feature = "workflow")]
         workflow_engine: Some(workflow_engine),
+        #[cfg(not(feature = "workflow"))]
+        workflow_engine: None,
         spawn: Some(nemesis_agent::loop_tools::SpawnConfig {
             default_model: model_name.clone(),
             max_concurrent: 4,

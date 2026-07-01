@@ -14,7 +14,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
-use nemesis_web::{ForgeProviderBridge, ProviderAdapter};
+use nemesis_web::ProviderAdapter;
+#[cfg(feature = "forge")]
+use nemesis_web::ForgeProviderBridge;
 
 use crate::common;
 
@@ -39,19 +41,37 @@ pub struct SharedResources {
     pub agent_outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
 
     // Shared infrastructure Arc references (lifecycle independent of AgentLoop)
+    #[cfg(feature = "forge")]
     pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    #[cfg(not(feature = "forge"))]
+    pub forge: Option<()>,
+    #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    #[cfg(not(feature = "forge"))]
+    pub forge_executor: Option<()>,
     pub cron_service: Arc<std::sync::Mutex<nemesis_cron::service::CronService>>,
+    #[cfg(feature = "security")]
     pub security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
+    pub security_plugin: Option<()>,
     pub observer_manager: Option<Arc<nemesis_observer::Manager>>,
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     pub skills_loader: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
     pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
+    #[cfg(feature = "memory")]
     pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)]
+    pub memory_manager: Option<()>,
     pub enabled_channels: Vec<String>,
     /// Workflow engine reference — when set, registers the `workflow_run`
     /// agent tool. None keeps the tool absent (e.g., during tests).
+    #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    pub workflow_engine: Option<()>,
     /// Approval manager slot, filled by the gateway after the agent loop is
     /// built. Lets `skill_manage` request interactive approval when enabled.
     pub approval_slot: nemesis_agent::loop_tools::ApprovalManagerSlot,
@@ -239,8 +259,11 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     // Stash the memory executor so the gateway can attach an approval gate
     // post-construction (P2: agent memory_store/forget require interactive
     // approval, never bypassed by YOLO/auto).
-    if let Some(ref exec) = tool_config.memory_executor {
-        agent_loop.set_memory_executor(exec.clone());
+    #[cfg(feature = "memory")]
+    {
+        if let Some(ref exec) = tool_config.memory_executor {
+            agent_loop.set_memory_executor(exec.clone());
+        }
     }
 
     // 8. Register ClusterRpcTool (using shared call_fn + peers_fn).
@@ -268,11 +291,17 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     }
 
     // 10. Inject shared Arc references.
-    if let Some(ref forge) = shared.forge {
-        agent_loop.set_forge(forge.clone());
+    #[cfg(feature = "forge")]
+    {
+        if let Some(ref forge) = shared.forge {
+            agent_loop.set_forge(forge.clone());
+        }
     }
-    if let Some(ref plugin) = shared.security_plugin {
-        agent_loop.set_security_plugin(plugin.clone());
+    #[cfg(feature = "security")]
+    {
+        if let Some(ref plugin) = shared.security_plugin {
+            agent_loop.set_security_plugin(plugin.clone());
+        }
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
     // a rewind can restore them. One per agent loop under {workspace}/.checkpoints/.
@@ -294,13 +323,16 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
 
     // 11. Update Forge's LLM provider (old model may have been deleted).
     //     set_provider cascades to reflector + pipeline + learning_engine.
-    if let Some(ref forge) = shared.forge {
-        let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
-        forge.set_provider(Arc::new(bridge));
-        info!(
-            "[AgentFactory] Forge provider updated to model {}",
-            model_name
-        );
+    #[cfg(feature = "forge")]
+    {
+        if let Some(ref forge) = shared.forge {
+            let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
+            forge.set_provider(Arc::new(bridge));
+            info!(
+                "[AgentFactory] Forge provider updated to model {}",
+                model_name
+            );
+        }
     }
 
     info!(
@@ -333,9 +365,12 @@ fn build_shared_tool_config(
         cron_service: Some(shared.cron_service.clone()),
         forge_executor: shared.forge_executor.clone(),
         forge: shared.forge.clone(),
+        #[cfg(feature = "memory")]
         memory_executor: shared.memory_manager.as_ref().map(|mgr| {
             Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr.clone()))
         }),
+        #[cfg(not(feature = "memory"))]
+        memory_executor: None,
         skills_loader: shared.skills_loader.clone(),
         skills_registry: shared.skills_registry.clone(),
         web_search: {
@@ -619,8 +654,11 @@ pub fn build_cluster_agent_loop(
     // Stash the memory executor so the gateway can attach an approval gate
     // post-construction (P2: agent memory_store/forget require interactive
     // approval, never bypassed by YOLO/auto).
-    if let Some(ref exec) = tool_config.memory_executor {
-        agent_loop.set_memory_executor(exec.clone());
+    #[cfg(feature = "memory")]
+    {
+        if let Some(ref exec) = tool_config.memory_executor {
+            agent_loop.set_memory_executor(exec.clone());
+        }
     }
 
     // 6b. Attach a dedicated SessionStore so cluster peer_chat can persist and

@@ -128,6 +128,7 @@ enum Commands {
         action: commands::mcp::McpAction,
     },
     /// Manage security settings
+    #[cfg(feature = "security")]
     Security {
         #[command(subcommand)]
         action: commands::security::SecurityAction,
@@ -149,16 +150,19 @@ enum Commands {
         action: commands::skills::SkillsAction,
     },
     /// Manage self-learning module
+    #[cfg(feature = "forge")]
     Forge {
         #[command(subcommand)]
         action: commands::forge::ForgeAction,
     },
     /// Manage DAG workflows
+    #[cfg(feature = "workflow")]
     Workflow {
         #[command(subcommand)]
         action: commands::workflow::WorkflowAction,
     },
     /// Manage virus scanner
+    #[cfg(feature = "security")]
     Scanner {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
@@ -170,6 +174,7 @@ enum Commands {
         action: commands::voice::VoiceAction,
     },
     /// Manage enhanced memory
+    #[cfg(feature = "memory")]
     Memory {
         #[command(subcommand)]
         action: commands::memory::MemoryAction,
@@ -632,6 +637,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::mcp::run(action, cli.local)?;
         }
+        #[cfg(feature = "security")]
         Commands::Security { action } => {
             common::ensure_default_logger();
             commands::security::run(action, cli.local).await?;
@@ -649,14 +655,17 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::skills::run(action, cli.local)?;
         }
+        #[cfg(feature = "forge")]
         Commands::Forge { action } => {
             common::ensure_default_logger();
             commands::forge::run(action, cli.local)?;
         }
+        #[cfg(feature = "workflow")]
         Commands::Workflow { action } => {
             common::ensure_default_logger();
             commands::workflow::run(action, cli.local)?;
         }
+        #[cfg(feature = "security")]
         Commands::Scanner { action } => {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
@@ -666,6 +675,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::voice::run(action, cli.local)?;
         }
+        #[cfg(feature = "memory")]
         Commands::Memory { action } => {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;

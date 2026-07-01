@@ -70,9 +70,16 @@ pub struct AppState {
     /// Data store for usage statistics queries.
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Memory manager for runtime vector store control.
+    #[cfg(feature = "memory")]
     pub memory_manager: Option<Arc<nemesis_memory::manager::MemoryManager>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)]
+    pub memory_manager: Option<()>,
     /// Forge self-learning instance for runtime start/stop control.
+    #[cfg(feature = "forge")]
     pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    #[cfg(not(feature = "forge"))]
+    pub forge: Option<()>,
     /// Agent loop for runtime model/provider switching.
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     pub agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
@@ -86,14 +93,26 @@ pub struct AppState {
     /// Cluster log directory for JSONL log reader.
     pub cluster_log_dir: Option<String>,
     /// Workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    pub workflow_engine: Option<()>,
     /// Per-workflow chat password store for the standalone
     /// `/workflow/chat/<index>` page. Lets a workflow be shared with
     /// collaborators (URL + password) without exposing the dashboard token.
+    #[cfg(feature = "workflow")]
     pub chat_secret_store: Arc<nemesis_workflow::chat_secrets::ChatSecretStore>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    pub chat_secret_store: Arc<()>,
     /// Per-IP rate limiter for webhook endpoints (1c-E5). Keyed by client
     /// IP; tracks request timestamps inside a sliding 1-minute window.
+    #[cfg(feature = "workflow")]
     pub webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    pub webhook_rate_limiter: Arc<()>,
     /// Internal command sender (gateway → web handler bridge).
     pub internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
 }

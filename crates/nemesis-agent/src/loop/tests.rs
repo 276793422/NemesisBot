@@ -4272,6 +4272,7 @@ fn test_truncate_tool_pairs_trailing_asst_clears_calls() {
 // =========================================================================
 
 /// Helper: create a Forge instance in a temp directory.
+#[cfg(feature = "forge")]
 fn create_test_forge() -> (Arc<nemesis_forge::forge::Forge>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let config = nemesis_forge::config::ForgeConfig::default();
@@ -4279,6 +4280,7 @@ fn create_test_forge() -> (Arc<nemesis_forge::forge::Forge>, tempfile::TempDir) 
     (Arc::new(forge), dir)
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_records_successful_tool_experience() {
     let (forge, _dir) = create_test_forge();
@@ -4328,6 +4330,7 @@ async fn test_forge_records_successful_tool_experience() {
     assert!(!exp.id.is_empty());
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_records_tool_error_experience() {
     let (forge, _dir) = create_test_forge();

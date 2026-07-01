@@ -8,6 +8,7 @@ pub mod loader;
 pub mod lint;
 pub mod quality;
 pub mod registry;
+#[cfg(feature = "security")]
 pub mod signer;
 pub mod security_check;
 pub mod installer;

@@ -819,6 +819,7 @@ use super::*;
     // Forge handler tests
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_status() {
         let handler = forge::ForgeHandler::new();
@@ -832,6 +833,7 @@ use super::*;
         assert_eq!(result["artifact_count"], 0);
     }
 
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_config_save() {
         let handler = forge::ForgeHandler::new();
@@ -849,6 +851,7 @@ use super::*;
         assert!(result["enabled"].as_bool().unwrap());
     }
 
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_artifacts_empty() {
         let handler = forge::ForgeHandler::new();
@@ -860,6 +863,7 @@ use super::*;
         assert!(result["artifacts"].as_array().unwrap().is_empty());
     }
 
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_artifacts_with_data() {
         let handler = forge::ForgeHandler::new();
@@ -1788,6 +1792,7 @@ use super::*;
     }
 
     // --- Forge: reflect (stub) ---
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_reflect_stub() {
         let handler = forge::ForgeHandler::new();
@@ -2100,6 +2105,7 @@ address = "192.168.1.11:5000"
     }
 
     // --- Forge: config.save missing enabled field ---
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_config_save_missing_enabled() {
         let handler = forge::ForgeHandler::new();
@@ -2112,6 +2118,7 @@ address = "192.168.1.11:5000"
         assert!(result.unwrap_err().contains("missing or invalid"));
     }
 
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_config_save_non_boolean_enabled() {
         let handler = forge::ForgeHandler::new();
@@ -3005,6 +3012,7 @@ address = "192.168.1.11:5000"
     }
 
     // --- Forge: status with forge dir containing subdirs ---
+    #[cfg(feature = "forge")]
     #[tokio::test]
     async fn test_forge_status_with_artifacts() {
         let handler = forge::ForgeHandler::new();

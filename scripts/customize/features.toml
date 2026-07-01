@@ -188,6 +188,48 @@ desc = "P2P 集群编排（`nemesisbot cluster` + 集群 Dashboard + cluster_rpc
 category = "subsystems"
 default = true
 
+# NOTE: `forge` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/forge + nemesis-web/forge）。
+# 这是 Class C 内核裁剪——动 nemesis-agent 内核。关闭后自学习整包不编译。
+[[feature]]
+id = "forge"
+label = "自学习（Forge）"
+desc = "Read→Execute→Reflect→Write 自学习框架（`nemesisbot forge` + forge 工具）。默认 config 关闭但模块仍编译；裁掉后整包不编译"
+category = "subsystems"
+default = true
+
+# NOTE: `memory` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/memory + nemesis-web/memory）。
+# Class C 内核裁剪。对话记忆（agent 内部 ConversationMemory）独立于本 crate，裁掉不会失忆；
+# 关闭后强化记忆/向量存储/ONNX 嵌入整包不编译，memory_search/store/forget/list 工具、
+# `nemesisbot memory` 命令、Memory Dashboard 随之不可用。
+[[feature]]
+id = "memory"
+label = "强化记忆（向量存储）"
+desc = "增强记忆/向量存储/ONNX 嵌入（`nemesisbot memory` + memory 工具 + Memory Dashboard）。对话记忆独立，裁掉不会失忆；裁后整包不编译"
+category = "subsystems"
+default = true
+
+# NOTE: `workflow` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/workflow + nemesis-web/workflow）。
+# Class C 内核裁剪。关闭后 DAG 工作流引擎整包不编译；workflow_run 工具、`nemesisbot workflow` 命令、
+# Workflow Dashboard、/workflow/chat 独立聊天页、message/event 触发器随之不可用。
+[[feature]]
+id = "workflow"
+label = "DAG 工作流"
+desc = "DAG 工作流引擎（`nemesisbot workflow` + workflow_run 工具 + Workflow Dashboard + /workflow/chat + 触发器）。IoT/无工作流场景建议关闭；裁后整包不编译"
+category = "subsystems"
+default = true
+
+# NOTE: `security` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/security + nemesis-web/security + nemesis-security/security + nemesis-skills/security）。
+# Class C 内核裁剪。关闭后整个安全中间件（8 层 pipeline：注入/命令/ABAC/凭据/DLP/SSRF/病毒扫描/审计链）
+# + 审批 + guardian LLM judge + ClamAV scanner + skill 签名（signer）整包不编译，**nemesis-security crate 完全排除**（cargo tree = 0）。
+# **警告**：裁掉后 Bot 无安全防护（无工具调用拦截、无审批、无病毒扫描、无 skill 签名）——仅适合可信隔离环境/IoT。
+# scanner 子 feature（security 开 + scanner 关）当前未拆分，scanner 与 security 绑定（未来可增强）。
+[[feature]]
+id = "security"
+label = "安全中间件 + 病毒扫描"
+desc = "8 层安全 pipeline + ABAC + 审批弹窗 + guardian LLM judge + ClamAV scanner + skill 签名（`nemesisbot security`/`scanner` + Security/Scanner Dashboard）。裁后无安全防护且 nemesis-security 整包不编译，仅适合可信/IoT"
+category = "subsystems"
+default = true
+
 # ── Build profile (cargo profile, not a feature) ───────────────────────────
 
 [[feature]]

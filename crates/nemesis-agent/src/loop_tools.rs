@@ -2099,10 +2099,12 @@ impl Tool for SpawnTool {
 ///
 /// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor` for the
 /// actual search. If no memory manager is configured, returns an error.
+#[cfg(feature = "memory")]
 pub struct MemorySearchTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
 }
 
+#[cfg(feature = "memory")]
 impl MemorySearchTool {
     /// Create a new memory search tool backed by the given executor.
     pub fn new(executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>) -> Self {
@@ -2110,6 +2112,7 @@ impl MemorySearchTool {
     }
 }
 
+#[cfg(feature = "memory")]
 #[async_trait]
 impl Tool for MemorySearchTool {
     fn description(&self) -> String {
@@ -2141,10 +2144,12 @@ impl Tool for MemorySearchTool {
 /// Memory store tool for storing information in long-term memory.
 ///
 /// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+#[cfg(feature = "memory")]
 pub struct MemoryStoreTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
 }
 
+#[cfg(feature = "memory")]
 impl MemoryStoreTool {
     /// Create a new memory store tool backed by the given executor.
     pub fn new(executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>) -> Self {
@@ -2152,6 +2157,7 @@ impl MemoryStoreTool {
     }
 }
 
+#[cfg(feature = "memory")]
 #[async_trait]
 impl Tool for MemoryStoreTool {
     fn description(&self) -> String {
@@ -2183,10 +2189,12 @@ impl Tool for MemoryStoreTool {
 /// Memory forget tool for removing information from long-term memory.
 ///
 /// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+#[cfg(feature = "memory")]
 pub struct MemoryForgetTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
 }
 
+#[cfg(feature = "memory")]
 impl MemoryForgetTool {
     /// Create a new memory forget tool backed by the given executor.
     pub fn new(executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>) -> Self {
@@ -2194,6 +2202,7 @@ impl MemoryForgetTool {
     }
 }
 
+#[cfg(feature = "memory")]
 #[async_trait]
 impl Tool for MemoryForgetTool {
     fn description(&self) -> String {
@@ -2225,10 +2234,12 @@ impl Tool for MemoryForgetTool {
 /// Memory list tool for listing stored memories.
 ///
 /// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+#[cfg(feature = "memory")]
 pub struct MemoryListTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
 }
 
+#[cfg(feature = "memory")]
 impl MemoryListTool {
     /// Create a new memory list tool backed by the given executor.
     pub fn new(executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>) -> Self {
@@ -2236,6 +2247,7 @@ impl MemoryListTool {
     }
 }
 
+#[cfg(feature = "memory")]
 #[async_trait]
 impl Tool for MemoryListTool {
     fn description(&self) -> String {
@@ -2535,9 +2547,16 @@ impl Tool for InstallSkillTool {
 /// Shareable slot holding an optional approval manager, filled in later by the
 /// gateway (after the agent loop is built). Lets `skill_manage` request
 /// interactive approval for writes when `skills.manage_approval` is enabled.
+#[cfg(feature = "security")]
 pub type ApprovalManagerSlot =
     Arc<parking_lot::RwLock<Option<Arc<dyn nemesis_security::auditor::ApprovalManager>>>>;
+#[cfg(not(feature = "security"))]
+/// Placeholder when the security feature is off — `skill_manage` auto-allows
+/// writes (no approval middleware). All `Option<ApprovalManagerSlot>` fields
+/// stay `None`-compatible via this `()` alias.
+pub type ApprovalManagerSlot = ();
 
+#[cfg_attr(not(feature = "security"), allow(dead_code))]
 pub struct SkillManageTool {
     workspace: String,
     /// Optional approval manager slot (filled later by the gateway). When
@@ -2574,43 +2593,52 @@ impl SkillManageTool {
         target: &str,
         reason: &str,
     ) -> Result<(), String> {
-        if !self.require_approval {
+        #[cfg(not(feature = "security"))]
+        {
+            // Security feature trimmed — no approval middleware; auto-allow skill writes.
+            let _ = (operation, target, reason);
             return Ok(());
         }
-        let slot = match &self.approval_manager {
-            Some(s) => s.clone(),
-            None => {
-                return Err(
-                    "skill write requires approval but no approval manager is configured"
-                        .to_string(),
-                )
+        #[cfg(feature = "security")]
+        {
+            if !self.require_approval {
+                return Ok(());
             }
-        };
-        let am = {
-            let guard = slot.read();
-            match guard.as_ref() {
-                Some(m) if m.is_running() => m.clone(),
-                _ => {
+            let slot = match &self.approval_manager {
+                Some(s) => s.clone(),
+                None => {
                     return Err(
-                        "skill write requires approval but no approval manager is running"
+                        "skill write requires approval but no approval manager is configured"
                             .to_string(),
                     )
                 }
+            };
+            let am = {
+                let guard = slot.read();
+                match guard.as_ref() {
+                    Some(m) if m.is_running() => m.clone(),
+                    _ => {
+                        return Err(
+                            "skill write requires approval but no approval manager is running"
+                                .to_string(),
+                        )
+                    }
+                }
+            };
+            let req_id = format!("skill_manage:{}:{}", operation, target);
+            let op = format!("skill_manage.{}", operation);
+            let target = target.to_string();
+            let reason = reason.to_string();
+            match tokio::task::spawn_blocking(move || {
+                am.request_approval_sync(&req_id, &op, &target, "MEDIUM", &reason, 30)
+            })
+            .await
+            {
+                Ok(Ok(true)) => Ok(()),
+                Ok(Ok(false)) => Err(format!("skill write '{}' denied by user", operation)),
+                Ok(Err(e)) => Err(format!("approval request failed: {}", e)),
+                Err(e) => Err(format!("approval task failed: {}", e)),
             }
-        };
-        let req_id = format!("skill_manage:{}:{}", operation, target);
-        let op = format!("skill_manage.{}", operation);
-        let target = target.to_string();
-        let reason = reason.to_string();
-        match tokio::task::spawn_blocking(move || {
-            am.request_approval_sync(&req_id, &op, &target, "MEDIUM", &reason, 30)
-        })
-        .await
-        {
-            Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err(format!("skill write '{}' denied by user", operation)),
-            Ok(Err(e)) => Err(format!("approval request failed: {}", e)),
-            Err(e) => Err(format!("approval task failed: {}", e)),
         }
     }
 
@@ -3192,6 +3220,7 @@ pub fn setup_cluster_rpc_channel(
 
 /// Bridge tool that wraps a ForgeToolExecutor tool call into the agent's Tool trait.
 /// Each instance wraps a single forge tool name (e.g. "forge_reflect").
+#[cfg(feature = "forge")]
 struct ForgeBridgeTool {
     name: String,
     description: String,
@@ -3199,6 +3228,7 @@ struct ForgeBridgeTool {
     executor: Arc<nemesis_forge::forge_tools::ForgeToolExecutor>,
 }
 
+#[cfg(feature = "forge")]
 impl ForgeBridgeTool {
     fn new(
         name: String,
@@ -3210,6 +3240,7 @@ impl ForgeBridgeTool {
     }
 }
 
+#[cfg(feature = "forge")]
 #[async_trait]
 impl Tool for ForgeBridgeTool {
     fn description(&self) -> String {
@@ -3884,16 +3915,30 @@ pub struct SharedToolConfig {
     /// Cron service for scheduling jobs.
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
+    #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
+    #[cfg(not(feature = "forge"))]
+    pub forge_executor: Option<()>,
     /// Forge instance for experience collection in AgentLoop.
+    #[cfg(feature = "forge")]
     pub forge: Option<Arc<nemesis_forge::forge::Forge>>,
+    #[cfg(not(feature = "forge"))]
+    pub forge: Option<()>,
     /// Memory tool executor for memory_search, memory_store, etc.
+    #[cfg(feature = "memory")]
     pub memory_executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)]
+    pub memory_executor: Option<()>,
     /// Snapshot of registered MCP tool names and descriptions for McpListTool.
     pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<(String, String)>>>>,
     /// Workflow engine reference for the `workflow_run` agent tool.
     /// `None` means workflows aren't wired in (tool stays unregistered).
+    #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
+    #[cfg(not(feature = "workflow"))]
+    #[allow(dead_code)]
+    pub workflow_engine: Option<()>,
     /// Optional approval manager slot for skill_manage write approval.
     pub approval_manager: Option<ApprovalManagerSlot>,
     /// Whether skill_manage writes require interactive approval.
@@ -3984,22 +4029,25 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Memory tools.
-    tools.insert(
-        "memory_search".to_string(),
-        Box::new(MemorySearchTool::new(config.memory_executor.clone())),
-    );
-    tools.insert(
-        "memory_store".to_string(),
-        Box::new(MemoryStoreTool::new(config.memory_executor.clone())),
-    );
-    tools.insert(
-        "memory_forget".to_string(),
-        Box::new(MemoryForgetTool::new(config.memory_executor.clone())),
-    );
-    tools.insert(
-        "memory_list".to_string(),
-        Box::new(MemoryListTool::new(config.memory_executor.clone())),
-    );
+    #[cfg(feature = "memory")]
+    {
+        tools.insert(
+            "memory_search".to_string(),
+            Box::new(MemorySearchTool::new(config.memory_executor.clone())),
+        );
+        tools.insert(
+            "memory_store".to_string(),
+            Box::new(MemoryStoreTool::new(config.memory_executor.clone())),
+        );
+        tools.insert(
+            "memory_forget".to_string(),
+            Box::new(MemoryForgetTool::new(config.memory_executor.clone())),
+        );
+        tools.insert(
+            "memory_list".to_string(),
+            Box::new(MemoryListTool::new(config.memory_executor.clone())),
+        );
+    }
 
     // Skills tools: use real loader when available, otherwise use stub.
     tools.insert(
@@ -4076,19 +4124,22 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
 
     // Forge tools (mirrors Go's forgeTools registration in bot_service.go).
     // Registered when forge executor is provided (i.e. forge.enabled = true).
-    if let Some(ref forge_executor) = config.forge_executor {
-        let forge_defs = nemesis_forge::forge_tools::forge_tool_definitions();
-        let forge_count = forge_defs.len();
-        for def in &forge_defs {
-            let bridge = ForgeBridgeTool::new(
-                def.name.clone(),
-                def.description.clone(),
-                def.parameters.clone(),
-                Arc::clone(forge_executor),
-            );
-            tools.insert(def.name.clone(), Box::new(bridge));
+    #[cfg(feature = "forge")]
+    {
+        if let Some(ref forge_executor) = config.forge_executor {
+            let forge_defs = nemesis_forge::forge_tools::forge_tool_definitions();
+            let forge_count = forge_defs.len();
+            for def in &forge_defs {
+                let bridge = ForgeBridgeTool::new(
+                    def.name.clone(),
+                    def.description.clone(),
+                    def.parameters.clone(),
+                    Arc::clone(forge_executor),
+                );
+                tools.insert(def.name.clone(), Box::new(bridge));
+            }
+            info!("[AgentTools] Registered {} forge tools", forge_count);
         }
-        info!("[AgentTools] Registered {} forge tools", forge_count);
     }
 
     // MCP discovery and listing tools.
@@ -4110,12 +4161,15 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Workflow tool — lets the agent trigger registered workflows.
-    if let Some(ref engine) = config.workflow_engine {
-        tools.insert(
-            "workflow_run".to_string(),
-            Box::new(WorkflowRunTool::new(engine.clone())),
-        );
-        info!("[AgentTools] Registered workflow_run tool");
+    #[cfg(feature = "workflow")]
+    {
+        if let Some(ref engine) = config.workflow_engine {
+            tools.insert(
+                "workflow_run".to_string(),
+                Box::new(WorkflowRunTool::new(engine.clone())),
+            );
+            info!("[AgentTools] Registered workflow_run tool");
+        }
     }
 
     info!(
@@ -4145,6 +4199,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
 /// `MAX_RECURSION_DEPTH`, the call is rejected without dispatching to the
 /// engine. This prevents runaway `workflow_run → agent → workflow_run`
 /// cycles from stack-allocating unbounded tokio tasks.
+#[cfg(feature = "workflow")]
 pub struct WorkflowRunTool {
     engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
     /// Depth attributed to the call this tool is about to make. Top-level
@@ -4155,6 +4210,7 @@ pub struct WorkflowRunTool {
     starting_depth: u32,
 }
 
+#[cfg(feature = "workflow")]
 impl WorkflowRunTool {
     pub fn new(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> Self {
         Self {
@@ -4177,6 +4233,7 @@ impl WorkflowRunTool {
     }
 }
 
+#[cfg(feature = "workflow")]
 #[async_trait]
 impl Tool for WorkflowRunTool {
     fn description(&self) -> String {

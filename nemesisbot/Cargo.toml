@@ -17,6 +17,7 @@ path = "src/main.rs"
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
+    "forge", "memory", "workflow", "security",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -28,6 +29,10 @@ heartbeat = ["dep:nemesis-heartbeat"]
 auth = ["dep:nemesis-auth"]
 voice = ["dep:nemesis-voice", "nemesis-web/voice"]
 cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
+forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
+memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
+workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]
+security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/security", "nemesis-web/security"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
@@ -51,16 +56,16 @@ channels-whatsapp = ["nemesis-channels/whatsapp"]
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-config = { workspace = true }
-nemesis-security = { workspace = true }
+nemesis-security = { workspace = true, optional = true }
 tokio-util = { version = "0.7", features = ["rt"] }
 nemesis-bus = { workspace = true }
 nemesis-agent = { workspace = true }
 nemesis-channels = { workspace = true }
 nemesis-providers = { workspace = true }
-nemesis-forge = { workspace = true }
+nemesis-forge = { workspace = true, optional = true }
 nemesis-skills = { workspace = true }
-nemesis-workflow = { workspace = true }
-nemesis-memory = { workspace = true }
+nemesis-workflow = { workspace = true, optional = true }
+nemesis-memory = { workspace = true, optional = true }
 nemesis-mcp = { workspace = true }
 nemesis-observer = { workspace = true }
 nemesis-tools = { workspace = true }

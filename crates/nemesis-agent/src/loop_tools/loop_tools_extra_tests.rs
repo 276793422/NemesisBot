@@ -428,6 +428,7 @@ fn test_extract_name_arg_invalid_json() {
 // ForgeBridgeTool: drive execute() through register_shared_tools result
 // ===========================================================================
 
+#[cfg(feature = "forge")]
 fn make_forge_executor() -> Arc<nemesis_forge::forge_tools::ForgeToolExecutor> {
     let tmp = tempfile::tempdir().unwrap();
     let forge = nemesis_forge::forge::Forge::new(
@@ -440,6 +441,7 @@ fn make_forge_executor() -> Arc<nemesis_forge::forge_tools::ForgeToolExecutor> {
     Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(Arc::new(forge)))
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_bridge_tool_execute_list_success() {
     let executor = make_forge_executor();
@@ -453,6 +455,7 @@ async fn test_forge_bridge_tool_execute_list_success() {
     assert!(result.is_ok(), "expected Ok, got: {:?}", result);
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_bridge_tool_execute_unknown_name_returns_err() {
     let executor = make_forge_executor();
@@ -469,6 +472,7 @@ async fn test_forge_bridge_tool_execute_unknown_name_returns_err() {
     assert!(result.is_ok());
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_bridge_tool_description_and_parameters() {
     let executor = make_forge_executor();
@@ -488,6 +492,7 @@ async fn test_forge_bridge_tool_description_and_parameters() {
     }
 }
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_bridge_tool_create_validation_failure() {
     // Missing required fields should produce an Err from the executor.
@@ -524,6 +529,7 @@ fn test_shared_tool_config_debug_with_web() {
     assert!(s.contains("WebSearchConfig"));
 }
 
+#[cfg(feature = "memory")]
 #[test]
 fn test_shared_tool_config_debug_with_skills_and_memory() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1511,6 +1517,7 @@ fn test_cluster_rpc_params_empty_local_node_id_omits_note() {
 // ForgeToolExecutor: unknown tool returns Err
 // ===========================================================================
 
+#[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_bridge_unknown_tool_name_returns_err() {
     // Manually wire a ForgeBridgeTool for an unknown name via register_shared_tools
