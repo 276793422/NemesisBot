@@ -200,7 +200,15 @@ fn audit_chain_path(workspace: &str) -> PathBuf {
 }
 
 fn local_node_id(ctx: &RequestContext) -> Option<String> {
-    ctx.state.cluster.as_ref().map(|c| c.node_id().to_string())
+    #[cfg(feature = "cluster")]
+    {
+        ctx.state.cluster.as_ref().map(|c| c.node_id().to_string())
+    }
+    #[cfg(not(feature = "cluster"))]
+    {
+        let _ = ctx;
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

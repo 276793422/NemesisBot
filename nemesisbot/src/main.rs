@@ -7,8 +7,11 @@ mod common;
 mod embedded;
 mod adapters;
 mod agent_factory;
+#[cfg(feature = "cluster")]
 mod cluster_agent;
+#[cfg(feature = "cluster")]
 mod cluster_service;
+#[cfg(feature = "cluster")]
 mod cluster_request_logger_observer;
 
 use clap::{Parser, Subcommand};
@@ -33,6 +36,7 @@ const DEFAULT_IDENTITY: &str = include_str!("../default/IDENTITY.md");
 const DEFAULT_SOUL: &str = include_str!("../default/SOUL.md");
 const DEFAULT_USER: &str = include_str!("../default/USER.md");
 const DEFAULT_IDENTITY_CLUSTER: &str = include_str!("../default/IDENTITY_Cluster.md");
+#[cfg(feature = "cluster")]
 const CLUSTER_IDENTITY_TEMPLATE: &str = include_str!("../config/IDENTITY.cluster.template.md");
 
 #[derive(Parser)]
@@ -98,6 +102,7 @@ enum Commands {
         action: commands::channel::ChannelAction,
     },
     /// Manage bot cluster
+    #[cfg(feature = "cluster")]
     Cluster {
         #[command(subcommand)]
         action: commands::cluster::ClusterAction,
@@ -606,6 +611,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::channel::run(action, cli.local)?;
         }
+        #[cfg(feature = "cluster")]
         Commands::Cluster { action } => {
             common::ensure_default_logger();
             commands::cluster::run(action, cli.local).await?;

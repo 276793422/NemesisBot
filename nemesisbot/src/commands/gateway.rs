@@ -267,16 +267,19 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
 ///
 /// Enables Forge to share reflections with and receive reflections from
 /// cluster peers. Mirrors Go's `forge.NewClusterForgeBridge(cluster)`.
+#[cfg(feature = "cluster")]
 struct ClusterForgeBridgeAdapter {
     node_id: String,
 }
 
+#[cfg(feature = "cluster")]
 impl ClusterForgeBridgeAdapter {
     fn new(node_id: String) -> Self {
         Self { node_id }
     }
 }
 
+#[cfg(feature = "cluster")]
 #[async_trait::async_trait]
 impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     async fn share_reflection(
@@ -623,6 +626,7 @@ fn print_gateway_banner(
 mod tests;
 
 /// Parse "host:port" string into (host, port).
+#[cfg(any(feature = "cluster", test))]
 fn parse_host_port(addr: &str) -> (String, u16) {
     if let Some(idx) = addr.rfind(':') {
         let host = &addr[..idx];
@@ -678,11 +682,13 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 ///
 // Bridges the cluster's TaskResultStore to PeerChatHandler's
 /// TaskResultPersister interface.
+#[cfg(feature = "cluster")]
 struct ClusterResultPersisterAdapter {
     result_store: Arc<nemesis_cluster::task_result_store::TaskResultStore>,
     node_id: String,
 }
 
+#[cfg(feature = "cluster")]
 impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister for ClusterResultPersisterAdapter {
     fn set_running(&self, task_id: &str, _source_node: &str) {
         // Mark as running with a placeholder result
@@ -722,10 +728,12 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister for ClusterRes
 ///
 /// Translates Cluster's BusInboundMessage to nemesis_types::InboundMessage
 /// and publishes on the real message bus.
+#[cfg(feature = "cluster")]
 struct BusToClusterAdapter {
     bus: Arc<nemesis_bus::MessageBus>,
 }
 
+#[cfg(feature = "cluster")]
 impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
     fn publish_inbound(&self, msg: nemesis_cluster::cluster::BusInboundMessage) {
         let inbound = nemesis_types::channel::InboundMessage {
@@ -1291,11 +1299,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Mirrors Go's bot_service.go initComponents → startCluster.
     // The Cluster object and adapter are always created for dynamic start/stop support.
     // Network components (RPC server, discovery) only start when both config flags are enabled.
+    #[cfg(feature = "cluster")]
     let cluster_master_enabled = cfg.cluster.as_ref().map(|c| c.enabled).unwrap_or(false);
+    #[cfg(feature = "cluster")]
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
+    #[cfg(feature = "cluster")]
     let cluster_should_start = cluster_master_enabled && cluster_app_cfg.enabled;
 
     // Cluster RPC resources — filled inside the cluster block below, consumed by SharedResources.
+    #[allow(unused_mut)] // mut only needed when feature="cluster" assigns these in the init block
     let mut cluster_rpc_call_fn: Option<
         Arc<
             dyn Fn(&str, &str, serde_json::Value)
@@ -1309,11 +1321,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 + Sync,
         >,
     > = None;
+    #[allow(unused_mut)]
     let mut cluster_rpc_config: Option<nemesis_agent::ClusterRpcConfig> = None;
+    #[allow(unused_mut)]
     let mut cluster_peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>> = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
+    #[cfg(feature = "cluster")]
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
     // Cluster refs saved during init, used to create adapter after SharedResources is built.
+    #[cfg(feature = "cluster")]
     #[allow(unused_assignments)] // always overwritten by the cluster init block below
     let mut cluster_adapter_refs: Option<(
         Arc<nemesis_cluster::cluster::Cluster>,
@@ -1322,6 +1338,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     )> = None;
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
+    #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份
         let cluster_config = nemesis_cluster::types::ClusterConfig {
@@ -2136,35 +2153,41 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // --- Inject tool capabilities into cluster for discovery broadcast ---
-    if let Some((ref cluster, _, _)) = cluster_adapter_refs {
-        let tool_names = agent_loop.tool_names();
-        cluster.set_capabilities(tool_names);
-        info!(
-            "[Gateway] Cluster capabilities injected ({} tools)",
-            initial_tool_count
-        );
+    #[cfg(feature = "cluster")]
+    {
+        if let Some((ref cluster, _, _)) = cluster_adapter_refs {
+            let tool_names = agent_loop.tool_names();
+            cluster.set_capabilities(tool_names);
+            info!(
+                "[Gateway] Cluster capabilities injected ({} tools)",
+                initial_tool_count
+            );
+        }
     }
 
     // --- Create ClusterServiceAdapter (always, for dynamic start/stop from Dashboard) ---
     // The adapter manages: cluster.start(), RPC server start, discovery start,
     // task recovery from disk, cluster agent loop spawn, ClusterRpcTool enable.
-    if let Some((cluster, task_list, work_queue)) = cluster_adapter_refs.take() {
-        let adapter = Arc::new(crate::cluster_service::ClusterServiceAdapter::new(
-            cluster,
-            shared_resources.clone(),
-            tokio::runtime::Handle::current(),
-            home.clone(),
-            task_list,
-            work_queue,
-        ));
-        // Only perform first start when both config flags are enabled.
-        // Otherwise the adapter is created but idle — can be started from Dashboard.
-        if cluster_should_start {
-            if let Err(e) = adapter.first_start() {
-                warn!("[Gateway] Cluster adapter first start failed: {}", e);
+    #[cfg(feature = "cluster")]
+    {
+        if let Some((cluster, task_list, work_queue)) = cluster_adapter_refs.take() {
+            let adapter = Arc::new(crate::cluster_service::ClusterServiceAdapter::new(
+                cluster,
+                shared_resources.clone(),
+                tokio::runtime::Handle::current(),
+                home.clone(),
+                task_list,
+                work_queue,
+            ));
+            // Only perform first start when both config flags are enabled.
+            // Otherwise the adapter is created but idle — can be started from Dashboard.
+            if cluster_should_start {
+                if let Err(e) = adapter.first_start() {
+                    warn!("[Gateway] Cluster adapter first start failed: {}", e);
+                }
             }
+            cluster_adapter = Some(adapter);
         }
-        cluster_adapter = Some(adapter);
     }
 
     // Create shared reference for WebServer model switching
@@ -2228,31 +2251,34 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Inject Cluster into web server for dashboard data queries
-    if let Some(ref adapter) = cluster_adapter {
-        web_server.set_cluster(adapter.cluster().clone());
-        info!("[Gateway] Cluster instance injected into web server");
+    #[cfg(feature = "cluster")]
+    {
+        if let Some(ref adapter) = cluster_adapter {
+            web_server.set_cluster(adapter.cluster().clone());
+            info!("[Gateway] Cluster instance injected into web server");
 
-        // Initialize cluster log writer for structured JSONL logging
-        let cluster_log_dir = home.join("workspace/logs/cluster_logs");
-        nemesis_cluster::cluster_log::init_cluster_log(&cluster_log_dir);
+            // Initialize cluster log writer for structured JSONL logging
+            let cluster_log_dir = home.join("workspace/logs/cluster_logs");
+            nemesis_cluster::cluster_log::init_cluster_log(&cluster_log_dir);
 
-        // Inject cluster lifecycle service for start/stop control
-        web_server.set_cluster_service(adapter.clone() as Arc<dyn nemesis_services::bot_service::LifecycleService>);
-        // Inject cluster log directory for JSONL log reader
-        web_server.set_cluster_log_dir(cluster_log_dir.to_string_lossy().to_string());
-        info!("[Gateway] Cluster service and log dir injected into web server");
+            // Inject cluster lifecycle service for start/stop control
+            web_server.set_cluster_service(adapter.clone() as Arc<dyn nemesis_services::bot_service::LifecycleService>);
+            // Inject cluster log directory for JSONL log reader
+            web_server.set_cluster_log_dir(cluster_log_dir.to_string_lossy().to_string());
+            info!("[Gateway] Cluster service and log dir injected into web server");
 
-        // Phase 4: Bridge cluster log events → SSE EventHub for real-time Dashboard updates.
-        // Every cluster log entry (task_submitted, rpc_call, node_online, etc.) is forwarded
-        // to connected SSE clients via the EVENT_CLUSTER_EVENT channel.
-        let event_hub = web_server.event_hub().clone();
-        nemesis_cluster::cluster_log::set_cluster_log_hook(Arc::new(move |event, data| {
-            event_hub.publish(nemesis_web::events::EVENT_CLUSTER_EVENT, serde_json::json!({
-                "event": event,
-                "data": data,
+            // Phase 4: Bridge cluster log events → SSE EventHub for real-time Dashboard updates.
+            // Every cluster log entry (task_submitted, rpc_call, node_online, etc.) is forwarded
+            // to connected SSE clients via the EVENT_CLUSTER_EVENT channel.
+            let event_hub = web_server.event_hub().clone();
+            nemesis_cluster::cluster_log::set_cluster_log_hook(Arc::new(move |event, data| {
+                event_hub.publish(nemesis_web::events::EVENT_CLUSTER_EVENT, serde_json::json!({
+                    "event": event,
+                    "data": data,
+                }));
             }));
-        }));
-        info!("[Gateway] Cluster log → SSE EventHub bridge connected");
+            info!("[Gateway] Cluster log → SSE EventHub bridge connected");
+        }
     }
 
     // Inject AgentLoop ref into web server for runtime model switching
@@ -2898,6 +2924,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let mut tray = PlatformTray::new();
 
         // Set cluster callbacks — tray controls both config files + runtime
+        #[cfg(feature = "cluster")]
+        {
         if let Some(ref ca) = cluster_adapter {
             let home_for_start = home.clone();
             let ca_start = ca.clone();
@@ -2965,6 +2993,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     }
                 }
             }));
+        }
         }
 
         let start_adapter = Arc::clone(&agent_adapter);
@@ -3052,8 +3081,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     //dispatch_handle.abort();
 
     // Stop cluster (adapter handles: agent abort, RPC server, discovery, recovery/sync loops)
-    if let Some(adapter) = cluster_adapter.take() {
-        let _ = adapter.stop();
+    #[cfg(feature = "cluster")]
+    {
+        if let Some(adapter) = cluster_adapter.take() {
+            let _ = adapter.stop();
+        }
     }
 
     // Clean up gateway state file

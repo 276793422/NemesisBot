@@ -927,6 +927,7 @@ fn test_forge_provider_bridge_construction() {
 // ClusterForgeBridgeAdapter tests
 // -------------------------------------------------------------------------
 
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_share_reflection() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -935,6 +936,7 @@ async fn test_cluster_forge_bridge_adapter_share_reflection() {
     assert_eq!(count, 0);
 }
 
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -943,6 +945,7 @@ async fn test_cluster_forge_bridge_adapter_get_remote_reflections() {
     assert!(reflections.is_empty());
 }
 
+#[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cluster_forge_bridge_adapter_get_online_peers() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());
@@ -951,6 +954,7 @@ async fn test_cluster_forge_bridge_adapter_get_online_peers() {
     assert!(peers.is_empty());
 }
 
+#[cfg(feature = "cluster")]
 #[test]
 fn test_cluster_forge_bridge_adapter_local_node_id() {
     let bridge = ClusterForgeBridgeAdapter::new("test-node-id".to_string());
@@ -958,6 +962,7 @@ fn test_cluster_forge_bridge_adapter_local_node_id() {
     assert_eq!(bridge_ref.local_node_id(), "test-node-id");
 }
 
+#[cfg(feature = "cluster")]
 #[test]
 fn test_cluster_forge_bridge_adapter_is_enabled() {
     let bridge = ClusterForgeBridgeAdapter::new("node-1".to_string());

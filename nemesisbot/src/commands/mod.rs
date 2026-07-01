@@ -1,6 +1,7 @@
 //! CLI command modules.
 
 pub mod gateway;
+#[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod model;
 pub mod forge;

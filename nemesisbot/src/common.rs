@@ -182,6 +182,7 @@ pub fn status_icon(ok: bool) -> &'static str {
 }
 
 /// Constant-time comparison to prevent timing attacks.
+#[cfg(any(feature = "cluster", test))]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;

@@ -177,8 +177,16 @@ desc = "本地 STT/TTS/VAD（`nemesisbot voice` 命令 + Web 语音端点）"
 category = "subsystems"
 default = true
 
-# NOTE: `cluster` 暂不可裁剪（编进 nemesis-web 结构体字段 + agent_factory），
-# 故不在此清单中。详见 docs/PLAN 功能裁剪文档。
+# NOTE: `cluster` 现已可裁剪（feature 穿透 nemesisbot → nemesis-web/cluster）。
+# 关闭后 nemesis-cluster 整包不参与编译；集群 Dashboard 的 WSAPI 命令与 `cluster_rpc`
+# 工具随之不可用。默认开启（=完整构建行为不变）。
+
+[[feature]]
+id = "cluster"
+label = "集群（RPC/发现/续行）"
+desc = "P2P 集群编排（`nemesisbot cluster` + 集群 Dashboard + cluster_rpc 工具）。单机/IoT 建议关闭"
+category = "subsystems"
+default = true
 
 # ── Build profile (cargo profile, not a feature) ───────────────────────────
 

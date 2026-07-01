@@ -77,7 +77,10 @@ pub struct AppState {
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     pub agent_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     /// Cluster runtime instance for dashboard data queries.
+    #[cfg(feature = "cluster")]
     pub cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    #[cfg(not(feature = "cluster"))]
+    pub cluster: Option<()>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.

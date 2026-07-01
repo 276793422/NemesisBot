@@ -16,7 +16,7 @@ path = "src/main.rs"
 [features]
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
-    "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice",
+    "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -27,8 +27,7 @@ health = ["dep:nemesis-health"]
 heartbeat = ["dep:nemesis-heartbeat"]
 auth = ["dep:nemesis-auth"]
 voice = ["dep:nemesis-voice", "nemesis-web/voice"]
-# NOTE: cluster is NOT yet trimmable (woven into nemesis-web struct fields +
-# agent_factory build_cluster_agent_loop). See docs/PLAN feature-trimming doc.
+cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
@@ -68,7 +67,7 @@ nemesis-tools = { workspace = true }
 nemesis-services = { workspace = true }
 nemesis-migrate = { workspace = true, optional = true }
 nemesis-auth = { workspace = true, optional = true }
-nemesis-cluster = { workspace = true }
+nemesis-cluster = { workspace = true, optional = true }
 nemesis-web = { workspace = true }
 nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }

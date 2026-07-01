@@ -1015,6 +1015,7 @@ use super::*;
     // Cluster handler tests
     // -----------------------------------------------------------------------
 
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_status_no_config() {
         let handler = cluster::ClusterHandler::new();
@@ -1025,6 +1026,7 @@ use super::*;
         assert!(!result["config_exists"].as_bool().unwrap());
     }
 
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_config_get_save() {
         let handler = cluster::ClusterHandler::new();
@@ -1042,6 +1044,7 @@ use super::*;
         assert_eq!(result["name"], "test-node");
     }
 
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_peers_no_file() {
         let handler = cluster::ClusterHandler::new();
@@ -1177,9 +1180,10 @@ use super::*;
     // No-workspace error tests
     // -----------------------------------------------------------------------
 
+    #[allow(unused_mut)] // `mut` only needed when feature="cluster" adds the push below
     #[tokio::test]
     async fn test_no_workspace_returns_error() {
-        let handlers: Vec<Box<dyn ModuleHandler>> = vec![
+        let mut handlers: Vec<Box<dyn ModuleHandler>> = vec![
             Box::new(models::ModelsHandler::new()),
             Box::new(channels::ChannelsHandler::new()),
             Box::new(config::ConfigHandler::new()),
@@ -1192,9 +1196,10 @@ use super::*;
             Box::new(security::SecurityHandler::new()),
             Box::new(forge::ForgeHandler::new()),
             Box::new(tasks::TasksHandler),
-            Box::new(cluster::ClusterHandler::new()),
             Box::new(logs::LogsHandler),
         ];
+        #[cfg(feature = "cluster")]
+        handlers.push(Box::new(cluster::ClusterHandler::new()));
 
         let ctx = make_ctx_no_workspace();
 
@@ -1225,6 +1230,7 @@ use super::*;
     // Unknown command tests
     // -----------------------------------------------------------------------
 
+    #[allow(unused_mut)] // `mut` only needed when feature="cluster" adds the push below
     #[tokio::test]
     async fn test_all_handlers_reject_unknown_cmd() {
         let dir = tempfile::tempdir().unwrap();
@@ -1232,7 +1238,7 @@ use super::*;
         ensure_config_dir(dir.path());
         let ctx = make_ctx(&dir);
 
-        let handlers: Vec<Box<dyn ModuleHandler>> = vec![
+        let mut handlers: Vec<Box<dyn ModuleHandler>> = vec![
             Box::new(system::SystemHandler),
             Box::new(config::ConfigHandler::new()),
             Box::new(models::ModelsHandler::new()),
@@ -1246,10 +1252,11 @@ use super::*;
             Box::new(security::SecurityHandler::new()),
             Box::new(forge::ForgeHandler::new()),
             Box::new(tasks::TasksHandler),
-            Box::new(cluster::ClusterHandler::new()),
             Box::new(logs::LogsHandler),
             Box::new(agent::AgentHandler),
         ];
+        #[cfg(feature = "cluster")]
+        handlers.push(Box::new(cluster::ClusterHandler::new()));
 
         for handler in &handlers {
             let result = handler.handle_cmd("__nonexistent_cmd__", None, &ctx).await;
@@ -1828,6 +1835,7 @@ use super::*;
     }
 
     // --- Cluster: peers with actual data ---
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_peers_with_data() {
         let handler = cluster::ClusterHandler::new();
@@ -3154,6 +3162,7 @@ address = "192.168.1.11:5000"
     }
 
     // --- Cluster: status with config ---
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_status_with_config() {
         let handler = cluster::ClusterHandler::new();
@@ -3171,6 +3180,7 @@ address = "192.168.1.11:5000"
     }
 
     // --- Cluster: config.get nonexistent returns empty ---
+    #[cfg(feature = "cluster")]
     #[tokio::test]
     async fn test_cluster_config_get_nonexistent() {
         let handler = cluster::ClusterHandler::new();

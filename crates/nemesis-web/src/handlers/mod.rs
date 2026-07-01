@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod channels;
+#[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod config;
 pub mod forge;
@@ -47,7 +48,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(security::SecurityHandler::new()));
     router.register(Arc::new(forge::ForgeHandler::new()));
     router.register(Arc::new(tasks::TasksHandler));
-    router.register(Arc::new(cluster::ClusterHandler::new()));
+    #[cfg(feature = "cluster")]
+    {
+        router.register(Arc::new(cluster::ClusterHandler::new()));
+    }
     router.register(Arc::new(logs::LogsHandler));
     router.register(Arc::new(agent::AgentHandler));
     #[cfg(feature = "voice")]
@@ -201,9 +205,9 @@ mod tests;
 
 // Previously-written extra/more coverage modules were never `mod`-declared, so
 // they silently did not compile or run. Wire them in here.
-#[cfg(test)]
+#[cfg(all(test, feature = "cluster"))]
 mod cluster_extra_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;
 #[cfg(test)]
 mod forge_extra_tests;

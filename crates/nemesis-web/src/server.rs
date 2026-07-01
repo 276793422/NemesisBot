@@ -128,7 +128,10 @@ pub struct WebServer {
     /// Shared with AgentLoopServiceAdapter — updated on each start/stop.
     agent_loop: Option<Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>>,
     /// Cluster runtime instance for dashboard data queries.
+    #[cfg(feature = "cluster")]
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    #[cfg(not(feature = "cluster"))]
+    cluster: Option<()>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -229,6 +232,7 @@ impl WebServer {
     }
 
     /// Set the cluster runtime instance for dashboard data queries.
+    #[cfg(feature = "cluster")]
     pub fn set_cluster(&mut self, cluster: Arc<nemesis_cluster::cluster::Cluster>) {
         self.cluster = Some(cluster);
     }

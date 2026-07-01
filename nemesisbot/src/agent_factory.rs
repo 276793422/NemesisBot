@@ -424,6 +424,7 @@ fn register_tools_and_mcp(
 ///   (writes LLM details to cluster_logs/{device_id}/{task_id}/)
 /// - Has cluster reference (for cluster_rpc tool to work)
 /// - System prompt loaded from `workspace/cluster/IDENTITY.md` + `SOUL.md`
+#[cfg(feature = "cluster")]
 pub fn build_cluster_agent_loop(
     shared: &Arc<SharedResources>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
@@ -692,6 +693,7 @@ pub fn build_cluster_agent_loop(
 /// Load cluster system prompt from `workspace/cluster/IDENTITY.md` + `SOUL.md`.
 ///
 /// Returns None if neither file exists (cluster agent runs without identity).
+#[cfg(feature = "cluster")]
 fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
     let cluster_dir = home.join("workspace").join("cluster");
     let mut parts = Vec::new();
