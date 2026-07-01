@@ -14,7 +14,7 @@ nemesis-skills = { workspace = true }
 nemesis-security = { workspace = true }
 nemesis-cron = { workspace = true }
 nemesis-services = { workspace = true }
-nemesis-voice = { workspace = true }
+nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-agent = { workspace = true }
@@ -41,6 +41,14 @@ tokio-util = { version = "0.7", features = ["rt"] }
 base64 = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+
+[features]
+# Optional subsystems (not in default — enabled via feature passthrough from
+# the `nemesisbot` binary so a trimmed build can drop them).
+voice = ["dep:nemesis-voice"]
+# NOTE: `cluster` is NOT yet trimmable — it is woven into nemesis-web's
+# WebServerConfig/AppState struct fields and nemesisbot's agent_factory
+# (build_cluster_agent_loop). Trimming it needs a dedicated refactor.
 
 [dev-dependencies]
 tempfile = "3"

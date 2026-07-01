@@ -533,6 +533,13 @@ pub fn print_results(results: &[TestResult]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // These two tests poke the shared global counters. Without serialization, a
+    // parallel `pass/fail/skip` increment races with `reset_counters()`+`get_counters()`
+    // and the reset assertion can see (1,1,1) instead of (0,0,0). Other tests still
+    // run in parallel; only these two are mutually exclusive.
+    static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn workspace_paths_are_consistent() {
@@ -589,12 +596,14 @@ mod tests {
 
     #[test]
     fn counters_reset_to_zero() {
+        let _g = COUNTER_TEST_LOCK.lock().unwrap();
         reset_counters();
         assert_eq!(get_counters(), (0, 0, 0));
     }
 
     #[test]
     fn pass_fail_skip_increment_counters() {
+        let _g = COUNTER_TEST_LOCK.lock().unwrap();
         reset_counters();
         let _ = pass("p1", "ok");
         let _ = fail("f1", "bad");

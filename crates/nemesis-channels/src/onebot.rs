@@ -93,7 +93,7 @@ pub struct OneBotChannel {
     base: BaseChannel,
     config: OneBotConfig,
     running: Arc<parking_lot::RwLock<bool>>,
-    dedup: parking_lot::RwLock<DedupRing>,
+    dedup: std::sync::Arc<parking_lot::RwLock<DedupRing>>,
     echo_counter: AtomicI64,
     self_id: AtomicI64,
     last_message_ids: dashmap::DashMap<String, String>,
@@ -153,7 +153,7 @@ impl OneBotChannel {
             base: BaseChannel::new("onebot"),
             config,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            dedup: parking_lot::RwLock::new(DedupRing::new(DEDUP_SIZE)),
+            dedup: std::sync::Arc::new(parking_lot::RwLock::new(DedupRing::new(DEDUP_SIZE))),
             echo_counter: AtomicI64::new(0),
             self_id: AtomicI64::new(0),
             last_message_ids: dashmap::DashMap::new(),
@@ -564,6 +564,7 @@ impl Channel for OneBotChannel {
                         session_key: chat_id,
                         correlation_id: String::new(),
                         metadata: std::collections::HashMap::new(),
+                        voice_playback: None,
                     };
 
                     let _ = bus.send(inbound);

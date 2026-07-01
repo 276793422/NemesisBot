@@ -431,6 +431,7 @@ impl Channel for MatrixChannel {
                                     session_key: room_id.clone(),
                                     correlation_id: String::new(),
                                     metadata: std::collections::HashMap::new(),
+                                    voice_playback: None,
                                 };
 
                                 let _ = bus.send(inbound);

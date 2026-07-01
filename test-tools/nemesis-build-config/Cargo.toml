@@ -1,0 +1,24 @@
+[package]
+name = "nemesis-build-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "menuconfig-style build configurator for NemesisBot feature trimming"
+
+[lib]
+name = "nemesis_build_config"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nemesis-build-config"
+path = "src/main.rs"
+
+[dependencies]
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }

@@ -431,6 +431,7 @@ impl FeishuChannel {
             session_key: format!("feishu:{}", chat_id),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         };
 
         info!(

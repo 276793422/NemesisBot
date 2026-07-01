@@ -1719,6 +1719,7 @@ fn test_agent_config_custom_values() {
         max_turns: 50,
         system_prompt: Some("You are helpful".to_string()),
         tools: vec![],
+        ..Default::default()
     };
     assert_eq!(config.model, "test-model");
     assert_eq!(config.max_turns, 50);

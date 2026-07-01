@@ -107,7 +107,7 @@ pub struct BlueskyChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     access_token: Arc<parking_lot::RwLock<String>>,
     did: Arc<parking_lot::RwLock<String>>,
-    seen_notifs: parking_lot::RwLock<HashMap<String, bool>>,
+    seen_notifs: std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -138,7 +138,7 @@ impl BlueskyChannel {
             running: Arc::new(parking_lot::RwLock::new(false)),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             did: Arc::new(parking_lot::RwLock::new(String::new())),
-            seen_notifs: parking_lot::RwLock::new(HashMap::new()),
+            seen_notifs: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
             bus_sender,
         })
     }
@@ -471,6 +471,7 @@ impl Channel for BlueskyChannel {
                         session_key: sender_handle.to_string(),
                         correlation_id: String::new(),
                         metadata: std::collections::HashMap::new(),
+                        voice_playback: None,
                     };
 
                     let _ = bus.send(inbound);

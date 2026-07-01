@@ -184,6 +184,7 @@ fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
             system_prompt: Some("test".to_string()),
             max_turns: 1,
             tools: vec![],
+            ..Default::default()
         },
         outbound_tx,
         nemesis_agent::r#loop::ConcurrentMode::Reject,
@@ -199,23 +200,9 @@ fn make_test_shared(bus: &Arc<nemesis_bus::MessageBus>) -> Arc<crate::agent_fact
         home: std::path::PathBuf::from("/tmp/test"),
         bus: bus.clone(),
         agent_outbound_tx: outbound_tx,
-        forge: None,
-        forge_executor: None,
         cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(""))),
-        security_plugin: None,
-        observer_manager: None,
-        data_store: None,
-        skills_loader: None,
-        skills_registry: None,
-        memory_manager: None,
-        enabled_channels: vec![],
-        workflow_engine: None,
-        cluster_rpc_call_fn: None,
-        cluster_rpc_config: None,
-        cluster_peers_fn: None,
-        cluster_rpc_enabled: parking_lot::RwLock::new(None),
         mcp_config_path: std::path::PathBuf::from("/tmp/test/mcp.json"),
-        mcp_enabled: false,
+        ..Default::default()
     })
 }
 

@@ -369,6 +369,7 @@ impl DingTalkChannel {
             session_key: format!("dingtalk:{}", chat_id),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         };
 
         info!(

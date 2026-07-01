@@ -678,6 +678,7 @@ impl TelegramChannel {
             session_key: String::new(),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         };
 
         if let Err(e) = bus_sender.send(inbound) {

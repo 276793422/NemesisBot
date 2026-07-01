@@ -10,11 +10,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use nemesis_services::{
-    LifecycleService, HealthServer as HealthServerTrait,
-    HeartbeatService as HeartbeatServiceTrait,
+    LifecycleService,
     ChannelManager as ChannelManagerTrait,
     AgentLoopService as AgentLoopServiceTrait,
 };
+#[cfg(feature = "health")]
+use nemesis_services::HealthServer as HealthServerTrait;
+#[cfg(feature = "heartbeat")]
+use nemesis_services::HeartbeatService as HeartbeatServiceTrait;
 
 // ---------------------------------------------------------------------------
 // HealthServer adapter
@@ -22,11 +25,13 @@ use nemesis_services::{
 
 /// Adapter wrapping `nemesis_health::HealthServer` to implement the
 /// `nemesis_services::HealthServer` trait.
+#[cfg(feature = "health")]
 pub struct HealthServerAdapter {
     inner: Arc<nemesis_health::server::HealthServer>,
     started: AtomicBool,
 }
 
+#[cfg(feature = "health")]
 impl HealthServerAdapter {
     pub fn new(inner: Arc<nemesis_health::server::HealthServer>) -> Self {
         Self {
@@ -36,6 +41,7 @@ impl HealthServerAdapter {
     }
 }
 
+#[cfg(feature = "health")]
 impl LifecycleService for HealthServerAdapter {
     fn start(&self) -> Result<(), String> {
         if self.started.swap(true, Ordering::SeqCst) {
@@ -57,6 +63,7 @@ impl LifecycleService for HealthServerAdapter {
     }
 }
 
+#[cfg(feature = "health")]
 impl HealthServerTrait for HealthServerAdapter {}
 
 // ---------------------------------------------------------------------------
@@ -65,11 +72,13 @@ impl HealthServerTrait for HealthServerAdapter {}
 
 /// Adapter wrapping `nemesis_heartbeat::HeartbeatService` to implement the
 /// `nemesis_services::HeartbeatService` trait.
+#[cfg(feature = "heartbeat")]
 pub struct HeartbeatServiceAdapter {
     inner: Arc<nemesis_heartbeat::service::HeartbeatService>,
     started: AtomicBool,
 }
 
+#[cfg(feature = "heartbeat")]
 impl HeartbeatServiceAdapter {
     pub fn new(inner: Arc<nemesis_heartbeat::service::HeartbeatService>) -> Self {
         Self {
@@ -79,6 +88,7 @@ impl HeartbeatServiceAdapter {
     }
 }
 
+#[cfg(feature = "heartbeat")]
 impl LifecycleService for HeartbeatServiceAdapter {
     fn start(&self) -> Result<(), String> {
         if self.started.swap(true, Ordering::SeqCst) {
@@ -100,6 +110,7 @@ impl LifecycleService for HeartbeatServiceAdapter {
     }
 }
 
+#[cfg(feature = "heartbeat")]
 impl HeartbeatServiceTrait for HeartbeatServiceAdapter {}
 
 // ---------------------------------------------------------------------------
@@ -227,6 +238,7 @@ impl AgentLoopServiceAdapter {
     }
 
     /// Get the current AgentLoop (if running). Used by heartbeat and external callers.
+    #[allow(dead_code)] // used by the heartbeat handler (heartbeat feature) + external callers.
     pub fn current(&self) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
         self.state.lock().unwrap().agent_loop.clone()
     }

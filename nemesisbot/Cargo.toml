@@ -7,6 +7,48 @@ edition.workspace = true
 name = "nemesisbot"
 path = "src/main.rs"
 
+# ---------------------------------------------------------------------------
+# Feature trimming — see docs/PLAN/2026-07-01_feature-trimming-and-build-configurator.md
+# ---------------------------------------------------------------------------
+# Channel backends are forwarded to nemesis-channels. Build a custom set with
+#   cargo build -p nemesisbot --no-default-features \
+#     --features "channels-web,channels-rpc,channels-telegram"
+[features]
+default = [
+    "channels-web", "channels-webhook", "channels-rpc",
+    "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice",
+]
+
+# Optional subsystems (on by default = current full build; drop with --no-default-features)
+migrate = ["dep:nemesis-migrate"]
+devices = ["dep:nemesis-devices"]
+desktop = ["dep:nemesis-desktop"]
+health = ["dep:nemesis-health"]
+heartbeat = ["dep:nemesis-heartbeat"]
+auth = ["dep:nemesis-auth"]
+voice = ["dep:nemesis-voice", "nemesis-web/voice"]
+# NOTE: cluster is NOT yet trimmable (woven into nemesis-web struct fields +
+# agent_factory build_cluster_agent_loop). See docs/PLAN feature-trimming doc.
+
+# Channel backends (forwarded to nemesis-channels)
+channels-web = ["nemesis-channels/web"]
+channels-webhook = ["nemesis-channels/webhook"]
+channels-rpc = ["nemesis-channels/rpc"]
+channels-discord = ["nemesis-channels/discord"]
+channels-telegram = ["nemesis-channels/telegram"]
+channels-slack = ["nemesis-channels/slack"]
+channels-feishu = ["nemesis-channels/feishu"]
+channels-dingtalk = ["nemesis-channels/dingtalk"]
+channels-onebot = ["nemesis-channels/onebot"]
+channels-tencent = ["nemesis-channels/tencent"]
+channels-email = ["nemesis-channels/email"]
+channels-matrix = ["nemesis-channels/matrix"]
+channels-irc = ["nemesis-channels/irc"]
+channels-signal = ["nemesis-channels/signal"]
+channels-mastodon = ["nemesis-channels/mastodon"]
+channels-bluesky = ["nemesis-channels/bluesky"]
+channels-whatsapp = ["nemesis-channels/whatsapp"]
+
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-config = { workspace = true }
@@ -24,18 +66,18 @@ nemesis-mcp = { workspace = true }
 nemesis-observer = { workspace = true }
 nemesis-tools = { workspace = true }
 nemesis-services = { workspace = true }
-nemesis-migrate = { workspace = true }
-nemesis-auth = { workspace = true }
+nemesis-migrate = { workspace = true, optional = true }
+nemesis-auth = { workspace = true, optional = true }
 nemesis-cluster = { workspace = true }
 nemesis-web = { workspace = true }
-nemesis-health = { workspace = true }
+nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
-nemesis-heartbeat = { workspace = true }
+nemesis-heartbeat = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
 nemesis-state = { workspace = true }
-nemesis-desktop = { workspace = true }
-nemesis-devices = { workspace = true }
-nemesis-voice = { workspace = true }
+nemesis-desktop = { workspace = true, optional = true }
+nemesis-devices = { workspace = true, optional = true }
+nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
 nemesis-utils = { workspace = true }
 serde_yaml = { workspace = true }

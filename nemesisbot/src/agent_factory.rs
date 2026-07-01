@@ -84,6 +84,41 @@ pub struct SharedResources {
     pub mcp_enabled: bool,
 }
 
+/// Default `SharedResources` for tests: empty/dummy infrastructure. Real
+/// instances are always built fully by `build_agent_loop`; this exists so test
+/// literals can use `..Default::default()` and stay immune to new fields.
+impl Default for SharedResources {
+    fn default() -> Self {
+        // Sender has no Default — create a throwaway channel.
+        let (agent_outbound_tx, _dropped_rx) = tokio::sync::mpsc::channel(16);
+        Self {
+            home: PathBuf::default(),
+            bus: Arc::new(nemesis_bus::MessageBus::default()),
+            agent_outbound_tx,
+            forge: None,
+            forge_executor: None,
+            cron_service: Arc::new(std::sync::Mutex::new(
+                nemesis_cron::service::CronService::new(""),
+            )),
+            security_plugin: None,
+            observer_manager: None,
+            data_store: None,
+            skills_loader: None,
+            skills_registry: None,
+            memory_manager: None,
+            enabled_channels: Vec::new(),
+            workflow_engine: None,
+            approval_slot: Default::default(),
+            cluster_rpc_call_fn: None,
+            cluster_rpc_config: None,
+            cluster_peers_fn: None,
+            cluster_rpc_enabled: parking_lot::RwLock::new(None),
+            mcp_config_path: PathBuf::default(),
+            mcp_enabled: false,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // build_agent_loop — factory function
 // ---------------------------------------------------------------------------

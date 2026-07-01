@@ -133,6 +133,7 @@ enum Commands {
         action: commands::log::LogAction,
     },
     /// Manage authentication
+    #[cfg(feature = "auth")]
     Auth {
         #[command(subcommand)]
         action: commands::auth::AuthAction,
@@ -158,6 +159,7 @@ enum Commands {
         action: commands::scanner::ScannerAction,
     },
     /// Manage local voice pipeline
+    #[cfg(feature = "voice")]
     Voice {
         #[command(subcommand)]
         action: commands::voice::VoiceAction,
@@ -175,6 +177,7 @@ enum Commands {
     /// Graceful shutdown
     Shutdown,
     /// Migrate from OpenClaw
+    #[cfg(feature = "migrate")]
     Migrate {
         #[command(flatten)]
         options: commands::migrate::MigrateOptions,
@@ -184,6 +187,7 @@ enum Commands {
     /// Open the dashboard UI
     Dashboard,
     /// Internal test commands (hidden)
+    #[cfg(feature = "desktop")]
     #[command(hide = true)]
     Test {
         #[command(subcommand)]
@@ -196,12 +200,15 @@ enum Commands {
 async fn main() -> Result<()> {
     // Early check for child mode (--multiple flag) before any CLI parsing.
     // This allows the parent process to self-spawn a child that loads plugin-ui.dll.
-    if nemesis_desktop::child_mode::has_child_mode_flag() {
-        match nemesis_desktop::child_mode::run_child_mode().await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                eprintln!("[Child] Error: {}", e);
-                std::process::exit(1);
+    #[cfg(feature = "desktop")]
+    {
+        if nemesis_desktop::child_mode::has_child_mode_flag() {
+            match nemesis_desktop::child_mode::run_child_mode().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    eprintln!("[Child] Error: {}", e);
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -256,6 +263,7 @@ fn main() -> Result<()> {
     // across awaits, e.g. CronService). The main thread stays free for the tray.
 
     // Child mode must run on the main thread (wry/tao also require it on macOS).
+    #[cfg(feature = "desktop")]
     if nemesis_desktop::child_mode::has_child_mode_flag() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -626,6 +634,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::log::run(action, cli.local)?;
         }
+        #[cfg(feature = "auth")]
         Commands::Auth { action } => {
             common::ensure_default_logger();
             commands::auth::run(action, cli.local).await?;
@@ -646,6 +655,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
         }
+        #[cfg(feature = "voice")]
         Commands::Voice { action } => {
             common::ensure_default_logger();
             commands::voice::run(action, cli.local)?;
@@ -664,6 +674,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::shutdown::run(cli.local)?;
         }
+        #[cfg(feature = "migrate")]
         Commands::Migrate { options } => {
             common::ensure_default_logger();
             commands::migrate::run(options, cli.local)?;
@@ -679,6 +690,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        #[cfg(feature = "desktop")]
         Commands::Test { action } => {
             common::ensure_default_logger();
             commands::test_cmd::run(action).await?;

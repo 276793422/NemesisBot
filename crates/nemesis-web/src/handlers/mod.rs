@@ -20,6 +20,7 @@ pub mod skills;
 pub mod system;
 pub mod tasks;
 pub mod tools;
+#[cfg(feature = "voice")]
 pub mod voice;
 pub mod persona;
 pub mod workflow;
@@ -49,7 +50,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(cluster::ClusterHandler::new()));
     router.register(Arc::new(logs::LogsHandler));
     router.register(Arc::new(agent::AgentHandler));
-    router.register(Arc::new(voice::VoiceHandler::new()));
+    #[cfg(feature = "voice")]
+    {
+        router.register(Arc::new(voice::VoiceHandler::new()));
+    }
     router.register(Arc::new(persona::PersonaHandler::new()));
     router.register(Arc::new(workflow::WorkflowHandler));
 }
@@ -217,5 +221,5 @@ mod scanner_more_tests;
 mod skills_extra_tests;
 #[cfg(test)]
 mod skills_more_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;

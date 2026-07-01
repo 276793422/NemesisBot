@@ -72,7 +72,7 @@ pub struct MastodonChannel {
     config: MastodonConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    seen_notifications: parking_lot::RwLock<HashMap<String, bool>>,
+    seen_notifications: std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
     bus_sender: broadcast::Sender<InboundMessage>,
 }
 
@@ -92,7 +92,7 @@ impl MastodonChannel {
             config: MastodonConfig { server, ..config },
             http: reqwest::Client::new(),
             running: Arc::new(parking_lot::RwLock::new(false)),
-            seen_notifications: parking_lot::RwLock::new(HashMap::new()),
+            seen_notifications: std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new())),
             bus_sender,
         })
     }
@@ -362,6 +362,7 @@ impl Channel for MastodonChannel {
                         session_key: chat_id,
                         correlation_id: String::new(),
                         metadata: std::collections::HashMap::new(),
+                        voice_playback: None,
                     };
 
                     let _ = bus.send(inbound);

@@ -19,3 +19,6 @@ archive/
 /test-tools/android-shell/app/build/outputs
 /test-tools/android-shell/app/src/main/jniLibs
 /test-tools/android-shell/app/build/tmp
+
+# Build configurator local selection (do not commit)
+scripts/customize/.config

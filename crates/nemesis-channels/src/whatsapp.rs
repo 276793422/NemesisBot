@@ -236,6 +236,7 @@ impl WhatsAppChannel {
                                             session_key: format!("whatsapp:{}", chat_id),
                                             correlation_id: String::new(),
                                             metadata,
+                                            voice_playback: None,
                                         };
 
                                         info!(

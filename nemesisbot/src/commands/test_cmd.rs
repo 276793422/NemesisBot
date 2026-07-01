@@ -27,6 +27,7 @@ pub enum TestAction {
         expected: String,
     },
     /// Test real UI approval window (blocks until window closes)
+    #[cfg(feature = "desktop")]
     ApprovalUi {
         /// Risk level for the approval request
         #[arg(long, default_value = "HIGH")]
@@ -39,6 +40,7 @@ pub enum TestAction {
         target: String,
     },
     /// Test dashboard window via ProcessManager (blocks until window closes)
+    #[cfg(feature = "desktop")]
     Dashboard {
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
@@ -48,6 +50,7 @@ pub enum TestAction {
         token: String,
     },
     /// Test WebSocket server/client communication
+    #[cfg(feature = "desktop")]
     Ws,
 }
 
@@ -57,12 +60,15 @@ pub async fn run(action: TestAction) -> Result<()> {
         TestAction::ApprovalHeadless { expected } => {
             run_approval_headless(&expected).await
         }
+        #[cfg(feature = "desktop")]
         TestAction::ApprovalUi { risk_level, operation, target } => {
             run_approval_ui(&risk_level, &operation, &target).await
         }
+        #[cfg(feature = "desktop")]
         TestAction::Dashboard { host, port, token } => {
             run_dashboard(&host, port, &token).await
         }
+        #[cfg(feature = "desktop")]
         TestAction::Ws => {
             run_ws_test().await
         }
@@ -74,6 +80,7 @@ pub async fn run(action: TestAction) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Create and start a ProcessManager, returning it with its WS port.
+#[cfg(feature = "desktop")]
 async fn create_process_manager() -> Result<Arc<nemesis_desktop::process::ProcessManager>> {
     let pm = Arc::new(nemesis_desktop::process::ProcessManager::new());
     pm.start().await.map_err(|e| anyhow::anyhow!("ProcessManager start failed: {}", e))?;

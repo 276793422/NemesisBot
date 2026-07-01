@@ -36,6 +36,7 @@ static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Request global shutdown from any component.
 #[cfg(not(target_os = "android"))]
+#[allow(dead_code)] // only called from the tray's on_quit (desktop feature); kept as a general API.
 pub fn trigger_global_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 }
@@ -51,6 +52,7 @@ pub fn is_shutdown_requested() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check if plugin-ui library exists in the `plugins/` directory next to the executable.
+#[cfg(feature = "desktop")]
 fn plugin_ui_library_exists() -> bool {
     nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
@@ -59,10 +61,12 @@ fn plugin_ui_library_exists() -> bool {
 /// approval popup. When attached, agent `memory_store`/`memory_forget` calls pop
 /// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
 /// timeout/error so a memory write never silently succeeds unapproved.
+#[cfg(feature = "desktop")]
 struct GatewayMemoryGate {
     approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
 }
 
+#[cfg(feature = "desktop")]
 impl GatewayMemoryGate {
     fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
         Self { approval }
@@ -87,6 +91,7 @@ impl GatewayMemoryGate {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[async_trait::async_trait]
 impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
     async fn approve_store(&self, preview: &str) -> bool {
@@ -156,16 +161,19 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
 /// When a tool call triggers an "ask" security rule, the auditor calls
 /// `request_approval_sync()` which spawns an approval popup child process
 /// via ProcessManager and blocks until the user responds.
+#[cfg(feature = "desktop")]
 struct ApprovalPopupAdapter {
     process_manager: Arc<nemesis_desktop::process::ProcessManager>,
 }
 
+#[cfg(feature = "desktop")]
 impl ApprovalPopupAdapter {
     fn new(pm: Arc<nemesis_desktop::process::ProcessManager>) -> Self {
         Self { process_manager: pm }
     }
 }
 
+#[cfg(feature = "desktop")]
 impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
     fn is_running(&self) -> bool {
         true
@@ -465,7 +473,7 @@ fn load_scanner_full_config(
 }
 
 /// Open a URL in the default browser.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
 fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -510,7 +518,7 @@ fn open_browser(url: &str) -> Result<(), String> {
 /// child is terminated and a new one is spawned.
 ///
 /// Falls back to browser if the plugin-ui library is not found.
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
 fn open_plugin_window(
     process_manager: &Arc<nemesis_desktop::process::ProcessManager>,
     window_type: &str,
@@ -2453,13 +2461,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     info!("[Gateway] Web server components injected");
 
     // Step 11: Create HealthServer
-    let health_port = cfg.gateway.port;
-    let health_config = nemesis_health::server::HealthServerConfig {
-        listen_addr: format!("{}:{}", &cfg.gateway.host, health_port),
-        version: Some(crate::common::VERSION_INFO.version.to_string()),
+    #[cfg(feature = "health")]
+    let health_server = {
+        let health_port = cfg.gateway.port;
+        let health_config = nemesis_health::server::HealthServerConfig {
+            listen_addr: format!("{}:{}", &cfg.gateway.host, health_port),
+            version: Some(crate::common::VERSION_INFO.version.to_string()),
+        };
+        Arc::new(nemesis_health::server::HealthServer::new(health_config))
     };
-    let health_server = Arc::new(nemesis_health::server::HealthServer::new(health_config));
-    info!("[Gateway] Health server created for {}:{}", &cfg.gateway.host, health_port);
+    #[cfg(feature = "health")]
+    info!("[Gateway] Health server created for {}:{}", &cfg.gateway.host, cfg.gateway.port);
 
     // Step 12: Create HeartbeatService
     let heartbeat_interval_secs = if cfg.heartbeat.interval > 0 {
@@ -2467,20 +2479,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     } else {
         300
     };
-    let heartbeat_config = nemesis_heartbeat::service::HeartbeatConfig {
-        interval: std::time::Duration::from_secs(heartbeat_interval_secs),
-        enabled: cfg.heartbeat.enabled,
-        workspace: Some(common::workspace_path(&home).to_string_lossy().to_string()),
-        min_interval_minutes: 5,
-        default_interval_minutes: 30,
+    #[cfg(feature = "heartbeat")]
+    let heartbeat_service = {
+        let heartbeat_config = nemesis_heartbeat::service::HeartbeatConfig {
+            interval: std::time::Duration::from_secs(heartbeat_interval_secs),
+            enabled: cfg.heartbeat.enabled,
+            workspace: Some(common::workspace_path(&home).to_string_lossy().to_string()),
+            min_interval_minutes: 5,
+            default_interval_minutes: 30,
+        };
+        Arc::new(nemesis_heartbeat::service::HeartbeatService::new(heartbeat_config))
     };
-    let heartbeat_service = Arc::new(nemesis_heartbeat::service::HeartbeatService::new(heartbeat_config));
+    #[cfg(feature = "heartbeat")]
     info!("[Gateway] Heartbeat service created (enabled: {})", cfg.heartbeat.enabled);
 
     // C2: Wire HeartbeatService — bus + handler + skip file.
     // Mirrors Go's bot_service.go:403-406:
     //   heartbeatSvc.SetBus(msgBus)
     //   heartbeatSvc.SetHandler(createHeartbeatHandler(agentLoop))
+    #[cfg(feature = "heartbeat")]
     {
         // Adapter: nemesis_bus::MessageBus → heartbeat::MessageBus
         struct HeartbeatBusAdapter {
@@ -2577,6 +2594,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // M1: Create and wire DeviceService.
     // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
+    #[cfg(feature = "devices")]
+    {
     if cfg.devices.enabled {
         let device_config = nemesis_devices::service::DeviceServiceConfig {
             enabled: true,
@@ -2604,6 +2623,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     } else {
         info!("[Gateway] Device service disabled (config.json: devices.enabled = false)");
     }
+    } // #[cfg(feature = "devices")]
 
     // Step 13: Create ServiceManager with config
     let bot_config = nemesis_services::BotServiceConfig {
@@ -2625,8 +2645,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject adapted services into BotService
     {
         let bot = svc_mgr.get_bot_service();
-        bot.inject_health(Arc::new(adapters::HealthServerAdapter::new(health_server.clone())));
-        bot.inject_heartbeat(Arc::new(adapters::HeartbeatServiceAdapter::new(heartbeat_service.clone())));
+        #[cfg(feature = "health")]
+        {
+            bot.inject_health(Arc::new(adapters::HealthServerAdapter::new(health_server.clone())));
+        }
+        #[cfg(feature = "heartbeat")]
+        {
+            bot.inject_heartbeat(Arc::new(adapters::HeartbeatServiceAdapter::new(heartbeat_service.clone())));
+        }
+        #[cfg(not(any(feature = "health", feature = "heartbeat")))]
+        let _ = bot;
         // Agent is NOT injected into BotService — its lifecycle is managed directly
         // by AgentLoopServiceAdapter (tray start/stop, gateway shutdown).
     }
@@ -2745,7 +2773,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)
     // via start_services() → services.health.start(). No separate spawn needed here.
-    info!("[Gateway] Health server will be started by bot service on {}:{}", &cfg.gateway.host, health_port);
+    info!("[Gateway] Health server will be started by bot service on {}:{}", &cfg.gateway.host, cfg.gateway.port);
 
     // Step 18: Start AgentLoop's bus processing via adapter
     if let Err(e) = agent_adapter.start() {
@@ -2783,14 +2811,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Mark as ready (mirrors Go's automatic readiness after HTTP server starts)
-    health_server.set_ready(true);
+    #[cfg(feature = "health")]
+    {
+        health_server.set_ready(true);
+    }
 
     // Create and start ProcessManager for plugin window lifecycle + dedup
+    #[cfg(feature = "desktop")]
     let process_manager = Arc::new(nemesis_desktop::process::ProcessManager::new());
-    if let Err(e) = process_manager.start().await {
-        warn!("[Gateway] ProcessManager start note: {} (non-fatal, plugin windows will use fallback)", e);
-    } else {
-        info!("[Gateway] ProcessManager started (WS server on port {})", process_manager.ws_port());
+    #[cfg(feature = "desktop")]
+    {
+        if let Err(e) = process_manager.start().await {
+            warn!("[Gateway] ProcessManager start note: {} (non-fatal, plugin windows will use fallback)", e);
+        } else {
+            info!("[Gateway] ProcessManager started (WS server on port {})", process_manager.ws_port());
+        }
     }
 
     // Wire up ApprovalManager: ProcessManager → SecurityPlugin auditor
@@ -2798,26 +2833,38 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // request_approval_sync() which spawns an approval popup child process.
     if let Some(ref plugin) = security_plugin {
         let auditor = plugin.auditor();
-        let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
-            Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
-        auditor.set_approval_manager(adapter.clone());
-        // Bridge the same approval manager to `skill_manage` write approval.
-        *shared_resources.approval_slot.write() = Some(adapter.clone());
-        // P2: bridge the same approval manager to the agent's memory write/forget
-        // gate — agent memory_store/forget now pop up for approval, never
-        // bypassed by YOLO/auto. No-op if no memory executor was stashed.
-        agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+        #[cfg(feature = "desktop")]
+        {
+            // Approval popup via ProcessManager (desktop only). When a tool
+            // call triggers an "ask" rule, the auditor spawns an approval popup
+            // child process and blocks until the user responds.
+            let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
+                Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
+            auditor.set_approval_manager(adapter.clone());
+            // Bridge the same approval manager to `skill_manage` write approval.
+            *shared_resources.approval_slot.write() = Some(adapter.clone());
+            // P2: bridge the same approval manager to the agent's memory write/forget
+            // gate — agent memory_store/forget now pop up for approval, never
+            // bypassed by YOLO/auto. No-op if no memory executor was stashed.
+            agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
+            info!("[Gateway] Approval manager wired (popup via ProcessManager)");
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            let _ = auditor;
+            info!("[Gateway] Approval popup disabled (desktop feature off; no interactive approval)");
+        }
         // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
         plugin.set_judge(Arc::new(GatewayLlmJudge {
             provider: llm_provider.clone(),
             model: model_name.clone(),
         }));
         info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
-        info!("[Gateway] Approval manager wired (popup via ProcessManager)");
     }
 
     // Internal command loop: /api/internal → open_plugin_window / open_browser
     {
+        #[cfg(all(feature = "desktop", not(target_os = "android")))]
         let pm = Arc::clone(&process_manager);
         let url = format!("http://{}:{}", web_host, real_port);
         let token = cfg.channels.web.auth_token.clone();
@@ -2826,15 +2873,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     nemesis_web::internal::InternalCommand::OpenDashboard => {
-                        #[cfg(not(target_os = "android"))]
+                        #[cfg(all(feature = "desktop", not(target_os = "android")))]
                         {
                             info!("[Gateway] Internal command: open_dashboard");
                             let _ = open_plugin_window(&pm, "dashboard", &url, &token);
                         }
-                        #[cfg(target_os = "android")]
+                        #[cfg(not(all(feature = "desktop", not(target_os = "android"))))]
                         {
-                            let _ = (&pm, &url, &token);
-                            info!("[Gateway] Internal command: open_dashboard (skipped on android)");
+                            let _ = (&url, &token);
+                            info!("[Gateway] Internal command: open_dashboard (no desktop / android)");
                         }
                     }
                 }
@@ -2844,7 +2891,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 22: Configure system tray (desktop only)
-    #[cfg(not(target_os = "android"))]
+    #[cfg(all(feature = "desktop", not(target_os = "android")))]
     {
         use nemesis_desktop::PlatformTray;
 
@@ -2981,11 +3028,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Cancel active voice sessions and release ONNX engines
     // so spawn_blocking tasks exit before Runtime drop.
-    nemesis_web::handlers::voice::voice_shutdown().await;
+    #[cfg(feature = "voice")]
+    {
+        nemesis_web::handlers::voice::voice_shutdown().await;
+    }
 
     // Stop ProcessManager (terminates all child processes)
-    if let Err(e) = process_manager.stop() {
-        warn!("[Gateway] ProcessManager stop note: {}", e);
+    #[cfg(feature = "desktop")]
+    {
+        if let Err(e) = process_manager.stop() {
+            warn!("[Gateway] ProcessManager stop note: {}", e);
+        }
     }
 
     // Close the message bus

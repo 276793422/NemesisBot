@@ -218,6 +218,7 @@ fn make_loop_with_session_store() -> (AgentLoop, std::sync::Arc<SessionStore>) {
             system_prompt: Some("test".to_string()),
             max_turns: 1,
             tools: vec![],
+            ..Default::default()
         },
     );
     let store = std::sync::Arc::new(SessionStore::new_in_memory());
@@ -231,6 +232,7 @@ fn make_test_config() -> AgentConfig {
         system_prompt: Some("test".to_string()),
         max_turns: 1,
         tools: vec![],
+        ..Default::default()
     }
 }
 
@@ -247,6 +249,7 @@ fn make_loop_without_session_store() -> AgentLoop {
             system_prompt: Some("test".to_string()),
             max_turns: 1,
             tools: vec![],
+            ..Default::default()
         },
     )
 }

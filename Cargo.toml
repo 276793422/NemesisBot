@@ -49,6 +49,7 @@ members = [
     "test-tools/approval-test",
     "test-tools/memory-test",
     "test-tools/cluster-node",
+    "test-tools/nemesis-build-config",
 ]
 
 [workspace.package]
@@ -158,3 +159,29 @@ nemesis-state = { path = "crates/nemesis-state" }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
+
+# Build-configurator (tools/nemesis-config) — TUI + manifest parsing
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
+
+# ---------------------------------------------------------------------------
+# Build profiles
+# ---------------------------------------------------------------------------
+# Default release: keeps panic=unwind so the system-tray thread's catch_unwind
+# (nemesis-desktop/src/systray.rs) still degrades gracefully on Windows/macOS.
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+codegen-units = 16
+
+# iotsmall: aggressive size optimization for low-resource / IoT targets.
+# panic=abort drops unwind tables (~5%) — acceptable there because such
+# targets have no system tray. Opt-in via: cargo build --profile iotsmall
+[profile.iotsmall]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -570,6 +570,7 @@ impl QQChannel {
             session_key: format!("qq:{}", chat_id),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         };
 
         info!(
@@ -644,6 +645,7 @@ impl QQChannel {
             session_key: format!("qq:{}", chat_id),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         };
 
         info!(

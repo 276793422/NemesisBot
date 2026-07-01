@@ -296,6 +296,7 @@ impl Channel for SignalChannel {
                             m.insert("timestamp".to_string(), timestamp.to_string());
                             m
                         },
+                        voice_playback: None,
                     };
 
                     let _ = bus.send(inbound);

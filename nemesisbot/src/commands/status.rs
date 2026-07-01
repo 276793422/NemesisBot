@@ -79,29 +79,36 @@ pub fn run(local: bool) -> Result<()> {
     // Authentication
     println!();
     println!("  Authentication:");
-    let auth_path = home.join("auth.json");
-    if auth_path.exists() {
-        let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
-        let providers = store.list_providers();
-        if providers.is_empty() {
-            println!("    No credentials stored.");
-        } else {
-            for provider in &providers {
-                if let Some(cred) = store.get(provider) {
-                    let status = if cred.is_expired() {
-                        "expired"
-                    } else if cred.needs_refresh() {
-                        "needs refresh"
-                    } else {
-                        "active"
-                    };
-                    let display = nemesis_auth::provider_display_name(provider);
-                    println!("    {}: {} ({})", display, cred.auth_method, status);
+    #[cfg(feature = "auth")]
+    {
+        let auth_path = home.join("auth.json");
+        if auth_path.exists() {
+            let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
+            let providers = store.list_providers();
+            if providers.is_empty() {
+                println!("    No credentials stored.");
+            } else {
+                for provider in &providers {
+                    if let Some(cred) = store.get(provider) {
+                        let status = if cred.is_expired() {
+                            "expired"
+                        } else if cred.needs_refresh() {
+                            "needs refresh"
+                        } else {
+                            "active"
+                        };
+                        let display = nemesis_auth::provider_display_name(provider);
+                        println!("    {}: {} ({})", display, cred.auth_method, status);
+                    }
                 }
             }
+        } else {
+            println!("    No credentials stored.");
         }
-    } else {
-        println!("    No credentials stored.");
+    }
+    #[cfg(not(feature = "auth"))]
+    {
+        println!("    (auth feature disabled in this build)");
     }
 
     println!();

@@ -11,6 +11,7 @@ pub mod scanner;
 pub mod memory;
 pub mod log;
 pub mod agent;
+#[cfg(feature = "auth")]
 pub mod auth;
 pub mod channel;
 pub mod cron;
@@ -19,7 +20,10 @@ pub mod mcp;
 pub mod status;
 pub mod shutdown;
 pub mod cors;
+#[cfg(feature = "migrate")]
 pub mod migrate;
+#[cfg(feature = "voice")]
 pub mod voice;
 pub mod persona;
+#[cfg(feature = "desktop")]
 pub mod test_cmd;

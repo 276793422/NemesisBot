@@ -513,6 +513,7 @@ impl SlackChannel {
             session_key: String::new(),
             correlation_id: String::new(),
             metadata,
+            voice_playback: None,
         })
     }
 

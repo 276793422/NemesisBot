@@ -631,7 +631,7 @@ impl ChannelManager {
         {
             if let Some(ref cfg) = config.whatsapp {
                 info!("[ChannelManager] attempting to initialize WhatsApp channel");
-                match crate::whatsapp::WhatsAppChannel::new(cfg.clone()) {
+                match crate::whatsapp::WhatsAppChannel::new(cfg.clone(), bus_sender.clone()) {
                     Ok(ch) => {
                         self.register_or_replace(Arc::new(ch)).await;
                         info!("[ChannelManager] WhatsApp channel enabled successfully");
