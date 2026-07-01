@@ -4,6 +4,7 @@
 //! sending messages. Supports thread replies, file download, and
 //! reaction-based acknowledgment (eyes on receive, checkmark on reply).
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};

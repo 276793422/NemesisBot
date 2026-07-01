@@ -1,7 +1,6 @@
 //! Telegram bot command handlers (/help, /start, /show, /list).
 
 use serde::Serialize;
-use tracing::debug;
 
 use nemesis_types::error::Result;
 

@@ -4,7 +4,7 @@
 //! messages and /rooms/{roomId}/send/m.room.message for sending.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};

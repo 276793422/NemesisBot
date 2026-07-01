@@ -4,6 +4,7 @@
 //! for sending replies. The Stream Mode uses a long-lived HTTP connection
 //! to receive events from the DingTalk server.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

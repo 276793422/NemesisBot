@@ -4,13 +4,14 @@
 //! updates and REST API for sending messages. Supports text, photo, voice,
 //! audio, and document messages with optional voice transcription.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, MediaAttachment, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};

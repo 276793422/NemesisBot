@@ -10,6 +10,7 @@
 //! 3. Waits for RPL_WELCOME (001) then JOIN
 //! 4. Reads lines in a loop, handling PING and dispatching PRIVMSG
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

@@ -5,12 +5,13 @@
 //! uses a simple line-based protocol for SEARCH, FETCH, and STORE commands.
 //! SMTP uses a simple connection with MAIL FROM / RCPT TO / DATA flow.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::channel::OutboundMessage;
 use nemesis_types::error::{NemesisError, Result};
@@ -548,7 +549,7 @@ impl EmailChannel {
 
                                             // FETCH body
                                             let body_cmd = format!("{} (BODY[TEXT])", seq);
-                                            let body = conn
+                                            let _body = conn
                                                 .send_command_multi(&format!("FETCH {}", body_cmd))
                                                 .await
                                                 .ok()

@@ -4,6 +4,7 @@
 //! via HTTP for sending and WebSocket for receiving. Falls back to
 //! a simple HTTP POST/GET pattern when WebSocket is unavailable.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

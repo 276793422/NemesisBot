@@ -3,6 +3,7 @@
 //! Uses the AT Protocol REST API with polling for notifications and
 //! createSession for authentication.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -4,6 +4,7 @@
 //! the REST API for sending messages. Supports typing indicators and
 //! message splitting for Discord's 2000 character limit.
 
+#![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use parking_lot::RwLock;
