@@ -112,7 +112,6 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         channels
     );
 
-    let mut iter: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
         // 等数据就绪（100ms 超时，便于周期性查 stop）
         if h_event.wait_for_event(100).is_err() {
@@ -154,32 +153,17 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         }
 
         // 灌进共享 far-end 缓冲（try_lock，不阻塞；消费者持锁就丢这块）
-        let pushed = if let Ok(mut fe) = far_end.try_lock() {
+        if let Ok(mut fe) = far_end.try_lock() {
             const FAR_CAP: usize = 96_000; // ~2s @48k
             let extra = (fe.len() + mono.len()).saturating_sub(FAR_CAP);
             if extra > 0 {
                 fe.drain(..extra);
             }
             fe.extend(mono);
-            true
-        } else {
-            false
-        };
-
-        // 周期日志（每 ~1s，按 100ms 周期≈10 次）确认在抓
-        iter += 1;
-        if iter % 10 == 0 {
-            let len = far_end.lock().map(|fe| fe.len()).unwrap_or(0);
-            tracing::info!(
-                "[AEC Loopback] iter={} frames_captured_now pushed={} far_buf_len={}",
-                iter,
-                pushed,
-                len
-            );
         }
     }
 
     let _ = audio_client.stop_stream();
-    tracing::info!("[AEC Loopback] stopped (iters={})", iter);
+    tracing::info!("[AEC Loopback] stopped");
     Ok(())
 }
