@@ -300,7 +300,12 @@ impl TtsEngine {
                 Ok((samples, sr))
             }
             Err(e) => {
-                tracing::error!("[TTS] Generate failed: {} — recreating engine", e);
+                tracing::error!(
+                    "[TTS] Generate failed (normalized_text={:?}, codepoints=[{}]): {} — recreating engine",
+                    normalized,
+                    normalized.chars().map(|c| format!("U+{:04X}", c as u32)).collect::<Vec<_>>().join(" "),
+                    e
+                );
                 self.recreate_engine()?;
                 Err(anyhow::anyhow!("TTS generation failed (engine recreated): {}", e))
             }
@@ -407,10 +412,31 @@ impl Drop for TtsEngine {
 fn normalize_tts_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut last_was_punct = false;
+    let mut prev_stripped = false; // 上一字符是否被剥（如 emoji）
     for ch in text.chars() {
+        // 全角标点 → ASCII：Kokoro 词表只有 ASCII 标点，全角（？ ！ 等）会触发
+        // sherpa "Unknown token" C++ 异常。先转成 ASCII 再走下面的安全过滤。
+        let ch = match ch {
+            '，' | '、' => ',',
+            '。' => '.',
+            '？' => '?',
+            '！' => '!',
+            '；' => ';',
+            '：' => ':',
+            c => c,
+        };
         if !is_tts_safe(ch) {
+            prev_stripped = true;
             continue;
         }
+        // 被剥字符（emoji 等）后面常跟一个空格——这个"孤儿空格"也要去掉：
+        // Kokoro 中文路径下句中 ASCII 空格会触发 "Unknown token"。
+        // （仅删紧跟在被剥字符后的空格；英文单词之间的空格不受影响。）
+        if ch == ' ' && prev_stripped {
+            prev_stripped = false;
+            continue;
+        }
+        prev_stripped = false;
         if is_tts_punct(ch) {
             if last_was_punct {
                 continue;

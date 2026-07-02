@@ -442,6 +442,7 @@ async function initVoiceState() {
       // Reset to false since pipelines aren't actually running
       voiceDictation.value = false
       voiceDialogue.value = false
+      voicePlayback.value = false
     }
     if (engines) {
       sttReady.value = engines.stt_ready ?? false
@@ -531,6 +532,17 @@ onUnmounted(() => {
   }
   removeMessageHandler(handleWSMessage)
   unwatchStatus()
+  // 离开 chat 页时停掉活跃的 STT 会话，避免后端 orphan 后再回来 "already running" 卡死
+  // （组件重挂载后 voiceDictation 是新 ref=false，但后端会话还在跑 → 重启报错 → 永远起不来）
+  if (voiceDictation.value) {
+    request('voice', 'stt_to_input_stop').catch(() => {})
+  }
+  if (voiceDialogue.value) {
+    request('voice', 'stt_dialogue_stop').catch(() => {})
+  }
+  if (voicePlayback.value) {
+    request('voice', 'tts_playback_stop').catch(() => {})
+  }
 })
 </script>
 

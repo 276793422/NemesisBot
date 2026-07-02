@@ -74,18 +74,36 @@ fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), St
 impl ModelsHandler {
     fn list(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_config(home)?;
-        let default_name = config.model_list.first().map(|m| m.model_name.clone());
+        // 默认模型以 agents.defaults.llm 为权威（启动 get_effective_llm 读的就是它），
+        // 不能用 model_list[0] 位置判——CLI 的 `model add --default` 把新模型追加到
+        // 末尾、只改 agents.defaults.llm，位置判会把旧模型误标为默认，dashboard 就
+        // 显示错了。default_llm 可能是 model_name / vendor/model 串 / 别名（CLI 设别名）。
+        let default_llm = config.agents.defaults.llm.clone();
+        let first_name = config
+            .model_list
+            .first()
+            .map(|m| m.model_name.clone())
+            .unwrap_or_default();
         let models: Vec<_> = config
             .model_list
             .iter()
             .map(|m| {
+                let alias = m.model.split('/').next_back().unwrap_or("");
+                let is_default = if default_llm.is_empty() {
+                    // 回退：老配置没显式默认时，沿用 list[0] 位置默认，保持旧行为。
+                    m.model_name == first_name
+                } else {
+                    m.model_name == default_llm
+                        || m.model == default_llm
+                        || (!alias.is_empty() && alias == default_llm)
+                };
                 serde_json::json!({
                     "model_name": m.model_name,
                     "model": m.model,
                     "api_base": m.api_base,
                     "api_key": if m.api_key.is_empty() { String::new() } else { mask_sensitive(&m.api_key) },
                     "proxy": m.proxy,
-                    "is_default": default_name.as_ref() == Some(&m.model_name),
+                    "is_default": is_default,
                 })
             })
             .collect();
@@ -120,6 +138,32 @@ impl ModelsHandler {
 
     fn delete(&self, home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         let mut config = load_config(home)?;
+
+        // 守卫：禁止删除当前默认模型。否则 agents.defaults.llm 变成悬空引用，
+        // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
+        // default_llm 可能是 model_name、vendor/model 串或别名（CLI 设的是别名），
+        // 故把目标模型的所有标识都拿来比对。同时兜住 list[0] 这个 dashboard 位置默认。
+        let default_llm = config.agents.defaults.llm.clone();
+        let first_name = config
+            .model_list
+            .first()
+            .map(|m| m.model_name.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(m) = config.model_list.iter().find(|m| m.model_name == name) {
+            let alias = m.model.split('/').next_back().unwrap_or("");
+            let is_default = name == default_llm
+                || name == first_name
+                || m.model == default_llm
+                || (!alias.is_empty() && alias == default_llm);
+            if is_default {
+                return Err(format!(
+                    "cannot delete default model '{}'. Switch the default to another model first.",
+                    name
+                ));
+            }
+        }
+
         let before = config.model_list.len();
         config.model_list.retain(|m| m.model_name != name);
         if config.model_list.len() == before {
@@ -138,6 +182,10 @@ impl ModelsHandler {
             .ok_or_else(|| format!("model '{}' not found", name))?;
         let model_cfg = config.model_list.remove(idx);
         config.model_list.insert(0, model_cfg.clone());
+        // 同步 agents.defaults.llm：启动时 get_effective_llm 只读这个字段、不看
+        // model_list 顺序。不写这行，dashboard 切模型只在运行时生效（provider 已换），
+        // 重启后回退到旧模型；若旧模型随后被删，启动会因 "model not found" 失败。
+        config.agents.defaults.llm = model_cfg.model_name.clone();
         save_config(home, &mut config)?;
 
         // Swap the runtime provider so the change takes effect immediately.

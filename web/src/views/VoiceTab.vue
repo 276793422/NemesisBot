@@ -25,6 +25,7 @@ const playbackDevice = ref('')
 const sttEnabled = ref(false)
 const ttsEnabled = ref(false)
 const punctEnabled = ref(false)
+const aecEnabled = ref(false)
 
 // TTS test
 const ttsText = ref('')
@@ -174,6 +175,23 @@ async function installModel(model: string, label: string) {
   }
 }
 
+async function installAec() {
+  setupProgress.value = '正在安装回声消除库...'
+  try {
+    await request('voice', 'install_aec', undefined, 0)
+    toast.success('回声消除库安装完成')
+    setupProgress.value = ''
+    await loadStatus()
+    // 安装即默认开启（触发 watch 自动保存）
+    if (aecReady.value && !aecEnabled.value) {
+      aecEnabled.value = true
+    }
+  } catch (e: any) {
+    toast.error('回声消除库安装失败: ' + e)
+    setupProgress.value = ''
+  }
+}
+
 async function saveConfig() {
   try {
     await request('voice', 'config_set', { content: configContent.value })
@@ -237,6 +255,7 @@ const dllStatus = computed(() => {
 const runtimeReady = computed(() => status.value?.all_dlls_present && status.value?.config_exists)
 
 const models = computed(() => status.value?.models || {})
+const aecReady = computed(() => !!status.value?.aec?.ready)
 
 const currentSpeakerName = computed(() => {
   const s = speakers.value.find((sp: any) => sp.speaker_id === selectedSpeaker.value)
@@ -286,6 +305,7 @@ async function loadVoiceConfig() {
       if (data.stt_enabled != null) sttEnabled.value = data.stt_enabled
       if (data.tts_enabled != null) ttsEnabled.value = data.tts_enabled
       if (data.punct_enabled != null) punctEnabled.value = data.punct_enabled
+      if (data.aec_enabled != null) aecEnabled.value = data.aec_enabled
       if (data.speaker_enabled != null) speakerEngineEnabled.value = data.speaker_enabled
       if (data.silence_timeout != null) silenceTimeout.value = data.silence_timeout
     }
@@ -309,6 +329,7 @@ function saveVoiceConfigDebounced() {
         stt_enabled: sttEnabled.value,
         tts_enabled: ttsEnabled.value,
         punct_enabled: punctEnabled.value,
+        aec_enabled: aecEnabled.value,
         speaker_enabled: speakerEngineEnabled.value,
         silence_timeout: silenceTimeout.value,
       })
@@ -323,7 +344,7 @@ const _engineInitialized = ref(false)
 const _skipEngineWatch = ref(false)
 
 // Watch all config values and auto-save
-watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled, speakerEngineEnabled, silenceTimeout], () => {
+watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled, aecEnabled, speakerEngineEnabled, silenceTimeout], () => {
   saveVoiceConfigDebounced()
 })
 
@@ -572,6 +593,13 @@ onUnmounted(() => {
               </span>
               <button class="btn btn-sm" @click="installModel('speaker', '声纹')" :disabled="!!setupProgress || models.speaker?.ready">安装</button>
             </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm);">
+                <span :style="{ color: aecReady ? 'var(--success)' : 'var(--text-secondary)' }">{{ aecReady ? '●' : '○' }}</span>
+                <span>回声消除</span>
+              </span>
+              <button class="btn btn-sm" @click="installAec" :disabled="!!setupProgress || aecReady">安装</button>
+            </div>
           </div>
         </div>
 
@@ -660,6 +688,14 @@ onUnmounted(() => {
             <input type="checkbox" v-model="punctEnabled" :disabled="sttEnabled" />
             <span class="toggle-slider"></span>
             <span class="toggle-label">{{ punctEnabled ? '启用' : '停用' }}</span>
+          </label>
+
+          <!-- AEC toggle（库未下载时灰，需关 STT 才能切，下次启动 STT 生效） -->
+          <span class="settings-key">回声消除</span>
+          <label class="toggle-switch">
+            <input type="checkbox" v-model="aecEnabled" :disabled="!aecReady || sttEnabled" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">{{ !aecReady ? '未安装' : (aecEnabled ? '启用' : '停用') }}</span>
           </label>
 
           <!-- Silence timeout -->

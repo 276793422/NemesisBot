@@ -2831,6 +2831,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let (internal_cmd_tx, internal_cmd_rx) = tokio::sync::mpsc::channel::<nemesis_web::internal::InternalCommand>(16);
     web_server.set_internal_cmd_tx(internal_cmd_tx);
 
+    // 在 web server 接受请求之前，按 config.voice.json 自动初始化已启用的语音引擎
+    // （STT/TTS/speaker）。这样 dashboard 查 engine_status 拿到的就是真值，前端 chat
+    // 页一次询问即可正确反映按钮可用状态，无需轮询。
+    #[cfg(feature = "voice")]
+    {
+        nemesis_web::handlers::voice::init_engines_from_config(&home.join("workspace")).await;
+    }
+
     let web_handle = tokio::spawn(async move {
         if let Err(e) = web_server.start_with_shutdown(web_shutdown_rx, Some(bound_tx)).await {
             error!("[Gateway] Web server error: {}", e);

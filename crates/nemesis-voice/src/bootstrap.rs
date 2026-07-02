@@ -35,6 +35,16 @@ const REQUIRED_LIBS: &[&str] = &[
     "onnxruntime_providers_shared.dll",
 ];
 
+/// AEC 后端版本（thewh1teagle/aec release tag）。
+#[cfg(target_os = "windows")]
+const AEC_VERSION: &str = "1.0.0";
+/// Windows x86_64 预编译包文件名（zip，含 aec.dll + aec.lib + libaec.h）。
+#[cfg(target_os = "windows")]
+const AEC_WIN_ARTIFACT: &str = "libaec-win-x86-64.zip";
+/// 解压后实际要落盘的共享库文件名（Windows）。
+#[cfg(target_os = "windows")]
+const AEC_LIB_FILENAME: &str = "aec.dll";
+
 #[cfg(target_os = "windows")]
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
 
@@ -329,6 +339,238 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
     let _ = fs::remove_dir_all(&extract_dir);
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AEC 库下载（Windows only）—— 与 sherpa 运行时独立。
+// 从 thewh1teagle/aec 的 GitHub release 下预编译包，解压**只取 aec.dll**
+// （丢弃 13MB 的静态 .lib）。
+// ---------------------------------------------------------------------------
+
+/// 下载 AEC 共享库到 `dst_dir`，返回解压后的 `aec.dll` 路径。
+/// 幂等：lib 已存在则跳过。
+///
+/// `dst_dir` 一般是 `{workspace}/tools/voice/aec/`（与 sherpa 运行时分开，
+/// 这样 AEC 模块可独立删除而不影响语音通道）。
+#[cfg(all(target_os = "windows", feature = "download"))]
+pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
+    let dst_dir = dst_dir.to_path_buf();
+    let proxy_url = proxy_url.to_string();
+    let handle = std::thread::spawn(move || -> Result<PathBuf> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .context("Failed to create tokio runtime")?;
+
+        fs::create_dir_all(&dst_dir)?;
+        let lib_path = dst_dir.join(AEC_LIB_FILENAME);
+        if lib_path.exists() {
+            tracing::info!("[aec] {} already present, skipping download.", AEC_LIB_FILENAME);
+            return Ok(lib_path);
+        }
+
+        let urls = [format!(
+            "https://github.com/thewh1teagle/aec/releases/download/v{}/{}",
+            AEC_VERSION, AEC_WIN_ARTIFACT
+        )];
+
+        let mut last_error = None;
+        for url in &urls {
+            tracing::info!("[aec] Trying: {}", url);
+            match rt.block_on(try_download_aec(url, &dst_dir, &proxy_url)) {
+                Ok(p) => return Ok(p),
+                Err(e) => {
+                    tracing::warn!("[aec] Failed: {}", e);
+                    last_error = Some(e);
+                }
+            }
+        }
+        bail!(
+            "[aec] All download sources failed. Last error: {}. \
+             Download {} manually from https://github.com/thewh1teagle/aec/releases \
+             and place {} in {}",
+            last_error.unwrap_or_else(|| anyhow::anyhow!("unknown error")),
+            AEC_WIN_ARTIFACT,
+            AEC_LIB_FILENAME,
+            dst_dir.display()
+        )
+    });
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("[aec] Download thread panicked"))?
+}
+
+#[cfg(all(target_os = "windows", not(feature = "download")))]
+pub fn download_aec_lib(_dst_dir: &Path, _proxy_url: &str) -> Result<PathBuf> {
+    bail!(
+        "AEC lib not found. Build with 'download' feature (default) for automatic \
+         download, or copy {} manually next to the exe.",
+        AEC_LIB_FILENAME
+    )
+}
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+async fn try_download_aec(url: &str, dst_dir: &Path, proxy_url: &str) -> Result<PathBuf> {
+    let temp_dir = std::env::temp_dir().join("nemesis-voice-aec-setup");
+    fs::create_dir_all(&temp_dir)?;
+
+    let archive_path = temp_dir.join(AEC_WIN_ARTIFACT);
+    let need_download = !archive_path.exists()
+        || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
+    if need_download {
+        download_to(url, &archive_path, proxy_url, AEC_WIN_ARTIFACT).await?;
+    } else {
+        let size = fs::metadata(&archive_path)?.len();
+        tracing::info!("[aec] Using cached archive: {:.0} KB", size as f64 / 1024.0);
+    }
+
+    // 解压（zip —— Windows 10+ 的 bsdtar 用 `tar -xf` 可直接解 zip）
+    tracing::info!("[aec] Extracting ...");
+    let extract_dir = temp_dir.join("extracted");
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir)?;
+    let status = std::process::Command::new("tar")
+        .args([
+            "-xf",
+            &archive_path.to_string_lossy(),
+            "-C",
+            &extract_dir.to_string_lossy(),
+        ])
+        .output()
+        .context("Failed to run tar command")?;
+    if !status.status.success() {
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        let _ = fs::remove_file(&archive_path);
+        bail!("[aec] extraction failed: {}", stderr.trim());
+    }
+
+    // 在解压结果里找 aec.dll（包内是 libaec-win-x86-64/aec.dll）
+    let dll_src = find_file(&extract_dir, AEC_LIB_FILENAME)?
+        .with_context(|| format!("{} not found in extracted archive", AEC_LIB_FILENAME))?;
+    fs::create_dir_all(dst_dir)?;
+    let dst = dst_dir.join(AEC_LIB_FILENAME);
+    fs::copy(&dll_src, &dst)
+        .with_context(|| format!("Failed to copy {} to {}", dll_src.display(), dst.display()))?;
+    tracing::info!(
+        "[aec] installed {} ({:.0} KB)",
+        AEC_LIB_FILENAME,
+        fs::metadata(&dst)?.len() as f64 / 1024.0
+    );
+    let _ = fs::remove_dir_all(&extract_dir);
+    Ok(dst)
+}
+
+/// 流式下载 `url` 到 `archive_path`（先写 `.part` 临时文件，成功后再改名）。
+#[cfg(all(target_os = "windows", feature = "download"))]
+async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &str) -> Result<()> {
+    let part_path = archive_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(
+            "{}.part",
+            archive_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("download")
+        ));
+
+    tracing::info!("[aec] Downloading {} ...", label);
+
+    let mut client_builder = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0")
+        .timeout(std::time::Duration::from_secs(1800))
+        .connect_timeout(std::time::Duration::from_secs(30));
+    if !proxy_url.trim().is_empty() {
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .with_context(|| format!("Invalid proxy URL: {}", proxy_url))?;
+        tracing::info!("[aec] Using proxy: {}", proxy_url);
+        client_builder = client_builder.proxy(proxy);
+    }
+    let client = client_builder
+        .build()
+        .context("Failed to create HTTP client")?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Download failed: {}", url))?;
+    if !response.status().is_success() {
+        bail!("HTTP {}", response.status());
+    }
+
+    let total_size = response.content_length();
+    let mut file = fs::File::create(&part_path)
+        .with_context(|| format!("Failed to create temp file: {}", part_path.display()))?;
+    let mut downloaded: u64 = 0;
+    let mut last_report = std::time::Instant::now();
+    let mut last_downloaded: u64 = 0;
+
+    use std::io::Write;
+    use futures::StreamExt;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Failed to read download chunk")?;
+        file.write_all(&chunk)?;
+        downloaded += chunk.len() as u64;
+
+        if last_report.elapsed() >= std::time::Duration::from_secs(5) {
+            let elapsed = last_report.elapsed().as_secs_f64();
+            let chunk_bytes = downloaded - last_downloaded;
+            let speed = if elapsed > 0.0 {
+                chunk_bytes as f64 / elapsed
+            } else {
+                0.0
+            };
+            let speed_str = format_speed(speed);
+            if let Some(total) = total_size {
+                let pct = downloaded as f64 / total as f64 * 100.0;
+                tracing::info!(
+                    "{:.1} / {:.1} MB ({: >3.0}%)  {}/s",
+                    downloaded as f64 / (1024.0 * 1024.0),
+                    total as f64 / (1024.0 * 1024.0),
+                    pct,
+                    speed_str
+                );
+            } else {
+                tracing::info!(
+                    "[aec] {:.1} MB downloaded  {}/s",
+                    downloaded as f64 / (1024.0 * 1024.0),
+                    speed_str
+                );
+            }
+            last_report = std::time::Instant::now();
+            last_downloaded = downloaded;
+        }
+    }
+    tracing::info!("[aec] Download complete: {:.0} KB", downloaded as f64 / 1024.0);
+    drop(file); // Windows 上 rename 前关掉句柄
+
+    let _ = fs::remove_file(archive_path);
+    fs::rename(&part_path, archive_path).with_context(|| "Failed to rename downloaded file")?;
+    Ok(())
+}
+
+/// 在 `root` 下递归找第一个名为 `name` 的文件。
+#[cfg(target_os = "windows")]
+fn find_file(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(target_os = "windows")]

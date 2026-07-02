@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Target sample rate for all voice processing (STT, VAD, TTS output)
@@ -127,6 +128,35 @@ impl AudioCapture {
 // =============================================================================
 // Audio playback
 // =============================================================================
+
+/// 全局共享的「远端参考信号」缓冲（AEC 用）。
+///
+/// 由 [`AudioPlayback`] 的输出 callback 写入（设备采样率、单声道 f32 ——
+/// 即「此刻正推给扬声器」的样本，时间上与真实播放对齐）；由 STT pipeline
+/// 读取，重采样到 16k 后作为 AEC 的 far-end 输入。
+///
+/// 用模块级单例而不是 AudioPlayback 实例字段：STT pipeline 和 TTS 播放循环
+/// 是分离的生命周期（可能各自创建/销毁 AudioCapture/AudioPlayback），单例
+/// 保证无论哪个 AudioPlayback 实例在播，参考信号都汇入同一处，STT 侧始终能读到。
+static FAR_END_BUFFER: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
+
+/// 拿远端参考信号缓冲的共享句柄（首次调用时惰性创建）。
+pub fn far_end_buffer() -> Arc<Mutex<VecDeque<f32>>> {
+    FAR_END_BUFFER
+        .get_or_init(|| Arc::new(Mutex::new(VecDeque::new())))
+        .clone()
+}
+
+/// 播放设备采样率（由 [`AudioPlayback::new`] 写入）。STT pipeline 用它把 far-end
+/// 参考信号从设备率重采样到 16k 喂 AEC——采集和播放可能是不同设备、不同采样率，
+/// 不能复用 near-end 的 resampler。默认 48000（未创建过播放设备时的兜底，那时 far-end
+/// 也是空的，不影响）。
+static FAR_END_RATE: AtomicU32 = AtomicU32::new(48000);
+
+/// 当前播放设备的采样率。
+pub fn far_end_sample_rate() -> u32 {
+    FAR_END_RATE.load(Ordering::Relaxed)
+}
 
 pub struct AudioPlayback {
     _stream: cpal::Stream,

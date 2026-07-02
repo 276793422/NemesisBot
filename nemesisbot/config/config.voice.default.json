@@ -8,5 +8,6 @@
   "tts_enabled": false,
   "punct_enabled": false,
   "speaker_enabled": false,
-  "silence_timeout": 3.0
+  "silence_timeout": 3.0,
+  "aec_enabled": false
 }

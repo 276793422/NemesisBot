@@ -15,6 +15,8 @@ use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
+use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
+#[cfg(target_os = "windows")]
 use tokio::sync::Mutex;
 #[cfg(target_os = "windows")]
 use tokio_util::sync::CancellationToken;
@@ -118,6 +120,22 @@ struct TtsPlaybackItem {
 #[cfg(target_os = "windows")]
 fn stt_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SttEngine>> {
     static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SttEngine>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// AEC 实例（可选）。启用且库已下载时，由 cmd_stt_engine_start 装载；STT pipeline
+/// 读取它做回声消除。SpeexAec 内部带攒帧缓冲，状态跨迭代保留。
+#[cfg(target_os = "windows")]
+fn aec_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SpeexAec>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::SpeexAec>>> = OnceLock::new();
+    INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 标点引擎（可选，ct-transformer）。启用时由 cmd_stt_engine_start 装载；
+/// run_stt_pipeline 在 recognize 后调 add_punctuation 给文本加标点。
+#[cfg(target_os = "windows")]
+fn punct_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::PunctEngine>> {
+    static INSTANCE: OnceLock<std::sync::Mutex<Option<nemesis_voice::PunctEngine>>> = OnceLock::new();
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -359,6 +377,7 @@ impl ModuleHandler for VoiceHandler {
                 "setup" => self.cmd_setup(&voice_dir, ctx).await,
                 "stop_setup" => self.cmd_stop_setup(),
                 "install_runtime" => self.cmd_install_runtime(&voice_dir, ctx).await,
+                "install_aec" => self.cmd_install_aec(&voice_dir, ctx).await,
                 "install_model" => {
                     let d = data.ok_or("missing data")?;
                     let model = d.get("model").and_then(|v| v.as_str()).ok_or("missing field: model")?;
@@ -623,6 +642,13 @@ pub async fn voice_shutdown() {
                 *mgr = None;
             }
         }
+        {
+            let mut eng = punct_engine_state().lock().unwrap();
+            if eng.is_some() {
+                tracing::info!("[Voice] Releasing punctuation engine");
+                *eng = None;
+            }
+        }
 
         tracing::info!("[Voice] Shutdown complete");
     }
@@ -630,6 +656,60 @@ pub async fn voice_shutdown() {
     #[cfg(not(target_os = "windows"))]
     {
         // Nothing to clean up on non-Windows platforms
+    }
+}
+
+/// 启动时按 `config.voice.json` 自动初始化已启用的语音引擎（STT / TTS / speaker）。
+///
+/// 在 gateway 接受 web 请求**之前**同步调用——这样 dashboard 任何 `engine_status`
+/// 查询拿到的都是真值，前端 chat 页一次询问就能正确反映按钮可用状态，无需轮询。
+/// 引擎加载失败只 warn、不阻断启动（engine_state 留空，status 如实返回 not-ready，
+/// 对应按钮保持灰——这是真实的"引擎没起来"，不是假状态）。
+pub async fn init_engines_from_config(workspace: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    {
+        let voice_dir = workspace.join("tools").join("voice");
+        let config_dir = workspace.join("config");
+        let voice_cfg = read_voice_config(&config_dir);
+        let stt_enabled = voice_cfg
+            .get("stt_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let tts_enabled = voice_cfg
+            .get("tts_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let speaker_enabled = voice_cfg
+            .get("speaker_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let handler = VoiceHandler::new();
+        if stt_enabled {
+            match handler.cmd_stt_engine_start(&voice_dir, &config_dir).await {
+                Ok(_) => tracing::info!("[Voice] auto-init: STT engine ready"),
+                Err(e) => tracing::warn!(
+                    "[Voice] auto-init: STT engine failed (chat STT buttons stay disabled): {}",
+                    e
+                ),
+            }
+        }
+        if tts_enabled {
+            match handler.cmd_tts_engine_start(&voice_dir).await {
+                Ok(_) => tracing::info!("[Voice] auto-init: TTS engine ready"),
+                Err(e) => tracing::warn!("[Voice] auto-init: TTS engine failed: {}", e),
+            }
+        }
+        if speaker_enabled {
+            match handler.cmd_speaker_engine_start(&voice_dir, &config_dir).await {
+                Ok(_) => tracing::info!("[Voice] auto-init: speaker engine ready"),
+                Err(e) => tracing::warn!("[Voice] auto-init: speaker engine failed: {}", e),
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = workspace;
     }
 }
 
@@ -683,6 +763,10 @@ impl VoiceHandler {
         let punct_ready = check_model_subdir_any(&punct_model);
         let speaker_ready = check_model_subdir_any(&speaker_model);
 
+        // AEC 库（可选，单独下载到 tools/voice/aec/）
+        let aec_lib = voice_dir.join("aec").join("aec.dll");
+        let aec_ready = aec_lib.exists();
+
         Ok(Some(serde_json::json!({
             "ready": all_dlls_present && config_exists,
             "dlls": dlls,
@@ -697,6 +781,7 @@ impl VoiceHandler {
                 "punct": { "ready": punct_ready, "path": punct_model.to_string_lossy() },
                 "speaker": { "ready": speaker_ready, "path": speaker_model.to_string_lossy() },
             },
+            "aec": { "ready": aec_ready, "path": aec_lib.to_string_lossy() },
         })))
     }
 
@@ -824,6 +909,42 @@ impl VoiceHandler {
             let mut guard = setup_cancel().lock().unwrap();
             *guard = None;
         }
+
+        result
+    }
+
+    async fn cmd_install_aec(&self, voice_dir: &std::path::Path, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let aec_dir = voice_dir.join("aec");
+        let config_path = voice_dir.join("config.toml");
+        let proxy_url = nemesis_voice::AppConfig::load_or_default(&config_path)
+            .models.proxy.url.clone();
+        let dir = aec_dir.clone();
+        let hub = ctx.state.event_hub.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("failed to create aec dir: {}", e))?;
+            hub.publish("voice-setup", serde_json::json!({
+                "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
+            }));
+            match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
+                Ok(p) => {
+                    hub.publish("voice-setup", serde_json::json!({
+                        "phase": "aec", "status": "complete", "message": "回声消除库安装完成"
+                    }));
+                    Ok(Some(serde_json::json!({ "success": true, "path": p.to_string_lossy() })))
+                }
+                Err(e) => {
+                    hub.publish("voice-setup", serde_json::json!({
+                        "phase": "aec", "status": "error",
+                        "message": format!("回声消除库安装失败: {}", e)
+                    }));
+                    Err(format!("aec install failed: {}", e))
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("install task panicked: {}", e))?;
 
         result
     }
@@ -996,6 +1117,9 @@ impl VoiceHandler {
             }
             if let Some(v) = data.get("silence_timeout") {
                 obj.insert("silence_timeout".to_string(), v.clone());
+            }
+            if let Some(v) = data.get("aec_enabled") {
+                obj.insert("aec_enabled".to_string(), v.clone());
             }
         }
 
@@ -1237,6 +1361,7 @@ impl VoiceHandler {
 
         let voice_cfg = read_voice_config(config_dir);
         let punct_enabled = voice_cfg.get("punct_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let aec_enabled = voice_cfg.get("aec_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
         let dir = voice_dir.to_path_buf();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -1257,15 +1382,70 @@ impl VoiceHandler {
 
             let use_itn = if punct_enabled {
                 match nemesis_voice::model::ensure_punct_model(&cfg) {
-                    Ok(_) => false,
-                    Err(_) => true,
+                    Ok(punct_dir) => {
+                        // 加载 ct-transformer 标点引擎，STT recognize 后给文本加标点
+                        let model_file = punct_dir.join("model.onnx");
+                        match nemesis_voice::PunctEngine::new(&model_file, cfg.stt.num_threads) {
+                            Ok(pe) => {
+                                *punct_engine_state().lock().unwrap() = Some(pe);
+                                tracing::info!("[Voice] punctuation engine loaded (ct-transformer)");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[Voice] punct engine init failed, STT output won't be punctuated: {}",
+                                    e
+                                );
+                                *punct_engine_state().lock().unwrap() = None;
+                            }
+                        }
+                        false // 用 ct-transformer，关掉 SenseVoice 自带 ITN 避免重复标点
+                    }
+                    Err(_) => true, // 标点模型没下，回退 SenseVoice 自带 ITN
                 }
             } else {
+                *punct_engine_state().lock().unwrap() = None;
                 true
             };
 
             let engine = nemesis_voice::SttEngine::new(&stt_dir, &cfg.stt.language, use_itn, cfg.stt.num_threads)
                 .map_err(|e| format!("STT engine init failed: {}", e))?;
+
+            // AEC：启用且库已下载时，加载 dll 并创建 SpeexAec 实例（采样率跟随 target_sr）。
+            // 失败只警告、不阻断 STT（回声消除降级为关闭）。
+            if aec_enabled {
+                let aec_dll = dir.join("aec").join("aec.dll");
+                if aec_dll.exists() {
+                    match nemesis_voice::aec::init(&aec_dll).and_then(|_| {
+                        nemesis_voice::SpeexAec::new(
+                            nemesis_voice::DEFAULT_FRAME_SIZE,
+                            nemesis_voice::DEFAULT_FILTER_LENGTH,
+                            cfg.audio.target_sample_rate,
+                            true,
+                        )
+                    }) {
+                        Ok(aec) => {
+                            *aec_state().lock().unwrap() = Some(aec);
+                            // 起系统混音 loopback 采集，给 AEC 喂 far-end 参考（含 TTS+RustDesk+所有播放声）
+                            nemesis_voice::start_loopback();
+                            tracing::info!("[Voice] AEC enabled (SpeexDSP, sr={})", cfg.audio.target_sample_rate);
+                        }
+                        Err(e) => {
+                            tracing::warn!("[Voice] AEC init failed, echo cancellation disabled: {}", e);
+                            *aec_state().lock().unwrap() = None;
+                            nemesis_voice::stop_loopback();
+                        }
+                    }
+                } else {
+                    tracing::info!(
+                        "[Voice] AEC enabled but lib not downloaded (tools/voice/aec/aec.dll); echo cancellation off"
+                    );
+                    *aec_state().lock().unwrap() = None;
+                    nemesis_voice::stop_loopback();
+                }
+            } else {
+                *aec_state().lock().unwrap() = None;
+                nemesis_voice::stop_loopback();
+            }
 
             Ok(engine)
         }).await
@@ -2491,6 +2671,11 @@ fn run_stt_pipeline(
         }
     };
 
+    // Far-end 重采样器：播放设备率 → target_sr（采集与播放可能是不同设备、不同采样率，
+    // 不能复用 near-end 的 resampler）。AEC 关闭时不使用，但廉价，预先建好。
+    let mut far_resampler =
+        nemesis_voice::Resampler::new(nemesis_voice::far_end_sample_rate(), target_sr).ok();
+
     tracing::info!("[STT Pipeline] Started (detector={})", detector.name());
 
     let mut chunk_count: u64 = 0;
@@ -2502,7 +2687,29 @@ fn run_stt_pipeline(
                 chunk_count += 1;
                 let resampled = resampler.resample(&chunk);
 
-                if let Some(speech) = detector.process(&resampled, target_sr) {
+                // AEC：用 TTS 播放（far-end）抵消麦克风（near-end）里的回声，使 VAD/STT
+                // 只听到用户。未启用/未装载时直通 resampled，无额外开销。
+                let cleaned: Vec<f32> = {
+                    let mut guard = aec_state().lock().unwrap();
+                    match guard.as_mut() {
+                        Some(aec) => {
+                            // 排空 far-end 参考（设备率）并重采样到 target_sr
+                            let far_dev: Vec<f32> = nemesis_voice::far_end_buffer()
+                                .lock()
+                                .unwrap()
+                                .drain(..)
+                                .collect();
+                            let far_16k = match far_resampler.as_mut() {
+                                Some(r) => r.resample(&far_dev),
+                                None => far_dev,
+                            };
+                            aec.process(&resampled, &far_16k)
+                        }
+                        None => resampled,
+                    }
+                };
+
+                if let Some(speech) = detector.process(&cleaned, target_sr) {
                     speech_count += 1;
                     if !speech.is_empty() {
                         // Speaker verification: if enabled, verify before STT
@@ -2537,7 +2744,7 @@ fn run_stt_pipeline(
                                 Ok(text) => {
                                     let trimmed = text.trim();
                                     if !trimmed.is_empty() {
-                                        output.send_text(trimmed);
+                                        output.send_text(&punctuate_if_loaded(trimmed));
                                     }
                                 }
                                 Err(e) => tracing::warn!("[STT Pipeline] Recognition error: {}", e),
@@ -2566,7 +2773,7 @@ fn run_stt_pipeline(
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
                             tracing::info!("[STT Pipeline] Recognized (final flush): {}", trimmed);
-                            output.send_text(trimmed);
+                            output.send_text(&punctuate_if_loaded(trimmed));
                         }
                     }
                     Err(e) => tracing::warn!("[STT Pipeline] Final recognition error: {}", e),
@@ -2579,6 +2786,23 @@ fn run_stt_pipeline(
 }
 
 #[cfg(target_os = "windows")]
+/// 若标点引擎已加载，给 STT 文本加标点；否则原样返回。
+#[cfg(target_os = "windows")]
+fn punctuate_if_loaded(text: &str) -> String {
+    let guard = punct_engine_state().lock().unwrap();
+    if let Some(ref engine) = *guard {
+        match engine.add_punctuation(text) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("[STT Pipeline] punctuate failed, using raw text: {}", e);
+                text.to_string()
+            }
+        }
+    } else {
+        text.to_string()
+    }
+}
+
 fn push_stt_result(session_id: &str, session_mgr: Arc<crate::session::SessionManager>, text: &str) {
     let msg = crate::protocol::ProtocolMessage::push(
         "voice",
