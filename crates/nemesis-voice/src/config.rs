@@ -188,7 +188,8 @@ impl Default for AppConfig {
                 window_size: 512,
             },
             tts: TtsConfig {
-                model_name: "kokoro-multi-lang-v1_1".into(),
+                // v1_0：v1_1 在当前 sherpa-onnx 正式版念英文会崩；v1_0 中英文都支持。
+                model_name: "kokoro-multi-lang-v1_0".into(),
                 speaker_id: 45,
                 speed: 1.0,
                 num_threads: 4,

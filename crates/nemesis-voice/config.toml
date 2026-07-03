@@ -16,7 +16,10 @@ max_speech_duration = 30.0
 window_size = 512
 
 [tts]
-model_name = "kokoro-multi-lang-v1_1"
+# 用 kokoro-multi-lang-v1_0（不要换 v1_1）：v1_1 在当前 sherpa-onnx 1.13.2/1.13.3 上
+# 念英文会触发 lexicon Unknown token → C++ 崩（sherpa 正式版尚未支持 v1_1 英文路径）。
+# v1_0（53 speakers）中英文原生支持，sid 45(zf_xiaobei 中文女声) 也能念英文。
+model_name = "kokoro-multi-lang-v1_0"
 speaker_id = 45
 speed = 1.0
 num_threads = 4
@@ -125,6 +128,34 @@ files = [
     { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
 ]
 
+[[models.sources]]
+name = "kokoro-multi-lang-v1_0"
+category = "tts"
+repo = "csukuangfj/kokoro-multi-lang-v1_0"
+files = [
+    { local = "model.onnx", remote = "model.onnx" },
+    { local = "voices.bin", remote = "voices.bin" },
+    { local = "tokens.txt", remote = "tokens.txt" },
+    { local = "lexicon-us-en.txt", remote = "lexicon-us-en.txt" },
+    { local = "lexicon-zh.txt", remote = "lexicon-zh.txt" },
+    { local = "date-zh.fst", remote = "date-zh.fst" },
+    { local = "number-zh.fst", remote = "number-zh.fst" },
+    { local = "phone-zh.fst", remote = "phone-zh.fst" },
+    { local = "espeak-ng-data/phontab", remote = "espeak-ng-data/phontab" },
+    { local = "espeak-ng-data/phonindex", remote = "espeak-ng-data/phonindex" },
+    { local = "espeak-ng-data/phondata", remote = "espeak-ng-data/phondata" },
+    { local = "espeak-ng-data/phondata-manifest", remote = "espeak-ng-data/phondata-manifest" },
+    { local = "espeak-ng-data/intonations", remote = "espeak-ng-data/intonations" },
+    { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
+    { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
+    { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
+    { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
+    { local = "dict/idf.utf8", remote = "dict/idf.utf8" },
+    { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
+]
+
+# ⚠ 不要把 [tts].model_name 设成下面的 v1_1：在当前 sherpa-onnx 正式版上念英文会 C++ 崩。
 [[models.sources]]
 name = "kokoro-multi-lang-v1_1"
 category = "tts"

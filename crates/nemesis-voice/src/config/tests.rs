@@ -44,7 +44,7 @@ fn app_config_default_populates_expected_fields() {
     assert_eq!(cfg.vad.threshold, 0.5);
     assert_eq!(cfg.vad.window_size, 512);
 
-    assert_eq!(cfg.tts.model_name, "kokoro-multi-lang-v1_1");
+    assert_eq!(cfg.tts.model_name, "kokoro-multi-lang-v1_0");
     assert_eq!(cfg.tts.speaker_id, 45);
     assert_eq!(cfg.tts.speed, 1.0);
 
