@@ -26,6 +26,26 @@ const sttEnabled = ref(false)
 const ttsEnabled = ref(false)
 const punctEnabled = ref(false)
 const aecEnabled = ref(false)
+// AEC 进阶参数：房间预设映射到 filter_length（16kHz 下的采样数）。改后重启 STT 生效。
+const aecAdvancedOpen = ref(false)
+const aecFilterLength = ref(8192) // 与后端 DEFAULT_FILTER_LENGTH 对齐
+const aecPreprocess = ref(true)
+
+// 房间类型预设：filter_length（采样数）≈ 回声尾 ms × 16
+const AEC_ROOM_PRESETS = [
+  { key: 'small', label: '小房间', filterLength: 4096, ms: 256 },
+  { key: 'normal', label: '普通房间', filterLength: 8192, ms: 512 },
+  { key: 'large', label: '空旷大房', filterLength: 16384, ms: 1024 },
+] as const
+// 当前值命中的预设（没命中说明值被手动改过，按钮组不高亮）
+const aecCurrentRoomKey = computed(() => {
+  const found = AEC_ROOM_PRESETS.find((p) => p.filterLength === aecFilterLength.value)
+  return found ? found.key : ''
+})
+const aecCurrentRoomMs = computed(() => Math.round(aecFilterLength.value / 16))
+function selectAecRoom(filterLength: number) {
+  aecFilterLength.value = filterLength
+}
 
 // TTS test
 const ttsText = ref('')
@@ -306,6 +326,8 @@ async function loadVoiceConfig() {
       if (data.tts_enabled != null) ttsEnabled.value = data.tts_enabled
       if (data.punct_enabled != null) punctEnabled.value = data.punct_enabled
       if (data.aec_enabled != null) aecEnabled.value = data.aec_enabled
+      if (data.aec_filter_length != null) aecFilterLength.value = data.aec_filter_length
+      if (data.aec_preprocess != null) aecPreprocess.value = data.aec_preprocess
       if (data.speaker_enabled != null) speakerEngineEnabled.value = data.speaker_enabled
       if (data.silence_timeout != null) silenceTimeout.value = data.silence_timeout
     }
@@ -330,6 +352,8 @@ function saveVoiceConfigDebounced() {
         tts_enabled: ttsEnabled.value,
         punct_enabled: punctEnabled.value,
         aec_enabled: aecEnabled.value,
+        aec_filter_length: aecFilterLength.value,
+        aec_preprocess: aecPreprocess.value,
         speaker_enabled: speakerEngineEnabled.value,
         silence_timeout: silenceTimeout.value,
       })
@@ -344,7 +368,7 @@ const _engineInitialized = ref(false)
 const _skipEngineWatch = ref(false)
 
 // Watch all config values and auto-save
-watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled, aecEnabled, speakerEngineEnabled, silenceTimeout], () => {
+watch([selectedSpeaker, volume, speed, captureDevice, playbackDevice, sttEnabled, ttsEnabled, punctEnabled, aecEnabled, aecFilterLength, aecPreprocess, speakerEngineEnabled, silenceTimeout], () => {
   saveVoiceConfigDebounced()
 })
 
@@ -698,6 +722,39 @@ onUnmounted(() => {
             <span class="toggle-label">{{ !aecReady ? '未安装' : (aecEnabled ? '启用' : '停用') }}</span>
           </label>
 
+          <!-- AEC 进阶参数（仅 AEC 已启用且库就绪；改后重启语音对话生效） -->
+          <div v-if="aecReady && aecEnabled" class="aec-advanced">
+            <div class="aec-advanced-header" @click="aecAdvancedOpen = !aecAdvancedOpen">
+              <span class="aec-caret">{{ aecAdvancedOpen ? '▾' : '▸' }}</span>
+              <span>AEC 进阶</span>
+            </div>
+            <div v-if="aecAdvancedOpen" class="aec-advanced-body">
+              <div class="aec-row">
+                <span class="aec-row-key">房间类型</span>
+                <div class="aec-room-group">
+                  <button
+                    v-for="p in AEC_ROOM_PRESETS"
+                    :key="p.key"
+                    type="button"
+                    class="aec-room-btn"
+                    :class="{ active: aecCurrentRoomKey === p.key }"
+                    @click="selectAecRoom(p.filterLength)"
+                  >{{ p.label }}</button>
+                </div>
+                <span class="aec-hint">当前回声尾 {{ aecCurrentRoomMs }} ms</span>
+              </div>
+              <div class="aec-row">
+                <span class="aec-row-key">降噪预处理</span>
+                <label class="toggle-switch">
+                  <input type="checkbox" v-model="aecPreprocess" />
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">{{ aecPreprocess ? '启用' : '停用' }}</span>
+                </label>
+              </div>
+              <div class="aec-restart-hint">⚠ 修改后重启语音对话生效</div>
+            </div>
+          </div>
+
           <!-- Silence timeout -->
           <span class="settings-key">自动发送</span>
           <div style="display: flex; align-items: center; gap: var(--space-2);">
@@ -910,5 +967,84 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .toggle-switch input:disabled ~ .toggle-label {
   opacity: 0.5;
+}
+
+/* AEC 进阶折叠区（跨两列，仅在 AEC 启用且库就绪时出现） */
+.aec-advanced {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.aec-advanced-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.aec-advanced-header:hover {
+  color: var(--text);
+}
+.aec-caret {
+  display: inline-block;
+  width: 12px;
+}
+.aec-advanced-body {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.aec-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.aec-row-key {
+  min-width: 90px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.aec-room-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.aec-room-btn {
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.aec-room-btn:last-child {
+  border-right: none;
+}
+.aec-room-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.aec-room-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.aec-hint {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.aec-restart-hint {
+  font-size: var(--text-sm);
+  color: var(--warning);
 }
 </style>

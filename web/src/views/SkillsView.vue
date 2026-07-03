@@ -535,7 +535,7 @@ onMounted(loadInstalled)
                   <span v-if="r.version && r.version !== 'latest'" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
                   <span v-else></span>
                   <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="handleInstallClick(r.source!, r.slug!)">
-                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug!) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
                   </button>
                 </div>
               </div>
@@ -551,7 +551,7 @@ onMounted(loadInstalled)
                   <span v-if="r.version && r.version !== 'latest'" style="font-size: var(--text-xs); color: var(--text-muted);">v{{ r.version }}</span>
                   <span v-else></span>
                   <button class="btn btn-sm btn-primary" :disabled="installingSlug === r.slug || r.installed" @click.stop="handleInstallClick(r.source!, r.slug!)">
-                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
+                    {{ r.installed ? '已安装' : alreadyInstalledSlugs.has(r.slug!) ? '更新' : installingSlug === r.slug ? '安装中...' : '安装' }}
                   </button>
                 </div>
               </div>

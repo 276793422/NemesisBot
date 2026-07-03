@@ -34,6 +34,10 @@ const testNames: Record<string, string> = {
   firewall_status: '防火墙状态',
 }
 
+function regenerateAuthToken() {
+  authToken.value = crypto.randomUUID()
+}
+
 async function loadConfig() {
   try {
     const data = await request('cluster', 'config.get')
@@ -192,7 +196,7 @@ onMounted(async () => {
             <label class="form-label">认证 Token</label>
             <div style="display:flex;gap:var(--space-2);align-items:center">
               <input class="form-input" type="password" :value="authToken" readonly style="width:240px" />
-              <button class="btn btn-sm" @click="authToken = crypto.randomUUID()">重新生成</button>
+              <button class="btn btn-sm" @click="regenerateAuthToken()">重新生成</button>
             </div>
           </div>
           <div style="display:flex;gap:var(--space-2);margin-top:var(--space-4)">

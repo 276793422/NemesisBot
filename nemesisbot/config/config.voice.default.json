@@ -9,5 +9,7 @@
   "punct_enabled": false,
   "speaker_enabled": false,
   "silence_timeout": 3.0,
-  "aec_enabled": false
+  "aec_enabled": false,
+  "aec_filter_length": 8192,
+  "aec_preprocess": true
 }

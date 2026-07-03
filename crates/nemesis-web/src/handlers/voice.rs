@@ -1362,6 +1362,15 @@ impl VoiceHandler {
         let voice_cfg = read_voice_config(config_dir);
         let punct_enabled = voice_cfg.get("punct_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
         let aec_enabled = voice_cfg.get("aec_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        // AEC 进阶参数：房间预设映射到 filter_length（16kHz 下采样数）。
+        // 越界/缺省回退默认值；非法值会让 AecNew 返回 null，由下方 match 降级为关闭。
+        let aec_filter_length = voice_cfg
+            .get("aec_filter_length")
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32)
+            .filter(|&v| (160..=65536).contains(&v))
+            .unwrap_or(nemesis_voice::DEFAULT_FILTER_LENGTH);
+        let aec_preprocess = voice_cfg.get("aec_preprocess").and_then(|v| v.as_bool()).unwrap_or(true);
         let dir = voice_dir.to_path_buf();
 
         let result = tokio::task::spawn_blocking(move || {
@@ -1418,16 +1427,19 @@ impl VoiceHandler {
                     match nemesis_voice::aec::init(&aec_dll).and_then(|_| {
                         nemesis_voice::SpeexAec::new(
                             nemesis_voice::DEFAULT_FRAME_SIZE,
-                            nemesis_voice::DEFAULT_FILTER_LENGTH,
+                            aec_filter_length,
                             cfg.audio.target_sample_rate,
-                            true,
+                            aec_preprocess,
                         )
                     }) {
                         Ok(aec) => {
                             *aec_state().lock().unwrap() = Some(aec);
                             // 起系统混音 loopback 采集，给 AEC 喂 far-end 参考（含 TTS+RustDesk+所有播放声）
                             nemesis_voice::start_loopback();
-                            tracing::info!("[Voice] AEC enabled (SpeexDSP, sr={})", cfg.audio.target_sample_rate);
+                            tracing::info!(
+                                "[Voice] AEC enabled (SpeexDSP, sr={}, filter_length={}, preprocess={})",
+                                cfg.audio.target_sample_rate, aec_filter_length, aec_preprocess
+                            );
                         }
                         Err(e) => {
                             tracing::warn!("[Voice] AEC init failed, echo cancellation disabled: {}", e);

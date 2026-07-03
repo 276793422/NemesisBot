@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { useAppStore } from '../stores/app'
+import { useWSAPI } from '../composables/useWSAPI'
 import { marked } from 'marked'
 
-const appStore = useAppStore()
+const { request } = useWSAPI()
 const activeTab = ref('about')
 const readmeContent = ref('')
 const readmeLoading = ref(false)
 const readmeError = ref('')
+const version = ref('--')
 
-const version = computed(() => appStore.version || '--')
+onMounted(async () => {
+  try {
+    const data = await request('system', 'version')
+    if (data?.version) version.value = data.version
+  } catch { /* 保留默认 '--' */ }
+})
 
 async function loadReadme() {
   if (readmeContent.value) return

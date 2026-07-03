@@ -413,28 +413,29 @@ fn normalize_tts_text(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut last_was_punct = false;
     let mut prev_stripped = false; // 上一字符是否被剥（如 emoji）
-    for ch in text.chars() {
+    let mut prev_emitted_cjk = false; // 上一个**保留**的字符是否 CJK
+    let mut iter = text.chars().peekable();
+    while let Some(raw) = iter.next() {
         // 全角标点 → ASCII：Kokoro 词表只有 ASCII 标点，全角（？ ！ 等）会触发
         // sherpa "Unknown token" C++ 异常。先转成 ASCII 再走下面的安全过滤。
-        let ch = match ch {
-            '，' | '、' => ',',
-            '。' => '.',
-            '？' => '?',
-            '！' => '!',
-            '；' => ';',
-            '：' => ':',
-            c => c,
-        };
+        let ch = map_fullwidth_punct(raw);
         if !is_tts_safe(ch) {
             prev_stripped = true;
             continue;
         }
-        // 被剥字符（emoji 等）后面常跟一个空格——这个"孤儿空格"也要去掉：
-        // Kokoro 中文路径下句中 ASCII 空格会触发 "Unknown token"。
-        // （仅删紧跟在被剥字符后的空格；英文单词之间的空格不受影响。）
-        if ch == ' ' && prev_stripped {
-            prev_stripped = false;
-            continue;
+        // 空格处理：Kokoro 中文路径下，CJK 之间的 ASCII 空格会触发 "Unknown token"
+        // （见文件顶部 issue 2223）。原先只删"被剥字符后的孤儿空格"，漏掉了用户/LLM
+        // 在中文之间手打的空格——"3日 周五"这类整句都会播放失败。三类空格都去掉：
+        //   (a) 紧跟被剥字符后的"孤儿空格"；
+        //   (b) 前一个保留字符是 CJK（"3日 周五" → "3日周五"）；
+        //   (c) 后一个字符是 CJK（"周五 下午" 从后看命中）。
+        // 英文单词之间的空格（前后都不是 CJK）保留——Kokoro 英文路径需要。
+        if ch == ' ' {
+            let next_is_cjk = iter.peek().map_or(false, |&n| is_cjk(n));
+            if prev_stripped || prev_emitted_cjk || next_is_cjk {
+                prev_stripped = false;
+                continue;
+            }
         }
         prev_stripped = false;
         if is_tts_punct(ch) {
@@ -445,6 +446,7 @@ fn normalize_tts_text(text: &str) -> String {
         } else {
             last_was_punct = false;
         }
+        prev_emitted_cjk = is_cjk(ch);
         result.push(ch);
     }
     result
@@ -453,7 +455,7 @@ fn normalize_tts_text(text: &str) -> String {
 /// Characters known to be safe for kokoro TTS.
 fn is_tts_safe(ch: char) -> bool {
     // CJK ideographs
-    if matches!(ch, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}') {
+    if is_cjk(ch) {
         return true;
     }
     // ASCII alphanumeric + space
@@ -462,6 +464,25 @@ fn is_tts_safe(ch: char) -> bool {
     }
     // Known-safe punctuation only
     is_tts_punct(ch)
+}
+
+/// 是否为 CJK 表意文字（Kokoro 中文路径安全）。
+fn is_cjk(ch: char) -> bool {
+    matches!(ch, '\u{4E00}'..='\u{9FFF}' | '\u{3400}'..='\u{4DBF}')
+}
+
+/// 全角标点 → ASCII：Kokoro 词表只有 ASCII 标点，全角会触发 "Unknown token"。
+/// 非标点（含 CJK 汉字、ASCII 字母数字）原样返回。
+fn map_fullwidth_punct(ch: char) -> char {
+    match ch {
+        '，' | '、' => ',',
+        '。' => '.',
+        '？' => '?',
+        '！' => '!',
+        '；' => ';',
+        '：' => ':',
+        c => c,
+    }
 }
 
 /// Punctuation the kokoro model handles correctly.
@@ -473,4 +494,61 @@ fn is_tts_punct(ch: char) -> bool {
         // Chinese
         | '，' | '。' | '？' | '！' | '、' | '；' | '：'
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归：用户报告 "【**2026年7月3日 周五 下午两点四十**！】" 无法播放。
+    /// 根因——CJK 之间的 ASCII 空格让 Kokoro 抛 "Unknown token"（issue 2223），
+    /// 此前 normalize 只删 emoji 后的孤儿空格，漏了中文之间手打的空格。
+    #[test]
+    fn normalize_user_regression_no_cjk_adjacent_space() {
+        let out = normalize_tts_text("【**2026年7月3日 周五 下午两点四十**！】");
+        assert_eq!(out, "2026年7月3日周五下午两点四十!");
+        assert!(!out.contains(' '), "normalized text must contain no ASCII space: {out:?}");
+    }
+
+    #[test]
+    fn normalize_drops_space_between_cjk() {
+        assert_eq!(normalize_tts_text("你 好"), "你好");
+        assert_eq!(normalize_tts_text("3日 周五"), "3日周五");
+        // 多个连续 CJK 间空格全去
+        assert_eq!(normalize_tts_text("你 好 吗"), "你好吗");
+        // CJK 与 ASCII 数字之间也去（前是 CJK）
+        assert_eq!(normalize_tts_text("第3 章"), "第3章");
+    }
+
+    #[test]
+    fn normalize_keeps_english_spaces() {
+        // 英文单词之间的空格必须保留（Kokoro 英文路径需要）
+        assert_eq!(normalize_tts_text("hello world"), "hello world");
+        assert_eq!(normalize_tts_text("it is 2026"), "it is 2026");
+    }
+
+    #[test]
+    fn normalize_drops_orphan_space_after_stripped() {
+        // emoji 被剥后紧跟的空格也要去（原有逻辑不能回归）
+        assert_eq!(normalize_tts_text("你好😀 世界"), "你好世界");
+    }
+
+    #[test]
+    fn normalize_collapses_adjacent_punct() {
+        // 连续/相邻标点会触发 C++ 异常，只保留一个
+        assert_eq!(normalize_tts_text("你好。。世界"), "你好.世界");
+        assert_eq!(normalize_tts_text("真的吗？？"), "真的吗?");
+    }
+
+    #[test]
+    fn normalize_maps_fullwidth_punct() {
+        assert_eq!(normalize_tts_text("你好，世界。"), "你好,世界.");
+    }
+
+    #[test]
+    fn normalize_strips_unsafe_symbols() {
+        // 【】、markdown 星号、书名号等都不在白名单，必须剥掉（不能漏到 Kokoro）
+        let out = normalize_tts_text("《**测试**》");
+        assert_eq!(out, "测试");
+    }
 }

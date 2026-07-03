@@ -31,10 +31,10 @@ function removeToast(id: number) {
 export function useToast() {
   return {
     toasts,
-    info: (msg: string) => addToast(msg, 'info'),
-    success: (msg: string) => addToast(msg, 'success'),
-    warn: (msg: string) => addToast(msg, 'warn'),
-    error: (msg: string) => addToast(msg, 'error', 6000),
+    info: (msg: string, duration?: number) => addToast(msg, 'info', duration),
+    success: (msg: string, duration?: number) => addToast(msg, 'success', duration),
+    warn: (msg: string, duration?: number) => addToast(msg, 'warn', duration),
+    error: (msg: string, duration?: number) => addToast(msg, 'error', duration ?? 6000),
     remove: removeToast,
   }
 }
