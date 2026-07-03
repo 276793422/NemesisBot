@@ -116,6 +116,24 @@ cd plugins/plugin-ui
 cargo build --release
 ```
 
+### 定制构建（功能裁剪）
+
+需要 IoT / 低资源 / 精简发行版？所有子系统都是可选 cargo feature，可按需关闭：
+
+```bash
+# menuconfig 风格 TUI：勾选功能 → 保存 → 编译 → 拷贝到 bin/bin_customize/
+scripts\customize.bat                    # Windows
+bash scripts/customize.sh                # Linux/macOS/git-bash
+
+# 直接编译最小 IoT 版（加载 minimal-iot 预设，产物约 12MB）
+bash scripts/customize.sh iot
+
+# 或手动指定 feature 子集
+cargo build --profile iotsmall -p nemesisbot --no-default-features --features "channels-web,channels-rpc"
+```
+
+可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md`。
+
 ### 运行测试
 
 ```bash
@@ -526,7 +544,7 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具（19 个项目：12 workspace member + 7 独立）
+├── test-tools/                      # 测试工具（20 个项目：13 workspace member + 7 独立）
 │   ├── TestAIServer/                # AI 服务器模拟器（Go，8 个测试模型）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
 │   ├── integration-test/            # CLI 集成测试（22 命令，298 断言）
@@ -547,6 +565,7 @@ NemesisBot_Rust/
 │   ├── build-linux.sh / build-macos.sh / build-wsl.sh
 │   ├── build-android.bat            #   Android 交叉编译
 │   ├── setup-linux.sh / setup-android.bat / setup-macos.sh  # 环境搭建
+│   ├── customize.bat / customize.sh #   功能裁剪入口（menuconfig TUI → 编译 → 拷贝）
 │   ├── run-demo.bat                 #   一键清理 + 构建 + 运行
 │   └── coverage.sh                  #   覆盖率脚本
 └── Cargo.toml                       # Workspace 配置
@@ -577,6 +596,7 @@ NemesisBot_Rust/
 - **持久化记忆** - AI 持续学习和进化
 - **Skill 系统** - 远程仓库搜索 + 本地技能管理
 - **多实例部署** - 支持同一设备运行多个独立实例
+- **编译期功能裁剪** - 所有子系统（cluster/forge/memory/workflow/security/voice/desktop/各通道…）均为可选 cargo feature，默认全开，可按需关闭；提供 menuconfig 风格 TUI 配置器（`scripts/customize.{bat,sh}`）和 `iotsmall` profile（panic=abort，产物约 12MB，IoT / 低资源场景）
 
 ---
 
@@ -607,6 +627,8 @@ nemesisbot cors             # CORS 配置
 nemesisbot migrate          # 数据迁移（OpenClaw → NemesisBot）
 nemesisbot agent            # Agent 管理
 ```
+
+> 上述为默认全量构建的命令集。CLI 子命令随 cargo feature 条件编译——裁剪掉某子系统后对应子命令不存在（例如关 `cluster` 则无 `cluster` / `scanner` 等子命令）。参见「定制构建」。
 
 ---
 
