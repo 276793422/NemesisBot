@@ -16,10 +16,10 @@ max_speech_duration = 30.0
 window_size = 512
 
 [tts]
-# 用 kokoro-multi-lang-v1_0（不要换 v1_1）：v1_1 在当前 sherpa-onnx 1.13.2/1.13.3 上
-# 念英文会触发 lexicon Unknown token → C++ 崩（sherpa 正式版尚未支持 v1_1 英文路径）。
-# v1_0（53 speakers）中英文原生支持，sid 45(zf_xiaobei 中文女声) 也能念英文。
-model_name = "kokoro-multi-lang-v1_0"
+# kokoro-multi-lang-v1_1（103 speakers）中英文都支持。关键：espeak-ng-data 必须带
+# lang/ 语言定义文件（见 sources 里 espeak-ng-data/lang/gmw/en、lang/sit/cmn），
+# 缺了英文会触发 lexicon Unknown token → C++ 崩。v1_0（53 speakers）同理也可用。
+model_name = "kokoro-multi-lang-v1_1"
 speaker_id = 45
 speed = 1.0
 num_threads = 4
@@ -121,6 +121,11 @@ files = [
     { local = "espeak-ng-data/intonations", remote = "espeak-ng-data/intonations" },
     { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
     { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    # espeak-ng 语言 voice 定义（缺了它 espeak 找不到语言 → 英文 Unknown token 崩；
+    # HF/git 不跟踪 lang/ 空目录，必须显式列文件。英文=gmw/en, gmw/en-US；中文=sit/cmn）
+    { local = "espeak-ng-data/lang/gmw/en", remote = "espeak-ng-data/lang/gmw/en" },
+    { local = "espeak-ng-data/lang/gmw/en-US", remote = "espeak-ng-data/lang/gmw/en-US" },
+    { local = "espeak-ng-data/lang/sit/cmn", remote = "espeak-ng-data/lang/sit/cmn" },
     { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
     { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
     { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
@@ -148,6 +153,11 @@ files = [
     { local = "espeak-ng-data/intonations", remote = "espeak-ng-data/intonations" },
     { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
     { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    # espeak-ng 语言 voice 定义（缺了它 espeak 找不到语言 → 英文 Unknown token 崩；
+    # HF/git 不跟踪 lang/ 空目录，必须显式列文件。英文=gmw/en, gmw/en-US；中文=sit/cmn）
+    { local = "espeak-ng-data/lang/gmw/en", remote = "espeak-ng-data/lang/gmw/en" },
+    { local = "espeak-ng-data/lang/gmw/en-US", remote = "espeak-ng-data/lang/gmw/en-US" },
+    { local = "espeak-ng-data/lang/sit/cmn", remote = "espeak-ng-data/lang/sit/cmn" },
     { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
     { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
     { local = "dict/user.dict.utf8", remote = "dict/user.dict.utf8" },
@@ -155,7 +165,6 @@ files = [
     { local = "dict/stop_words.utf8", remote = "dict/stop_words.utf8" },
 ]
 
-# ⚠ 不要把 [tts].model_name 设成下面的 v1_1：在当前 sherpa-onnx 正式版上念英文会 C++ 崩。
 [[models.sources]]
 name = "kokoro-multi-lang-v1_1"
 category = "tts"
@@ -179,6 +188,11 @@ files = [
     # Language dicts (Chinese + English minimum)
     { local = "espeak-ng-data/cmn_dict", remote = "espeak-ng-data/cmn_dict" },
     { local = "espeak-ng-data/en_dict", remote = "espeak-ng-data/en_dict" },
+    # espeak-ng 语言 voice 定义（缺了它 espeak 找不到语言 → 英文 Unknown token 崩；
+    # HF/git 不跟踪 lang/ 空目录，必须显式列文件。英文=gmw/en, gmw/en-US；中文=sit/cmn）
+    { local = "espeak-ng-data/lang/gmw/en", remote = "espeak-ng-data/lang/gmw/en" },
+    { local = "espeak-ng-data/lang/gmw/en-US", remote = "espeak-ng-data/lang/gmw/en-US" },
+    { local = "espeak-ng-data/lang/sit/cmn", remote = "espeak-ng-data/lang/sit/cmn" },
     # Jieba dict for Chinese word segmentation
     { local = "dict/jieba.dict.utf8", remote = "dict/jieba.dict.utf8" },
     { local = "dict/hmm_model.utf8", remote = "dict/hmm_model.utf8" },
