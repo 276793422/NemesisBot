@@ -5,6 +5,24 @@ fn test_bus() -> broadcast::Sender<InboundMessage> {
     tx
 }
 
+// Directly exercises the allow_from rule (single source of truth shared by
+// process_sync_events and start()), without needing a live Matrix server.
+#[test]
+fn test_sender_allowed_rule() {
+    // Empty allow_from = open (everyone allowed).
+    assert!(MatrixChannel::sender_allowed(&[], "@anyone:matrix.org"));
+    assert!(MatrixChannel::sender_allowed(&[], ""));
+    // Non-empty = only listed senders pass.
+    let list = vec!["@alice:m.org".to_string(), "@bob:m.org".to_string()];
+    assert!(MatrixChannel::sender_allowed(&list, "@alice:m.org"));
+    assert!(MatrixChannel::sender_allowed(&list, "@bob:m.org"));
+    assert!(!MatrixChannel::sender_allowed(&list, "@eve:m.org")); // not listed
+    assert!(!MatrixChannel::sender_allowed(&list, "")); // empty sender rejected
+    // Exact-match semantics — no substring / prefix / case folding.
+    assert!(!MatrixChannel::sender_allowed(&list, "alice:m.org")); // missing '@'
+    assert!(!MatrixChannel::sender_allowed(&list, "@ALICE:M.ORG")); // case-sensitive
+}
+
 #[tokio::test]
 async fn test_matrix_channel_new_validates() {
     let config = MatrixConfig {

@@ -258,6 +258,15 @@ impl MatrixChannel {
         Ok(result.event_id)
     }
 
+    /// allow_from access control — the **single source of truth** for "is this
+    /// sender allowed to command the bot". Returns true if the message should
+    /// be processed. Semantics: empty `allow_from` = open (allow everyone);
+    /// non-empty = only listed senders. Shared by `process_sync_events` and the
+    /// `start()` runtime sync loop so the rule can't drift between them.
+    fn sender_allowed(allow_from: &[String], sender: &str) -> bool {
+        allow_from.is_empty() || allow_from.iter().any(|a| a == sender)
+    }
+
     /// Processes events from a sync response.
     pub fn process_sync_events(
         &self,
@@ -285,13 +294,9 @@ impl MatrixChannel {
                                 continue;
                             }
 
-                            // allow_from access control — consistent with
-                            // WhatsApp / Discord / DingTalk / Feishu. When the
-                            // list is non-empty, only listed senders may command
-                            // the bot; others are silently dropped.
-                            if !self.config.allow_from.is_empty()
-                                && !self.config.allow_from.iter().any(|a| a == sender)
-                            {
+                            // allow_from access control — single source of truth
+                            // is `MatrixChannel::sender_allowed` (shared with start()).
+                            if !Self::sender_allowed(&self.config.allow_from, sender) {
                                 continue;
                             }
 
@@ -426,10 +431,10 @@ impl Channel for MatrixChannel {
                                     continue;
                                 }
 
-                                // allow_from access control (see process_sync_events)
-                                if !allow_from.is_empty()
-                                    && !allow_from.iter().any(|a| a == sender)
-                                {
+                                // allow_from access control — single source of truth
+                                // is `MatrixChannel::sender_allowed` (shared with
+                                // process_sync_events).
+                                if !Self::sender_allowed(&allow_from, sender) {
                                     continue;
                                 }
 
