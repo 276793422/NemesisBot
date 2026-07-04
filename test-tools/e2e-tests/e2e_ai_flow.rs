@@ -32,7 +32,10 @@ async fn chat_request(messages: Vec<Value>, tools: Vec<Value>) -> Value {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_ai_server_health() {
     let resp = reqwest::get(&format!("{}/health", AI_SERVER_URL))
         .await
@@ -41,7 +44,10 @@ async fn test_e2e_ai_server_health() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_list_models() {
     let resp = reqwest::get(&format!("{}/v1/models", AI_SERVER_URL))
         .await
@@ -58,7 +64,10 @@ async fn test_e2e_list_models() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_simple_chat() {
     let messages = vec![serde_json::json!({
         "role": "user",
@@ -76,7 +85,10 @@ async fn test_e2e_simple_chat() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_tool_call_flow() {
     // Simulate the full tool call flow:
     // 1. User sends message
@@ -161,7 +173,10 @@ async fn test_e2e_tool_call_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_multi_turn_conversation() {
     // Simulate a multi-turn conversation
     let messages = vec![
@@ -180,7 +195,10 @@ async fn test_e2e_multi_turn_conversation() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_e2e_usage_tracking() {
     let messages = vec![serde_json::json!({"role": "user", "content": "test"})];
     let resp = chat_request(messages, vec![]).await;

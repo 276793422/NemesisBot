@@ -1496,7 +1496,9 @@ fn test_provider_adapter_model_fallback_nonempty() {
 // -------------------------------------------------------------------------
 
 #[test]
-#[ignore = "DirectLlmChannel type not yet available"]
+// Ignored (unimplemented): placeholder — DirectLlmChannel type does not exist yet.
+// Re-enable and write real assertions once DirectLlmChannel is implemented.
+#[ignore]
 fn test_direct_llm_channel_new() {
     // Placeholder: will be implemented when DirectLlmChannel is introduced.
 }

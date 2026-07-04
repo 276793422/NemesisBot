@@ -65,7 +65,10 @@ fn extract_content(response: &Value) -> String {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_provider_http_flow() {
     // IT: Test that the HTTP provider pattern works with real AI server
     let messages = vec![serde_json::json!({
@@ -83,7 +86,10 @@ async fn test_it_provider_http_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_security_pipeline_with_llm() {
     // IT: Test that security-scanned input can still reach the LLM
     // Simulate: user sends safe message → security passes → LLM responds
@@ -100,7 +106,10 @@ async fn test_it_security_pipeline_with_llm() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_tool_execution_loop() {
     // IT: Test the full tool execution loop
     // 1. User asks a question
@@ -194,7 +203,10 @@ async fn test_it_tool_execution_loop() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_multi_tool_workflow() {
     // IT: Test workflow with multiple tools registered
     let tools = vec![
@@ -239,7 +251,10 @@ async fn test_it_multi_tool_workflow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_error_recovery() {
     // IT: Test error handling - feed invalid tool result and verify recovery
     let messages = vec![
@@ -277,7 +292,10 @@ async fn test_it_rpc_correlation_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_memory_context_flow() {
     // IT: Test memory context accumulation
     let messages = vec![
@@ -294,7 +312,10 @@ async fn test_it_memory_context_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires external AI server on port 18080
+// Ignored (TestAIServer): requires the Go AI simulator running on port 18080:
+//   cd test-tools/TestAIServer && go build -o testaiserver.exe && ./testaiserver.exe --port 18080
+//   cargo test -p e2e-tests -- --ignored <test_name>
+#[ignore]
 async fn test_it_concurrent_requests() {
     // IT: Test concurrent LLM requests (load test)
     let mut handles = Vec::new();

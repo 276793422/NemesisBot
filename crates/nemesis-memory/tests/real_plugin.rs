@@ -27,6 +27,12 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
 }
 
 #[test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn it_onnx_embedding_pipeline() {
     let embed = __test_fixture::shared_embed_func()
@@ -46,6 +52,12 @@ fn it_onnx_embedding_pipeline() {
 }
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn it_onnx_vector_store_with_manager() {
     use nemesis_memory::manager::{Config, MemoryManager};

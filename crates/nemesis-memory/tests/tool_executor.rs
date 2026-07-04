@@ -116,6 +116,12 @@ async fn it_forget_removes_entry() {
 }
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn it_tools_with_vector_store() {
     let dir = tempfile::tempdir().unwrap();

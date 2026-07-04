@@ -25,6 +25,12 @@ use nemesis_memory::vector::StoreConfig;
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn e2e_gateway_memory_pipeline() {
     let data_dir = tempfile::tempdir().unwrap();

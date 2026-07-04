@@ -303,6 +303,11 @@ fn test_register_default_tools_count() {
 /// This test makes a real network request to DuckDuckGo.
 /// Use `cargo test -- --ignored` to run network-dependent tests.
 #[tokio::test]
+// Ignored (network/live): hits real external services (DuckDuckGo / live URLs);
+// needs internet and depends on the external site being up. Run manually:
+// Ignored (network/live): hits real external services (DuckDuckGo / live URLs);
+// needs internet and depends on the external site being up. Run manually:
+//   cargo test -p nemesis-agent -- --ignored <test_name>
 #[ignore]
 async fn test_web_search_tool_duckduckgo_live() {
     let config = WebSearchConfig {
@@ -339,6 +344,11 @@ async fn test_web_search_tool_no_provider() {
 /// This test makes a real network request.
 /// Use `cargo test -- --ignored` to run network-dependent tests.
 #[tokio::test]
+// Ignored (network/live): hits real external services (DuckDuckGo / live URLs);
+// needs internet and depends on the external site being up. Run manually:
+// Ignored (network/live): hits real external services (DuckDuckGo / live URLs);
+// needs internet and depends on the external site being up. Run manually:
+//   cargo test -p nemesis-agent -- --ignored <test_name>
 #[ignore]
 async fn test_web_fetch_tool_live() {
     let tool = WebFetchTool::new(50000);

@@ -1413,6 +1413,12 @@ async fn test_execute_search_all_types() {
 // ============================================================
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_store_and_search_with_vector_store() {
     let dir = tempfile::tempdir().unwrap();
@@ -1457,6 +1463,12 @@ async fn test_execute_store_and_search_with_vector_store() {
 }
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_list_with_vector_store_entries() {
     let dir = tempfile::tempdir().unwrap();
@@ -1495,6 +1507,12 @@ async fn test_execute_list_with_vector_store_entries() {
 }
 
 #[tokio::test]
+// Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
+// re-init after free → MUST run single-threaded. Setup + run:
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_forget_removes_from_vector_store() {
     let dir = tempfile::tempdir().unwrap();
