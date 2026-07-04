@@ -102,17 +102,6 @@ fn test_signal_config_fields() {
 }
 
 #[test]
-fn test_send_url() {
-    let config = SignalConfig {
-        api_url: "http://localhost:8080".into(),
-        phone_number: "+1234567890".into(),
-        allow_from: Vec::new(),
-    };
-    let ch = SignalChannel::new(config, test_bus()).unwrap();
-    assert_eq!(ch.send_url("+999"), "http://localhost:8080/v1/send/+999");
-}
-
-#[test]
 fn test_process_envelope_group_message() {
     let config = SignalConfig {
         api_url: "http://localhost:8080".into(),

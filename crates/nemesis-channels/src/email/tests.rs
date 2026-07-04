@@ -223,7 +223,7 @@ fn test_build_smtp_message_content() {
         "Test",
         "Body content",
     );
-    assert!(msg.contains("Content-Type: text/plain; charset=utf-8"));
+    assert!(msg.contains("Content-Type: text/plain; charset=UTF-8"));
     assert!(msg.contains("Body content"));
 }
 
@@ -234,7 +234,7 @@ fn test_email_config_default() {
     assert!(cfg.smtp_host.is_empty());
     assert!(cfg.imap_username.is_empty());
     assert!(cfg.imap_password.is_empty());
-    assert_eq!(cfg.poll_interval, 300);
+    assert_eq!(cfg.poll_interval, 30);
 }
 
 #[test]

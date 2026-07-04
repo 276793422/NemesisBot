@@ -1,17 +1,17 @@
 [
   {
-    "id": "6d58d7c1-f83d-471c-a6ff-c31dd91b8c65",
-    "name": "time-test",
+    "id": "d1282f4c-03c6-459b-9d49-1fe7852390e3",
+    "name": "multi",
     "kind": "Skill",
-    "version": "0.1.0",
-    "status": "Draft",
-    "content": "test content",
+    "version": "2.0.0",
+    "status": "Active",
+    "content": "new content",
     "tool_signature": [
       "tool_a"
     ],
-    "created_at": "2026-07-01T03:38:30.387695500+08:00",
-    "updated_at": "2026-07-01T03:38:30.400244800+08:00",
-    "usage_count": 1,
+    "created_at": "2026-07-04T22:46:09.104582400+08:00",
+    "updated_at": "2026-07-04T22:46:09.104788400+08:00",
+    "usage_count": 100,
     "success_rate": 0.0,
     "last_degraded_at": null,
     "consecutive_observing_rounds": 0

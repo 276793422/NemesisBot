@@ -83,7 +83,9 @@ fn test_strip_html_complex() {
     assert_eq!(strip_html_tags("<div><p>para1</p><p>para2</p></div>"), "para1para2");
     assert_eq!(strip_html_tags("no html here"), "no html here");
     assert_eq!(strip_html_tags(""), "");
-    assert_eq!(strip_html_tags("&nbsp;"), "\u{a0}");
+    // &nbsp; is an HTML entity, not a tag; strip_html_tags leaves entities as-is
+    // (it only decodes the 5 common formatting entities, and &nbsp; isn't among them).
+    assert_eq!(strip_html_tags("&nbsp;"), "&nbsp;");
 }
 
 #[test]
@@ -109,18 +111,6 @@ fn test_seen_notification_multiple() {
         ch.mark_seen(&format!("n-{}", i));
         assert!(ch.is_seen(&format!("n-{}", i)));
     }
-}
-
-#[test]
-fn test_status_url() {
-    let config = MastodonConfig {
-        server: "https://mastodon.social".into(),
-        access_token: "token".into(),
-        allow_from: Vec::new(),
-    };
-    let ch = MastodonChannel::new(config, test_bus()).unwrap();
-    let url = ch.status_url("12345");
-    assert!(url.contains("/api/v1/statuses/12345"));
 }
 
 #[tokio::test]

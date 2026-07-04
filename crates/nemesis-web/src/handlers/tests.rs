@@ -447,7 +447,21 @@ use super::*;
         write_config(dir.path());
         let ctx = make_ctx(&dir);
 
-        // Add
+        // Add a "default-holder" first and make it the default. The delete guard
+        // refuses to remove the current default / list[0] model (would leave
+        // agents.defaults.llm as a dangling reference), so the model under test
+        // must be neither.
+        let holder = serde_json::json!({
+            "name": "default-holder", "model": "gpt-4", "key": "sk-holderkey-1234567"
+        });
+        handler.handle_cmd("add", Some(holder), &ctx).await.unwrap().unwrap();
+        handler
+            .handle_cmd("set_default", Some(serde_json::json!({ "name": "default-holder" })), &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Add the model under test
         let data = serde_json::json!({
             "name": "test-model",
             "model": "gpt-4",
@@ -456,29 +470,28 @@ use super::*;
         let result = handler.handle_cmd("add", Some(data), &ctx).await.unwrap().unwrap();
         assert!(result["added"].as_bool().unwrap());
 
-        // List
+        // List — both present
         let result = handler.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
         let models = result["models"].as_array().unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0]["model_name"], "test-model");
+        assert_eq!(models.len(), 2);
         // API key should be masked
-        let api_key = models[0]["api_key"].as_str().unwrap();
+        let test_entry = models
+            .iter()
+            .find(|m| m["model_name"] == "test-model")
+            .expect("test-model present");
+        let api_key = test_entry["api_key"].as_str().unwrap();
         assert!(api_key.contains("****"));
 
-        // Set default
-        let data = serde_json::json!({ "name": "test-model" });
-        let result = handler.handle_cmd("set_default", Some(data), &ctx).await.unwrap().unwrap();
-        assert!(result["set_default"].as_bool().unwrap());
-
-        // Delete
+        // Delete the non-default model (test-model is not list[0] / not default)
         let data = serde_json::json!({ "name": "test-model" });
         let result = handler.handle_cmd("delete", Some(data), &ctx).await.unwrap().unwrap();
         assert!(result["deleted"].as_bool().unwrap());
 
-        // List should be empty now
+        // Only the holder remains
         let result = handler.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
         let models = result["models"].as_array().unwrap();
-        assert!(models.is_empty());
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["model_name"], "default-holder");
     }
 
     #[tokio::test]
@@ -1379,33 +1392,40 @@ use super::*;
     async fn integration_dispatch_models_lifecycle() {
         let mut router = IntegrationRouter::new();
 
-        // Add
+        // Default-holder: the delete guard refuses to remove the current default
+        // / list[0] model, so add a holder first and make it the default.
+        router.dispatch_ok("models", "add", Some(serde_json::json!({
+            "name": "default-holder", "model": "gpt-4", "key": "sk-holderkey1234567"
+        }))).await;
+        router.dispatch_ok("models", "set_default", Some(serde_json::json!({
+            "name": "default-holder"
+        }))).await;
+
+        // Add the model under test
         let data = router.dispatch_ok("models", "add", Some(serde_json::json!({
             "name": "test-gpt", "model": "gpt-4", "key": "sk-1234567890abcdef"
         }))).await;
         assert!(data["added"].as_bool().unwrap());
 
-        // List — verify masked key
+        // List — verify masked key on test-gpt
         let data = router.dispatch_ok("models", "list", None).await;
         let models = data["models"].as_array().unwrap();
-        assert_eq!(models.len(), 1);
-        let key = models[0]["api_key"].as_str().unwrap();
+        assert_eq!(models.len(), 2);
+        let entry = models.iter().find(|m| m["model_name"] == "test-gpt").expect("test-gpt present");
+        let key = entry["api_key"].as_str().unwrap();
         assert!(key.contains("****"));
         assert!(!key.contains("1234567890abcdef"));
 
-        // Set default
-        router.dispatch_ok("models", "set_default", Some(serde_json::json!({
-            "name": "test-gpt"
-        }))).await;
-
-        // Delete
+        // Delete the non-default model
         router.dispatch_ok("models", "delete", Some(serde_json::json!({
             "name": "test-gpt"
         }))).await;
 
-        // Verify empty
+        // Only the holder remains
         let data = router.dispatch_ok("models", "list", None).await;
-        assert!(data["models"].as_array().unwrap().is_empty());
+        let models = data["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["model_name"], "default-holder");
     }
 
     #[tokio::test]
@@ -1568,7 +1588,16 @@ use super::*;
         write_config(dir.path());
         let ctx = make_ctx(&dir);
 
-        // Add then immediately delete, 20 times
+        // Persistent list[0] / default holder so rapid-{i} are never the
+        // delete-guarded default (the guard refuses to remove list[0]).
+        let holder = serde_json::json!({ "name": "base-holder", "model": "test", "key": "k" });
+        handler.handle_cmd("add", Some(holder), &ctx).await.unwrap();
+        handler
+            .handle_cmd("set_default", Some(serde_json::json!({ "name": "base-holder" })), &ctx)
+            .await
+            .unwrap();
+
+        // Add then immediately delete, 20 times — rapid-{i} is never list[0]
         for i in 0..20 {
             let name = format!("rapid-{}", i);
             let add_data = serde_json::json!({ "name": &name, "model": "test", "key": "k" });
@@ -1578,9 +1607,11 @@ use super::*;
             handler.handle_cmd("delete", Some(del_data), &ctx).await.unwrap();
         }
 
-        // Should be empty
+        // Only the holder remains
         let result = handler.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
-        assert!(result["models"].as_array().unwrap().is_empty());
+        let models = result["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["model_name"], "base-holder");
     }
 
     #[tokio::test]

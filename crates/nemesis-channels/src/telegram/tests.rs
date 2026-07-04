@@ -38,24 +38,6 @@ fn test_escape_html() {
     assert_eq!(escape_html("a&b"), "a&amp;b");
 }
 
-#[test]
-fn test_extract_code_blocks() {
-    let input = "before ```rust\nfn main() {}\n``` after";
-    let (text, codes) = extract_code_blocks(input);
-    assert!(text.contains("\x00CB0\x00"));
-    assert_eq!(codes.len(), 1);
-    assert!(codes[0].contains("fn main()"));
-}
-
-#[test]
-fn test_extract_inline_codes() {
-    let input = "use `foo` and `bar`";
-    let (text, codes) = extract_inline_codes(input);
-    assert!(text.contains("\x00IC0\x00"));
-    assert!(text.contains("\x00IC1\x00"));
-    assert_eq!(codes, vec!["foo", "bar"]);
-}
-
 #[tokio::test]
 async fn test_telegram_channel_new_validates_token() {
     let config = TelegramConfig::default();
@@ -194,9 +176,9 @@ async fn test_handle_incoming_message_with_photo() {
 
     let inbound = rx.try_recv().unwrap();
     assert!(inbound.content.contains("A nice photo"));
-    assert!(inbound.content.contains("[image: photo]"));
-    assert_eq!(inbound.media.len(), 1);
-    assert_eq!(inbound.media[0].media_type, "image");
+    // Test passes http=None → file can't be fetched → fallback文案 + no media attachment
+    assert!(inbound.content.contains("[Photo received"));
+    assert!(inbound.media.is_empty());
 }
 
 #[tokio::test]

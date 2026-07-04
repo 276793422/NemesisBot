@@ -922,6 +922,17 @@ impl TelegramChannel {
 
             // Fenced code block
             if trimmed.starts_with("```") {
+                // Single-line fenced block: ```code``` with open and close fences
+                // on the same line. Extract content between first and last ```.
+                // (Byte offsets 3 and len-3 are char boundaries since ``` is ASCII.)
+                if trimmed.len() > 6 && trimmed.ends_with("```") {
+                    let inner = &trimmed[3..trimmed.len() - 3];
+                    blocks.push(format!("<pre><code>{}</code></pre>", escape_html(inner)));
+                    i += 1;
+                    continue;
+                }
+
+                // Multi-line fenced block (open/close fences on separate lines)
                 i += 1;
                 let mut code_lines = Vec::new();
                 while i < lines.len() {
@@ -1133,16 +1144,30 @@ fn render_inline(text: &str) -> String {
         }
     }
 
-    // Italic: single * (not **) → <i>text</i>
+    // Italic: single * (not **) or single _ (not __) → <i>text</i>.
+    // `__bold__` was already converted to <b> above, so a lone _ here is
+    // unambiguous. For _ we additionally require a word boundary on at least
+    // one side (CommonMark: _ only emphasizes at word edges) so that intraword
+    // underscores like `snake_case` / `file_name` stay literal.
     let mut out = String::with_capacity(result.len());
     let chars: Vec<char> = result.chars().collect();
     let mut idx = 0;
     let mut in_italic = false;
     while idx < chars.len() {
-        if chars[idx] == '*'
-            && (idx == 0 || chars[idx - 1] != '*')
-            && (idx + 1 >= chars.len() || chars[idx + 1] != '*')
-        {
+        let c = chars[idx];
+        let prev = if idx == 0 { None } else { Some(chars[idx - 1]) };
+        let next = if idx + 1 >= chars.len() { None } else { Some(chars[idx + 1]) };
+
+        let star_marker = c == '*'
+            && prev.map_or(true, |p| p != '*')
+            && next.map_or(true, |n| n != '*');
+        let underscore_marker = c == '_'
+            && prev.map_or(true, |p| p != '_')
+            && next.map_or(true, |n| n != '_')
+            && !(prev.map_or(false, |p| p.is_alphanumeric())
+                && next.map_or(false, |n| n.is_alphanumeric()));
+
+        if star_marker || underscore_marker {
             if in_italic {
                 out.push_str("</i>");
             } else {
@@ -1150,7 +1175,7 @@ fn render_inline(text: &str) -> String {
             }
             in_italic = !in_italic;
         } else {
-            out.push(chars[idx]);
+            out.push(c);
         }
         idx += 1;
     }

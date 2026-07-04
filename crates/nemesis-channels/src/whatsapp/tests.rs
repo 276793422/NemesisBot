@@ -132,11 +132,7 @@ fn test_process_inbound_with_media() {
         content: Some("See this image".into()),
         id: Some("msg-media".into()),
         from_name: None,
-        media: Some(WhatsAppMedia {
-            media_type: "image".into(),
-            url: "http://bridge/media/123".into(),
-            mime_type: Some("image/jpeg".into()),
-        }),
+        media: Some(vec!["http://bridge/media/123".to_string()]),
     };
     let result = ch.process_inbound(&msg);
     assert!(result.is_some());
@@ -158,7 +154,11 @@ async fn test_whatsapp_double_stop() {
 }
 
 #[test]
-fn test_process_inbound_allow_from_filter() {
+fn test_process_inbound_is_a_pure_parser_no_allow_from_filter() {
+    // process_inbound only parses the inbound JSON shape; it intentionally does
+    // NOT apply allow_from filtering. The allow_from check lives in the runtime
+    // receive loop (spawn_receive_loop) upstream of this call. So a valid
+    // message from a non-allowed sender still parses to Some here.
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:8080".into(),
         api_key: None,
@@ -176,5 +176,7 @@ fn test_process_inbound_allow_from_filter() {
         from_name: None,
         media: None,
     };
-    assert!(ch.process_inbound(&msg).is_none()); // not in allow_from
+    // +888 is not in allow_from, but process_inbound still parses it (Some) —
+    // by design. Filtering happens in the receive loop before this is called.
+    assert!(ch.process_inbound(&msg).is_some());
 }

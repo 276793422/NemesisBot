@@ -285,6 +285,16 @@ impl MatrixChannel {
                                 continue;
                             }
 
+                            // allow_from access control — consistent with
+                            // WhatsApp / Discord / DingTalk / Feishu. When the
+                            // list is non-empty, only listed senders may command
+                            // the bot; others are silently dropped.
+                            if !self.config.allow_from.is_empty()
+                                && !self.config.allow_from.iter().any(|a| a == sender)
+                            {
+                                continue;
+                            }
+
                             let content = match event.content {
                                 Some(ref c) => {
                                     if c.msgtype.as_deref() != Some("m.text") {
@@ -334,6 +344,7 @@ impl Channel for MatrixChannel {
         let homeserver = self.config.homeserver.clone();
         let access_token = self.config.access_token.clone();
         let bot_user_id = self.config.user_id.clone();
+        let allow_from = self.config.allow_from.clone();
         let running = self.running.clone();
         let since_token = self.since_token.clone();
 
@@ -412,6 +423,13 @@ impl Channel for MatrixChannel {
 
                                 let sender = event["sender"].as_str().unwrap_or("");
                                 if sender == bot_user_id {
+                                    continue;
+                                }
+
+                                // allow_from access control (see process_sync_events)
+                                if !allow_from.is_empty()
+                                    && !allow_from.iter().any(|a| a == sender)
+                                {
                                     continue;
                                 }
 

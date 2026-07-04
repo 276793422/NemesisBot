@@ -37,6 +37,7 @@ fn test_agent_config_custom() {
         system_prompt: Some("You are a helpful assistant".to_string()),
         max_turns: 5,
         tools: vec!["search".to_string(), "calculator".to_string()],
+        ..Default::default()
     };
     assert_eq!(config.model, "claude-sonnet-4-6");
     assert_eq!(config.system_prompt.as_deref(), Some("You are a helpful assistant"));
@@ -51,6 +52,7 @@ fn test_agent_config_serialization() {
         system_prompt: Some("test prompt".to_string()),
         max_turns: 3,
         tools: vec!["t1".to_string()],
+        ..Default::default()
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AgentConfig = serde_json::from_str(&json).unwrap();
@@ -67,6 +69,7 @@ fn test_agent_config_no_system_prompt() {
         system_prompt: None,
         max_turns: 1,
         tools: vec![],
+        ..Default::default()
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AgentConfig = serde_json::from_str(&json).unwrap();
@@ -80,6 +83,7 @@ fn test_agent_config_empty_tools() {
         system_prompt: None,
         max_turns: 1,
         tools: vec![],
+        ..Default::default()
     };
     assert!(config.tools.is_empty());
 }
@@ -91,6 +95,7 @@ fn test_agent_config_many_tools() {
         system_prompt: None,
         max_turns: 10,
         tools: (0..50).map(|i| format!("tool_{}", i)).collect(),
+        ..Default::default()
     };
     assert_eq!(config.tools.len(), 50);
 }
@@ -366,6 +371,7 @@ fn test_config() -> AgentConfig {
         system_prompt: Some("You are a test assistant.".to_string()),
         max_turns: 5,
         tools: vec!["search".to_string()],
+        ..Default::default()
     }
 }
 

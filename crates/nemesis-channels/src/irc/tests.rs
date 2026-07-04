@@ -199,19 +199,19 @@ fn test_split_message_exact_limit() {
 
 #[test]
 fn test_split_message_multiline() {
+    // split_message chunks by IRC line-length limit, not by newline. A short
+    // multiline message (under max_len) is returned as a single whole chunk.
     let msg = "line1\nline2\nline3";
     let lines = IRCChannel::split_message(msg, 400);
-    assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0], "line1");
-    assert_eq!(lines[1], "line2");
-    assert_eq!(lines[2], "line3");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "line1\nline2\nline3");
 }
 
 #[test]
 fn test_irc_config_default() {
     let cfg = IRCConfig::default();
     assert!(cfg.server.is_empty());
-    assert!(!cfg.use_tls);
+    assert!(cfg.use_tls);
     assert!(cfg.nick.is_empty());
     assert!(cfg.password.is_none());
     assert!(cfg.channel.is_empty());

@@ -214,19 +214,23 @@ fn test_try_init_cluster_log_already_initialized() {
 }
 
 // Test that init_cluster_log panics on double init
-// Marked `serial` because CLUSTER_LOG is a process-wide OnceLock — if any
-// other test in the same `cargo test` invocation initializes it first,
-// this test's "first" init would itself panic (outside catch_unwind).
-// serial_test forces this test to run alone, avoiding the race.
+// CLUSTER_LOG is a process-wide OnceLock shared with
+// test_try_init_cluster_log_already_initialized (which is NOT #[serial]) — that
+// test may run first in parallel and set the lock, in which case our "first"
+// init would itself panic. `#[serial]` only serializes among other serial
+// tests; it does not block non-serial tests. So wrap the first init in
+// catch_unwind too: regardless of prior state, after this call the lock IS set,
+// which is the precondition we need to assert the second init panics.
 #[test]
 #[serial_test::serial]
 fn test_init_cluster_log_panics_on_double_init() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let log_dir = temp_dir.path();
 
-    init_cluster_log(log_dir);
+    // Ensure the lock is set; tolerate it having been set by a parallel test.
+    let _ = std::panic::catch_unwind(|| init_cluster_log(log_dir));
 
-    // This should panic
+    // A subsequent init MUST panic (lock already set).
     let result = std::panic::catch_unwind(|| {
         init_cluster_log(log_dir);
     });
