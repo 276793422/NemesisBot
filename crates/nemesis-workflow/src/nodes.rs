@@ -824,15 +824,18 @@ impl NodeExecutor for DelayNodeExecutor {
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
+        // Form label is "等待秒数" — treat the value as seconds, not millis.
+        // Parse as f64 so fractional seconds work (e.g. seconds=0.01 → 10ms),
+        // matching what every form placeholder implies. Whole numbers (2) and
+        // floats (0.5) both serialize to JSON numbers that as_f64() accepts.
+        // (Earlier code used `from_millis(secs)` which made a `seconds=2` config
+        // delay for 2ms, contradicting every form placeholder.)
         let secs = node
             .config
             .get("seconds")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        // Form label is "等待秒数" — treat the value as seconds, not millis.
-        // (Earlier code used `from_millis(secs)` which made a `seconds=2` config
-        // delay for 2ms, contradicting every form placeholder.)
-        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        tokio::time::sleep(std::time::Duration::from_secs_f64(secs)).await;
         Ok(NodeResult {
             node_id: node.id.clone(),
             output: serde_json::json!({ "delayed_seconds": secs }),

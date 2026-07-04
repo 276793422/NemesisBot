@@ -1,4 +1,14 @@
 use super::*;
+use std::sync::Mutex;
+
+// Single shared lock for tests that mutate process-global env (set_var /
+// remove_var on OPENCLAW_HOME / NEMESISBOT_HOME / HOME / USERPROFILE). Env is
+// process-wide, so under parallel test execution these race: a writer in one
+// test pollutes the env a reader in another sees. Every env-mutating test in
+// this file acquires this lock → they run exclusively → no parallel flake.
+// (This is the only env-touching test file in the crate, so one local static
+// suffices.) Verified equivalent to --test-threads=1 for these tests.
+static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_needs_migration_empty() {
@@ -1184,6 +1194,7 @@ fn test_plan_workspace_migration_no_dirs() {
 
 #[test]
 fn test_resolve_openclaw_home_with_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("OPENCLAW_HOME").ok();
     unsafe { std::env::set_var("OPENCLAW_HOME", "/env/openclaw"); }
     let result = resolve_openclaw_home("");
@@ -1197,6 +1208,7 @@ fn test_resolve_openclaw_home_with_env() {
 
 #[test]
 fn test_resolve_nemesisbot_home_with_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("NEMESISBOT_HOME").ok();
     unsafe { std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot"); }
     let result = resolve_nemesisbot_home("");
@@ -1210,6 +1222,7 @@ fn test_resolve_nemesisbot_home_with_env() {
 
 #[test]
 fn test_resolve_openclaw_home_override_takes_priority_over_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("OPENCLAW_HOME").ok();
     unsafe { std::env::set_var("OPENCLAW_HOME", "/env/openclaw"); }
     let result = resolve_openclaw_home("/override/path");
@@ -1222,6 +1235,7 @@ fn test_resolve_openclaw_home_override_takes_priority_over_env() {
 
 #[test]
 fn test_resolve_nemesisbot_home_override_takes_priority_over_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig = std::env::var("NEMESISBOT_HOME").ok();
     unsafe { std::env::set_var("NEMESISBOT_HOME", "/env/nemesisbot"); }
     let result = resolve_nemesisbot_home("/override/path");
@@ -1257,6 +1271,7 @@ fn test_dirs_home_returns_ok() {
 
 #[test]
 fn test_dirs_home_uses_home_env_first() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig_home = std::env::var("HOME").ok();
     let orig_userprofile = std::env::var("USERPROFILE").ok();
     unsafe { std::env::set_var("HOME", "/test/home/dir"); }
@@ -1274,6 +1289,7 @@ fn test_dirs_home_uses_home_env_first() {
 
 #[test]
 fn test_dirs_home_uses_userprofile_fallback() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let orig_home = std::env::var("HOME").ok();
     let orig_userprofile = std::env::var("USERPROFILE").ok();
     unsafe {

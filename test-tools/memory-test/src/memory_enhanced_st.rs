@@ -16,6 +16,16 @@ use test_harness::*;
 
 use memory_test::*;
 
+// ST (end-to-end) test — requires external artifacts not present in a clean checkout.
+// Needs ALL of:
+//   1. nemesisbot.exe            (cargo build --release -p nemesisbot)
+//   2. testaiserver.exe          (Go: test-tools/TestAIServer)
+//   3. plugin_onnx.dll           (target/{release,debug}/plugins/)
+//   4. embedding model files     (model.onnx + tokenizer.json under
+//      test-data/memory-e2e/ or crates/nemesis-memory/models/all-MiniLM-L6-v2/)
+// Ignored by default so `cargo test` stays green without these artifacts.
+// Run manually after setup: cargo test -p memory-test --test memory_enhanced_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_enhanced_memory_plugin() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -46,6 +56,9 @@ async fn st_bot_enhanced_memory_plugin() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries (see st_bot_enhanced_memory_plugin).
+// Ignored by default; run with: cargo test -p memory-test --test memory_enhanced_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_memory_disabled_starts() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -70,6 +83,9 @@ async fn st_bot_memory_disabled_starts() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries (see st_bot_enhanced_memory_plugin).
+// Ignored by default; run with: cargo test -p memory-test --test memory_enhanced_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_plugin_auto_detection() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -105,6 +121,10 @@ async fn st_bot_plugin_auto_detection() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external artifacts (see st_bot_enhanced_memory_plugin):
+//   nemesisbot.exe + testaiserver.exe + plugin_onnx.dll + embedding model files.
+// Ignored by default; run with: cargo test -p memory-test --test memory_enhanced_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_persistence_across_restart() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -149,6 +169,12 @@ async fn st_bot_persistence_across_restart() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries: nemesisbot.exe + testaiserver.exe.
+// (This one deliberately tests degraded mode with the plugin DLL moved aside, so it
+// does NOT need the embedding model — but it still needs the two built executables,
+// which aren't present in a clean checkout.) Ignored by default;
+// run with: cargo test -p memory-test --test memory_enhanced_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_degradation_missing_plugin() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;

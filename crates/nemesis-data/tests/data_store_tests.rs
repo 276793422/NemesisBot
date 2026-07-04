@@ -171,9 +171,10 @@ fn test_cache_hit_rate_calculation() {
     store.insert_request_log(&log).expect("Failed to insert log");
 
     let summary = store.query_summary(0, 2000000000).expect("Failed to query summary");
-    // Cache hit rate = cache_read_tokens / (input_tokens + cache_creation_tokens + cache_read_tokens)
-    // = 400 / (500 + 100 + 400) = 400 / 1000 = 0.4
-    assert!((summary.cache_hit_rate - 0.4).abs() < 0.01);
+    // Cache hit rate = cache_read_tokens / (cache_creation_tokens + cache_read_tokens)
+    // — input tokens are NOT part of the cacheable denominator (see usage_store.rs).
+    // = 400 / (100 + 400) = 400 / 500 = 0.8
+    assert!((summary.cache_hit_rate - 0.8).abs() < 0.01);
 
     let _ = fs::remove_file(&db_path);
 }

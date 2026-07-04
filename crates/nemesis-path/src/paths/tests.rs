@@ -777,6 +777,10 @@ fn test_resolve_home_dir_with_tilde_env() {
 
 #[test]
 fn test_resolve_home_dir_auto_detect_with_dir() {
+    // set_current_dir is process-global and races with other env/cwd tests
+    // under parallel execution. Acquire ENV_LOCK so this test runs exclusively
+    // w.r.t. every other env-mutating test in this file.
+    let _cwd_lock = ENV_LOCK.lock();
     // Create a temp dir with .nemesisbot subdir, cd into it.
     // NOTE: This test changes cwd which races with parallel tests that also
     // touch cwd. We avoid the strict equality assertion since another test

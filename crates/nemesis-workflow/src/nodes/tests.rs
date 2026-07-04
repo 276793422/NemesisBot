@@ -885,7 +885,8 @@ async fn test_delay_node_with_seconds() {
     let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     // Field is named `delayed_seconds` (was `delayed_ms` before BUG #2 fix).
-    assert_eq!(result.output["delayed_seconds"].as_u64().unwrap(), 0);
+    // Value is f64 since the executor now supports fractional seconds.
+    assert_eq!(result.output["delayed_seconds"].as_f64().unwrap(), 0.0);
 }
 
 #[tokio::test]
@@ -2722,8 +2723,8 @@ async fn test_delay_uses_seconds_unit_for_output_field() {
     let node = make_node("delay", "delay", config);
     let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
 
-    // Field name + value both reflect "seconds" semantics.
-    assert_eq!(result.output["delayed_seconds"].as_u64().unwrap(), 3);
+    // Field name + value both reflect "seconds" semantics (f64 — fractional ok).
+    assert_eq!(result.output["delayed_seconds"].as_f64().unwrap(), 3.0);
     // Old (buggy) field name must NOT be present — tests following this
     // contract shouldn't see ghost data from the millis era.
     assert!(result.output.get("delayed_ms").is_none());

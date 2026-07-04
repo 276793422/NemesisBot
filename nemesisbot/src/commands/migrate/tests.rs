@@ -1,4 +1,5 @@
 use super::*;
+use crate::GLOBAL_STATE_LOCK;
 use tempfile::TempDir;
 
 #[test]
@@ -25,6 +26,7 @@ fn test_detect_openclaw_home_no_override_no_env() {
 
 #[test]
 fn test_detect_openclaw_home_env_var() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
@@ -37,6 +39,7 @@ fn test_detect_openclaw_home_env_var() {
 
 #[test]
 fn test_detect_openclaw_home_env_var_takes_precedence() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("OPENCLAW_HOME", &path); }
@@ -149,6 +152,7 @@ fn test_copy_dir_recursive_creates_dst() {
 
 #[test]
 fn test_atty_isnt_with_prompt() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     unsafe { std::env::set_var("PROMPT", "1"); }
     let result = atty_isnt();
     unsafe { std::env::remove_var("PROMPT"); }
@@ -157,6 +161,7 @@ fn test_atty_isnt_with_prompt() {
 
 #[test]
 fn test_atty_isnt_with_term() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     unsafe { std::env::set_var("TERM", "xterm"); }
     let result = atty_isnt();
     unsafe { std::env::remove_var("TERM"); }

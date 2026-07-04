@@ -1,8 +1,10 @@
 use super::*;
-use std::sync::Mutex;
 
-/// Global lock for tests that mutate process-wide state.
-static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
+// All env/CWD-mutating tests in this crate share ONE process-global lock
+// (`GLOBAL_STATE_LOCK` defined at crate root in lib.rs). See the comment in
+// lib.rs for the rationale (process-global env → parallel races) and why the
+// previous per-module lock was insufficient (cross-module races).
+use super::GLOBAL_STATE_LOCK;
 
 #[test]
 fn test_default_config() {

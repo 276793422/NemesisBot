@@ -10,6 +10,11 @@ use test_harness::*;
 
 use memory_test::*;
 
+// ST (end-to-end) test — requires external binaries + runtime setup
+// (nemesisbot.exe + testaiserver.exe + free ports + timing). These are
+// inherently flaky in the default `cargo test` run; ignored by default.
+// Run with: cargo test -p memory-test --test memory_basic_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_basic_memory_startup() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -36,6 +41,9 @@ async fn st_bot_basic_memory_startup() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries (see st_bot_basic_memory_startup).
+// Ignored by default; run with: cargo test -p memory-test --test memory_basic_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_enhanced_memory_local_tier() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -68,6 +76,11 @@ async fn st_bot_enhanced_memory_local_tier() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries built out-of-band:
+//   nemesisbot.exe (cargo build --release -p nemesisbot) + testaiserver.exe (Go).
+// Ignored by default so `cargo test` stays green without these artifacts.
+// Run manually after setup: cargo test -p memory-test --test memory_basic_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_memory_store_via_ws() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -91,6 +104,10 @@ async fn st_bot_memory_store_via_ws() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries (see st_bot_memory_store_via_ws):
+//   nemesisbot.exe + testaiserver.exe. Ignored by default;
+// run with: cargo test -p memory-test --test memory_basic_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_memory_search_via_ws() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;
@@ -121,6 +138,9 @@ async fn st_bot_memory_search_via_ws() -> Result<()> {
     Ok(())
 }
 
+// ST (end-to-end) test — requires external binaries (see st_bot_basic_memory_startup).
+// Ignored by default; run with: cargo test -p memory-test --test memory_basic_st -- --ignored
+#[ignore]
 #[tokio::test]
 async fn st_bot_invalid_config_fallback() -> Result<()> {
     let nemesisbot_bin = resolve_nemesisbot_bin()?;

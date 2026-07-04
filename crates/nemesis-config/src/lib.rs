@@ -1950,3 +1950,14 @@ mod tests;
 
 #[cfg(test)]
 mod extra_tests;
+
+// Single shared process-global-state lock for ALL tests in this crate that touch
+// `std::env::set_var` / `set_current_dir` / load config (which reads env). These
+// mutate/read PROCESS-GLOBAL state, so under parallel test execution they race:
+// a writer in one test module pollutes the env a reader in another module sees.
+// Both `tests` and `extra_tests` `use super::GLOBAL_STATE_LOCK` so they share
+// ONE mutex (previously each module had its own → cross-module races still flaked
+// under parallel). With this single lock, `cargo test -p nemesis-config` (default
+// parallel) is as reliable as `--test-threads=1` for these tests.
+#[cfg(test)]
+static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

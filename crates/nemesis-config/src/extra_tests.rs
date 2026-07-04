@@ -5,13 +5,13 @@
 
 use super::*;
 use std::io::Write;
-use std::sync::Mutex;
 
-/// Global lock to serialize tests that mutate process-wide state (CWD, env vars).
-/// Without this, parallel test execution causes data races between tests that
-/// call `std::env::set_current_dir()` or `std::env::set_var()` — these are
-/// process-global and cannot be isolated per-thread.
-static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
+// All env/CWD-mutating tests in this crate share ONE process-global lock
+// (`GLOBAL_STATE_LOCK` defined at crate root in lib.rs). See the comment in
+// lib.rs for why this is needed (process-global env → parallel races) and why
+// the previous per-module lock was insufficient (cross-module races between
+// `tests` and `extra_tests`).
+use super::GLOBAL_STATE_LOCK;
 
 // ============================================================================
 // deserialize_flexible_string_vec: visitor branches

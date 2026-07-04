@@ -736,5 +736,12 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Shared lock for env-mutating tests across nemesisbot's test modules
+// (common::tests, commands::migrate::tests). Env is process-global → parallel
+// tests race on set_var/set_current_dir; every env-mutating test acquires this
+// lock so the binary is reliable under default parallel `cargo test`.
+#[cfg(test)]
+static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests;

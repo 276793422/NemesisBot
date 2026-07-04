@@ -1,4 +1,5 @@
 use super::*;
+use crate::GLOBAL_STATE_LOCK;
 use std::fs;
 
 #[test]
@@ -116,6 +117,7 @@ fn test_should_skip_heartbeat() {
 
 #[test]
 fn test_resolve_home_env_var() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("NEMESISBOT_HOME", &custom_path); }
@@ -362,6 +364,7 @@ fn test_resolve_home_local_returns_cwd_based() {
 
 #[test]
 fn test_resolve_home_env_var_custom_path() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
     unsafe { std::env::set_var("NEMESISBOT_HOME", &custom_path); }
@@ -627,6 +630,7 @@ fn test_log_flag_constants() {
 
 #[test]
 fn test_ensure_exe_in_path() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let exe_dir = std::env::current_exe()
         .unwrap()
         .parent()
