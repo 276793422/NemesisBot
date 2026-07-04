@@ -1,6 +1,7 @@
 [package]
 name = "plugin-ui"
 version = "0.1.0"
+license = "AGPL-3.0-only"
 edition = "2021"
 description = "NemesisBot UI plugin — pure WebView2 window DLL (no business logic)"
 

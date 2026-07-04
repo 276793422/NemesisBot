@@ -1,6 +1,7 @@
 [package]
 name = "nemesis-ui"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 
 [dependencies]

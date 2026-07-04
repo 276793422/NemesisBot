@@ -1,6 +1,7 @@
 [package]
 name = "nemesis-security"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 
 # Class C 子系统 feature（默认开 = 现状；可通过 `--no-default-features` 关闭）。

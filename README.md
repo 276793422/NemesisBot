@@ -8,7 +8,7 @@
 
 （这句话是人写的）以下内容大部分都是AI胡掰，可信可不信，凡是AI说“稳定”的地方，可靠度都和投硬币差不多。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Rust Version](https://img.shields.io/badge/Rust-1.85+-000000?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-lightgrey)](https://github.com/276793422/NemesisBot)
 
@@ -720,11 +720,27 @@ nemesisbot agent            # Agent 管理
 
 ---
 
-## 许可证
+## 许可证（双授权）
 
-MIT License - 请查看 [LICENSE](LICENSE) 文件了解详情。
+NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两种合法使用途径，由你按需选择。
 
-**⚠️ 重要**：本许可证有特定限制条款，使用前请务必阅读。
+### 1. 开源版 — GNU AGPL-3.0
+
+- **免费**，包括商业使用、修改、分发。
+- 但 AGPL 是强 copyleft：分发衍生品，**或把它作为网络服务对外提供**（AGPL §13），必须按 AGPL 公开你修改后的源代码。
+- 详见 [LICENSE](LICENSE)（GNU AGPL-3.0 全文）。
+- 适合：个人、开源项目、愿意回馈源代码的团队。
+
+### 2. 商业版 — 商业授权
+
+- 不想受 AGPL copyleft / §13 约束（要嵌入闭源产品、要做内部商用部署、不想公开修改）→ 申请商业授权。
+- 详见 [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)（商业授权模板）。
+- 适合：闭源商用、企业内部部署、SaaS 集成。
+
+### 其他
+
+- **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，全树无 GPL/AGPL/LGPL 强 copyleft 依赖（ClamAV 走网络协议，不打包、不传染）。
+- **贡献者**：外部 PR 须接受 [CLA.md](CLA.md)，以维持双授权能力。
 
 ---
 
