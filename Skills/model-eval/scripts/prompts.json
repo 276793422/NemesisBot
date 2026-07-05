@@ -1,0 +1,14 @@
+[
+  ["B1-time",       "What is the current time in Beijing right now?"],
+  ["B2-read",       "Read the file eval_test.txt using the read_file tool."],
+  ["B3-list",       "List the files in the current directory using the list_dir tool."],
+  ["B4-math",       "What is 17 multiplied by 23? Answer directly without tools."],
+  ["I1-write2arg",  "Write exactly the text hello world to a file named _bench.txt using write_file."],
+  ["I2-grep-path",  "Search only the file eval_test.txt for the word import using the grep tool."],
+  ["I3-extra-fld",  "Read the file eval_test.txt with utf-8 encoding."],
+  ["I4-count-lin",  "How many lines does the file eval_test.txt have? Read it and count."],
+  ["C1-count-wrd",  "Read eval_test.txt and tell me how many times the word import appears. Count carefully."],
+  ["C2-count-files","List the current directory and tell me the total number of files."],
+  ["C3-first-last", "Read eval_test.txt and tell me its first line and its last line exactly."],
+  ["C4-error-rec",  "Read the file does_not_exist.xyz. If it does not exist, just tell me so."]
+]
