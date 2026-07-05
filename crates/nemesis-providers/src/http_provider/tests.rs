@@ -30,6 +30,58 @@ extra: std::collections::HashMap::new(),
 }
 
 #[test]
+fn test_deepseek_thinking_disabled_workaround_characterization() {
+    // Characterization for the deepseek `thinking: disabled` workaround in
+    // build_request_body. The workaround was added during a test that was LATER
+    // traced to a local config error (tools weren't being passed), NOT a
+    // deepseek-v4-flash defect. These assertions pin the CURRENT behaviour so
+    // that removing the workaround (a capability gain — restores thinking mode
+    // for deepseek models) shows up as a deliberate, visible test change. See
+    // http_provider.rs for the full note + TODO.
+    let config = HttpProviderConfig {
+        name: "test".to_string(),
+        base_url: "https://api.example.com/v1".to_string(),
+        api_key: "k".to_string(),
+        default_model: "deepseek-v4-flash".to_string(),
+        timeout_secs: 30,
+        headers: HashMap::new(),
+        proxy: None,
+        preserve_prefix: false,
+    };
+    let provider = HttpProvider::new(config);
+
+    let tools = vec![ToolDefinition {
+        tool_type: "function".to_string(),
+        function: ToolFunctionDefinition {
+            name: "read_file".to_string(),
+            description: "Read".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    }];
+
+    // deepseek + tools → thinking disabled (the workaround).
+    let body = provider.build_request_body(&[], &tools, "deepseek-v4-flash", &ChatOptions::default());
+    assert_eq!(
+        body["thinking"]["type"], "disabled",
+        "deepseek + tools currently disables thinking (workaround)"
+    );
+
+    // deepseek + NO tools → thinking NOT set (workaround is tools-gated).
+    let body = provider.build_request_body(&[], &[], "deepseek-v4-flash", &ChatOptions::default());
+    assert!(
+        body.get("thinking").is_none(),
+        "deepseek without tools should not set thinking"
+    );
+
+    // non-deepseek + tools → thinking NOT set.
+    let body = provider.build_request_body(&[], &tools, "gpt-4", &ChatOptions::default());
+    assert!(
+        body.get("thinking").is_none(),
+        "non-deepseek models must never get thinking disabled"
+    );
+}
+
+#[test]
 fn test_build_request_with_tools() {
     let config = HttpProviderConfig {
         name: "test".to_string(),

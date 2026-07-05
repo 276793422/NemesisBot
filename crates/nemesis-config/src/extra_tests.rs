@@ -683,7 +683,7 @@ fn extra_serde_default_agent_defaults_via_json() {
     assert!(cfg.restrict_to_workspace);
     assert_eq!(cfg.max_tokens, 8192);
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
-    assert_eq!(cfg.max_tool_iterations, 20);
+    assert_eq!(cfg.max_tool_iterations, 60);
     assert_eq!(cfg.concurrent_request_mode, "reject");
     assert_eq!(cfg.queue_size, 8);
 }

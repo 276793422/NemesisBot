@@ -254,7 +254,7 @@ fn instance_workspace() {
 #[test]
 fn instance_max_iterations() {
     let mut instance = AgentInstance::new(test_config());
-    assert_eq!(instance.max_iterations(), 20);
+    assert_eq!(instance.max_iterations(), 60);
 
     instance.set_max_iterations(50);
     assert_eq!(instance.max_iterations(), 50);

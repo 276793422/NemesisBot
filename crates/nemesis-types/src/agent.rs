@@ -25,7 +25,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 10,
+            max_iterations: 60,
             max_context_tokens: 128000,
             system_prompt: None,
             temperature: 0.7,

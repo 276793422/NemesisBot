@@ -31,7 +31,7 @@ impl Default for AgentConfig {
         Self {
             model: "gpt-4".to_string(),
             system_prompt: None,
-            max_turns: 10,
+            max_turns: 60,
             tools: Vec::new(),
             models: HashMap::new(),
         }

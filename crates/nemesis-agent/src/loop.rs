@@ -430,6 +430,21 @@ pub struct AgentLoop {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     memory_executor: parking_lot::RwLock<Option<()>>,
+    /// Capability tier (small-model-tool-robustness plan, Phase 4a). Resolved at
+    /// construction from the active model's `model_tier` config (see
+    /// [`nemesis_types::capability`]). Drives tool-set size (Phase 3),
+    /// validation-retry budget (Phase 2), and format-repair gating (Phase 5).
+    /// `RwLock` so it can be re-resolved if the active model switches at runtime.
+    tier: parking_lot::RwLock<nemesis_types::capability::ModelTier>,
+    /// Path to config.json — the single source of truth for per-model
+    /// `model_tier`. `None` in standalone mode (no config.json to watch). Set
+    /// by `agent_factory`; used by `refresh_active_tier` / `check_config_reload`
+    /// so dashboard-added models and CLI `model set-tier` are picked up live,
+    /// with no stale snapshot.
+    config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// Last-seen mtime of config.json; `check_config_reload` compares against
+    /// this each round to detect on-disk changes without re-reading every turn.
+    config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
 }
 
 impl AgentLoop {
@@ -448,6 +463,8 @@ impl AgentLoop {
             "[AgentLoop] Active model set to {} (via '{}')",
             model, alias_or_model
         );
+        // Phase 4a: re-resolve capability tier for the new model.
+        self.refresh_active_tier();
         model
     }
 
@@ -490,6 +507,9 @@ impl AgentLoop {
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             memory_executor: parking_lot::RwLock::new(None),
+            tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
+            config_path: parking_lot::RwLock::new(None),
+            config_mtime: parking_lot::RwLock::new(None),
         }
     }
 
@@ -619,6 +639,9 @@ impl AgentLoop {
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             memory_executor: parking_lot::RwLock::new(None),
+            tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
+            config_path: parking_lot::RwLock::new(None),
+            config_mtime: parking_lot::RwLock::new(None),
         }
     }
 
@@ -970,6 +993,8 @@ impl AgentLoop {
         *self.provider.write() = provider;
         *self.active_model.write() = model;
         tracing::info!("[AgentLoop] Provider swapped at runtime");
+        // Phase 4a: re-resolve capability tier for the new model.
+        self.refresh_active_tier();
     }
 
     /// Get the observer manager, if set.
@@ -2417,10 +2442,19 @@ impl AgentLoop {
         };
 
         let mut turns_used = 0u32;
+        // Phase 2 (small-model-tool-robustness): per-request consecutive
+        // validation-failure counter. Reset on any successful (valid or
+        // auto-fixed) tool call; incremented on each schema violation. When it
+        // reaches the tier budget the loop stops, preventing a struggling model
+        // from burning max_turns on the same malformed call.
+        let mut validation_failures = 0u32;
 
         loop {
             // Auto-reload MCP tools if config file changed.
             self.check_mcp_reload();
+            // Phase 4a: re-resolve capability tier if config.json changed on
+            // disk (dashboard model add, CLI `model set-tier` while running).
+            self.check_config_reload();
 
             // Check cancellation at the top of each iteration.
             if cancel_token.is_cancelled() {
@@ -2454,15 +2488,19 @@ impl AgentLoop {
 
             // Build tool definitions from registered tools for LLM function calling.
             // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
-            // Sort by name so the order is stable across runs — some models (e.g. deepseek-v4-flash,
-            // which has a known tool-calling reliability bug) are sensitive to tool ordering, and a
-            // random HashMap order intermittently makes them emit tool calls as plain text instead of
-            // the standard tool_calls structure.
+            // Sort by name so the order is stable across runs — a deterministic
+            // tool order gives reproducible behaviour and avoids unnecessary prompt
+            // variation between requests.
             let tool_defs: Vec<crate::types::ToolDefinition> = {
                 let tools_guard = self.tools.read();
+                // Phase 3 (small-model-tool-robustness): tier-based toolset.
+                // Empty allowed-list (Big/Auto) = show everything; Mini/Normal
+                // see a restricted set to reduce small-model cognitive load.
+                let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
                 let mut names: Vec<&String> = tools_guard.keys().collect();
                 names.sort();
                 names.into_iter()
+                    .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
                     .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
                     .map(|(name, tool)| {
                         crate::types::ToolDefinition {
@@ -2713,7 +2751,35 @@ impl AgentLoop {
                 }
 
                 let tool_start = std::time::Instant::now();
-                let result = self.handle_tool_call(tc, context).await;
+                // Phase 2 (small-model-tool-robustness): validate args against
+                // the tool's schema before dispatch. Catches B-class failures;
+                // auto-fixes high-confidence field-name typos (edit distance ≤2);
+                // otherwise bounces a structured error back to the model so it
+                // can self-correct on the next round.
+                let result = match self.check_tool_args(tc) {
+                    crate::args_validator::Outcome::Valid => {
+                        validation_failures = 0;
+                        self.handle_tool_call(tc, context).await
+                    }
+                    crate::args_validator::Outcome::Fixed(fixed_args) => {
+                        validation_failures = 0;
+                        info!(
+                            "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
+                            tc.name, tc.id
+                        );
+                        let mut fixed = tc.clone();
+                        fixed.arguments = fixed_args;
+                        self.handle_tool_call(&fixed, context).await
+                    }
+                    crate::args_validator::Outcome::Invalid { message, class } => {
+                        validation_failures += 1;
+                        warn!(
+                            "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
+                            tc.name, tc.id, class, message
+                        );
+                        format!("Tool error: {}", message)
+                    }
+                };
                 let tool_duration = tool_start.elapsed();
 
                 // Emit tool call observer event.
@@ -2821,6 +2887,21 @@ impl AgentLoop {
 
                 // Feed the result back as a tool message.
                 instance.add_tool_result(&tc.id, &result);
+
+                // Phase 2: bound consecutive validation failures so a struggling
+                // model cannot burn the whole max_turns budget on the same
+                // malformed arguments.
+                if validation_failures >= self.validation_retry_budget() {
+                    warn!(
+                        "[AgentLoop] Validation retry budget exhausted ({}); stopping loop.",
+                        validation_failures
+                    );
+                    events.push(AgentEvent::Error(format!(
+                        "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。",
+                        validation_failures, tc.name
+                    )));
+                    break;
+                }
             }
 
             if hit_async {
@@ -2965,23 +3046,156 @@ impl AgentLoop {
         result
     }
 
+    /// Phase 2: check a tool call's arguments against the registered tool's
+    /// schema. Returns Valid / Fixed / Invalid. Unknown tools return Valid so
+    /// the existing unknown-tool path in `handle_tool_call` reports them
+    /// (class C, not a schema failure).
+    fn check_tool_args(&self, tool_call: &ToolCallInfo) -> crate::args_validator::Outcome {
+        let schema_opt = self.tools.read().get(&tool_call.name).map(|t| t.parameters());
+        match schema_opt {
+            Some(schema) => crate::args_validator::check(&schema, &tool_call.arguments),
+            None => crate::args_validator::Outcome::Valid,
+        }
+    }
+
+    /// Phase 2: per-request consecutive-validation-failure budget, tier-aware.
+    /// Mini models get 3, Normal 2, Big 1.
+    fn validation_retry_budget(&self) -> u32 {
+        (*self.tier.read()).validation_retry_budget()
+    }
+
+    /// Phase 4a: capability tier currently in effect (small-model-tool-robustness).
+    pub fn tier(&self) -> nemesis_types::capability::ModelTier {
+        *self.tier.read()
+    }
+
+    /// Phase 4a: override the capability tier (e.g. after resolving it from the
+    /// active model config at construction, or after `model set-tier`).
+    pub fn set_tier(&self, tier: nemesis_types::capability::ModelTier) {
+        info!("[AgentLoop] Capability tier set: {}", tier);
+        *self.tier.write() = tier;
+    }
+
+    /// Phase 4a: set the config.json path. After this, the tier is re-resolved
+    /// live from config.json on every model switch and whenever the file's mtime
+    /// changes (dashboard model add, CLI `model set-tier`). config.json is the
+    /// single source of truth — there is no stale per-model snapshot to keep in
+    /// sync. Called by `agent_factory` at gateway startup.
+    pub fn set_config_path(&self, path: std::path::PathBuf) {
+        *self.config_path.write() = Some(path);
+    }
+
+    /// Phase 4a: re-resolve the capability tier against the currently active
+    /// model by reading config.json live. Per-model `model_tier`/`real_name`/
+    /// `model_size_b` are honoured; a missing/unreadable config falls back to
+    /// the name heuristic. Called after every model switch and on config change.
+    fn refresh_active_tier(&self) {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return, // standalone mode — keep the startup tier
+        };
+        let active = self.active_model.read().clone();
+        let tier = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_active_tier(&v, &active))
+            .unwrap_or_else(|| {
+                nemesis_types::capability::detect_tier(
+                    &nemesis_types::capability::TierHint {
+                        full_model: Some(active.clone()),
+                        real_name: None,
+                        size_b: None,
+                    },
+                )
+            });
+        if *self.tier.read() != tier {
+            info!(
+                "[AgentLoop] Active model '{}' → capability tier {} (re-resolved from config.json)",
+                active, tier
+            );
+            *self.tier.write() = tier;
+        }
+    }
+
+    /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve
+    /// the active model's tier if it changed. Runs once per LLM round, next to
+    /// `check_mcp_reload`. Picks up dashboard model additions and CLI
+    /// `model set-tier` while the gateway is running.
+    pub(crate) fn check_config_reload(&self) {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return,
+        };
+        let mtime = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok();
+        {
+            let mut last = self.config_mtime.write();
+            if mtime == *last {
+                return; // unchanged since last check
+            }
+            *last = mtime;
+        }
+        debug!("[AgentLoop] config.json mtime changed; re-resolving capability tier");
+        self.refresh_active_tier();
+    }
+
     /// Build the LLM message list from the instance conversation history.
+    ///
+    /// Injects an ephemeral "# Current Time / # Environment" system message
+    /// immediately before the latest user message. The historical prefix (system
+    /// prompt + earlier turns) stays byte-identical across requests, preserving
+    /// prompt-cache hits; only the trailing user message and the dynamic marker
+    /// are billed at the cache-miss rate. The platform/shell hint steers the
+    /// model away from interactive commands that hang the exec tool (e.g. bare
+    /// Windows `date` vs `date /t`) — small-model-tool-robustness plan Phase 1.
     pub fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
-        instance
-            .get_history()
-            .into_iter()
-            .map(|turn| LlmMessage {
-                role: turn.role,
-                content: turn.content,
-                tool_calls: if turn.tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(turn.tool_calls)
-                },
-                tool_call_id: turn.tool_call_id,
-                reasoning_content: turn.reasoning_content,
-            })
-            .collect()
+        let history = instance.get_history();
+
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
+        #[cfg(target_os = "windows")]
+        let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
+        #[cfg(not(target_os = "windows"))]
+        let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
+        let dyn_msg = LlmMessage {
+            role: "system".to_string(),
+            content: format!("# Current Time\n{}\n# Environment\n{}", now, env_hint),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+
+        let turn_to_msg = |turn: &crate::types::ConversationTurn| LlmMessage {
+            role: turn.role.clone(),
+            content: turn.content.clone(),
+            tool_calls: if turn.tool_calls.is_empty() {
+                None
+            } else {
+                Some(turn.tool_calls.clone())
+            },
+            tool_call_id: turn.tool_call_id.clone(),
+            reasoning_content: turn.reasoning_content.clone(),
+        };
+
+        // Inject dyn_msg just before the last user message, but only when there
+        // is a system prompt at history[0] to protect (otherwise there's no
+        // cached prefix to preserve).
+        let last_user_idx = history
+            .iter()
+            .rposition(|t| t.role == "user")
+            .filter(|&i| i > 0)
+            .filter(|_| history.first().map_or(false, |t| t.role == "system"));
+
+        match last_user_idx {
+            Some(idx) => {
+                let mut messages: Vec<LlmMessage> = Vec::with_capacity(history.len() + 1);
+                messages.extend(history[..idx].iter().map(turn_to_msg));
+                messages.push(dyn_msg);
+                messages.extend(history[idx..].iter().map(turn_to_msg));
+                messages
+            }
+            None => history.iter().map(turn_to_msg).collect(),
+        }
     }
 
     // -----------------------------------------------------------------------

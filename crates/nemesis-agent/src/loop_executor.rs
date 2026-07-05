@@ -1,3 +1,24 @@
+//! ⚠️ **STATUS (2026-07-05): legacy — type definitions only in production.**
+//!
+//! The `AgentLoopExecutor` struct in this module is **NOT instantiated in
+//! production** — only its own tests construct it. The production agent loop is
+//! [`crate::r#loop::AgentLoop`](crate::r#loop::AgentLoop), which grew its own
+//! bus integration (`new_bus`) plus full subsystem wiring (security, forge,
+//! cluster continuation, MCP, slash commands) and superseded this executor.
+//! `AgentLoopExecutor` was left behind in that refactor; its `run_agent_loop` /
+//! `build_messages` / `execute_tool_with_result` are dead in production (so any
+//! edit there — including a prior time-injection — silently has no effect on
+//! live behaviour; route such changes through `loop.rs`).
+//!
+//! This module IS still linked in production **only for its type definitions**
+//! (`ObserverEvent`, `ObserverUsageInfo`, `ToolResult`, `ContextualTool`,
+//! `FallbackExecutor`, `SessionPersistence`, `ExecutorConfig`) — `loop.rs`
+//! imports them. **Do not add runtime behaviour here; put it in `loop.rs`.** If
+//! you are editing `AgentLoopExecutor`'s run loop or `build_messages`, you are
+//! almost certainly in the wrong file.
+//!
+//! ---
+
 //! Full agent loop executor that integrates with the message bus.
 //!
 //! `AgentLoopExecutor` receives `InboundMessage`s from a tokio mpsc channel,
@@ -48,7 +69,7 @@ impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
             model: "gpt-4".to_string(),
-            max_turns: 10,
+            max_turns: 60,
             system_prompt: None,
             event_buffer_size: 64,
         }
@@ -1214,6 +1235,12 @@ impl AgentLoopExecutor {
         let mut final_content = String::new();
         let max_iterations = self.config.max_turns;
         let max_retries = 2u32;
+        // Phase 2 (small-model-tool-robustness): consecutive-validation-failure
+        // counter for this request. Reset to 0 on any successful (valid or
+        // auto-fixed) tool call; incremented on each schema violation. When it
+        // reaches the budget the loop stops, preventing a struggling model from
+        // burning the whole max_turns budget retrying the same malformed call.
+        let mut validation_failures = 0u32;
 
         while iteration < max_iterations {
             iteration += 1;
@@ -1228,8 +1255,8 @@ impl AgentLoopExecutor {
             debug!("[AgentLoopExecutor] Sending {} messages to LLM", messages.len());
 
             // Build tool definitions from registered tools for LLM function calling.
-            // Sort by name for a stable order — see loop.rs for rationale (model tool-order
-            // sensitivity on deepseek-v4-flash).
+            // Sort by name for a stable order — see loop.rs for rationale
+            // (deterministic tool order, avoids unnecessary prompt variation).
             let tool_defs: Vec<crate::types::ToolDefinition> = {
                 let mut names: Vec<&String> = self.tools.keys().collect();
                 names.sort();
@@ -1350,10 +1377,40 @@ impl AgentLoopExecutor {
                 let tool_start = std::time::Instant::now();
                 info!("[AgentLoopExecutor] Tool call: {} (id={})", tc.name, tc.id);
 
-                // Execute the tool with context.
-                let tool_result = self
-                    .execute_tool_with_result(tc, context)
-                    .await;
+                // Phase 2 (small-model-tool-robustness): validate args against the
+                // tool's schema before dispatch. Catches B-class failures; auto-fixes
+                // high-confidence field-name typos (edit distance ≤ 2); otherwise
+                // bounces a structured error back to the model so it can self-correct
+                // on the next LLM round. Unknown tools are class C.
+                let tool_result = match self.tools.get(&tc.name) {
+                    Some(tool) => {
+                        match crate::args_validator::check(&tool.parameters(), &tc.arguments) {
+                            crate::args_validator::Outcome::Valid => {
+                                validation_failures = 0;
+                                self.execute_tool_with_result(tc, context).await
+                            }
+                            crate::args_validator::Outcome::Fixed(fixed_args) => {
+                                validation_failures = 0;
+                                info!(
+                                    "[AgentLoopExecutor] Auto-fixed args for tool '{}' (id={})",
+                                    tc.name, tc.id
+                                );
+                                let mut tc_fixed = tc.clone();
+                                tc_fixed.arguments = fixed_args;
+                                self.execute_tool_with_result(&tc_fixed, context).await
+                            }
+                            crate::args_validator::Outcome::Invalid { message, class } => {
+                                validation_failures += 1;
+                                warn!(
+                                    "[AgentLoopExecutor] Arg validation failed for tool '{}' (id={}, class={}): {}",
+                                    tc.name, tc.id, class, message
+                                );
+                                ToolResult::error(message)
+                            }
+                        }
+                    }
+                    None => ToolResult::error(format!("Unknown tool '{}'", tc.name)),
+                };
                 let tool_duration = tool_start.elapsed();
 
                 // Emit observer event (asynchronous).
@@ -1422,6 +1479,23 @@ impl AgentLoopExecutor {
 
                 // Suppress unused variable warning.
                 let _ = chain_pos;
+
+                // Phase 2: bound consecutive validation failures so a struggling
+                // model cannot burn the whole max_turns budget retrying the same
+                // malformed arguments. The error for this call has already been
+                // fed back to the model via add_tool_result above; stop here.
+                if validation_failures >= self.validation_retry_budget() {
+                    final_content = format!(
+                        "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。\
+                         请检查模型输出或简化工具定义（如减少 required 字段、加示例）。",
+                        validation_failures, tc.name
+                    );
+                    info!(
+                        "[AgentLoopExecutor] Validation retry budget exhausted ({}); stopping loop.",
+                        validation_failures
+                    );
+                    break;
+                }
             }
         }
 
@@ -1435,6 +1509,17 @@ impl AgentLoopExecutor {
         } else {
             final_content.to_string()
         }
+    }
+
+    /// Phase 2: per-request consecutive-validation-failure budget. Once the
+    /// model produces this many schema-violating tool calls in a row (without a
+    /// successful call in between), the loop stops. Bounds the worst-case token
+    /// burn of a small model stuck on one malformed call.
+    ///
+    /// TODO(phase-4a): make tier-aware (big=1 / normal=2 / mini=3 once the model
+    /// capability tier is wired through).
+    fn validation_retry_budget(&self) -> u32 {
+        5
     }
 
     /// Execute a single tool and return a complex ToolResult.
@@ -1679,9 +1764,18 @@ impl AgentLoopExecutor {
     fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
         let history = instance.get_history();
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M (%A)").to_string();
+        // Platform/shell hint folded into the same ephemeral system message as
+        // the time marker (single injection point → identical prompt-cache
+        // behavior to before). Guides the model away from interactive commands
+        // that hang the exec tool (e.g. bare Windows `date` vs `date /t`).
+        #[cfg(target_os = "windows")]
+        let env_hint =
+            "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
+        #[cfg(not(target_os = "windows"))]
+        let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
         let time_msg = LlmMessage {
             role: "system".to_string(),
-            content: format!("# Current Time\n{}", now),
+            content: format!("# Current Time\n{}\n# Environment\n{}", now, env_hint),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,

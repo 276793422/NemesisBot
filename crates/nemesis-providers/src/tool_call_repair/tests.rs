@@ -7,7 +7,9 @@ const D: &str = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
 
 #[test]
 fn test_dsml_single_invoke() {
-    // Real deepseek-v4-flash output observed during /learn debugging.
+    // DSML-shaped sample (from a /learn debugging session; the root cause was
+    // later traced to a local config error — tools weren't being passed — not a
+    // model defect).
     let content = format!(
         "<{d}tool_calls>\n<{d}invoke name=\"skills_info\">\n\
          <{d}parameter name=\"action\" string=\"true\">list</{d}parameter>\n\

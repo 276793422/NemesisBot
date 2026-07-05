@@ -1782,7 +1782,7 @@ fn default_search_limit() -> i64 { 50 }
 fn default_true() -> bool { true }
 fn default_max_tokens() -> i64 { 8192 }
 fn default_temperature() -> f64 { 0.7 }
-fn default_max_tool_iterations() -> i64 { 20 }
+fn default_max_tool_iterations() -> i64 { 60 }
 fn default_concurrent_request_mode() -> String { "reject".to_string() }
 fn default_queue_size() -> i64 { 8 }
 fn default_gateway_host() -> String { "0.0.0.0".to_string() }

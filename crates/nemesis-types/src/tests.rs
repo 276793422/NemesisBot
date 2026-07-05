@@ -51,7 +51,7 @@ fn test_constants() {
     assert_eq!(USER_FILE, "USER.md");
     assert_eq!(RPC_PREFIX, "[rpc:");
     assert_eq!(CLUSTER_CONTINUATION_PREFIX, "cluster_continuation:");
-    assert_eq!(DEFAULT_MAX_ITERATIONS, 10);
+    assert_eq!(DEFAULT_MAX_ITERATIONS, 60);
     assert_eq!(DEFAULT_MAX_CONTEXT_TOKENS, 128_000);
     assert_eq!(RPC_CLIENT_TIMEOUT_SECS, 3600);
     assert_eq!(PEER_CHAT_TIMEOUT_SECS, 3540);

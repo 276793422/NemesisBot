@@ -178,6 +178,16 @@ nemesisbot model add --model zhipu/glm-4.7 --key YOUR_API_KEY --default
 nemesisbot model default --model zhipu/glm-4.7
 ```
 
+**模型能力分级（小模型支持）**：每个模型在 config.json 有 `model_tier` 字段（`auto`/`mini`/`normal`/`big`），决定给它多少工具、多少次校验重试。`auto` 默认按模型名/参数量自动检测；看不出大小的 opaque 别名建议跑探针实测：
+
+```bash
+nemesisbot model probe <name>            # 跑 7 题探针，按实测能力定档（~7 次 LLM 调用）
+nemesisbot model set-tier <name> mini    # 手动覆盖（mini=核心 13 工具 / normal=23 / big=全量 41）
+nemesisbot model set-size <name> 30B     # 或直接告诉参数量，auto 检测会采信
+```
+
+档位效果：**mini** 给核心 13 个工具 + 校验重试 3 次（小模型减负）；**normal** ~23 工具 + 重试 2 次；**big** 全量 41 工具 + 重试 1 次。运行中改 tier **无需重启 gateway**（下一轮 LLM 自动重解析）。完整评估方法见 `docs/INFO/2026-07-05_model-support-eval-suite.md`。
+
 ### 启动服务
 
 ```bash

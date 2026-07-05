@@ -547,7 +547,7 @@ fn test_is_internal_channel() {
 fn test_executor_config_default() {
     let config = ExecutorConfig::default();
     assert_eq!(config.model, "gpt-4");
-    assert_eq!(config.max_turns, 10);
+    assert_eq!(config.max_turns, 60);
     assert!(config.system_prompt.is_none());
     assert_eq!(config.event_buffer_size, 64);
 }

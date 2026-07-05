@@ -17,6 +17,7 @@ pub mod config;
 pub mod traits;
 pub mod constants;
 pub mod utils;
+pub mod capability;
 
 // Re-export commonly used constants
 pub use constants::{

@@ -750,9 +750,16 @@ fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
     let content = entry.get("content").and_then(|v| v.as_str()).map(|s| s.to_string());
     if let Some(c) = content {
         if c.len() > 200 {
+            // Truncate at the nearest char boundary ≤ 200 bytes. Slicing at a
+            // fixed byte index lands inside multibyte UTF-8 chars (e.g. Chinese
+            // in memory content) and panics.
+            let mut end = 200;
+            while !c.is_char_boundary(end) {
+                end -= 1;
+            }
             entry.as_object_mut().map(|o| o.insert(
                 "content".to_string(),
-                serde_json::Value::String(format!("{}...", &c[..200])),
+                serde_json::Value::String(format!("{}...", &c[..end])),
             ));
         }
     }

@@ -88,7 +88,7 @@ fn test_session_key_in_hashmap() {
 #[test]
 fn test_agent_config_default() {
     let cfg = AgentConfig::default();
-    assert_eq!(cfg.max_iterations, 10);
+    assert_eq!(cfg.max_iterations, 60);
     assert_eq!(cfg.max_context_tokens, 128000);
     assert!(cfg.system_prompt.is_none());
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);

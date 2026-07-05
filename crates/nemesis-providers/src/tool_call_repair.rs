@@ -1,9 +1,9 @@
 //! Tool-call repair — recover tool calls from non-standard model outputs.
 //!
-//! Some models (notably deepseek-v4-flash) intermittently emit tool calls as
-//! plain text in the `content` field instead of the standard `tool_calls`
-//! structure. This module detects and parses those non-standard formats back
-//! into standard `ToolCall`s, so the agent loop still executes them.
+//! Some models (especially smaller local models) emit tool calls as plain text
+//! in the `content` field instead of the standard `tool_calls` structure. This
+//! module detects and parses those non-standard formats back into standard
+//! `ToolCall`s, so the agent loop still executes them.
 //!
 //! Supported formats (tried in priority order):
 //! 1. **DSML** — deepseek's internal markup: `<｜｜DSML｜｜invoke name="X">...`

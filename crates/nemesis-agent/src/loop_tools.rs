@@ -623,7 +623,7 @@ impl Tool for ExecTool {
 
         let timeout_secs = val.get("timeout")
             .and_then(|v| v.as_u64())
-            .unwrap_or(60);
+            .unwrap_or(30);
 
         let cwd = val.get("cwd")
             .and_then(|v| v.as_str())
@@ -649,12 +649,23 @@ impl Tool for ExecTool {
                 // paths with inner quotes). Use raw_arg to pass the command
                 // verbatim so cmd.exe parses it correctly.
                 c.raw_arg(format!("/C {}", command));
+                // Null stdin: interactive commands (Windows `date`/`time` without
+                // /t, REPLs, prompts) get immediate EOF instead of hanging the
+                // tool for the full timeout waiting for input that never arrives.
+                // The exec tool exposes no stdin parameter, so stdin was never a
+                // usable input channel — only a hang risk.
+                c.stdin(std::process::Stdio::null());
+                // Kill the child when the timeout future is dropped, so a hung
+                // command does not survive as an orphan process.
+                c.kill_on_drop(true);
                 c
             };
             #[cfg(not(target_os = "windows"))]
             let mut cmd = {
                 let mut c = tokio::process::Command::new("sh");
                 c.arg("-c").arg(command);
+                c.stdin(std::process::Stdio::null());
+                c.kill_on_drop(true);
                 c
             };
             tokio::time::timeout(
@@ -675,7 +686,13 @@ impl Tool for ExecTool {
                 }
             }
             Ok(Err(e)) => Err(format!("Failed to execute command: {}", e)),
-            Err(_) => Err(format!("Command timed out after {} seconds", timeout_secs)),
+            Err(_) => Err(format!(
+                "Command timed out after {} seconds. It may be waiting for input \
+                 (e.g. an interactive prompt). On Windows, `date`/`time` are \
+                 interactive — use `date /t`/`time /t` or PowerShell `Get-Date`. \
+                 Command was: {}",
+                timeout_secs, command
+            )),
         }
     }
 }
@@ -749,6 +766,7 @@ impl Tool for AsyncExecTool {
                 c
             };
             c.current_dir(cwd)
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -3014,7 +3032,14 @@ fn grep_recursive(
                     if re.is_match(line) {
                         let display = line.trim();
                         if display.len() > 300 {
-                            out.push(format!("{}:{}: {}…", path.display(), i + 1, &display[..300]));
+                            // Truncate at the nearest char boundary ≤ 300 bytes.
+                            // Slicing at a fixed byte index can land inside a
+                            // multibyte UTF-8 char (e.g. Chinese) and panic.
+                            let mut end = 300;
+                            while !display.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            out.push(format!("{}:{}: {}…", path.display(), i + 1, &display[..end]));
                         } else {
                             out.push(format!("{}:{}: {}", path.display(), i + 1, display));
                         }

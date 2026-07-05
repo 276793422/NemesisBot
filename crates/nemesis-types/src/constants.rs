@@ -22,7 +22,7 @@ pub const RPC_PREFIX: &str = "[rpc:";
 pub const CLUSTER_CONTINUATION_PREFIX: &str = "cluster_continuation:";
 
 /// Default agent max iterations.
-pub const DEFAULT_MAX_ITERATIONS: u32 = 10;
+pub const DEFAULT_MAX_ITERATIONS: u32 = 60;
 
 /// Default context token limit.
 pub const DEFAULT_MAX_CONTEXT_TOKENS: usize = 128_000;

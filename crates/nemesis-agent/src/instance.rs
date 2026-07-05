@@ -70,7 +70,7 @@ impl AgentInstance {
             summary: Mutex::new(String::new()),
             context_window: 32000,
             workspace: PathBuf::new(),
-            max_iterations: 20,
+            max_iterations: 60,
             subagents: Mutex::new(Vec::new()),
             skills_filter: Mutex::new(Vec::new()),
             fallback_candidates: Mutex::new(Vec::new()),

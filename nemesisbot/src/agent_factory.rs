@@ -193,6 +193,20 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
 
     // 4. Create ProviderAdapter + AgentConfig + AgentLoop.
     let adapter = ProviderAdapter::new(provider_arc.clone(), model_name.clone());
+    // Phase 4a (small-model-tool-robustness): resolve the startup model's tier
+    // from config.json, and remember the path so the tier can be re-resolved
+    // live when the model switches or config.json changes on disk (dashboard
+    // add / CLI model set-tier). config.json is the single source of truth —
+    // no stale snapshot.
+    let cfg_json: serde_json::Value = std::fs::read_to_string(shared.home.join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let resolved_tier = nemesis_types::capability::resolve_active_tier(&cfg_json, &model_name);
+    info!(
+        "[AgentFactory] Model '{}' capability tier: {}",
+        model_name, resolved_tier
+    );
     let agent_config = AgentConfig {
         model: model_name.clone(),
         system_prompt: if system_prompt.is_empty() {
@@ -214,6 +228,10 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         8,
         max_continuation_permits,
     );
+    // Phase 4a: apply the resolved startup tier + remember the config path so
+    // runtime model switches and dashboard/CLI config edits re-resolve it live.
+    agent_loop.set_tier(resolved_tier);
+    agent_loop.set_config_path(shared.home.join("config.json"));
 
     // 5. Session store (disk-persisted — new instance, same directory).
     {
@@ -501,7 +519,7 @@ pub fn build_cluster_agent_loop(
     let config = nemesis_agent::types::AgentConfig {
         model: model_name.clone(),
         system_prompt,
-        max_turns: 50,
+        max_turns: 60,
         ..Default::default()
     };
     let adapter = ProviderAdapter::new(provider_arc, model_name.clone());

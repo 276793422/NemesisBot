@@ -235,8 +235,8 @@ pub(crate) fn build_agent_loop(
 
     // 4. Build system prompt from workspace files (IDENTITY.md, SOUL.md, AGENT.md, ...).
     //    Mirrors gateway/agent_factory. Without it the agent has no "Always use tools"
-    //    instruction, and weaker models (e.g. deepseek-v4-flash) fall back to chat mode
-    //    and won't issue tool_calls — they hallucinate tool use in plain text instead.
+    //    instruction, and some models then fall back to chat mode and won't issue
+    //    tool_calls — they hallucinate tool use in plain text instead.
     let workspace_dir = home.join("workspace");
     let system_prompt = {
         let mut context_builder = nemesis_agent::context::ContextBuilder::new(&workspace_dir);
@@ -264,10 +264,9 @@ pub(crate) fn build_agent_loop(
     // 5. Create AgentLoop (standalone mode for CLI)
     let mut agent_loop = AgentLoop::new(Box::new(adapter), agent_config);
 
-    // 6. Register shared tools — match the gateway's full set (39 tools). With
-    //    a slim tool set deepseek-v4-flash degrades to XML-tag pseudo-calls
-    //    instead of standard tool_calls; the full set keeps it stable. All
-    //    dependencies are constructed minimally (no background tasks): the
+    // 6. Register shared tools — match the gateway's full set (39 tools) so the
+    //    standalone CLI agent behaves like the gateway. All dependencies are
+    //    constructed minimally (no background tasks): the
     //    standalone CLI agent is short-lived and won't actually drive
     //    forge/workflow/cron — they just need to register so the tool count
     //    (and thus deepseek's tool-calling behavior) matches the gateway.

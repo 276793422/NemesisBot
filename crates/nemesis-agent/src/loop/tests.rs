@@ -1119,11 +1119,12 @@ fn test_build_messages_from_instance() {
 
     let messages = agent_loop.build_messages(&instance);
 
-    // system + user + assistant = 3
-    assert_eq!(messages.len(), 3);
+    // system + (injected Current Time/Environment system msg) + user + assistant = 4
+    assert_eq!(messages.len(), 4);
     assert_eq!(messages[0].role, "system");
-    assert_eq!(messages[1].role, "user");
-    assert_eq!(messages[2].role, "assistant");
+    assert_eq!(messages[1].role, "system"); // injected time/env marker
+    assert_eq!(messages[2].role, "user");
+    assert_eq!(messages[3].role, "assistant");
 }
 
 #[tokio::test]
@@ -1178,6 +1179,67 @@ fn test_provider_access() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     // provider() should not panic
     let _ = agent_loop.provider_arc();
+}
+
+#[test]
+fn test_runtime_model_switch_refreshes_tier() {
+    // Phase 4a: tier is re-resolved LIVE from config.json on every model switch.
+    // config.json is the single source of truth — dashboard-added models and
+    // CLI `model set-tier` edits are picked up because each switch re-reads
+    // config.json (no stale snapshot). This also exercises `refresh_active_tier`,
+    // the same path `check_config_reload` triggers when config.json's mtime
+    // changes mid-conversation.
+    use nemesis_types::capability::ModelTier;
+
+    let cfg_path = std::env::temp_dir().join(format!(
+        "nemesis_test_tier_{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [
+                {"model": "qwen/qwen3-30b", "model_name": "qwen3-30b", "model_tier": "mini"},
+                {"model": "openai/gpt-4", "model_name": "gpt-4", "model_tier": "big"},
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg_path.clone());
+
+    // Switch re-resolves tier live from config.json.
+    agent_loop.set_active_model("qwen3-30b");
+    assert_eq!(agent_loop.tier(), ModelTier::Mini);
+    agent_loop.set_active_model("gpt-4");
+    assert_eq!(agent_loop.tier(), ModelTier::Big);
+
+    // Edit config on disk (dashboard / CLI `model set-tier`) → next switch
+    // reflects it, because every switch re-reads config.json.
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({
+            "model_list": [
+                {"model": "qwen/qwen3-30b", "model_name": "qwen3-30b", "model_tier": "normal"},
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    agent_loop.set_active_model("qwen3-30b");
+    assert_eq!(
+        agent_loop.tier(),
+        ModelTier::Normal,
+        "config edit must be reflected on next switch"
+    );
+
+    // Unknown model (not in config) → fallback to name heuristic → Big default.
+    agent_loop.set_active_model("some-opaque-alias");
+    assert_eq!(agent_loop.tier(), ModelTier::Big);
+
+    let _ = std::fs::remove_file(&cfg_path);
 }
 
 #[test]
@@ -1975,10 +2037,10 @@ fn test_build_messages_with_tool_history() {
     instance.add_assistant_message("The answer is 42", vec![], None);
 
     let messages = agent_loop.build_messages(&instance);
-    // system + user + assistant(tool_calls) + tool + assistant = 5
-    assert_eq!(messages.len(), 5);
-    assert!(messages[2].tool_calls.is_some());
-    assert_eq!(messages[3].tool_call_id, Some("tc_1".to_string()));
+    // system + (injected time) + user + assistant(tool_calls) + tool + assistant = 6
+    assert_eq!(messages.len(), 6);
+    assert!(messages[3].tool_calls.is_some());
+    assert_eq!(messages[4].tool_call_id, Some("tc_1".to_string()));
 }
 
 #[test]
@@ -3248,14 +3310,15 @@ fn test_build_messages_preserves_history_order() {
     instance.add_user_message("Third");
 
     let messages = agent_loop.build_messages(&instance);
-    // system + 3 messages = 4
-    assert_eq!(messages.len(), 4);
+    // system + user + assistant + (injected time before last user) + user = 5
+    assert_eq!(messages.len(), 5);
     assert_eq!(messages[0].role, "system");
     assert_eq!(messages[1].role, "user");
     assert_eq!(messages[1].content, "First");
     assert_eq!(messages[2].role, "assistant");
-    assert_eq!(messages[3].role, "user");
-    assert_eq!(messages[3].content, "Third");
+    assert_eq!(messages[3].role, "system"); // injected time/env marker
+    assert_eq!(messages[4].role, "user");
+    assert_eq!(messages[4].content, "Third");
 }
 
 #[test]

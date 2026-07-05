@@ -36,6 +36,8 @@ pub mod mcp_bridge;
 pub mod chat_log;
 pub mod checkpoint;
 pub mod message_preprocess;
+pub mod args_validator;
+pub mod probe;
 
 pub use types::*;
 pub use instance::AgentInstance;

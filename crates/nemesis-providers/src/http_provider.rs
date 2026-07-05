@@ -212,13 +212,13 @@ impl HttpProvider {
             body["stop"] = serde_json::json!(stop);
         }
 
-        // DeepSeek V4 defaults to thinking mode. In thinking mode the model emits
-        // tool calls in its internal DSML markup, which the API normally rewrites
-        // into the standard `tool_calls` structure — but deepseek-v4-flash
-        // intermittently fails to and returns DSML as plain `content` (community
-        // reports / GitHub deepseek-ai #1244). When tools are present, disable
-        // thinking so tool calls come back as standard tool_calls. Non-thinking
-        // mode fully supports tool calls per the official docs.
+        // NOTE: this `thinking: disabled` workaround was added during a test of
+        // deepseek-v4-flash that was LATER traced to a local config error (tools
+        // were not being passed to the provider, so the model received an empty
+        // tool list and understandably didn't emit standard tool_calls).
+        // deepseek-v4-flash itself has NO tool-calling defect. The block is kept
+        // pending re-test — removing it would restore thinking mode (a capability
+        // gain) for deepseek models. TODO: re-verify and likely delete this.
         let lower = normalized.to_lowercase();
         if lower.contains("deepseek") && !tools.is_empty() {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
@@ -613,9 +613,9 @@ impl LLMProvider for HttpProvider {
             vec![]
         };
 
-        // Tool-call repair: some models (notably deepseek-v4-flash) intermittently
-        // emit tool calls as plain text in `content` (DSML / JSON / XML) instead of
-        // the standard `tool_calls` structure. When the standard field is empty,
+        // Tool-call repair: some models (especially smaller local models) emit
+        // tool calls as plain text in `content` (DSML / JSON / XML) instead of the
+        // standard `tool_calls` structure. When the standard field is empty,
         // recover tool calls from the content so the agent loop still runs them.
         if tool_calls.is_empty() && !content.is_empty() {
             let repaired = crate::tool_call_repair::repair_tool_calls(&content);
