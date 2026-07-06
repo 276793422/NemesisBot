@@ -3031,6 +3031,14 @@ impl AgentLoop {
             // Execute each tool call.
             instance.set_state(crate::types::AgentState::ExecutingTool);
             let mut hit_async = false;
+            // ⑥ Escalation latch. Set inside the tool-call for-loop (where
+            // `break` can only exit the batch, not the outer LLM loop); checked
+            // AFTER the for-loop in the outer scope to actually end the turn.
+            // Without this two-step, escalation's `break` only stopped the
+            // current batch and the model was called again — re-triggering
+            // escalation every round without ever stopping (observed 43× in a
+            // deployed test).
+            let mut escalation_stop: Option<String> = None;
             for tc in &tool_calls {
                 // Check cancellation before each tool execution.
                 if cancel_token.is_cancelled() {
@@ -3221,15 +3229,15 @@ impl AgentLoop {
                 instance.add_tool_result(&tc.id, &fed_result);
 
                 // ⑥ Escalation: same (tool, error) failed past the hard-stop
-                // threshold → nudges are being ignored. Stop the turn now to
-                // bound the worst-case cost (a stuck small model would otherwise
-                // run all the way to max_turns). Resumable, like the grace round.
+                // threshold → nudges are being ignored. Latch the stop message
+                // and break the tool batch; the outer-scope check after this
+                // for-loop ends the turn (a bare `break` here only exits the
+                // batch, not the LLM loop).
                 if let Some(msg) = turn_guard.escalation_check() {
                     warn!(
                         "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
                     );
-                    let formatted = context.format_rpc_message(&msg);
-                    events.push(AgentEvent::Done(formatted));
+                    escalation_stop = Some(context.format_rpc_message(&msg));
                     break;
                 }
 
@@ -3250,6 +3258,13 @@ impl AgentLoop {
             }
 
             if hit_async {
+                break;
+            }
+
+            // ⑥ Escalation latch from the tool-call loop above — end the turn
+            // here (outer-scope break), emitting a single Done event.
+            if let Some(msg) = escalation_stop {
+                events.push(AgentEvent::Done(msg));
                 break;
             }
         }

@@ -407,12 +407,29 @@ async fn escalation_fires_on_repeated_failing_builds() {
 
     let events = agent_loop.run(&instance, "build it", &context).await;
 
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    // Escalation must actually STOP the turn (exactly one Done), not just fire
+    // the nudge repeatedly while the model keeps looping. The original wiring
+    // bug: escalation's `break` only exited the tool-call batch, so escalation
+    // fired every round without ending the turn — observed 43× in a deployed
+    // test. With the latch-based fix, exactly one Done at ~round 6.
+    assert_eq!(
+        done_events.len(),
+        1,
+        "escalation should stop the turn with ONE Done, not fire repeatedly; got {} Done events: {:?}",
+        done_events.len(),
+        done_events
+    );
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("无法打破"))),
-        "expected escalation hard-stop on repeated failing builds; got: {:?}",
-        events
+        done_events[0].contains("无法打破"),
+        "expected escalation message; got: {}",
+        done_events[0]
     );
 }
 
