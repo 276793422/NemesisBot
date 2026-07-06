@@ -367,6 +367,46 @@ async fn transient_error_retry_succeeds() {
     assert_eq!(done_events[0], "Recovered!");
 }
 
+#[tokio::test]
+async fn degenerate_final_answer_retries_then_real_answer() {
+    // ⑦ Two empty final answers are retried with a nudge; the third response
+    // (a real answer) is accepted and returned as Done.
+    let empty = LlmResponse {
+        content: String::new(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let real = LlmResponse {
+        content: "here is the real answer".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let provider = MockLlmProvider::new(vec![empty.clone(), empty, real]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "hi", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0], "here is the real answer");
+}
+
 #[test]
 fn test_handle_command_show_model() {
     let provider = MockLlmProvider::new(vec![]);

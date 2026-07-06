@@ -2466,6 +2466,13 @@ impl AgentLoop {
         // synthesize a final answer from completed work; a second hit stops
         // resumably instead of hard-crashing with "Max iterations reached".
         let mut grace_round = false;
+        // Turn-scoped guards (⑥ alternating loop, ⑦ degenerate output). Fresh
+        // per request — no state crosses requests.
+        let mut turn_guard = crate::turn_guard::TurnGuard::new();
+        // ⑦ Degenerate-answer nudge awaiting re-injection. Transient — kept out
+        // of instance history / session_log; re-applied after each build_messages
+        // until the model gives a visible answer or the retry budget runs out.
+        let mut degenerate_nudge_pending: Option<String> = None;
 
         loop {
             // Auto-reload MCP tools if config file changed.
@@ -2522,6 +2529,18 @@ impl AgentLoop {
                 messages.push(LlmMessage {
                     role: "system".to_string(),
                     content: GRACE_ROUND_NUDGE.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                });
+            }
+
+            // ⑦ Re-inject a pending degenerate-answer nudge (transient, like the
+            // grace nudge — never persisted to instance history / session_log).
+            if let Some(nudge) = &degenerate_nudge_pending {
+                messages.push(LlmMessage {
+                    role: "user".to_string(),
+                    content: nudge.clone(),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
@@ -2823,14 +2842,45 @@ impl AgentLoop {
             }
 
             if response.tool_calls.is_empty() || response.finished {
-                // No tool calls: this is the final response.
+                // No tool calls: candidate final response. ⑦ Check for degenerate
+                // (empty / whitespace-only / reasoning-only) content and nudge
+                // the model to retry before accepting. Skipped for heartbeat —
+                // an empty heartbeat response means "nothing to do", a valid
+                // outcome, not a broken answer.
                 let content = response.content.clone();
-                instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
-
-                // Apply RPC correlation ID formatting if needed.
-                let formatted = context.format_rpc_message(&content);
-                events.push(AgentEvent::Done(formatted));
-                break;
+                if context.user == "heartbeat" {
+                    instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                    let formatted = context.format_rpc_message(&content);
+                    events.push(AgentEvent::Done(formatted));
+                    break;
+                }
+                match turn_guard.check_final_answer(&content) {
+                    crate::turn_guard::FinalAnswerVerdict::Accept => {
+                        instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                        degenerate_nudge_pending = None;
+                        let formatted = context.format_rpc_message(&content);
+                        events.push(AgentEvent::Done(formatted));
+                        break;
+                    }
+                    crate::turn_guard::FinalAnswerVerdict::RetryWithNudge(nudge) => {
+                        warn!(
+                            "[AgentLoop] degenerate final answer (empty/no visible text); nudging retry"
+                        );
+                        // Record the empty attempt in history, then queue the
+                        // nudge for transient re-injection on the next build.
+                        instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
+                        degenerate_nudge_pending = Some(nudge);
+                        continue;
+                    }
+                    crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
+                        warn!("[AgentLoop] degenerate final answer retry budget exhausted; giving up");
+                        instance.add_assistant_message(&notice, Vec::new(), None);
+                        degenerate_nudge_pending = None;
+                        let formatted = context.format_rpc_message(&notice);
+                        events.push(AgentEvent::Done(formatted));
+                        break;
+                    }
+                }
             }
 
             // Record the assistant's response with tool calls.
@@ -2985,8 +3035,24 @@ impl AgentLoop {
                 };
                 events.push(AgentEvent::ToolResult(tool_result));
 
-                // Feed the result back as a tool message.
-                instance.add_tool_result(&tc.id, &result);
+                // Feed the result back as a tool message — with ⑥ alternating-loop
+                // guard. Track per-turn (tool, error) failure frequency; NOT reset
+                // by intervening successes, so it catches edit(ok)→build(fail)→
+                // edit(ok)→build(fail). On a repeated identical failure, append a
+                // nudge so the model sees it when it reads the error back.
+                let tool_succeeded = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+                let error_for_guard: Option<&str> = if tool_succeeded { None } else { Some(&result) };
+                let fed_result = match turn_guard.record_tool_outcome(&tc.name, error_for_guard) {
+                    Some(nudge) => {
+                        info!(
+                            "[AgentLoop] loop guard: '{}' repeating the same failure within this turn; nudging",
+                            tc.name
+                        );
+                        format!("{}\n{}", result, nudge)
+                    }
+                    None => result,
+                };
+                instance.add_tool_result(&tc.id, &fed_result);
 
                 // Phase 2: bound consecutive validation failures so a struggling
                 // model cannot burn the whole max_turns budget on the same

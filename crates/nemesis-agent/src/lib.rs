@@ -38,6 +38,7 @@ pub mod checkpoint;
 pub mod message_preprocess;
 pub mod args_validator;
 pub mod probe;
+pub mod turn_guard;
 
 pub use types::*;
 pub use instance::AgentInstance;
