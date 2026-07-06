@@ -2473,6 +2473,9 @@ impl AgentLoop {
         // of instance history / session_log; re-applied after each build_messages
         // until the model gives a visible answer or the retry budget runs out.
         let mut degenerate_nudge_pending: Option<String> = None;
+        // ⑧ Pending cross-round prose-repetition nudge (same transient pattern:
+        // re-applied after each build_messages, never persisted to history).
+        let mut repetition_nudge_pending: Option<String> = None;
 
         loop {
             // Auto-reload MCP tools if config file changed.
@@ -2540,6 +2543,17 @@ impl AgentLoop {
             if let Some(nudge) = &degenerate_nudge_pending {
                 messages.push(LlmMessage {
                     role: "user".to_string(),
+                    content: nudge.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                });
+            }
+
+            // ⑧ Re-inject a pending prose-repetition nudge (transient).
+            if let Some(nudge) = &repetition_nudge_pending {
+                messages.push(LlmMessage {
+                    role: "system".to_string(),
                     content: nudge.clone(),
                     tool_calls: None,
                     tool_call_id: None,
@@ -2841,6 +2855,17 @@ impl AgentLoop {
                 }
             }
 
+            // ⑧ Cross-round prose repetition: if the model's content is
+            // near-identical to the previous round's, queue a transient nudge
+            // for the next build. Catches "saying the same thing while churning
+            // tools" — a loop ⑥ cannot see (it watches tool results, not prose).
+            if let Some(nudge) = turn_guard.check_text_repetition(&response.content) {
+                info!("[AgentLoop] loop guard: response content repeating across rounds; nudging");
+                repetition_nudge_pending = Some(nudge);
+            } else {
+                repetition_nudge_pending = None;
+            }
+
             if response.tool_calls.is_empty() || response.finished {
                 // No tool calls: candidate final response. ⑦ Check for degenerate
                 // (empty / whitespace-only / reasoning-only) content and nudge
@@ -2857,7 +2882,6 @@ impl AgentLoop {
                 match turn_guard.check_final_answer(&content) {
                     crate::turn_guard::FinalAnswerVerdict::Accept => {
                         instance.add_assistant_message(&content, Vec::new(), response.reasoning_content.clone());
-                        degenerate_nudge_pending = None;
                         let formatted = context.format_rpc_message(&content);
                         events.push(AgentEvent::Done(formatted));
                         break;
@@ -2875,7 +2899,6 @@ impl AgentLoop {
                     crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
                         warn!("[AgentLoop] degenerate final answer retry budget exhausted; giving up");
                         instance.add_assistant_message(&notice, Vec::new(), None);
-                        degenerate_nudge_pending = None;
                         let formatted = context.format_rpc_message(&notice);
                         events.push(AgentEvent::Done(formatted));
                         break;
@@ -3035,12 +3058,30 @@ impl AgentLoop {
                 };
                 events.push(AgentEvent::ToolResult(tool_result));
 
-                // Feed the result back as a tool message — with ⑥ alternating-loop
-                // guard. Track per-turn (tool, error) failure frequency; NOT reset
-                // by intervening successes, so it catches edit(ok)→build(fail)→
-                // edit(ok)→build(fail). On a repeated identical failure, append a
-                // nudge so the model sees it when it reads the error back.
+                // ⑤/⑥ Loop guards — mutually exclusive per call (success vs error).
                 let tool_succeeded = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+
+                // ⑤ Repeat-success guard: a write-like tool succeeding with
+                // identical args is a no-op / write loop → append a nudge.
+                let result = if tool_succeeded {
+                    match turn_guard.record_write_success(&tc.name, &tc.arguments) {
+                        Some(nudge) => {
+                            info!(
+                                "[AgentLoop] loop guard: '{}' repeated an identical write; nudging",
+                                tc.name
+                            );
+                            format!("{}\n{}", result, nudge)
+                        }
+                        None => result,
+                    }
+                } else {
+                    result
+                };
+
+                // ⑥ Alternating-loop guard: per-turn (tool, error) failure
+                // frequency, NOT reset by intervening successes (also handles ④
+                // storm — consecutive identical — internally). On a repeated
+                // failure, append a nudge so the model sees it in the error.
                 let error_for_guard: Option<&str> = if tool_succeeded { None } else { Some(&result) };
                 let fed_result = match turn_guard.record_tool_outcome(&tc.name, error_for_guard) {
                     Some(nudge) => {
