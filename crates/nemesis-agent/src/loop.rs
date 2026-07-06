@@ -3217,6 +3217,19 @@ impl AgentLoop {
                 };
                 instance.add_tool_result(&tc.id, &fed_result);
 
+                // ⑥ Escalation: same (tool, error) failed past the hard-stop
+                // threshold → nudges are being ignored. Stop the turn now to
+                // bound the worst-case cost (a stuck small model would otherwise
+                // run all the way to max_turns). Resumable, like the grace round.
+                if let Some(msg) = turn_guard.escalation_check() {
+                    warn!(
+                        "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
+                    );
+                    let formatted = context.format_rpc_message(&msg);
+                    events.push(AgentEvent::Done(formatted));
+                    break;
+                }
+
                 // Phase 2: bound consecutive validation failures so a struggling
                 // model cannot burn the whole max_turns budget on the same
                 // malformed arguments.

@@ -19,6 +19,13 @@ use std::collections::{HashMap, HashSet};
 /// `edit(ok) → build(fail) → edit(ok) → build(fail)` loops.
 pub const ALTERNATING_LOOP_THRESHOLD: u32 = 3;
 
+/// ⑥ Escalation: when the same `(tool, error_signature)` fails this many times
+/// in a turn we stop hard — nudges are being ignored. Bounds the worst-case
+/// cost of a stuck model that would otherwise run all the way to `max_turns`.
+/// 2× the nudge threshold, so the model gets three nudged chances to recover
+/// (failures 3, 4, 5) before we cut it off at failure 6.
+pub const ALTERNATING_LOOP_HARD_STOP: u32 = 6;
+
 /// ④ Per-turn threshold for the storm guard: the same `(tool, error)` failing
 /// this many times **consecutively** (no intervening success or different
 /// error) is a death-spiral — nudge. Lower priority than ⑥ (consecutive is a
@@ -113,7 +120,7 @@ impl TurnGuard {
         *alt_count += 1;
         let alt_nudge = (*alt_count >= ALTERNATING_LOOP_THRESHOLD).then(|| {
             format!(
-                "\n[loop guard] {} 在本任务中已 {} 次报相同错误。中间的修改并没有消除这个错误——根因可能在别处（依赖、配置、环境）。请换方向：检查 Cargo.toml / 配置 / 依赖，或换一条完全不同的实现路径；若实在无法解决，请在最终答复里说明阻塞点。",
+                "\n[loop guard] {} 在本任务中已 {} 次报相同错误。中间的修改并没有消除这个错误——根因可能在别处。请换方向：检查依赖配置 / 构建配置 / 环境依赖是否正确安装，或换一条完全不同的实现路径；若实在无法解决，请在最终答复里说明阻塞点。",
                 tool, *alt_count
             )
         });
@@ -136,6 +143,24 @@ impl TurnGuard {
         };
 
         storm_nudge.or(alt_nudge)
+    }
+
+    /// ⑥ Escalation: returns a hard-stop message if any single `(tool, error)`
+    /// has failed at least [`ALTERNATING_LOOP_HARD_STOP`] times this turn — the
+    /// model is ignoring the nudges, so stop the turn to avoid burning the whole
+    /// `max_turns` budget. The caller breaks the loop and surfaces the message.
+    pub fn escalation_check(&self) -> Option<String> {
+        self.fail_freq.iter().find_map(|(sig, count)| {
+            if *count >= ALTERNATING_LOOP_HARD_STOP {
+                let tool = sig.split('\x00').next().unwrap_or("tool");
+                Some(format!(
+                    "检测到循环无法打破：{} 在本任务中已 {} 次报相同错误，多次提示后仍未改变方向。已停止本轮以避免空耗，已完成的工作已保存。请人工介入，或换一种思路后重试。",
+                    tool, count
+                ))
+            } else {
+                None
+            }
+        })
     }
 
     /// ⑤ Record a successful write-like tool call; returns a nudge if this
@@ -312,6 +337,41 @@ mod tests {
         for _ in 0..10 {
             assert!(g.record_tool_outcome("read_file", None).is_none());
         }
+    }
+
+    /// ⑥ Escalation: at 5 cumulative identical failures there's only a nudge;
+    /// at 6 the hard-stop fires.
+    #[test]
+    fn alternating_loop_escalates_after_hard_stop_threshold() {
+        let mut g = TurnGuard::new();
+        let err = "Error: build failed: unresolved import";
+        // Failures 1-5: no escalation (nudge fires from 3, tested elsewhere).
+        for _ in 0..5 {
+            g.record_tool_outcome("exec", Some(err));
+            assert!(
+                g.escalation_check().is_none(),
+                "no escalation before hard-stop threshold"
+            );
+        }
+        // 6th failure → escalation fires.
+        g.record_tool_outcome("exec", Some(err));
+        let stop = g.escalation_check().expect("escalation at 6th failure");
+        assert!(stop.contains("exec"));
+        assert!(stop.contains("无法打破"));
+    }
+
+    /// ⑥ Escalation survives intervening successes — the cumulative counter
+    /// (unlike storm's consecutive counter) is NOT reset, so an alternating
+    /// edit(ok)→build(fail) loop still escalates.
+    #[test]
+    fn escalation_survives_intervening_successes() {
+        let mut g = TurnGuard::new();
+        let err = "Error: timeout";
+        for _ in 0..6 {
+            g.record_tool_outcome("exec", Some(err));
+            g.record_tool_outcome("edit_file", None); // success, does not reset ⑥
+        }
+        assert!(g.escalation_check().is_some());
     }
 
     #[test]
