@@ -79,6 +79,14 @@ const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
 /// pause auto-summarization and warn.
 const COMPACT_STUCK_LIMIT: u32 = 2;
 
+/// Session-keyed state maps on `AgentLoop` (`compact_state`, `summarizing`) are
+/// size-bounded: when one exceeds this many entries we clear it wholesale. These
+/// maps are best-effort — losing an entry just re-learns the state on the next
+/// relevant call — and a wholesale clear under size pressure avoids the
+/// unbounded-growth anti-pattern (one entry per session, never evicted, leaking
+/// for the whole bot-process lifetime).
+pub(crate) const SESSION_STATE_MAX_ENTRIES: usize = 512;
+
 /// ⑩ Pure predicate: did a summarization fail to meaningfully reduce the
 /// prompt? True when there was a prior summarization (`last_summary_tokens > 0`)
 /// AND the current prompt is still at least [`COMPACT_STUCK_PLATEAU_RATIO`]% of
@@ -1995,6 +2003,10 @@ impl AgentLoop {
         let mut paused_stuck = false;
         {
             let mut states = self.compact_state.lock();
+            // ⑩ Bound growth: clear wholesale under size pressure (best-effort).
+            if states.len() > SESSION_STATE_MAX_ENTRIES {
+                states.clear();
+            }
             let st = states.entry(session_key.to_string()).or_default();
 
             if token_estimate >= soft && !st.soft_noticed {
@@ -2041,6 +2053,12 @@ impl AgentLoop {
         let summarize_key = format!("main:{}", session_key);
         {
             let mut map = self.summarizing.lock();
+            // Bound growth: clear wholesale under size pressure. Best-effort —
+            // the worst case is one redundant concurrent summarization, which
+            // overwrites benignly.
+            if map.len() > SESSION_STATE_MAX_ENTRIES {
+                map.clear();
+            }
             if map.contains_key(&summarize_key) {
                 return;
             }
@@ -2998,6 +3016,12 @@ impl AgentLoop {
                 }
             }
 
+            // Model produced tool calls → it is making progress. Clear any
+            // pending degenerate-answer nudge (⑦) so it stops nagging while the
+            // model works — tool work is the opposite of a degenerate empty
+            // final answer.
+            degenerate_nudge_pending = None;
+
             // Record the assistant's response with tool calls.
             let tool_calls = response.tool_calls.clone();
             let assistant_content = response.content.clone();
@@ -3155,6 +3179,12 @@ impl AgentLoop {
 
                 // ⑤ Repeat-success guard: a write-like tool succeeding with
                 // identical args is a no-op / write loop → append a nudge.
+                //
+                // NOTE: keys on `tc.arguments` (the model's ORIGINAL args), not
+                // the validator's auto-fixed args. Intentional — if the model
+                // keeps re-sending the same (typo'd) args, that IS the repeat
+                // we want to catch, regardless of the per-call auto-fix.
+                // Detection stays consistent; the signature is the pre-fix form.
                 let result = if tool_succeeded {
                     match turn_guard.record_write_success(&tc.name, &tc.arguments) {
                         Some(nudge) => {
