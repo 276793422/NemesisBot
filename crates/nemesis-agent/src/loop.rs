@@ -48,6 +48,46 @@ const GRACE_ROUND_NUDGE: &str = "工具调用预算已用尽，不要再调用�
 /// to get a successful response.
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
+/// ⑩ Per-session compaction tracking for graded tiers + stuck self-check.
+/// Keyed by session; lives on `AgentLoop`.
+#[derive(Default)]
+struct CompactState {
+    /// Whether the soft-tier (50%) notice has already been emitted this session
+    /// (one-shot; do not nag).
+    soft_noticed: bool,
+    /// Token estimate at the time of the last summarization. The next
+    /// summarization-triggered call compares against this to detect whether
+    /// summarization is keeping up.
+    last_summary_tokens: usize,
+    /// Consecutive summarizations that failed to meaningfully reduce the
+    /// prompt. At [`COMPACT_STUCK_LIMIT`] we pause auto-summarization.
+    consecutive_failures: u32,
+    /// Auto-summarization paused (stuck). Re-checked each call; cleared once
+    /// the prompt drops back below the summarize threshold.
+    stuck: bool,
+}
+
+/// ⑩ Soft tier: prompt at this fraction of context_window emits a one-shot
+/// info notice (no summarization, cache-stable prefix intact).
+const COMPACT_SOFT_RATIO: usize = 50; // % of context_window
+/// ⑩ Summarize tier: at this fraction, trigger summarization.
+const COMPACT_SUMMARIZE_RATIO: usize = 75; // % (unchanged from legacy behavior)
+/// ⑩ Stuck: a summarization counts as ineffective when the prompt afterwards
+/// is still at least this fraction of its pre-summarization size.
+const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
+/// ⑩ Stuck limit: after this many consecutive ineffective summarizations,
+/// pause auto-summarization and warn.
+const COMPACT_STUCK_LIMIT: u32 = 2;
+
+/// ⑩ Pure predicate: did a summarization fail to meaningfully reduce the
+/// prompt? True when there was a prior summarization (`last_summary_tokens > 0`)
+/// AND the current prompt is still at least [`COMPACT_STUCK_PLATEAU_RATIO`]% of
+/// the pre-summarization size. Extracted so the threshold logic is unit-testable.
+fn summarize_was_ineffective(last_summary_tokens: usize, current_tokens: usize) -> bool {
+    last_summary_tokens > 0
+        && current_tokens >= last_summary_tokens * COMPACT_STUCK_PLATEAU_RATIO / 100
+}
+
 /// A simplified LLM message used for building requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
@@ -381,6 +421,9 @@ pub struct AgentLoop {
     /// Wrapped in `Arc` so the flag can be cleared from a spawned task
     /// after summarization completes (mirrors Go's `defer al.summarizing.Delete()`).
     summarizing: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
+    /// ⑩ Per-session compaction state for graded tiers (soft/summarize) and
+    /// stuck self-check. See `maybe_summarize`.
+    compact_state: Arc<parking_lot::Mutex<HashMap<String, CompactState>>>,
     /// Channel manager reference (for channel listing commands).
     channel_manager_channels: parking_lot::Mutex<Vec<String>>,
     /// Tracks whether a message tool already sent a response this round.
@@ -504,6 +547,7 @@ impl AgentLoop {
             max_continuation_permits: 0,
             continuation_semaphore: None,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: None,
@@ -636,6 +680,7 @@ impl AgentLoop {
             max_continuation_permits,
             continuation_semaphore,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: Some(RouteResolver::new(default_route_config)),
@@ -1940,7 +1985,54 @@ impl AgentLoop {
         let history = instance.get_history();
         let context_window = instance.context_window();
         let token_estimate = estimate_tokens_for_turns(&history);
-        let threshold = context_window * 75 / 100;
+        let soft = context_window * COMPACT_SOFT_RATIO / 100;
+        let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
+
+        // ⑩ Graded tiers (soft / summarize) + stuck self-check. One critical
+        // section. Soft is info-log-only (must NOT pollute the model's input or
+        // session_log). Stuck pauses auto-summarization when it isn't reducing
+        // the prompt, so we don't loop summarizing forever.
+        let mut paused_stuck = false;
+        {
+            let mut states = self.compact_state.lock();
+            let st = states.entry(session_key.to_string()).or_default();
+
+            if token_estimate >= soft && !st.soft_noticed {
+                st.soft_noticed = true;
+                info!(
+                    "[AgentLoop] context at ~{}% of window ({} / {}); summarization will trigger at {}%",
+                    token_estimate * 100 / context_window.max(1),
+                    token_estimate, context_window, COMPACT_SUMMARIZE_RATIO
+                );
+            }
+
+            if token_estimate >= threshold && history.len() > 20 {
+                if summarize_was_ineffective(st.last_summary_tokens, token_estimate) {
+                    st.consecutive_failures += 1;
+                } else {
+                    st.consecutive_failures = 0;
+                }
+                if st.consecutive_failures >= COMPACT_STUCK_LIMIT {
+                    if !st.stuck {
+                        warn!(
+                            "[AgentLoop] compaction stuck: summarization has not reduced the prompt {} times in a row; pausing auto-summarization (raise context_window or reduce tool output)",
+                            st.consecutive_failures
+                        );
+                        st.stuck = true;
+                    }
+                    paused_stuck = true;
+                } else {
+                    st.last_summary_tokens = token_estimate;
+                }
+            } else if token_estimate < threshold {
+                // Breathing room — clear the stuck latch.
+                st.consecutive_failures = 0;
+                st.stuck = false;
+            }
+        }
+        if paused_stuck {
+            return;
+        }
 
         if history.len() <= 20 && token_estimate <= threshold {
             return;

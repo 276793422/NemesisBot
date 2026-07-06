@@ -408,6 +408,21 @@ async fn degenerate_final_answer_retries_then_real_answer() {
 }
 
 #[test]
+fn compaction_ineffective_predicate_basics() {
+    // ⑩ summarize_was_ineffective: was there a prior summarize AND the prompt
+    // is still ≥ 90% of the pre-summarization size?
+    use crate::r#loop::summarize_was_ineffective;
+    // No prior summarize → never ineffective (need a baseline first).
+    assert!(!summarize_was_ineffective(0, 10_000));
+    // Dropped well below 90% → effective (not stuck).
+    assert!(!summarize_was_ineffective(10_000, 5_000));
+    // Barely dropped (still ≥ 90%) → ineffective.
+    assert!(summarize_was_ineffective(10_000, 9_500));
+    // Grew back → ineffective.
+    assert!(summarize_was_ineffective(10_000, 11_000));
+}
+
+#[test]
 fn test_handle_command_show_model() {
     let provider = MockLlmProvider::new(vec![]);
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
