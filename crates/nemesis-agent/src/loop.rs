@@ -3175,7 +3175,10 @@ impl AgentLoop {
                 events.push(AgentEvent::ToolResult(tool_result));
 
                 // ⑤/⑥ Loop guards — mutually exclusive per call (success vs error).
-                let tool_succeeded = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+                // Use the shared helper so ExecTool's `Ok("Exit code: N")` for
+                // non-zero exits is detected as a failure — otherwise build
+                // loops look like success and the guards never fire.
+                let tool_succeeded = !crate::turn_guard::tool_result_indicates_error(&result);
 
                 // ⑤ Repeat-success guard: a write-like tool succeeding with
                 // identical args is a no-op / write loop → append a nudge.

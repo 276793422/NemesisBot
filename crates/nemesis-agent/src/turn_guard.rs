@@ -244,13 +244,53 @@ impl TurnGuard {
 /// truncating ignores volatile line numbers / surrounding output while still
 /// distinguishing genuinely-different errors. Char-bounded truncation so it is
 /// safe on multi-byte (e.g. Chinese) text.
+/// Whether a tool's result string indicates failure. Tools in this codebase
+/// signal errors three ways, and the guards must recognize all of them:
+/// - `Error: ...` — framework-wrapped (e.g. unknown tool).
+/// - `Tool error: ...` — `handle_tool_call` wrapping a tool's `Err(_)` return.
+/// - `Exit code: <N>\n...` — `ExecTool` returns this as `Ok(_)` for non-zero
+///   exits. A non-zero exit IS a failure even though it's `Ok`, so without this
+///   case the most common loop shape — repeated failing builds — would look like
+///   a stream of successes and the guards would never fire.
+pub fn tool_result_indicates_error(result: &str) -> bool {
+    result.starts_with("Error:")
+        || result.starts_with("Tool error:")
+        || result.starts_with("Exit code:")
+}
+
+/// Build a stable signature for a tool failure. Keys on `(tool, first
+/// meaningful error line)` — NOT on arguments. Skips `ExecTool` boilerplate
+/// lines (`Exit code:` / `stdout:` / `stderr:` headers) so the signature
+/// reflects the actual error — otherwise every build failure keys to
+/// "Exit code: 101" and distinct errors (fix-one-expose-next progress) would
+/// collide into a false-positive loop signal. Char-bounded truncation so it is
+/// safe on multi-byte (e.g. Chinese) text.
 fn error_signature(tool: &str, error: &str) -> String {
     let stripped = error
         .trim_start_matches("Error:")
         .trim_start_matches("Tool error:")
         .trim();
-    let first_line = stripped.lines().next().unwrap_or(stripped);
-    let normalized: String = first_line.chars().take(120).collect();
+    // Skip ExecTool's `Exit code:` / `stdout:` / `stderr:` headers. The latter
+    // two are INLINE prefixes on the same line as the content (e.g.
+    // "stderr: error[E0432]: ..."), so we strip the prefix and look at the
+    // remainder — otherwise every build failure keys to "Exit code: N" and
+    // distinct errors collide into a false-positive loop signal.
+    let meaningful = stripped
+        .lines()
+        .filter_map(|l| {
+            let s = l
+                .trim_start_matches("stdout:")
+                .trim_start_matches("stderr:")
+                .trim();
+            if s.is_empty() || s.starts_with("Exit code:") {
+                None
+            } else {
+                Some(s)
+            }
+        })
+        .next()
+        .unwrap_or_else(|| stripped.lines().next().unwrap_or(stripped).trim());
+    let normalized: String = meaningful.chars().take(120).collect();
     format!("{}\x00{}", tool, normalized)
 }
 
@@ -381,6 +421,38 @@ mod tests {
         let s1 = error_signature("exec", "Error: boom: details");
         let s2 = error_signature("exec", "boom: details");
         assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn indicates_error_detects_exit_code_prefix() {
+        use super::tool_result_indicates_error;
+        assert!(tool_result_indicates_error("Error: boom"));
+        assert!(tool_result_indicates_error("Tool error: bad args"));
+        // ExecTool non-zero-exit format (the original stuck case).
+        assert!(tool_result_indicates_error(
+            "Exit code: 101\nstdout: \nstderr: error[E0432]: x"
+        ));
+        // Genuine success.
+        assert!(!tool_result_indicates_error("compilation successful"));
+        assert!(!tool_result_indicates_error("File edited: /a/b.rs"));
+    }
+
+    #[test]
+    fn signature_skips_exec_boilerplate_to_actual_error() {
+        // Two DIFFERENT build errors must get distinct signatures so that
+        // fix-one-expose-next progress is not a false-positive loop. The sig
+        // skips "Exit code:" / "stdout:" / "stderr:" headers.
+        let s1 = error_signature(
+            "exec",
+            "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import `winapi::user32`",
+        );
+        let s2 = error_signature(
+            "exec",
+            "Exit code: 101\nstdout: \nstderr: error[E0425]: cannot find function `MessageBoxA`",
+        );
+        assert_ne!(s1, s2, "distinct build errors must not collide");
+        assert!(s1.contains("E0432"));
+        assert!(s2.contains("E0425"));
     }
 
     /// ⑦ Two retries, then give up on the third degenerate answer.

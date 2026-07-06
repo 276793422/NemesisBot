@@ -368,6 +368,102 @@ async fn transient_error_retry_succeeds() {
 }
 
 #[tokio::test]
+async fn escalation_fires_on_repeated_failing_builds() {
+    // Reproduces the ORIGINAL stuck case realistically: the model keeps calling
+    // exec (cargo build), which fails identically every time. ExecTool returns
+    // Ok("Exit code: 101\nstderr: error[...]...") for a non-zero exit — without
+    // the tool_result_indicates_error helper this looks like success and the
+    // guards never fire. Verify ⑥ escalation hard-stops at failure 6 (well
+    // under max_turns=100).
+    let fail_resp = LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc_fail".to_string(),
+            name: "exec".to_string(),
+            arguments: r#"{"command":"cargo build"}"#.to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let responses: Vec<LlmResponse> = (0..20).map(|_| fail_resp.clone()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result:
+                "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import `winapi::user32`"
+                    .to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("无法打破"))),
+        "expected escalation hard-stop on repeated failing builds; got: {:?}",
+        events
+    );
+}
+
+#[tokio::test]
+async fn resume_execution_grace_round_on_max_turns() {
+    // #3 cluster-continuation path: resume_execution (used by cluster_agent to
+    // resume a remote task) now goes through the grace round. Verifies that a
+    // resumed execution hitting max_turns produces a resumable Done (the message
+    // extract_final_message surfaces to the requesting node) instead of the old
+    // "Max iterations reached" Error. Deterministic — no two-node deployment
+    // needed to check this specific edge.
+    let infinite_response = LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc".to_string(),
+            name: "calculator".to_string(),
+            arguments: "{}".to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let responses: Vec<LlmResponse> = (0..10).map(|_| infinite_response.clone()).collect();
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 3;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool { result: "0".to_string() }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("cluster", "task-123", "remote-A", "cluster-resume");
+
+    let events = agent_loop
+        .resume_execution(&instance, &context, "cluster-resume-test")
+        .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停"))),
+        "expected grace-round Done on resume_execution max_turns; got: {:?}",
+        events
+    );
+}
+
+#[tokio::test]
 async fn degenerate_final_answer_retries_then_real_answer() {
     // ⑦ Two empty final answers are retried with a nudge; the third response
     // (a real answer) is accepted and returned as Done.
