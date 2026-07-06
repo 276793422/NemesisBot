@@ -705,7 +705,7 @@ fn test_agent_defaults_default() {
     let defaults = AgentDefaults::default();
     assert_eq!(defaults.max_tokens, 8192);
     assert_eq!(defaults.temperature, 0.7);
-    assert_eq!(defaults.max_tool_iterations, 60);
+    assert_eq!(defaults.max_tool_iterations, 100);
 }
 
 #[test]

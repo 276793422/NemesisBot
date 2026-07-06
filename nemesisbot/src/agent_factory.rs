@@ -214,7 +214,13 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         } else {
             Some(system_prompt)
         },
-        max_turns: cfg.agents.defaults.max_tool_iterations.max(1) as u32,
+        max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
+            // 0 (or negative) = unlimited opt-in. The run-loop treats
+            // max_turns == 0 as "no cap"; see AgentLoop process_message.
+            0
+        } else {
+            cfg.agents.defaults.max_tool_iterations as u32
+        },
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
     };

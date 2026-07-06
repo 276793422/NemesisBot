@@ -35,6 +35,19 @@ use crate::session::{SessionStore, estimate_tokens_for_turns};
 use crate::types::{AgentConfig, AgentEvent, ToolCallInfo, ToolCallResult};
 use nemesis_routing::{RouteResolver, RouteInput as RoutingRouteInput, RouteConfig, AgentDef};
 
+/// Grace-round nudge injected when the tool-call budget is exhausted (②).
+/// The model gets one extra round to synthesize a final answer from the work
+/// already done, instead of hard-stopping with "Max iterations reached". This
+/// is a TRANSIENT system message — appended to the built message list for the
+/// grace round only, never persisted to instance history or session_log.
+const GRACE_ROUND_NUDGE: &str = "工具调用预算已用尽，不要再调用任何工具。请基于已完成的工作给出最终答复：总结完成了什么、还有什么没做、需要用户做哪些决定。";
+
+/// Max retries for transient LLM errors (network / stream / 5xx) before giving
+/// up (③). Retries do NOT consume the `turns_used` budget — the increment at
+/// the end of an iteration happens once regardless of how many retries it took
+/// to get a successful response.
+const MAX_TRANSIENT_RETRIES: u32 = 3;
+
 /// A simplified LLM message used for building requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
@@ -2448,6 +2461,11 @@ impl AgentLoop {
         // reaches the tier budget the loop stops, preventing a struggling model
         // from burning max_turns on the same malformed call.
         let mut validation_failures = 0u32;
+        // ② Grace-round latch. When the tool-call budget is exhausted we grant
+        // one extra round (with GRACE_ROUND_NUDGE injected) so the model can
+        // synthesize a final answer from completed work; a second hit stops
+        // resumably instead of hard-crashing with "Max iterations reached".
+        let mut grace_round = false;
 
         loop {
             // Auto-reload MCP tools if config file changed.
@@ -2463,15 +2481,29 @@ impl AgentLoop {
                 break;
             }
 
-            if turns_used >= self.config.max_turns {
-                warn!(
-                    "[AgentLoop] Agent loop reached max turns ({})",
-                    self.config.max_turns
-                );
-                events.push(AgentEvent::Error(
-                    "Max iterations reached".to_string(),
-                ));
-                break;
+            // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
+            // (opt-in). On the first hit we grant one grace round (with
+            // GRACE_ROUND_NUDGE injected below) so the model can finalize from
+            // completed work; a second hit stops resumably — no work is lost.
+            if self.config.max_turns > 0 && turns_used >= self.config.max_turns {
+                if !grace_round {
+                    grace_round = true;
+                    info!(
+                        "[AgentLoop] max_turns ({}) reached after {} turns; granting one grace round to finalize",
+                        self.config.max_turns, turns_used
+                    );
+                    // Fall through: this iteration runs as the grace round.
+                } else {
+                    warn!(
+                        "[AgentLoop] paused after {} tool-call rounds (grace round exhausted)",
+                        self.config.max_turns
+                    );
+                    events.push(AgentEvent::Done(format!(
+                        "已在 {} 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。",
+                        self.config.max_turns
+                    )));
+                    break;
+                }
             }
 
             // Build the message list from instance history.
@@ -2482,6 +2514,18 @@ impl AgentLoop {
                 if let Some(last_user) = messages.iter_mut().rev().find(|m| m.role == "user") {
                     last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
                 }
+            }
+
+            // ② Grace-round nudge. Transient — NOT persisted to instance history
+            // or session_log; only this turn's message list carries it.
+            if grace_round {
+                messages.push(LlmMessage {
+                    role: "system".to_string(),
+                    content: GRACE_ROUND_NUDGE.to_string(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                });
             }
 
             debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
@@ -2652,26 +2696,82 @@ impl AgentLoop {
                             }
                         }
                     } else {
-                        warn!("[AgentLoop] LLM call failed: {}", err);
-                        let error_round = turns_used + 1;
-                        let error_duration = round_start.elapsed();
-                        self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
-                            trace_id: trace_id.to_string(),
-                            round: error_round,
-                            duration_ms: error_duration.as_millis() as u64,
-                            has_tool_calls: false,
-                            content: format!("Error: {}", err),
-                            tool_calls: vec![],
-                            tool_calls_count: 0,
-                            finish_reason: Some("error".to_string()),
-                            usage: None,
-                            raw_request_body: None,
-                            raw_response_body: None,
-                        }).await;
-                        instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
-                        let formatted = context.format_rpc_message(&format!("Error: {}", err));
-                        events.push(AgentEvent::Error(formatted));
-                        break;
+                        // ③ Transient-error retry (network / stream / 5xx). Retries
+                        // do NOT consume turns_used — the per-iteration increment
+                        // below happens once regardless of how many retries it took
+                        // to get a successful response. Messages + tool_defs are
+                        // rebuilt fresh because the first-attempt values were moved
+                        // into the failed call.
+                        let is_transient_error = [
+                            "timeout", "timed out", "connection reset",
+                            "broken pipe", "connect error", "connection refused",
+                            "temporarily unavailable", "reset by peer",
+                            "502", "503", "504", "service unavailable",
+                        ].iter().any(|k| err_lower.contains(k));
+
+                        let mut last_err = err.clone();
+                        let mut maybe_resp: Option<LlmResponse> = None;
+
+                        if is_transient_error {
+                            info!(
+                                "[AgentLoop] LLM transient error, retrying up to {} times: {}",
+                                MAX_TRANSIENT_RETRIES, last_err
+                            );
+                            let mut retries = 0u32;
+                            while retries < MAX_TRANSIENT_RETRIES {
+                                retries += 1;
+                                let r_msgs = self.build_messages(instance);
+                                let r_tools: Vec<crate::types::ToolDefinition> = self.tools.read().iter()
+                                    .map(|(name, tool)| crate::types::ToolDefinition {
+                                        tool_type: "function".to_string(),
+                                        function: crate::types::ToolFunctionDef {
+                                            name: name.clone(),
+                                            description: tool.description(),
+                                            parameters: tool.parameters(),
+                                        },
+                                    })
+                                    .collect();
+                                match active_provider.chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools).await {
+                                    Ok(resp) => {
+                                        maybe_resp = Some(resp);
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        last_err = e;
+                                        warn!(
+                                            "[AgentLoop] transient retry {}/{} failed: {}",
+                                            retries, MAX_TRANSIENT_RETRIES, last_err
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if let Some(resp) = maybe_resp {
+                            resp
+                        } else {
+                            // Non-transient error, or transient retries exhausted.
+                            warn!("[AgentLoop] LLM call failed: {}", last_err);
+                            let error_round = turns_used + 1;
+                            let error_duration = round_start.elapsed();
+                            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
+                                trace_id: trace_id.to_string(),
+                                round: error_round,
+                                duration_ms: error_duration.as_millis() as u64,
+                                has_tool_calls: false,
+                                content: format!("Error: {}", last_err),
+                                tool_calls: vec![],
+                                tool_calls_count: 0,
+                                finish_reason: Some("error".to_string()),
+                                usage: None,
+                                raw_request_body: None,
+                                raw_response_body: None,
+                            }).await;
+                            instance.add_assistant_message(&format!("Error: {}", last_err), Vec::new(), None);
+                            let formatted = context.format_rpc_message(&format!("Error: {}", last_err));
+                            events.push(AgentEvent::Error(formatted));
+                            break;
+                        }
                     }
                 }
             };

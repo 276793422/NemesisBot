@@ -62,7 +62,7 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 "llm": "zhipu/glm-4.7-flash",
                 "max_tokens": 8192,
                 "temperature": 0.7,
-                "max_tool_iterations": 20,
+                "max_tool_iterations": 100,
                 "concurrent_request_mode": "reject",
                 "queue_size": 8
             }

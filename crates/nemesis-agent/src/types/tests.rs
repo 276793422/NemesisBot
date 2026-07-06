@@ -5,7 +5,7 @@ fn agent_config_default() {
     let config = AgentConfig::default();
     assert_eq!(config.model, "gpt-4");
     assert!(config.system_prompt.is_none());
-    assert_eq!(config.max_turns, 60);
+    assert_eq!(config.max_turns, 100);
     assert!(config.tools.is_empty());
 }
 

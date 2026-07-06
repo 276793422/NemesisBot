@@ -206,17 +206,20 @@ fn test_factory_config_with_slash_in_model() {
 
 #[test]
 fn test_agent_config_default_max_turns() {
+    // ① New semantics: max_tool_iterations <= 0 means "unlimited", represented
+    // as 0 in AgentConfig.max_turns (the run-loop treats 0 as "no cap"). A
+    // positive value is used as-is.
     let max_tool_iterations: i32 = 0;
-    let max_turns = max_tool_iterations.max(1) as u32;
-    assert_eq!(max_turns, 1);
+    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
+    assert_eq!(max_turns, 0);
 
     let max_tool_iterations: i32 = 10;
-    let max_turns = max_tool_iterations.max(1) as u32;
+    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
     assert_eq!(max_turns, 10);
 
     let max_tool_iterations: i32 = -5;
-    let max_turns = max_tool_iterations.max(1) as u32;
-    assert_eq!(max_turns, 1);
+    let max_turns = if max_tool_iterations <= 0 { 0u32 } else { max_tool_iterations as u32 };
+    assert_eq!(max_turns, 0);
 }
 
 // -------------------------------------------------------------------------

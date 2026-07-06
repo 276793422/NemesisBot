@@ -250,10 +250,121 @@ async fn max_turns_limit() {
 
     let events = agent_loop.run(&instance, "Loop test", &context).await;
 
-    // Should have hit max_turns and produced an Error event.
+    // ② Grace round: on the first max_turns hit we grant one finalize round.
+    // The model here keeps requesting tools, so the second hit stops resumably
+    // with a Done event (no longer a hard "Max iterations reached" Error) and
+    // the completed work is preserved.
     assert!(events
         .iter()
-        .any(|e| matches!(e, AgentEvent::Error(msg) if msg.contains("Max iterations"))));
+        .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停"))));
+}
+
+#[tokio::test]
+async fn grace_round_finalizes_when_model_cooperates() {
+    // ② When max_turns is hit, the loop grants one grace round (with the
+    // finalize nudge). If the model cooperates and returns a plain answer on
+    // that grace round, the loop ends normally — NOT with the paused Done.
+    let tool_resp = LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc".to_string(),
+            name: "calculator".to_string(),
+            arguments: "{}".to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let final_resp = LlmResponse {
+        content: "done summarizing".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    // max_turns=2 → 2 tool rounds, then 1 grace round that finalizes.
+    let responses = vec![tool_resp.clone(), tool_resp, final_resp];
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 2;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool { result: "0".to_string() }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "do stuff", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0], "done summarizing");
+    // The paused-grace Done must NOT appear — the model finalized in time.
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::Done(msg) if msg.contains("暂停"))));
+}
+
+#[tokio::test]
+async fn transient_error_retry_succeeds() {
+    // ③ A transient error (network/stream/5xx) is retried up to
+    // MAX_TRANSIENT_RETRIES times without consuming the turns_used budget.
+    // Success on retry yields a normal Done.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TransientThenSuccess {
+        call_count: AtomicUsize,
+    }
+    #[async_trait]
+    impl LlmProvider for TransientThenSuccess {
+        async fn chat(&self, _model: &str, _messages: Vec<LlmMessage>, _options: Option<crate::types::ChatOptions>, _tools: Vec<crate::types::ToolDefinition>) -> Result<LlmResponse, String> {
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if count == 0 {
+                Err("connection reset by peer".to_string())
+            } else {
+                Ok(LlmResponse {
+                    content: "Recovered!".to_string(),
+                    tool_calls: Vec::new(),
+                    finished: true,
+                    reasoning_content: None,
+                    usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
+                })
+            }
+        }
+    }
+
+    let agent_loop = AgentLoop::new(
+        Box::new(TransientThenSuccess { call_count: AtomicUsize::new(0) }),
+        test_config(),
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0], "Recovered!");
 }
 
 #[test]
