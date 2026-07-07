@@ -668,7 +668,12 @@ impl Cluster {
         // via list_peers to find any *other* entry at the same address that
         // isn't the real_id and remove it.
         if !primary_address.is_empty() {
-            let placeholders: Vec<String> = self
+            // Collect placeholder (id, name) pairs. A placeholder is a
+            // manually/statically-added entry keyed by the human name or address
+            // (e.g. "Node-A") rather than the real node_id. Its `name` field is
+            // the human-readable name the operator configured in peers.toml —
+            // capture it so we can preserve it across the upgrade.
+            let placeholders: Vec<(String, String)> = self
                 .registry
                 .list_peers()
                 .into_iter()
@@ -677,18 +682,19 @@ impl Cluster {
                         && (addr_eq(&p.base.address, &primary_address)
                             || p.addresses.iter().any(|a| addr_eq(a, &primary_address)))
                 })
-                .map(|p| p.base.id)
+                .map(|p| (p.base.id.clone(), p.base.name.clone()))
                 .collect();
-            for placeholder_id in placeholders {
+            let mut inherited_name: Option<String> = None;
+            for (placeholder_id, placeholder_name) in &placeholders {
                 tracing::info!(
                     real_id = node_id,
                     placeholder_id = %placeholder_id,
                     address = %primary_address,
                     "[Cluster] UDP discovery upgrading placeholder peer to real ID"
                 );
-                self.registry.remove(&placeholder_id);
+                self.registry.remove(placeholder_id);
                 self.upgrade_peer_in_peers_toml(
-                    &placeholder_id,
+                    placeholder_id,
                     node_id,
                     &RealNodeInfo {
                         id: node_id.into(),
@@ -700,6 +706,23 @@ impl Cluster {
                         node_type: node_type.into(),
                     },
                 );
+                if !placeholder_name.is_empty() {
+                    inherited_name = Some(placeholder_name.clone());
+                }
+            }
+            // Preserve the human-readable name across the upgrade. The real
+            // entry was inserted above keyed by node_id; if its `name` ended up
+            // empty or just the node_id (announce sometimes carries node_id as
+            // name), restore the name inherited from the placeholder so that
+            // lookups by human name (e.g. cluster_rpc target "Node-A") still
+            // resolve via get_peer_info's name fallback.
+            if let Some(human_name) = inherited_name {
+                if let Some(mut info) = self.registry.get(node_id) {
+                    if info.base.name.is_empty() || info.base.name == node_id {
+                        info.base.name = human_name;
+                        self.registry.upsert(info);
+                    }
+                }
             }
         }
 
