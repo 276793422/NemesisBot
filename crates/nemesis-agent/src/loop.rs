@@ -3031,14 +3031,14 @@ impl AgentLoop {
             // Execute each tool call.
             instance.set_state(crate::types::AgentState::ExecutingTool);
             let mut hit_async = false;
-            // ⑥ Escalation latch. Set inside the tool-call for-loop (where
-            // `break` can only exit the batch, not the outer LLM loop); checked
-            // AFTER the for-loop in the outer scope to actually end the turn.
-            // Without this two-step, escalation's `break` only stopped the
-            // current batch and the model was called again — re-triggering
-            // escalation every round without ever stopping (observed 43× in a
-            // deployed test).
-            let mut escalation_stop: Option<String> = None;
+            // Outer-scope turn-stop latch. Set inside the tool-call for-loop
+            // (where `break` can only exit the batch, not the outer LLM loop) by
+            // ⑥ escalation OR validation-budget exhaustion. Checked after the
+            // for-loop to actually end the turn. Without this two-step, those
+            // `break`s only stopped the current batch and the model was called
+            // again — escalation fired every round without stopping (observed
+            // 43× in a deployed test), and "validation stopping loop" was a lie.
+            let mut force_stop: Option<AgentEvent> = None;
             for tc in &tool_calls {
                 // Check cancellation before each tool execution.
                 if cancel_token.is_cancelled() {
@@ -3229,27 +3229,31 @@ impl AgentLoop {
                 instance.add_tool_result(&tc.id, &fed_result);
 
                 // ⑥ Escalation: same (tool, error) failed past the hard-stop
-                // threshold → nudges are being ignored. Latch the stop message
-                // and break the tool batch; the outer-scope check after this
-                // for-loop ends the turn (a bare `break` here only exits the
-                // batch, not the LLM loop).
+                // threshold → nudges are being ignored. Latch a stop event and
+                // break the tool batch; the outer-scope check after this for-loop
+                // ends the turn (a bare `break` here only exits the batch, not
+                // the LLM loop).
                 if let Some(msg) = turn_guard.escalation_check() {
                     warn!(
                         "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
                     );
-                    escalation_stop = Some(context.format_rpc_message(&msg));
+                    force_stop = Some(AgentEvent::Done(context.format_rpc_message(&msg)));
                     break;
                 }
 
                 // Phase 2: bound consecutive validation failures so a struggling
                 // model cannot burn the whole max_turns budget on the same
-                // malformed arguments.
+                // malformed arguments. Same latch pattern as escalation — a bare
+                // `break` here used to only exit the batch while the outer LLM
+                // loop kept calling the model (the "stopping loop" log was a lie,
+                // observed in a deployed cluster test). Now it actually ends the
+                // turn, giving the model exactly `validation_retry_budget` retries.
                 if validation_failures >= self.validation_retry_budget() {
                     warn!(
-                        "[AgentLoop] Validation retry budget exhausted ({}); stopping loop.",
+                        "[AgentLoop] Validation retry budget exhausted ({}); stopping turn.",
                         validation_failures
                     );
-                    events.push(AgentEvent::Error(format!(
+                    force_stop = Some(AgentEvent::Error(format!(
                         "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。",
                         validation_failures, tc.name
                     )));
@@ -3261,10 +3265,12 @@ impl AgentLoop {
                 break;
             }
 
-            // ⑥ Escalation latch from the tool-call loop above — end the turn
-            // here (outer-scope break), emitting a single Done event.
-            if let Some(msg) = escalation_stop {
-                events.push(AgentEvent::Done(msg));
+            // Outer-scope turn stop latched from inside the tool-call for-loop
+            // (⑥ escalation OR validation-budget exhaustion). A bare `break` in
+            // that for-loop only exits the batch; this actually ends the turn,
+            // emitting a single terminal event.
+            if let Some(ev) = force_stop {
+                events.push(ev);
                 break;
             }
         }

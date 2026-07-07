@@ -45,6 +45,20 @@ impl Tool for MockTool {
     }
 }
 
+/// A tool with a required field, so calls missing it fail schema validation —
+/// used to exercise the validation-retry-budget path.
+struct StrictTool;
+
+#[async_trait]
+impl Tool for StrictTool {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok("ok".to_string())
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+    }
+}
+
 fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
@@ -430,6 +444,60 @@ async fn escalation_fires_on_repeated_failing_builds() {
         done_events[0].contains("无法打破"),
         "expected escalation message; got: {}",
         done_events[0]
+    );
+}
+
+#[tokio::test]
+async fn validation_budget_actually_stops_turn() {
+    // The validation retry budget must END the turn when exhausted, not just
+    // break the current tool batch. Pre-existing bug (same shape as the
+    // escalation break-scope bug): the "stopping loop" log fired but the outer
+    // LLM loop kept calling the model every round, so a model that kept sending
+    // bad args would push an Error event every round until max_turns. With the
+    // force_stop latch, exhaustion produces exactly ONE Error and ends the turn.
+    let bad_resp = LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: "tc_bad".to_string(),
+            name: "strict_tool".to_string(),
+            arguments: "{}".to_string(), // missing required "path"
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    // 10 responses available — budget exhaustion must stop the turn long before.
+    let provider = MockLlmProvider::new((0..10).map(|_| bad_resp.clone()).collect());
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.register_tool("strict_tool".to_string(), Box::new(StrictTool));
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "do it", &context).await;
+
+    let error_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        error_events.len(),
+        1,
+        "validation budget should stop the turn with ONE Error, not push one per round; got {}: {:?}",
+        error_events.len(),
+        error_events
+    );
+    assert!(
+        error_events[0].contains("参数校验"),
+        "expected validation error; got: {}",
+        error_events[0]
     );
 }
 
