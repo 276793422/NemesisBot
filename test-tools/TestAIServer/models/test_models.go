@@ -128,14 +128,10 @@ func (m *TestAI30) Process(messages []Message) string {
 				// 构造工具调用响应
 				toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
 
-				// 构造 cluster_rpc 的参数
+				// 构造 cluster_rpc 的参数（target + message，对齐工具 schema）
 				args := map[string]interface{}{
-					"peer_id": req.PeerID,
-					"action":  "peer_chat",
-					"data": map[string]interface{}{
-						"type":    "chat",
-						"content": req.Content,
-					},
+					"target":  req.PeerID,
+					"message": req.Content,
 				}
 
 				argsJSON, _ := json.Marshal(args)
@@ -263,16 +259,16 @@ func (m *TestAI31) Delay() time.Duration {
 }
 
 // buildClusterRpcToolCall constructs a cluster_rpc tool call response.
+// Emits top-level `target` + `message` — the cluster_rpc tool's schema-required
+// fields (loop_tools.rs:1807-1811). The old `peer_id`/`data.content` shape failed
+// schema validation, so cluster_rpc never executed and cluster-uat continuation
+// tests (T4+) timed out for the wrong reason.
 func buildClusterRpcToolCall(peerID, content string) string {
 	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
 
 	args := map[string]interface{}{
-		"peer_id": peerID,
-		"action":  "peer_chat",
-		"data": map[string]interface{}{
-			"type":    "chat",
-			"content": content,
-		},
+		"target":  peerID,
+		"message": content,
 	}
 
 	argsJSON, _ := json.Marshal(args)
