@@ -66,6 +66,7 @@ fn insert_peer_with_timestamp(
             info,
             last_health_check: last_health_check.into(),
             consecutive_failures: 0,
+            is_static: false,
         },
     );
 }

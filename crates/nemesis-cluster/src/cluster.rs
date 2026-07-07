@@ -685,6 +685,7 @@ impl Cluster {
                 .map(|p| (p.base.id.clone(), p.base.name.clone()))
                 .collect();
             let mut inherited_name: Option<String> = None;
+            let mut inherited_static = false;
             for (placeholder_id, placeholder_name) in &placeholders {
                 tracing::info!(
                     real_id = node_id,
@@ -692,6 +693,12 @@ impl Cluster {
                     address = %primary_address,
                     "[Cluster] UDP discovery upgrading placeholder peer to real ID"
                 );
+                // Capture static-ness BEFORE removing the placeholder so the
+                // upgraded real entry inherits it (static peers stay exempt
+                // from UDP-staleness expiry).
+                if self.registry.is_peer_static(placeholder_id) {
+                    inherited_static = true;
+                }
                 self.registry.remove(placeholder_id);
                 self.upgrade_peer_in_peers_toml(
                     placeholder_id,
@@ -723,6 +730,12 @@ impl Cluster {
                         self.registry.upsert(info);
                     }
                 }
+            }
+            // Preserve static-ness across the upgrade so a configured peer
+            // (loaded from peers.toml) doesn't suddenly become UDP-expirable
+            // once its placeholder key is replaced by the real node_id.
+            if inherited_static {
+                self.registry.mark_static(node_id);
             }
         }
 
@@ -1448,6 +1461,14 @@ impl Cluster {
     pub fn mark_peer_offline(&self, node_id: &str, reason: &str) {
         self.registry.mark_offline(node_id, reason);
         crate::logger::log_discovery("offline", reason, Some(node_id));
+    }
+
+    /// Mark a peer as static/configured (loaded from peers.toml). Static peers
+    /// are exempt from UDP-staleness expiry in `check_health` — they have a
+    /// known address and stay Online across UDP announce gaps. Call after
+    /// loading each static peer at startup.
+    pub fn mark_peer_static(&self, node_id: &str) -> bool {
+        self.registry.mark_static(node_id)
     }
 
     /// Get online peers.

@@ -46,6 +46,13 @@ pub struct PeerEntry {
     pub last_health_check: String,
     /// Number of failed health checks.
     pub consecutive_failures: u32,
+    /// Static/configured peer (loaded from peers.toml, not just UDP-discovered).
+    /// `check_health` never marks these Offline based on UDP announce staleness
+    /// — they have a known configured address and are only removed explicitly or
+    /// via a real RPC failure. This stops flaky UDP discovery (e.g. multi-node
+    /// on one device) from taking configured peers offline.
+    #[serde(default)]
+    pub is_static: bool,
 }
 
 impl PeerRegistry {
@@ -72,6 +79,7 @@ impl PeerRegistry {
                     info,
                     last_health_check: now,
                     consecutive_failures: 0,
+                    is_static: false,
                 },
             );
         }
@@ -104,10 +112,28 @@ impl PeerRegistry {
                     info,
                     last_health_check: now,
                     consecutive_failures: 0,
+                    is_static: false,
                 },
             );
             true
         }
+    }
+
+    /// Mark a peer as static/configured (loaded from peers.toml). Static peers
+    /// are exempt from UDP-staleness expiry in [`check_health`]. No-op if the
+    /// peer isn't in the registry.
+    pub fn mark_static(&self, node_id: &str) -> bool {
+        if let Some(existing) = self.peers.lock().get_mut(node_id) {
+            existing.is_static = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether a peer is static/configured. Returns `false` if unknown.
+    pub fn is_peer_static(&self, node_id: &str) -> bool {
+        self.peers.lock().get(node_id).map(|e| e.is_static).unwrap_or(false)
     }
 
     /// Remove a peer by node ID.
@@ -331,6 +357,14 @@ impl PeerRegistry {
         for (id, entry) in peers.iter_mut() {
             // Only transition peers that are currently Online
             if entry.info.status != NodeStatus::Online {
+                continue;
+            }
+            // Static/configured peers (from peers.toml) are exempt from
+            // UDP-staleness expiry — they have a known address and shouldn't be
+            // taken offline just because a UDP announce didn't arrive (e.g.
+            // multi-node-on-one-device where UDP discovery is lossy). They're
+            // only removed explicitly or via a real RPC failure.
+            if entry.is_static {
                 continue;
             }
 

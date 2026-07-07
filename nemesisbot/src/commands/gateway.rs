@@ -1421,6 +1421,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 vec![],
                                 "unknown",
                             );
+                            // Mark as static/configured so flaky UDP discovery
+                            // (e.g. multi-node on one device) can't take it
+                            // offline via check_health staleness — the address
+                            // is known, only explicit removal/RPC-failure takes
+                            // it down.
+                            cluster.mark_peer_static(&peer_id);
                         }
                     }
                 }
