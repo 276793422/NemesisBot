@@ -49,7 +49,6 @@ members = [
     "test-tools/approval-test",
     "test-tools/memory-test",
     "test-tools/cluster-node",
-    "test-tools/nemesis-build-config",
 ]
 
 [workspace.package]
@@ -185,3 +184,4 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+

@@ -22,3 +22,6 @@ archive/
 
 # Build configurator local selection (do not commit)
 scripts/customize/.config
+/log
+/test-tools/autotest
+/cluster-uat-logs
