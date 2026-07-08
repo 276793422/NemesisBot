@@ -169,6 +169,7 @@ enum Commands {
         action: commands::scanner::ScannerAction,
     },
     /// Sandboxie sandbox management (install / uninstall / status)
+    #[cfg(feature = "sandbox")]
     Sandbox {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
@@ -696,6 +697,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
         }
+        #[cfg(feature = "sandbox")]
         Commands::Sandbox { action } => {
             common::ensure_default_logger();
             commands::sandbox::run(action, cli.local).await?;

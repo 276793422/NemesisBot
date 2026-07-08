@@ -230,6 +230,16 @@ desc = "8 层安全 pipeline + ABAC + 审批弹窗 + guardian LLM judge + ClamAV
 category = "subsystems"
 default = true
 
+# NOTE: `sandbox` 可裁剪（Sandboxie 集成 = Windows 内核驱动；IoT/Linux 不用）。
+# 关闭后 nemesis-sandbox 整包不编译，`nemesisbot sandbox` 命令、executor.sandbox=true（Layer 2）不可用。
+# Layer 1 执行分离（executor.enabled，进程隔离）独立保留；7z/Sandboxie 运行时下载（sandbox install）。
+[[feature]]
+id = "sandbox"
+label = "沙盒（Sandboxie 集成）"
+desc = "Sandboxie 沙盒（executor.sandbox=true + nemesisbot sandbox 装/卸/提交）。Windows 内核驱动，IoT/Linux 不用建议关"
+category = "subsystems"
+default = true
+
 # ── Build profile (cargo profile, not a feature) ───────────────────────────
 
 [[feature]]

@@ -18,7 +18,7 @@ path = "src/main.rs"
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
-    "forge", "memory", "workflow", "security",
+    "forge", "memory", "workflow", "security", "sandbox",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -34,6 +34,10 @@ forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/security", "nemesis-web/security"]
+
+# Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
+# Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
+sandbox = ["dep:nemesis-sandbox"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
@@ -85,7 +89,7 @@ nemesis-devices = { workspace = true, optional = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
 nemesis-utils = { workspace = true }
-nemesis-sandbox = { workspace = true }
+nemesis-sandbox = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

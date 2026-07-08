@@ -42,9 +42,10 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
     .await
     .context("download release")?;
 
-    // 2. Extract using the bundled 7-Zip (include_bytes; written to runtime/7z/),
-    //    with a system-7z fallback.
-    extract::extract_release(&installer, &paths.runtime_dir).context("extract")?;
+    // 2. Resolve 7z (local-first: cached → system → download 7z.zip) + extract.
+    extract::extract_release(&installer, &paths.runtime_dir)
+        .await
+        .context("extract")?;
     paths.verify_runtime().context("verify runtime files")?;
 
     // 3. KmdUtil install driver + redirect IniPath + install service + service DWORDs.

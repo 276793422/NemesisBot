@@ -282,8 +282,8 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     // Executor separation: if enabled, MOVE tools are wrapped in RemoteExecutorTool
     // and dispatched to a per-call child process. sandbox=false → stdio transport
     // (Layer 1). sandbox=true → named-pipe transport + Start.exe wrap (real
-    // Sandboxie box, L2.2); requires `nemesisbot sandbox install` to have placed
-    // Start.exe and started SbieSvc.
+    // Sandboxie box, Layer 2); requires the `sandbox` feature + `nemesisbot sandbox
+    // install`. When the `sandbox` feature is compiled out, sandbox=true is ignored.
     let executor_channel = cfg
         .executor
         .as_ref()
@@ -292,45 +292,58 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
             let exe_path = std::env::current_exe()
                 .map_err(|err| anyhow::anyhow!("resolve current_exe for executor: {err}"))?;
             let workspace = workspace_dir.to_string_lossy().to_string();
-            if !e.sandbox {
+            let sandbox = e.sandbox;
+
+            #[cfg(feature = "sandbox")]
+            if sandbox {
+                // Real Sandboxie box: probe Start.exe + SbieSvc, then wrap the spawn.
+                let paths = nemesis_sandbox::SandboxPaths::new(&shared.home);
+                let start_exe = paths.start_exe();
+                if !start_exe.exists() {
+                    anyhow::bail!(
+                        "executor.sandbox=true but Start.exe not found at {} — run \
+                         `nemesisbot sandbox install` first",
+                        start_exe.display()
+                    );
+                }
+                if !matches!(
+                    nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                    nemesis_sandbox::status::ServiceState::Running
+                ) {
+                    anyhow::bail!(
+                        "executor.sandbox=true but SbieSvc is not running — run \
+                         `nemesisbot sandbox install`"
+                    );
+                }
                 info!(
-                    "[AgentFactory] executor separation enabled (sandbox=false, stdio transport): {}",
+                    "[AgentFactory] executor separation enabled (sandbox=true, named-pipe + \
+                     Start.exe box): child {}",
                     exe_path.display()
                 );
-                return Ok(Arc::new(nemesis_agent::ExecutorChannel::new(
-                    exe_path,
-                    workspace,
-                    false,
-                )));
+                return Ok(Arc::new(
+                    nemesis_agent::ExecutorChannel::new(exe_path, workspace, true)
+                        .with_start_exe(start_exe),
+                ));
             }
-            // sandbox=true: real Sandboxie box. Probe Start.exe + SbieSvc.
-            let paths = nemesis_sandbox::SandboxPaths::new(&shared.home);
-            let start_exe = paths.start_exe();
-            if !start_exe.exists() {
-                anyhow::bail!(
-                    "executor.sandbox=true but Start.exe not found at {} — run \
-                     `nemesisbot sandbox install` first",
-                    start_exe.display()
+
+            #[cfg(not(feature = "sandbox"))]
+            if sandbox {
+                tracing::warn!(
+                    "[AgentFactory] executor.sandbox=true ignored — the 'sandbox' feature is \
+                     not compiled into this build (Layer-2 Sandboxie unavailable); tools will \
+                     run via Layer-1 executor only"
                 );
             }
-            if !matches!(
-                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
-                nemesis_sandbox::status::ServiceState::Running
-            ) {
-                anyhow::bail!(
-                    "executor.sandbox=true but SbieSvc is not running — run \
-                     `nemesisbot sandbox install`"
-                );
-            }
+
             info!(
-                "[AgentFactory] executor separation enabled (sandbox=true, named-pipe + \
-                 Start.exe box): child {}",
+                "[AgentFactory] executor separation enabled (sandbox=false, stdio transport): {}",
                 exe_path.display()
             );
-            Ok(Arc::new(
-                nemesis_agent::ExecutorChannel::new(exe_path, workspace, true)
-                    .with_start_exe(start_exe),
-            ))
+            Ok(Arc::new(nemesis_agent::ExecutorChannel::new(
+                exe_path,
+                workspace,
+                false,
+            )))
         })
         .transpose()?;
     register_tools_and_mcp(

@@ -3498,6 +3498,7 @@ name = "nemesis-sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "nemesis-types",
  "reqwest",
  "serde",
@@ -3507,6 +3508,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]

@@ -1,10 +1,12 @@
-//! Extract the NSIS-built installer with 7-Zip.
+//! Extract the NSIS-built Sandboxie installer with 7-Zip.
 //!
-//! 7-Zip (`7z.exe` + `7z.dll`) is **bundled** into this crate via
-//! `include_bytes!` (LGPL; see `third_party/7z/LICENSE.txt`) so the Sandboxie
-//! extraction is self-contained — no requirement that 7-Zip be pre-installed.
-//! The bundled 7-Zip is written to `<runtime_dir>/7z/` on first use and reused.
-//! A system 7-Zip in PATH / common install dirs is only a fallback.
+//! 7-Zip is **not bundled** (keeps the binary ~2.4MB smaller). Instead,
+//! [`resolve_seven_zip`] looks for a local 7z first — a previously-downloaded
+//! copy in `runtime/7z/`, then a system install in PATH / `Program Files` — and
+//! only downloads `7z.zip` (7z.exe + 7z.dll + LICENSE, LGPL) from the project's
+//! GitHub when neither is present. This keeps the binary lean while letting any
+//! user enable the sandbox later without re-downloading the binary: just run
+//! `sandbox install`, which fetches 7z + Sandboxie on the spot.
 //!
 //! The public Classic `.exe` is pure NSIS (`SandboxieVS.nsi:5` SetCompressor
 //! lzma), so `7z x` extracts it cleanly. Files MUST be extracted verbatim —
@@ -15,39 +17,124 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// Bundled 7-Zip console + engine (LGPL; from `third_party/7z/`).
-const SEVEN_ZIP_EXE: &[u8] = include_bytes!("../third_party/7z/7z.exe");
-const SEVEN_ZIP_DLL: &[u8] = include_bytes!("../third_party/7z/7z.dll");
+/// Where we fetch 7z.zip (7z.exe + 7z.dll + LICENSE.txt, LGPL) when no local
+/// 7-Zip is found. Hosted in the project repo so it's under our control.
+const SEVEN_ZIP_ZIP_URL: &str =
+    "https://raw.githubusercontent.com/276793422/NemesisBot_Rust/refs/heads/main/test-tools/bins/7z.zip";
 
-/// Resolve a usable 7z.exe path: prefer the bundled one (written to
-/// `<runtime_dir>/7z/7z.exe` on first use), fall back to a system 7-Zip in
-/// PATH / common install dirs (insurance).
-pub fn resolve_seven_zip(runtime_dir: &Path) -> Result<PathBuf> {
-    let bundled_dir = runtime_dir.join("7z");
-    let bundled_exe = bundled_dir.join("7z.exe");
-    if !bundled_exe.exists() {
-        std::fs::create_dir_all(&bundled_dir)
-            .with_context(|| format!("create bundled-7z dir {}", bundled_dir.display()))?;
-        std::fs::write(&bundled_exe, SEVEN_ZIP_EXE)
-            .with_context(|| format!("write bundled 7z.exe to {}", bundled_exe.display()))?;
-        std::fs::write(bundled_dir.join("7z.dll"), SEVEN_ZIP_DLL)
-            .with_context(|| format!("write bundled 7z.dll to {}", bundled_dir.display()))?;
-        tracing::info!("[sandbox] extracted bundled 7-Zip to {}", bundled_dir.display());
-    }
+/// Resolve a usable 7z.exe: (1) a previously-downloaded copy in
+/// `runtime/7z/7z.exe`, (2) a system 7-Zip in PATH / common install dirs,
+/// (3) download `7z.zip` from GitHub + unzip into `runtime/7z/`. Returns the
+/// 7z.exe path.
+pub async fn resolve_seven_zip(runtime_dir: &Path) -> Result<PathBuf> {
+    let bundled_exe = runtime_dir.join("7z").join("7z.exe");
+    // 1. Previously downloaded.
     if bundled_exe.exists() {
+        tracing::debug!("[sandbox] using cached 7z at {}", bundled_exe.display());
         return Ok(bundled_exe);
     }
+    // 2. System 7-Zip (user already has 7-Zip installed).
     if let Some(p) = find_system_7z() {
-        tracing::warn!(
-            "[sandbox] bundled 7-Zip unavailable; falling back to system 7z at {}",
+        tracing::info!(
+            "[sandbox] using system 7-Zip at {} (no download needed)",
             p.display()
         );
         return Ok(p);
     }
-    bail!("no 7-Zip available (bundled extraction failed and no system 7z found)");
+    // 3. Download + unzip.
+    tracing::info!(
+        "[sandbox] no local 7-Zip; downloading from {SEVEN_ZIP_ZIP_URL}"
+    );
+    download_and_unzip_7z(runtime_dir).await?;
+    if bundled_exe.exists() {
+        Ok(bundled_exe)
+    } else {
+        bail!(
+            "7z download/extract finished but 7z.exe not at {} (unexpected 7z.zip layout)",
+            bundled_exe.display()
+        );
+    }
 }
 
-/// Search PATH + common install dirs for a system 7z.exe (fallback only).
+/// Download `7z.zip` + unzip into `runtime_dir` (preserves the archive's `7z/`
+/// subdir → `runtime_dir/7z/7z.exe`). Logs the SHA-256 for audit; integrity is
+/// backstopped by Sandboxie's own signature check on the files it later extracts.
+async fn download_and_unzip_7z(runtime_dir: &Path) -> Result<()> {
+    tokio::fs::create_dir_all(runtime_dir)
+        .await
+        .with_context(|| format!("create runtime dir {}", runtime_dir.display()))?;
+
+    // Download with a timeout + retry — raw.githubusercontent.com (Fastly CDN)
+    // occasionally resets mid-transfer; a fresh connection usually completes.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("build http client")?;
+    let bytes = {
+        let mut last: Option<anyhow::Error> = None;
+        let mut got: Option<bytes::Bytes> = None;
+        for attempt in 1..=3u32 {
+            match client.get(SEVEN_ZIP_ZIP_URL).send().await {
+                Ok(resp) => match resp.bytes().await {
+                    Ok(b) => {
+                        got = Some(b);
+                        break;
+                    }
+                    Err(e) => last = Some(anyhow::anyhow!("read body (attempt {attempt}): {e}")),
+                },
+                Err(e) => last = Some(anyhow::anyhow!("GET (attempt {attempt}): {e}")),
+            }
+            tracing::warn!(
+                "[sandbox] 7z.zip download attempt {attempt} failed: {:?}; retrying",
+                last.as_ref().map(|e| e.to_string())
+            );
+            if attempt < 3 {
+                tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+            }
+        }
+        match got {
+            Some(b) => b,
+            None => return Err(last.context("fetch 7z.zip (3 attempts)")?),
+        }
+    };
+    {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        tracing::info!(
+            "[sandbox] downloaded 7z.zip ({} bytes, sha256={:x})",
+            bytes.len(),
+            h.finalize()
+        );
+    }
+    let zip_path = runtime_dir.join("7z.zip");
+    tokio::fs::write(&zip_path, &bytes)
+        .await
+        .with_context(|| format!("write {}", zip_path.display()))?;
+
+    // Unzip (sync file I/O → spawn_blocking so we don't stall the async runtime).
+    // Clone zip_path into the closure; the original is reused for cleanup below.
+    let dest = runtime_dir.to_path_buf();
+    let zip_for_closure = zip_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let file = std::fs::File::open(&zip_for_closure)
+            .with_context(|| format!("open {}", zip_for_closure.display()))?;
+        let mut archive = zip::ZipArchive::new(file).context("open zip archive")?;
+        archive
+            .extract(&dest)
+            .with_context(|| format!("extract zip -> {}", dest.display()))?;
+        Ok(())
+    })
+    .await
+    .context("unzip task join")??;
+
+    // Keep runtime/ clean — the zip has served its purpose.
+    let _ = tokio::fs::remove_file(&zip_path).await;
+    Ok(())
+}
+
+/// Search PATH + common install dirs for a system 7z.exe (used only when no
+/// cached/downloaded copy exists yet).
 fn find_system_7z() -> Option<PathBuf> {
     if let Ok(out) = std::process::Command::new("where").arg("7z.exe").output() {
         if out.status.success() {
@@ -97,8 +184,34 @@ pub fn extract(installer: &Path, runtime_dir: &Path, seven_zip: &Path) -> Result
     Ok(())
 }
 
-/// Convenience: resolve 7z (bundled first) + extract in one call.
-pub fn extract_release(installer: &Path, runtime_dir: &Path) -> Result<()> {
-    let seven_zip = resolve_seven_zip(runtime_dir)?;
+/// Convenience: resolve 7z (local-first, download if needed) + extract the
+/// Sandboxie installer in one call.
+pub async fn extract_release(installer: &Path, runtime_dir: &Path) -> Result<()> {
+    let seven_zip = resolve_seven_zip(runtime_dir).await?;
     extract(installer, runtime_dir, &seven_zip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Download 7z.zip from the project GitHub + unzip → 7z.exe/7z.dll appear.
+    /// This exercises the download path directly (bypasses the system-7z check),
+    /// validating it for users who don't have 7-Zip pre-installed.
+    #[tokio::test]
+    async fn download_and_unzip_7z_brings_7z_exe_into_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        download_and_unzip_7z(tmp.path())
+            .await
+            .expect("download + unzip should succeed");
+        let exe = tmp.path().join("7z").join("7z.exe");
+        let dll = tmp.path().join("7z").join("7z.dll");
+        assert!(exe.exists(), "7z.exe missing at {}", exe.display());
+        assert!(dll.exists(), "7z.dll missing at {}", dll.display());
+        // the zip itself should have been cleaned up.
+        assert!(
+            !tmp.path().join("7z.zip").exists(),
+            "7z.zip should be removed after unzip"
+        );
+    }
 }

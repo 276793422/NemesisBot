@@ -24,6 +24,7 @@ pub mod cron;
 pub mod dashboard;
 pub mod mcp;
 pub mod status;
+#[cfg(feature = "sandbox")]
 pub mod sandbox;
 pub mod shutdown;
 pub mod cors;
