@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::r#loop::Tool;
@@ -98,19 +99,171 @@ async fn spawn_and_call_file_write_then_read_round_trips() {
     let _ = ch.spawn_and_call("delete_file", &del_args, &ctx()).await;
 }
 
+#[cfg(windows)]
 #[tokio::test]
-async fn spawn_and_call_sandbox_without_start_exe_errors_clearly() {
-    // Layer 2 (sandbox) is not integrated yet. sandbox=true must fail with a
-    // clear message rather than silently running unsandboxed.
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), true));
-    let err = ch
+async fn spawn_and_call_via_pipe_round_trips() {
+    // sandbox=true → named-pipe transport. L2.1: start_exe=None → direct spawn
+    // (no box), so this validates the pipe transport independently of Sandboxie.
+    let ch = Arc::new(
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+            .with_timeout(Duration::from_secs(15)),
+    );
+    let res = ch
         .spawn_and_call("sleep", r#"{"seconds":1}"#, &ctx())
         .await
-        .expect_err("sandbox without Start.exe must error");
+        .expect("pipe round-trip should succeed");
+    assert!(res.contains("Slept"), "unexpected sleep result via pipe: {res}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_and_call_via_startexe_crosses_box() {
+    // L2.2 headline test: spawn via Start.exe into NemesisBox, exchange over the
+    // named pipe. Verifies the box's OpenPipePath lets the pipe through (the
+    // make-or-break Layer 2 risk). Requires `nemesisbot sandbox install` to have
+    // been run (driver + Start.exe present).
+    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let paths = nemesis_sandbox::SandboxPaths::new(&home);
+    let start_exe = paths.start_exe();
     assert!(
-        err.contains("Sandboxie"),
-        "error should mention Sandboxie not being integrated: {err}"
+        start_exe.exists(),
+        "Start.exe not found at {} — run `nemesisbot sandbox install` first",
+        start_exe.display()
     );
+
+    let ch = Arc::new(
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+            .with_start_exe(start_exe)
+            .with_timeout(Duration::from_secs(30)),
+    );
+    let res = ch
+        .spawn_and_call("sleep", r#"{"seconds":1}"#, &ctx())
+        .await
+        .expect("Start.exe + pipe round-trip should succeed (box must let the pipe through)");
+    assert!(
+        res.contains("Slept"),
+        "unexpected sleep result via Start.exe+pipe: {res}"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
+    // L2.2 isolation: a boxed write_file to a path OUTSIDE the workspace must
+    // NOT touch the real disk — the write is contained in the box's virtual FS.
+    // (write_file is a unit tool with no self-restrict, so it will happily write
+    // wherever asked; the box must contain it.) Requires sandbox install.
+    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let paths = nemesis_sandbox::SandboxPaths::new(&home);
+    let start_exe = paths.start_exe();
+    assert!(
+        start_exe.exists(),
+        "Start.exe not found at {} — run `nemesisbot sandbox install` first",
+        start_exe.display()
+    );
+
+    // A path OUTSIDE the workspace, unique per test run, clean slate.
+    let outside = std::env::temp_dir().join(format!(
+        "nemesis_isolation_{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&outside);
+
+    let ch = Arc::new(
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+            .with_start_exe(start_exe)
+            .with_timeout(Duration::from_secs(30)),
+    );
+    let args = format!(
+        r#"{{"path":{:?},"content":"isolation-marker"}}"#,
+        outside.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    // The boxed tool should report success (it wrote to the box's virtual FS)...
+    assert!(
+        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
+        "write_file should succeed inside the box: {:?}",
+        res
+    );
+    // ...but the REAL disk must NOT have the file (containment held).
+    assert!(
+        !outside.exists(),
+        "ISOLATION FAILED: real file exists at {} — the box did not contain the write",
+        outside.display()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
+    // L2.3: a sandboxed write to the workspace lands in the box's virtual FS;
+    // pending lists it; commit copies it to real disk. (write_file is a unit tool
+    // — no self-restrict — so it writes wherever asked; the box contains it until
+    // commit.) Requires `nemesisbot sandbox install`.
+    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let paths = nemesis_sandbox::SandboxPaths::new(&home);
+    let start_exe = paths.start_exe();
+    assert!(
+        start_exe.exists(),
+        "Start.exe not found at {} — run `nemesisbot sandbox install` first",
+        start_exe.display()
+    );
+
+    // Workspace under %USERPROFILE% (so it maps via the box's user/current layout).
+    let workspace = home.join("workspace");
+    std::fs::create_dir_all(&workspace).ok();
+    let target = workspace.join("l23_test.txt");
+    let _ = std::fs::remove_file(&target); // clean slate on real disk
+
+    let ch = Arc::new(
+        ExecutorChannel::new(nemesisbot_exe(), workspace.to_string_lossy().to_string(), true)
+            .with_start_exe(start_exe.clone())
+            .with_timeout(Duration::from_secs(30)),
+    );
+    let args = format!(
+        r#"{{"path":{:?},"content":"l23-commit-marker"}}"#,
+        target.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    assert!(
+        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
+        "boxed write_file should succeed: {:?}",
+        res
+    );
+    // The write is contained — real disk must NOT have it yet.
+    assert!(
+        !target.exists(),
+        "real target must not exist before commit (write should be in the box)"
+    );
+
+    // pending must list the workspace file.
+    let up = dirs::home_dir().expect("home dir");
+    let pending =
+        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &workspace, &up).unwrap();
+    let found = pending.iter().find(|p| p.real_path.ends_with("l23_test.txt"));
+    assert!(
+        found.is_some(),
+        "pending should list l23_test.txt; got {} entries: {:?}",
+        pending.len(),
+        pending
+    );
+
+    // commit brings it to real disk.
+    let n = nemesis_sandbox::pending::commit_file(found.unwrap()).unwrap();
+    assert!(n > 0, "commit copied 0 bytes");
+    assert!(target.exists(), "real target must exist after commit");
+    let content = std::fs::read_to_string(&target).unwrap();
+    assert!(
+        content.contains("l23-commit-marker"),
+        "committed content mismatch: {content}"
+    );
+
+    // cleanup: clear the box + remove the real test file.
+    let _ = nemesis_sandbox::pending::delete_box_contents(
+        &paths.start_exe(),
+        nemesis_sandbox::DEFAULT_BOX_NAME,
+    );
+    let _ = std::fs::remove_file(&target);
 }
 
 #[test]

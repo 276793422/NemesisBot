@@ -27,6 +27,13 @@ pub fn write_sandboxie_ini(ini_path: &Path, box_name: &str, box_root: &Path) -> 
     let content = format!(
         "[GlobalSettings]\n\
          \n\
+         # Prevent SbieCtrl (the Classic GUI) from auto-launching when a sandboxed\n\
+         # program starts — without this, SbieSvc auto-starts SbieCtrl.exe on every\n\
+         # boxed spawn (sbieiniserver.cpp:1543 SbieCtrl_EnableAutoStart), popping its\n\
+         # window + message dialogs. Headless use must keep this at n.\n\
+         [UserSettings_Default]\n\
+         SbieCtrl_EnableAutoStart=n\n\
+         \n\
          [{box_name}]\n\
          Enabled=y\n\
          AllowNetworkAccess=n\n\

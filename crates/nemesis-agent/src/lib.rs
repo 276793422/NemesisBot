@@ -34,6 +34,7 @@ pub mod request_logger_observer;
 pub mod loop_continuation;
 pub mod mcp_bridge;
 pub mod remote_executor_tool;
+pub mod executor_pipe;
 pub mod chat_log;
 pub mod checkpoint;
 pub mod message_preprocess;

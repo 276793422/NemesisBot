@@ -42,12 +42,9 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
     .await
     .context("download release")?;
 
-    // 2. Extract (7z from PATH / common dirs; bundling is follow-up).
-    let seven_zip = extract::find_7z().context(
-        "7-Zip not found — install 7-Zip (https://7-zip.org) or add 7z.exe to PATH. \
-         (bundling 7z.exe into the crate is a planned follow-up)",
-    )?;
-    extract::extract(&installer, &paths.runtime_dir, &seven_zip).context("extract")?;
+    // 2. Extract using the bundled 7-Zip (include_bytes; written to runtime/7z/),
+    //    with a system-7z fallback.
+    extract::extract_release(&installer, &paths.runtime_dir).context("extract")?;
     paths.verify_runtime().context("verify runtime files")?;
 
     // 3. KmdUtil install driver + redirect IniPath + install service + service DWORDs.

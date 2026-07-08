@@ -1,18 +1,22 @@
 //! Executor role entrypoint.
 //!
 //! Activated when the binary is spawned with `NEMESISBOT_ROLE=executor` (set by
-//! the gateway's
-//! [`ExecutorChannel`](../../nemesis_agent/remote_executor_tool/) when it spawns
-//! a child per tool call). `main()` short-circuits here BEFORE clap parsing —
-//! the child is spawned with no subcommand.
+//! the gateway's [`ExecutorChannel`](../../nemesis_agent/remote_executor_tool/)
+//! when it spawns a child per tool call). `main()` short-circuits here BEFORE
+//! clap parsing — the child is spawned with no subcommand.
 //!
-//! Protocol: read one newline-delimited JSON request from stdin, dispatch the
-//! named tool via the same `register_shared_tools` registry the gateway uses
-//! (zero implementation drift between local and remote), write one JSON
-//! response to stdout, exit on EOF. Workspace is passed via
-//! `NEMESISBOT_EXECUTOR_WORKSPACE` so the child does not re-run path resolution.
+//! Two transports (mirroring the gateway side), selected by env:
+//! - `NEMESISBOT_EXECUTOR_PIPE` set → **named-pipe** transport (sandbox mode):
+//!   connect to the gateway's `\\.\pipe\NemesisBox_<id>`.
+//! - otherwise → **stdio** transport (Layer 1): read stdin, write stdout.
 //!
-//! See `docs/PLAN/2026-07-08_executor-separation.md`.
+//! Both exchange the same newline-delimited JSON protocol and dispatch via the
+//! same `register_shared_tools` registry (zero implementation drift). Workspace
+//! is passed via `NEMESISBOT_EXECUTOR_WORKSPACE` so the child does not re-run
+//! path resolution.
+//!
+//! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1) and
+//! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2).
 
 use std::collections::HashMap;
 
@@ -40,8 +44,8 @@ struct ExecutorResponse {
     error: String,
 }
 
-/// Executor entrypoint. Reads stdin, dispatches one tool per line, writes
-/// responses to stdout, exits on EOF (gateway closed stdin).
+/// Executor entrypoint. Reads stdin OR a named pipe, dispatches one tool per
+/// line, writes responses, exits on EOF (gateway closed the channel).
 pub async fn run() -> Result<()> {
     // Workspace is passed explicitly by the gateway; the child does not resolve.
     let workspace = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE")
@@ -58,21 +62,64 @@ pub async fn run() -> Result<()> {
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
     debug!("[executor] registered {} tools", tools.len());
 
+    // Transport: named pipe if the gateway gave us one, else stdio (Layer 1).
+    #[cfg(windows)]
+    if let Some(pipe_name) = std::env::var("NEMESISBOT_EXECUTOR_PIPE").ok() {
+        let stream = nemesis_agent::executor_pipe::connect_client(&pipe_name)
+            .await
+            .context("connect executor pipe")?;
+        debug!("[executor] connected to pipe {pipe_name}");
+        return pipe_loop(stream, &tools).await;
+    }
+
+    stdio_loop(&tools).await
+}
+
+/// Named-pipe transport loop (sandbox mode).
+#[cfg(windows)]
+async fn pipe_loop(
+    mut stream: nemesis_agent::executor_pipe::NamedPipeClient,
+    tools: &HashMap<String, Box<dyn Tool>>,
+) -> Result<()> {
+    loop {
+        // Read one request line (block scopes the BufReader borrow so the write
+        // below can borrow `stream` after).
+        let line = {
+            let mut reader = BufReader::new(&mut stream).lines();
+            match reader.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => return Ok(()), // gateway closed → exit cleanly
+                Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
+            }
+        };
+        let resp = dispatch(tools, &line).await;
+        let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
+            r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
+        });
+        out.push('\n');
+        stream
+            .write_all(out.as_bytes())
+            .await
+            .context("pipe write")?;
+        stream.flush().await.context("pipe flush")?;
+    }
+}
+
+/// stdio transport loop (Layer 1).
+async fn stdio_loop(tools: &HashMap<String, Box<dyn Tool>>) -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
     let mut reader = BufReader::new(stdin).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {
-        let resp = dispatch(&tools, &line).await;
-        let resp_line = serde_json::to_string(&resp)
-            .unwrap_or_else(|_| r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string());
-        let mut out = resp_line;
+        let resp = dispatch(tools, &line).await;
+        let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
+            r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
+        });
         out.push('\n');
-        // Best-effort write + flush before we loop / exit.
         let _ = stdout.write_all(out.as_bytes()).await;
         let _ = stdout.flush().await;
     }
-    // EOF → gateway closed stdin → exit cleanly.
     Ok(())
 }
 

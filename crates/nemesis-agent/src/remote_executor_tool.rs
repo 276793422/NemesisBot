@@ -4,18 +4,21 @@
 //! [`RemoteExecutorTool`] that delegates metadata (`description` / `parameters`
 //! / `preview`) to the local tool impl — so the LLM sees byte-identical schemas
 //! and the checkpoint (edit safety net) still snapshots file writes — but routes
-//! `execute()` over a per-call stdio IPC to a freshly-spawned `nemesisbot` child
-//! running in executor role (`NEMESISBOT_ROLE=executor`).
+//! `execute()` to a freshly-spawned `nemesisbot` child running in executor role.
 //!
-//! See `docs/PLAN/2026-07-08_executor-separation.md`.
+//! Two transports, picked by `sandbox`:
+//! - **stdio** (sandbox=false, Layer 1): spawn child, exchange JSON over its
+//!   stdin/stdout.
+//! - **named pipe** (sandbox=true, Layer 2): `Start.exe` does not forward stdio
+//!   across the box boundary, so the sandboxed path uses a Windows named pipe
+//!   `\\.\pipe\NemesisBox_<id>` instead.
 //!
-//! Layer 2 (sandbox) is a single spawn-command fork: when `sandbox` is set the
-//! child is launched via `Start.exe /box:NemesisBox nemesisbot.exe` instead of
-//! `nemesisbot.exe` directly. Sandboxie does not isolate by process name — box
-//! membership is assigned at spawn time by the driver — so the same binary runs
-//! unsandboxed (gateway) and sandboxed (executor child) simultaneously. The
-//! `start_exe` path stays `None` until the Sandboxie integration phase; until
-//! then `sandbox=true` returns a clear error from `build_command`.
+//! The spawn command is controlled INDEPENDENTLY by `start_exe`:
+//! - `None` → spawn the executor directly (Layer 1, or L2.1 transport testing).
+//! - `Some` → wrap with `Start.exe /box:<box>` (L2.2 real Sandboxie containment).
+//!
+//! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1) and
+//! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2).
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -95,11 +98,13 @@ pub struct ExecutorChannel {
     /// Resolved workspace path, passed to the child via env so it does not
     /// re-run path resolution (which depends on `--local` / NEMESISBOT_HOME).
     pub workspace: String,
-    /// Layer 2 switch: wrap the spawn with `Start.exe /box:`.
+    /// Transport switch: true → named-pipe transport (sandbox mode); false →
+    /// stdio transport (Layer 1). NOTE: this is the TRANSPORT choice, not the
+    /// spawn-wrap choice — see `start_exe`.
     pub sandbox: bool,
-    /// Path to Sandboxie `Start.exe`. `None` until the Sandboxie integration
-    /// phase; if `sandbox` is set while this is `None`, `build_command` errors
-    /// with a clear message.
+    /// Sandboxie `Start.exe` path. `Some` → spawn via `Start.exe /box:<box>`
+    /// (real containment, L2.2). `None` → spawn the executor directly (Layer 1,
+    /// or L2.1 transport testing without the box).
     pub start_exe: Option<PathBuf>,
     /// Sandboxie box name.
     pub box_name: String,
@@ -108,8 +113,8 @@ pub struct ExecutorChannel {
 }
 
 impl ExecutorChannel {
-    /// Construct a channel. `start_exe` defaults to `None` (Layer 1); the
-    /// Sandboxie integration phase fills it (likely from config).
+    /// Construct a channel in Layer-1 / L2.1 mode (direct spawn, no Start.exe
+    /// wrap). L2.2 sets `start_exe` via the `with_start_exe` builder.
     pub fn new(exe_path: PathBuf, workspace: String, sandbox: bool) -> Self {
         Self {
             exe_path,
@@ -121,20 +126,25 @@ impl ExecutorChannel {
         }
     }
 
-    /// Build the spawn command, forking on the `sandbox` flag.
-    ///
-    /// - Layer 1 (`sandbox=false`): `nemesisbot.exe` directly — a normal process.
-    /// - Layer 2 (`sandbox=true`):  `Start.exe /box:NemesisBox nemesisbot.exe` —
-    ///   the driver marks the child as boxed at creation. Same binary, different
-    ///   box membership, distinguished by launch command (NOT by exe name).
-    fn build_command(&self) -> Result<Command, String> {
-        let mut cmd = if self.sandbox {
-            let start = self.start_exe.as_ref().ok_or_else(|| {
-                "executor.sandbox=true but Sandboxie is not integrated yet \
-                 (start_exe unset); set executor.sandbox=false or wait for the \
-                 Sandboxie integration phase"
-                    .to_string()
-            })?;
+    /// Set the Sandboxie `Start.exe` path (L2.2: wraps the spawn for real box).
+    #[allow(dead_code)]
+    pub fn with_start_exe(mut self, start_exe: PathBuf) -> Self {
+        self.start_exe = Some(start_exe);
+        self
+    }
+
+    /// Set the per-call timeout (use a short one in tests).
+    #[allow(dead_code)]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Build the spawn command. The wrap is controlled by `start_exe`:
+    /// - `Some` → `Start.exe /box:<box> nemesisbot.exe` (L2.2 real box).
+    /// - `None` → `nemesisbot.exe` directly (Layer 1 / L2.1 transport-only).
+    fn build_command(&self) -> Command {
+        let mut cmd = if let Some(start) = &self.start_exe {
             let mut c = Command::new(start);
             c.arg(format!("/box:{}", self.box_name));
             c.arg(&self.exe_path);
@@ -144,11 +154,34 @@ impl ExecutorChannel {
         };
         cmd.env("NEMESISBOT_ROLE", "executor")
             .env("NEMESISBOT_EXECUTOR_WORKSPACE", &self.workspace);
-        Ok(cmd)
+        cmd
     }
 
-    /// Spawn a child, send one request line, read one response line, reap.
+    /// Spawn a child, send one request, read one response, reap.
     pub async fn spawn_and_call(
+        &self,
+        tool: &str,
+        args: &str,
+        ctx: &RequestContext,
+    ) -> Result<String, String> {
+        let request_line = self.build_request_line(tool, args, ctx)?;
+        if self.sandbox {
+            #[cfg(windows)]
+            {
+                return self.spawn_and_call_pipe(tool, &request_line).await;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = request_line;
+                return Err(
+                    "sandbox (named-pipe) transport is only supported on Windows".to_string(),
+                );
+            }
+        }
+        self.spawn_and_call_stdio(tool, &request_line).await
+    }
+
+    fn build_request_line(
         &self,
         tool: &str,
         args: &str,
@@ -164,18 +197,23 @@ impl ExecutorChannel {
         let mut line = serde_json::to_string(&request)
             .map_err(|e| format!("serialize executor request: {e}"))?;
         line.push('\n');
+        Ok(line)
+    }
 
-        let mut cmd = self.build_command()?;
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+    fn parse_response(resp_line: &str) -> Result<String, String> {
+        let resp: ExecutorResponse = serde_json::from_str(resp_line)
+            .map_err(|e| format!("parse executor response: {e}"))?;
+        if resp.ok {
+            Ok(resp.result)
+        } else if resp.error.is_empty() {
+            Err("executor returned an error".to_string())
+        } else {
+            Err(resp.error)
+        }
+    }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("failed to spawn executor child: {e}"))?;
-
-        // Drain stderr in the background so the child never blocks on a full
-        // (~4KB) stderr pipe. Lines surface in gateway logs for diagnosis.
+    /// Drain child stderr in the background (prevents a ~4KB pipe block).
+    fn drain_stderr(child: &mut tokio::process::Child) {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
@@ -184,15 +222,31 @@ impl ExecutorChannel {
                 }
             });
         }
+    }
+
+    /// stdio transport (sandbox=false): write stdin, read stdout.
+    async fn spawn_and_call_stdio(
+        &self,
+        tool: &str,
+        request_line: &str,
+    ) -> Result<String, String> {
+        let mut cmd = self.build_command();
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn executor child: {e}"))?;
+        Self::drain_stderr(&mut child);
 
         // Write the single request line, then drop stdin to signal EOF.
         if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(line.as_bytes()).await;
+            let _ = stdin.write_all(request_line.as_bytes()).await;
             let _ = stdin.flush().await;
             drop(stdin);
         }
 
-        // Read the single response line (with timeout).
         let stdout = child
             .stdout
             .take()
@@ -219,18 +273,97 @@ impl ExecutorChannel {
             Ok(Ok(Some(line))) => line,
         };
 
-        // Reap the child (best-effort).
         let _ = child.wait().await;
+        Self::parse_response(&resp_line)
+    }
 
-        let resp: ExecutorResponse = serde_json::from_str(&resp_line)
-            .map_err(|e| format!("parse executor response: {e}"))?;
-        if resp.ok {
-            Ok(resp.result)
-        } else if resp.error.is_empty() {
-            Err("executor returned an error".to_string())
-        } else {
-            Err(resp.error)
+    /// Named-pipe transport (sandbox=true). L2.1: works with or without the box
+    /// — `start_exe=None` spawns directly (transport test); `start_exe=Some`
+    /// wraps with Start.exe (real box, L2.2).
+    #[cfg(windows)]
+    async fn spawn_and_call_pipe(
+        &self,
+        tool: &str,
+        request_line: &str,
+    ) -> Result<String, String> {
+        use crate::executor_pipe;
+
+        let id = executor_pipe::unique_pipe_id();
+        let pipe = executor_pipe::pipe_name(&id);
+
+        // 1. Create the named pipe BEFORE spawn so the child can connect to it.
+        let mut server = executor_pipe::create_server(&pipe)
+            .map_err(|e| format!("create executor pipe: {e}"))?;
+
+        // 2. Spawn the child with the pipe env. stdio is unused for transport
+        //    (the pipe carries the JSON); null stdin/stdout, piped stderr for
+        //    diagnosis.
+        let mut cmd = self.build_command();
+        cmd.env("NEMESISBOT_EXECUTOR_PIPE", &pipe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn executor child: {e}"))?;
+        Self::drain_stderr(&mut child);
+
+        // 3. Wait for the child to connect (timeout — child must start + connect).
+        match tokio::time::timeout(Duration::from_secs(30), server.connect()).await {
+            Err(_) => {
+                let _ = child.start_kill();
+                return Err(format!(
+                    "executor child did not connect to pipe within 30s (tool={tool})"
+                ));
+            }
+            Ok(Err(e)) => {
+                let _ = child.start_kill();
+                return Err(format!("executor pipe connect failed: {e}"));
+            }
+            Ok(Ok(())) => {}
         }
+
+        // 4. Write request line.
+        server
+            .write_all(request_line.as_bytes())
+            .await
+            .map_err(|e| format!("write executor pipe: {e}"))?;
+        server
+            .flush()
+            .await
+            .map_err(|e| format!("flush executor pipe: {e}"))?;
+
+        // 5. Read response line (timeout).
+        let resp_line = {
+            let mut reader = BufReader::new(&mut server).lines();
+            match tokio::time::timeout(self.timeout, reader.next_line()).await {
+                Err(_) => {
+                    let _ = child.start_kill();
+                    return Err(format!(
+                        "executor timed out after {:?} (tool={tool})",
+                        self.timeout
+                    ));
+                }
+                Ok(Err(e)) => {
+                    let _ = child.start_kill();
+                    return Err(format!("read executor pipe: {e}"));
+                }
+                Ok(Ok(None)) => {
+                    let _ = child.start_kill();
+                    return Err(format!(
+                        "executor child closed pipe without a response (tool={tool})"
+                    ));
+                }
+                Ok(Ok(Some(line))) => line,
+            }
+        };
+
+        // 6. Close our end so the child's loop sees EOF and exits; then reap.
+        //    (The per-call child loops waiting for the next request; without
+        //    closing the pipe it would block forever and child.wait() hangs.)
+        drop(server);
+        let _ = child.wait().await;
+        Self::parse_response(&resp_line)
     }
 }
 
@@ -293,20 +426,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_command_real_env_succeeds() {
+    fn build_command_no_start_exe_is_direct_spawn() {
         let ch = ExecutorChannel::new(PathBuf::from("/x/nemesisbot.exe"), "/ws".into(), false);
-        assert!(!ch.sandbox);
-        assert!(ch.build_command().is_ok());
+        assert!(ch.start_exe.is_none());
+        // No error — direct spawn command is built.
+        let _ = ch.build_command();
     }
 
     #[test]
-    fn build_command_sandbox_without_start_exe_errors_clearly() {
-        let ch = ExecutorChannel::new(PathBuf::from("/x/nemesisbot.exe"), "/ws".into(), true);
-        let err = ch.build_command().unwrap_err();
-        assert!(
-            err.contains("Sandboxie"),
-            "expected a Sandboxie-not-integrated error, got: {err}"
-        );
+    fn build_command_with_start_exe_wraps() {
+        let ch = ExecutorChannel::new(PathBuf::from("/x/nemesisbot.exe"), "/ws".into(), true)
+            .with_start_exe(PathBuf::from("/x/Start.exe"));
+        assert!(ch.start_exe.is_some());
+        // No error — Start.exe wrap command is built (L2.2 form).
+        let _ = ch.build_command();
     }
 
     #[test]

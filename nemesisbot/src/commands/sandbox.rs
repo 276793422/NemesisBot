@@ -33,6 +33,24 @@ pub enum SandboxCommand {
     },
     /// Show Sandboxie install / service status.
     Status,
+    /// List pending workspace files in the box (written by the sandboxed executor,
+    /// not yet committed to real disk).
+    Pending,
+    /// Commit pending files from the box to the real workspace.
+    Commit {
+        /// Commit ALL pending workspace files.
+        #[arg(long)]
+        all: bool,
+        /// Commit only files whose real path contains one of these (case-insensitive).
+        /// Ignored when --all is set.
+        files: Vec<String>,
+    },
+    /// Delete the box's contents (discard pending). Asks before discarding if
+    /// there are pending workspace files; --force skips the prompt.
+    Clear {
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
@@ -42,7 +60,148 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
         SandboxCommand::Install { internal } => install(&paths, local, internal).await,
         SandboxCommand::Uninstall { internal } => uninstall(&paths, local, internal),
         SandboxCommand::Status => status(&paths),
+        SandboxCommand::Pending => pending(&paths, local),
+        SandboxCommand::Commit { all, files } => commit(&paths, local, all, files),
+        SandboxCommand::Clear { force } => clear(&paths, local, force),
     }
+}
+
+// ---------------------------------------------------------------------------
+// pending / commit / clear — manual workspace-commit (L2.3)
+// ---------------------------------------------------------------------------
+
+/// %USERPROFILE% — the box's `user/<marker>/` subtree maps here.
+fn user_profile() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir())
+        .expect("USERPROFILE / home dir")
+}
+
+/// The workspace whose subtree is committable (matches what the gateway uses).
+fn workspace_dir(local: bool) -> std::path::PathBuf {
+    common::resolve_home(local).join("workspace")
+}
+
+fn format_size(n: u64) -> String {
+    if n < 1024 {
+        format!("{n}B")
+    } else if n < 1024 * 1024 {
+        format!("{}K", n / 1024)
+    } else {
+        format!("{}M", n / (1024 * 1024))
+    }
+}
+
+fn pending(paths: &nemesis_sandbox::SandboxPaths, local: bool) -> Result<()> {
+    let ws = workspace_dir(local);
+    let up = user_profile();
+    let pending =
+        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    if pending.is_empty() {
+        println!(
+            "No pending workspace files in box {}.",
+            paths.box_root.display()
+        );
+        return Ok(());
+    }
+    println!("Pending workspace files ({}):", pending.len());
+    for p in &pending {
+        let rel = p.real_path.strip_prefix(&ws).unwrap_or(&p.real_path);
+        println!("  {:>8}  {}", format_size(p.size), rel.display());
+    }
+    println!("\nCommit with: nemesisbot sandbox commit --all");
+    Ok(())
+}
+
+fn commit(
+    paths: &nemesis_sandbox::SandboxPaths,
+    local: bool,
+    all: bool,
+    files: Vec<String>,
+) -> Result<()> {
+    let ws = workspace_dir(local);
+    let up = user_profile();
+    let pending =
+        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    if pending.is_empty() {
+        println!("No pending workspace files to commit.");
+        return Ok(());
+    }
+    let to_commit: Vec<&nemesis_sandbox::pending::PendingFile> = if all {
+        pending.iter().collect()
+    } else {
+        let needles: Vec<String> = files.iter().map(|s| s.to_lowercase()).collect();
+        pending
+            .iter()
+            .filter(|p| {
+                let rp = p.real_path.to_string_lossy().to_lowercase();
+                needles.iter().any(|n| rp.contains(n))
+            })
+            .collect()
+    };
+    if to_commit.is_empty() {
+        println!("No pending files matched. Use --all or check `nemesisbot sandbox pending`.");
+        return Ok(());
+    }
+    let mut total = 0u64;
+    let mut ok = 0usize;
+    for p in &to_commit {
+        match nemesis_sandbox::pending::commit_file(p) {
+            Err(e) => println!("  FAILED {}: {e}", p.real_path.display()),
+            Ok(n) => {
+                total += n;
+                ok += 1;
+                println!("  committed {} ({} bytes)", p.real_path.display(), n);
+            }
+        }
+    }
+    println!("Committed {ok}/{} file(s), {} bytes.", to_commit.len(), total);
+    Ok(())
+}
+
+fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Result<()> {
+    use std::io::Write as _;
+
+    let ws = workspace_dir(local);
+    let up = user_profile();
+    let pending =
+        nemesis_sandbox::pending::pending_workspace(&paths.box_root, &ws, &up)?;
+    if !pending.is_empty() && !force {
+        println!(
+            "{} pending workspace file(s) will be LOST when the box is cleared.",
+            pending.len()
+        );
+        print!(
+            "Commit all before clearing? [y=commit+clear / n=clear-without-commit / a=abort] (default a): "
+        );
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        match line.trim().to_lowercase().as_str() {
+            "y" => {
+                let mut n = 0usize;
+                for p in &pending {
+                    if nemesis_sandbox::pending::commit_file(p).is_ok() {
+                        n += 1;
+                    }
+                }
+                println!("Committed {n}/{} before clearing.", pending.len());
+            }
+            "n" => { /* clear without commit */ }
+            _ => {
+                println!("Aborted — box not cleared.");
+                return Ok(());
+            }
+        }
+    }
+    println!("Clearing box contents...");
+    nemesis_sandbox::pending::delete_box_contents(
+        &paths.start_exe(),
+        nemesis_sandbox::DEFAULT_BOX_NAME,
+    )?;
+    println!("Box cleared.");
+    Ok(())
 }
 
 /// Build the argv for the elevated self-relaunch (`sandbox <subcmd> --internal [--local]`).

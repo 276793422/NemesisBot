@@ -21,6 +21,7 @@ pub mod extract;
 pub mod ini;
 pub mod install;
 pub mod kmdutil;
+pub mod pending;
 pub mod status;
 
 // ---------------------------------------------------------------------------
