@@ -1162,14 +1162,13 @@ async fn main() {
     // plumbing through ContinuationData broke).
     all_results.push(
         run_test("T14: session_log persists continuation reply", || async {
-            // Unique marker so we don't pick up rows from earlier tests.
-            let marker = format!(
-                "T14_SESSIONLOG_MARKER_{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-            );
+            // Non-numeric marker. A previous version used a 13-digit millis
+            // timestamp, which tripped the DLP credit_card rule (dlp.rs) —
+            // cluster_rpc got blocked as "sensitive data", the continuation
+            // never happened, and the test timed out at 180s. Letters only so
+            // DLP doesn't flag it; still unique within the run (no other test
+            // uses this marker, and each run gets a fresh temp workspace).
+            let marker = "T14_SESSIONLOG_MARKER_UNIQUETESTXYZ".to_string();
             let user_payload = format!(
                 r#"<PEER_CHAT>{{"peer_id":"Node-B","content":"{}"}}</PEER_CHAT>"#,
                 marker
