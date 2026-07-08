@@ -285,6 +285,22 @@ pub fn append_peer_to_file(
     role: &str,
     category: &str,
 ) -> Result<(), ConfigError> {
+    append_peer_to_file_with_name(path, peer_id, address, role, category, None)
+}
+
+/// Like [`append_peer_to_file`] but also persists a `name` field. Used when
+/// upgrading a placeholder peer to its real node_id — the human-readable name
+/// (e.g. "Node-A") must be written so that after a reload the static loader
+/// recovers it (otherwise `name` falls back to the real_id key and lookups by
+/// the human name fail).
+pub fn append_peer_to_file_with_name(
+    path: &Path,
+    peer_id: &str,
+    address: &str,
+    role: &str,
+    category: &str,
+    name: Option<&str>,
+) -> Result<(), ConfigError> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -336,6 +352,9 @@ pub fn append_peer_to_file(
 
     let mut peer_entry = toml::value::Table::new();
     peer_entry.insert("address".to_string(), toml::Value::String(address.to_string()));
+    if let Some(n) = name {
+        peer_entry.insert("name".to_string(), toml::Value::String(n.to_string()));
+    }
     peer_entry.insert("role".to_string(), toml::Value::String(role.to_string()));
     peer_entry.insert("category".to_string(), toml::Value::String(category.to_string()));
     peers_table.insert(key, toml::Value::Table(peer_entry));

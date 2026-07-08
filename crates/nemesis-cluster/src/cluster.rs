@@ -700,12 +700,21 @@ impl Cluster {
                     inherited_static = true;
                 }
                 self.registry.remove(placeholder_id);
+                // Use the placeholder's human name (e.g. "Node-A") for the
+                // persisted entry when available — the announce sometimes
+                // carries node_id as name, which would survive into peers.toml
+                // and break name-based lookups after a reload.
+                let effective_name = if !placeholder_name.is_empty() {
+                    placeholder_name.clone()
+                } else {
+                    name.to_string()
+                };
                 self.upgrade_peer_in_peers_toml(
                     placeholder_id,
                     node_id,
                     &RealNodeInfo {
                         id: node_id.into(),
-                        name: name.into(),
+                        name: effective_name,
                         address: primary_address.clone(),
                         role: nemesis_types::cluster::NodeRole::Worker,
                         category: category.into(),
@@ -870,19 +879,43 @@ impl Cluster {
         info.id.clone()
     }
 
-    /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
+    /// Convert an RPC address (`host:rpc_port`) to the UDP address (`host:udp_port`)
+/// for peers.toml write-back, reversing the static loader's
+/// `rpc_port = udp_port + 10000` convention (gateway.rs). Falls back to the
+/// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
+/// reverse — e.g. a non-standard port or an address without a port).
+fn rpc_to_udp_address(rpc_addr: &str) -> String {
+    if let Some((host, port_str)) = rpc_addr.rsplit_once(':') {
+        if let Ok(rpc_port) = port_str.parse::<u32>() {
+            if rpc_port > 10000 {
+                return format!("{}:{}", host, rpc_port - 10000);
+            }
+        }
+    }
+    rpc_addr.to_string()
+}
+
+/// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
     fn persist_real_peer_to_toml(&self, real_id: &str, info: &RealNodeInfo) {
         let path = &self.static_config_path;
         let role_str = match info.role {
             nemesis_types::cluster::NodeRole::Master => "master",
             nemesis_types::cluster::NodeRole::Worker => "worker",
         };
-        if let Err(e) = crate::cluster_config::append_peer_to_file(
+        // peers.toml's `address` field is the UDP host:port — the static loader
+        // (gateway.rs) derives rpc_port = udp_port + 10000 from it. info.address
+        // is the RPC address (host:rpc_port) used in-memory; convert it back to
+        // the UDP address on write so the derivation isn't double-applied on
+        // reload (otherwise 21949 → 31949, breaking post-restart callbacks —
+        // root cause of cluster-uat T9).
+        let toml_address = Self::rpc_to_udp_address(&info.address);
+        if let Err(e) = crate::cluster_config::append_peer_to_file_with_name(
             path,
             real_id,
-            &info.address,
+            &toml_address,
             role_str,
             &info.category,
+            Some(&info.name),
         ) {
             tracing::warn!(
                 real_id = real_id,
