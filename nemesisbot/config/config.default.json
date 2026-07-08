@@ -12,6 +12,10 @@
       "max_continuation_permits": 0
     }
   },
+  "executor": {
+    "enabled": false,
+    "sandbox": false
+  },
   "channels": {
     "whatsapp": {
       "enabled": false,

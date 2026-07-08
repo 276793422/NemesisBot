@@ -7,6 +7,7 @@ mod common;
 mod embedded;
 mod adapters;
 mod agent_factory;
+mod exec_worker;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]
@@ -208,6 +209,16 @@ enum Commands {
 #[cfg(not(target_os = "macos"))]
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Executor role short-circuit: if spawned as a tool-executor child (env
+    // NEMESISBOT_ROLE=executor, set by the gateway's ExecutorChannel when it
+    // spawns a child per tool call), run the executor entrypoint instead of CLI
+    // dispatch. Must precede Cli::parse_from — the child is spawned with no
+    // subcommand. The early return also prevents any fork loop: the child never
+    // reaches the gateway code that spawns executors.
+    if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("executor") {
+        return exec_worker::run().await;
+    }
+
     // Early check for child mode (--multiple flag) before any CLI parsing.
     // This allows the parent process to self-spawn a child that loads plugin-ui.dll.
     #[cfg(feature = "desktop")]
@@ -265,6 +276,16 @@ async fn main() -> Result<()> {
 /// and hand the system tray to the main thread so its event loop runs there.
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
+    // Executor role short-circuit (see the non-mac entry for rationale). macOS
+    // main is sync, so drive the async executor entrypoint on a current-thread
+    // runtime. The executor never needs the main-thread tray handoff.
+    if std::env::var("NEMESISBOT_ROLE").as_deref() == Ok("executor") {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return rt.block_on(exec_worker::run());
+    }
+
     // macOS: winit's EventLoop must run on the process main thread. We run the
     // gateway on a dedicated OS thread with its OWN multi-thread runtime and
     // drive it via `block_on` (NOT `tokio::spawn`), so the gateway's future

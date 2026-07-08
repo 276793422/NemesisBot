@@ -278,7 +278,47 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         &model_name,
         Some(agent_loop.mcp_tool_snapshot()),
     );
-    register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
+
+    // Executor separation (Layer 1): if enabled, MOVE tools are wrapped in
+    // RemoteExecutorTool and dispatched to a per-call child process.
+    let executor_channel = cfg
+        .executor
+        .as_ref()
+        .filter(|e| e.enabled)
+        .map(|e| -> anyhow::Result<Arc<nemesis_agent::ExecutorChannel>> {
+            let exe_path = std::env::current_exe()
+                .map_err(|err| anyhow::anyhow!("resolve current_exe for executor: {err}"))?;
+            let sandbox = e.sandbox;
+            if sandbox {
+                // Layer 2 not integrated yet — Start.exe unavailable. Warn now;
+                // build_command returns a clear error if a tool is actually
+                // dispatched. Keeps the switch plumbing testable in B.0/B.2
+                // without a working sandbox.
+                tracing::warn!(
+                    "[AgentFactory] executor.sandbox=true but Sandboxie is not \
+                     integrated yet; executor children will spawn in the REAL \
+                     environment and sandbox dispatches will fail until the \
+                     Sandboxie integration phase"
+                );
+            }
+            info!(
+                "[AgentFactory] executor separation enabled (sandbox={sandbox}): \
+                 MOVE tools run in child process {}",
+                exe_path.display()
+            );
+            Ok(Arc::new(nemesis_agent::ExecutorChannel::new(
+                exe_path,
+                workspace_dir.to_string_lossy().to_string(),
+                sandbox,
+            )))
+        })
+        .transpose()?;
+    register_tools_and_mcp(
+        &mut agent_loop,
+        shared,
+        &tool_config,
+        executor_channel.as_ref(),
+    );
 
     // Stash the memory executor so the gateway can attach an approval gate
     // post-construction (P2: agent memory_store/forget require interactive
@@ -447,8 +487,30 @@ fn register_tools_and_mcp(
     agent_loop: &mut nemesis_agent::r#loop::AgentLoop,
     shared: &Arc<SharedResources>,
     tool_config: &nemesis_agent::SharedToolConfig,
+    executor_channel: Option<&Arc<nemesis_agent::ExecutorChannel>>,
 ) {
-    let all_tools = nemesis_agent::register_shared_tools(tool_config);
+    let mut all_tools = nemesis_agent::register_shared_tools(tool_config);
+
+    // Executor separation (Layer 1): replace the MOVE tool set with
+    // RemoteExecutorTool bridges that proxy execute() to a child process.
+    // Metadata (description / parameters / preview) delegates to the local
+    // impl, so the LLM sees byte-identical schemas and the checkpoint safety
+    // net still snapshots file writes.
+    if let Some(channel) = executor_channel {
+        for name in nemesis_agent::MOVE_TOOLS {
+            if let Some(local) = all_tools.remove(*name) {
+                all_tools.insert(
+                    (*name).to_string(),
+                    Box::new(nemesis_agent::RemoteExecutorTool::new(
+                        (*name).to_string(),
+                        local,
+                        channel.clone(),
+                    )),
+                );
+            }
+        }
+    }
+
     let tool_count = all_tools.len();
     for (name, tool) in all_tools {
         agent_loop.register_tool(name, tool);
@@ -673,7 +735,9 @@ pub fn build_cluster_agent_loop(
 
     // 6. Build tool config + register all tools + enable MCP.
     let tool_config = build_shared_tool_config(shared, &cfg, &model_name, None);
-    register_tools_and_mcp(&mut agent_loop, shared, &tool_config);
+    // Cluster agent does not use executor separation yet (B.0 scope: main agent
+    // only). Pass None → all tools stay local.
+    register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None);
 
     // Stash the memory executor so the gateway can attach an approval gate
     // post-construction (P2: agent memory_store/forget require interactive

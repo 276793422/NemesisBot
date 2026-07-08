@@ -114,6 +114,8 @@ pub struct Config {
     pub memory: Option<MemoryFlagConfig>,
     #[serde(default)]
     pub mcp: Option<McpConfig>,
+    #[serde(default)]
+    pub executor: Option<ExecutorSeparationConfig>,
 }
 
 impl Default for Config {
@@ -135,8 +137,30 @@ impl Default for Config {
             cluster: None,
             memory: None,
             mcp: None,
+            executor: None,
         }
     }
+}
+
+// ============================================================================
+// Executor Separation Config (执行体剥离 + 沙盒开关)
+// ============================================================================
+
+/// Executor separation + sandbox switch (Layer 1 / Layer 2). See
+/// `docs/PLAN/2026-07-08_executor-separation.md`.
+///
+/// - `enabled`: Layer 1 — run execution-class tools (exec/file/grep/git/...) in
+///   a separate child process (per-call spawn). `false` = today's in-process
+///   behavior (safe fallback).
+/// - `sandbox`: Layer 2 — wrap the child spawn with Sandboxie `Start.exe /box:`.
+///   Requires `enabled = true` AND Sandboxie installed (next phase). The gateway
+///   probes for Start.exe and falls back if absent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExecutorSeparationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 // ============================================================================
@@ -1459,6 +1483,7 @@ pub fn default_config() -> Config {
         memory: None,
         skills: None,
         mcp: None,
+        executor: None,
     }
 }
 
