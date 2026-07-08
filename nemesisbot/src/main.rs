@@ -168,6 +168,11 @@ enum Commands {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
     },
+    /// Sandboxie sandbox management (install / uninstall / status)
+    Sandbox {
+        #[command(subcommand)]
+        action: commands::sandbox::SandboxCommand,
+    },
     /// Manage local voice pipeline
     #[cfg(feature = "voice")]
     Voice {
@@ -690,6 +695,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Scanner { action } => {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;
+        }
+        Commands::Sandbox { action } => {
+            common::ensure_default_logger();
+            commands::sandbox::run(action, cli.local).await?;
         }
         #[cfg(feature = "voice")]
         Commands::Voice { action } => {

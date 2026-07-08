@@ -3494,6 +3494,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nemesis-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nemesis-security"
 version = "0.1.0"
 dependencies = [
@@ -3782,6 +3798,7 @@ dependencies = [
  "nemesis-migrate",
  "nemesis-observer",
  "nemesis-providers",
+ "nemesis-sandbox",
  "nemesis-security",
  "nemesis-services",
  "nemesis-skills",

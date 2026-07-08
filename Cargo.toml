@@ -7,6 +7,7 @@ members = [
     "crates/nemesis-data",
     "crates/nemesis-observer",
     "crates/nemesis-security",
+    "crates/nemesis-sandbox",
     "crates/nemesis-providers",
     "crates/nemesis-tools",
     "crates/nemesis-memory",
@@ -129,6 +130,7 @@ nemesis-config = { path = "crates/nemesis-config" }
 nemesis-data = { path = "crates/nemesis-data" }
 nemesis-observer = { path = "crates/nemesis-observer" }
 nemesis-security = { path = "crates/nemesis-security", default-features = false }
+nemesis-sandbox = { path = "crates/nemesis-sandbox" }
 nemesis-providers = { path = "crates/nemesis-providers" }
 nemesis-tools = { path = "crates/nemesis-tools" }
 nemesis-memory = { path = "crates/nemesis-memory" }
