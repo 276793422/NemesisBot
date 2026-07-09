@@ -133,6 +133,18 @@ async fn download_and_unzip_7z(runtime_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Probe 7z availability WITHOUT downloading: cached `runtime/7z/7z.exe`, then a
+/// system 7z in PATH / common install dirs. Returns (available, source).
+pub fn seven_zip_status(runtime_dir: &Path) -> (bool, &'static str) {
+    if runtime_dir.join("7z").join("7z.exe").exists() {
+        return (true, "cached");
+    }
+    if find_system_7z().is_some() {
+        return (true, "system");
+    }
+    (false, "none")
+}
+
 /// Search PATH + common install dirs for a system 7z.exe (used only when no
 /// cached/downloaded copy exists yet).
 fn find_system_7z() -> Option<PathBuf> {

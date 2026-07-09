@@ -3716,6 +3716,7 @@ dependencies = [
  "nemesis-forge",
  "nemesis-memory",
  "nemesis-providers",
+ "nemesis-sandbox",
  "nemesis-security",
  "nemesis-services",
  "nemesis-skills",

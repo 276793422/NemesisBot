@@ -28,6 +28,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') },
   { path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') },
   { path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') },
+  { path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') },
   // Other
   { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') },
   { path: '/license', name: 'license', component: () => import('../views/LicenseView.vue') },

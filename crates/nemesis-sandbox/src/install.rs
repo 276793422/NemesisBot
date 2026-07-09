@@ -30,9 +30,24 @@ pub fn wait_for_state(name: &str, target: ServiceState, timeout: Duration) -> Se
     }
 }
 
-/// Full install. Must be called elevated.
+/// Poll `service_state(name)` until the service EXISTS (state != NotFound) or
+/// `timeout` elapses. Used by the install flow to confirm the service got
+/// created (install no longer starts it — start is the user's explicit step).
+pub fn wait_for_installed(name: &str, timeout: Duration) -> ServiceState {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let s = service_state(name);
+        if s != ServiceState::NotFound || std::time::Instant::now() >= deadline {
+            return s;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Acquire the Sandboxie runtime files: download the official installer +
+/// extract it into `runtime/`. Does NOT install the driver/service or write ini
+/// (that's [`start`]) and needs no elevation — just file I/O.
 pub async fn install(paths: &SandboxPaths) -> Result<()> {
-    // 1. Download + verify.
     let installer = download::download_release(
         crate::INSTALLER_URL,
         crate::CHECKSUMS_URL,
@@ -42,13 +57,27 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
     .await
     .context("download release")?;
 
-    // 2. Resolve 7z (local-first: cached → system → download 7z.zip) + extract.
+    // Resolve 7z (local-first: cached → system → download 7z.zip) + extract.
     extract::extract_release(&installer, &paths.runtime_dir)
         .await
         .context("extract")?;
     paths.verify_runtime().context("verify runtime files")?;
 
-    // 3. KmdUtil install driver + redirect IniPath + install service + service DWORDs.
+    tracing::info!(
+        "[sandbox] files acquired at {} — run `sandbox start` to activate the engine",
+        paths.runtime_dir.display()
+    );
+    Ok(())
+}
+
+/// Activate the Sandboxie engine: install the driver + service, redirect IniPath,
+/// write Sandboxie.ini, and start SbieSvc. Requires the files acquired first
+/// ([`install`]). Must be called elevated (kernel driver install → UAC).
+pub fn start(paths: &SandboxPaths) -> Result<()> {
+    paths
+        .verify_runtime()
+        .context("runtime files missing — run `nemesisbot sandbox install` first")?;
+
     kmdutil::run(
         kmdutil::install_driver(&paths.kmdutil(), &paths.sbiedrv_sys(), &paths.sbiemsg_dll()),
         false,
@@ -62,7 +91,9 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
     .context("install SbieSvc")?;
     kmdutil::set_sbiesvc_service_key_dwounds().context("set SbieSvc service-key DWORDs")?;
 
-    // 4. Start service.
+    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root)
+        .context("write Sandboxie.ini")?;
+
     kmdutil::run(kmdutil::start(&paths.kmdutil(), USERMODE_SERVICE), false)
         .context("start SbieSvc")?;
     let s = wait_for_state(
@@ -73,28 +104,34 @@ pub async fn install(paths: &SandboxPaths) -> Result<()> {
     if s != ServiceState::Running {
         bail!("SbieSvc did not reach RUNNING (state={s:?})");
     }
-
-    // 5. Write Sandboxie.ini (NemesisBox).
-    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root)
-        .context("write Sandboxie.ini")?;
-
-    tracing::info!("[sandbox] install complete");
+    tracing::info!("[sandbox] engine activated — SbieSvc RUNNING");
     Ok(())
 }
 
-/// Full uninstall (tolerant). Must be called elevated.
-pub fn uninstall(paths: &SandboxPaths) -> Result<()> {
+/// Deactivate the Sandboxie engine: stop + uninstall the driver and service.
+/// The acquired files stay (so `start` can re-activate without re-downloading),
+/// unless `purge` is set — then the runtime files, box, and ini are removed too.
+/// Must be called elevated.
+pub fn stop(paths: &SandboxPaths, purge: bool) -> Result<()> {
     let _ = kmdutil::run(kmdutil::stop(&paths.kmdutil(), USERMODE_SERVICE), true);
     let _ = kmdutil::run(kmdutil::stop(&paths.kmdutil(), DRIVER_SERVICE), true);
     let _ = kmdutil::run(kmdutil::delete(&paths.kmdutil(), USERMODE_SERVICE), true);
     let _ = kmdutil::run(kmdutil::delete(&paths.kmdutil(), DRIVER_SERVICE), true);
-    // Best-effort: confirm gone.
+
     let svc = service_state(USERMODE_SERVICE);
     let drv = service_state(DRIVER_SERVICE);
-    tracing::info!(
-        "[sandbox] uninstall done (SbieSvc={svc:?}, SbieDrv={drv:?}); runtime files left at {} \
-         (delete manually if desired)",
-        paths.runtime_dir.display()
-    );
+    tracing::info!("[sandbox] engine deactivated (SbieSvc={svc:?}, SbieDrv={drv:?})");
+
+    if purge {
+        let _ = std::fs::remove_dir_all(&paths.runtime_dir);
+        let _ = std::fs::remove_dir_all(&paths.box_root);
+        let _ = std::fs::remove_file(&paths.ini_path);
+        tracing::info!(
+            "[sandbox] --purge: removed runtime {}, box {}, ini {}",
+            paths.runtime_dir.display(),
+            paths.box_root.display(),
+            paths.ini_path.display()
+        );
+    }
     Ok(())
 }

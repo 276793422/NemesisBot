@@ -13,6 +13,7 @@ nemesis-cluster = { workspace = true, optional = true }
 nemesis-forge = { workspace = true, optional = true }
 nemesis-skills = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+nemesis-sandbox = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
@@ -52,6 +53,7 @@ forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security"]
+sandbox = ["dep:nemesis-sandbox"]
 
 [dev-dependencies]
 tempfile = "3"

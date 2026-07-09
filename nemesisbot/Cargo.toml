@@ -37,7 +37,7 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/
 
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
-sandbox = ["dep:nemesis-sandbox"]
+sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]

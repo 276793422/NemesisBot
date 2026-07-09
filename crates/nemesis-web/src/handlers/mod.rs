@@ -21,6 +21,8 @@ pub mod models;
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
+#[cfg(feature = "sandbox")]
+pub mod sandbox;
 pub mod skills;
 pub mod system;
 pub mod tasks;
@@ -59,6 +61,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "security")]
     {
         router.register(Arc::new(security::SecurityHandler::new()));
+    }
+    #[cfg(feature = "sandbox")]
+    {
+        router.register(Arc::new(sandbox::SandboxHandler::new()));
     }
     #[cfg(feature = "forge")]
     {

@@ -20,16 +20,16 @@ use nemesis_sandbox::status::ServiceState;
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxCommand {
-    /// Download + install the Sandboxie driver + service (needs admin → triggers UAC).
-    Install {
-        /// Internal: run the install synchronously in THIS already-elevated process.
+    /// Download + extract the Sandboxie runtime files (no admin / no UAC — just files).
+    /// Use `start` to activate the engine (install driver + service).
+    Install,
+    /// Deactivate the engine: stop + uninstall the driver + service (needs admin → UAC).
+    /// --purge also deletes the acquired files (full removal).
+    Stop {
         #[arg(long, hide = true)]
         internal: bool,
-    },
-    /// Stop + delete the Sandboxie driver + service (needs admin → triggers UAC).
-    Uninstall {
-        #[arg(long, hide = true)]
-        internal: bool,
+        #[arg(long)]
+        purge: bool,
     },
     /// Show Sandboxie install / service status.
     Status,
@@ -51,18 +51,25 @@ pub enum SandboxCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Activate the engine: install driver + service + write ini + start SbieSvc.
+    /// Needs admin (kernel driver) → triggers UAC. Requires `install` (files) first.
+    Start {
+        #[arg(long, hide = true)]
+        internal: bool,
+    },
 }
 
 pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     match action {
-        SandboxCommand::Install { internal } => install(&paths, local, internal).await,
-        SandboxCommand::Uninstall { internal } => uninstall(&paths, local, internal),
+        SandboxCommand::Install => install(&paths).await,
+        SandboxCommand::Stop { internal, purge } => stop(&paths, local, internal, purge),
         SandboxCommand::Status => status(&paths),
         SandboxCommand::Pending => pending(&paths, local),
         SandboxCommand::Commit { all, files } => commit(&paths, local, all, files),
         SandboxCommand::Clear { force } => clear(&paths, local, force),
+        SandboxCommand::Start { internal } => start(&paths, local, internal),
     }
 }
 
@@ -204,6 +211,39 @@ fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Res
     Ok(())
 }
 
+/// Activate the engine: install driver + service + ini + start SbieSvc. Needs
+/// admin (kernel driver) → UAC self-relaunch. Requires files acquired (`install`).
+fn start(paths: &nemesis_sandbox::SandboxPaths, local: bool, internal: bool) -> Result<()> {
+    if internal {
+        println!("[sandbox] activating engine (elevated child)...");
+        nemesis_sandbox::install::start(paths)?;
+        println!("[sandbox] engine activated — SbieSvc RUNNING.");
+        return Ok(());
+    }
+    if !nemesis_sandbox::elevation::is_elevated() {
+        println!("[sandbox] not elevated — requesting UAC...");
+        let exe = std::env::current_exe()?;
+        nemesis_sandbox::elevation::relaunch_elevated(&exe, &relaunch_args("start", local))?;
+        println!("[sandbox] elevated activator launched; waiting for SbieSvc (up to 120s)...");
+        let state = nemesis_sandbox::install::wait_for_state(
+            nemesis_sandbox::USERMODE_SERVICE,
+            ServiceState::Running,
+            Duration::from_secs(120),
+        );
+        if !matches!(state, ServiceState::Running) {
+            anyhow::bail!(
+                "activate did not complete (SbieSvc state={state:?}); check the UAC prompt"
+            );
+        }
+        println!("[sandbox] engine activated — SbieSvc RUNNING.");
+        return Ok(());
+    }
+    println!("[sandbox] activating engine (already elevated)...");
+    nemesis_sandbox::install::start(paths)?;
+    println!("[sandbox] engine activated — SbieSvc RUNNING.");
+    Ok(())
+}
+
 /// Build the argv for the elevated self-relaunch (`sandbox <subcmd> --internal [--local]`).
 fn relaunch_args(subcmd: &str, local: bool) -> Vec<String> {
     let mut v = vec!["sandbox".to_string(), subcmd.to_string(), "--internal".to_string()];
@@ -213,65 +253,54 @@ fn relaunch_args(subcmd: &str, local: bool) -> Vec<String> {
     v
 }
 
-async fn install(
-    paths: &nemesis_sandbox::SandboxPaths,
-    local: bool,
-    internal: bool,
-) -> Result<()> {
-    if internal {
-        println!("[sandbox] installing (elevated child)...");
-        nemesis_sandbox::install::install(paths).await?;
-        println!("[sandbox] install complete.");
-        return Ok(());
-    }
-    if !nemesis_sandbox::elevation::is_elevated() {
-        println!("[sandbox] not elevated — requesting UAC...");
-        let exe = std::env::current_exe()?;
-        nemesis_sandbox::elevation::relaunch_elevated(&exe, &relaunch_args("install", local))?;
-        println!("[sandbox] elevated installer launched; waiting for SbieSvc (up to 120s)...");
-        let state = nemesis_sandbox::install::wait_for_state(
-            nemesis_sandbox::USERMODE_SERVICE,
-            ServiceState::Running,
-            Duration::from_secs(120),
-        );
-        match state {
-            ServiceState::Running => println!("[sandbox] install OK — SbieSvc RUNNING."),
-            _ => anyhow::bail!(
-                "install did not complete (SbieSvc state={state:?}); check the UAC prompt, \
-                 7z availability (PATH or C:\\Program Files\\7-Zip), and network/download"
-            ),
-        }
-        return Ok(());
-    }
-    println!("[sandbox] installing (already elevated)...");
+async fn install(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
+    // Acquire files only (download + extract). No driver/service/ini, no UAC.
+    println!("[sandbox] acquiring Sandboxie files (download + extract, no UAC)...");
     nemesis_sandbox::install::install(paths).await?;
-    println!("[sandbox] install complete.");
+    println!(
+        "[sandbox] files acquired at {}.\nRun `nemesisbot sandbox start` (or the dashboard 启动 button) to activate the engine (installs driver, triggers UAC).",
+        paths.runtime_dir.display()
+    );
     Ok(())
 }
 
-fn uninstall(paths: &nemesis_sandbox::SandboxPaths, local: bool, internal: bool) -> Result<()> {
+/// Deactivate the engine: stop + uninstall driver + service. --purge also removes
+/// the acquired files. Needs admin → UAC self-relaunch.
+fn stop(
+    paths: &nemesis_sandbox::SandboxPaths,
+    local: bool,
+    internal: bool,
+    purge: bool,
+) -> Result<()> {
     if internal {
-        println!("[sandbox] uninstalling (elevated child)...");
-        nemesis_sandbox::install::uninstall(paths)?;
-        println!("[sandbox] uninstall complete.");
+        println!(
+            "[sandbox] deactivating engine (elevated child){}...",
+            if purge { " + purging files" } else { "" }
+        );
+        nemesis_sandbox::install::stop(paths, purge)?;
+        println!("[sandbox] engine deactivated.");
         return Ok(());
     }
     if !nemesis_sandbox::elevation::is_elevated() {
         println!("[sandbox] not elevated — requesting UAC...");
         let exe = std::env::current_exe()?;
-        nemesis_sandbox::elevation::relaunch_elevated(&exe, &relaunch_args("uninstall", local))?;
-        println!("[sandbox] elevated uninstaller launched; waiting for SbieSvc to disappear (up to 60s)...");
+        let mut args = relaunch_args("stop", local);
+        if purge {
+            args.push("--purge".to_string());
+        }
+        nemesis_sandbox::elevation::relaunch_elevated(&exe, &args)?;
+        println!("[sandbox] elevated deactivator launched; waiting for SbieSvc to disappear (up to 60s)...");
         let state = nemesis_sandbox::install::wait_for_state(
             nemesis_sandbox::USERMODE_SERVICE,
             ServiceState::NotFound,
             Duration::from_secs(60),
         );
-        println!("[sandbox] SbieSvc state after uninstall: {state:?}");
+        println!("[sandbox] SbieSvc state after stop: {state:?}");
         return Ok(());
     }
-    println!("[sandbox] uninstalling (already elevated)...");
-    nemesis_sandbox::install::uninstall(paths)?;
-    println!("[sandbox] uninstall complete.");
+    println!("[sandbox] deactivating engine (already elevated)...");
+    nemesis_sandbox::install::stop(paths, purge)?;
+    println!("[sandbox] engine deactivated.");
     Ok(())
 }
 
