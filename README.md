@@ -132,7 +132,7 @@ bash scripts/customize.sh iot
 cargo build --profile iotsmall -p nemesisbot --no-default-features --features "channels-web,channels-rpc"
 ```
 
-可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md`。
+可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md`。
 
 ### 运行测试
 
@@ -221,6 +221,40 @@ nemesisbot security scanner install
 # 查看扫描引擎状态
 nemesisbot security scanner list
 ```
+
+---
+
+## 执行体隔离与沙盒（安全第 9 层 / 最终防线）
+
+Sandboxie 沙盒是 NemesisBot 安全防线的**第 9 层——最终防御红线**：前 8 层（注入→命令→ABAC→凭据→DLP→SSRF→病毒扫描→审计链）在 gateway 做判断和拦截，沙盒是兜底的**盒级物理隔离**——即便前 8 层都放行了某个高危操作，它在盒里也动不了真盘。这是核心安全能力，不是实验性功能。
+
+LLM 高危本地操作（exec / 文件读写 / grep / git）默认在 gateway 进程内执行。开启**执行体隔离**后，这些操作被剥离到独立子进程跑，进一步套进 **Sandboxie 沙盒**全隔离（断网 + 降权）。两层开关在 `config.json` 的 `executor` 段（默认关，按需启用）：
+
+```json
+{
+  "executor": {
+    "enabled": false,
+    "sandbox": false
+  }
+}
+```
+
+- **Layer 1（`executor.enabled=true`）**：每次工具调用 spawn 一个 `nemesisbot.exe` 子进程（角色 `executor`），一行 JSON 请求 / 一行响应经 stdio 往返，跑完即退。安全 8 层仍在 gateway 执行前跑（子进程收到的都是已批准的操作）。`sandbox=false` 时子进程跑在真实环境，纯进程隔离。
+- **Layer 2（`executor.sandbox=true`，需 `enabled=true` + Windows）**：子进程经 `Start.exe /box:NemesisBox` 起进 Sandboxie 盒——**断网 + 降权 + 全隔离**。盒里对工作区的写入不自动落真盘，需手动审阅后提交；工作区外的破坏（删越界、注册表、网络）永远关在盒里、提交不了。
+
+沙盒是 **Windows 内核驱动**（mini-filter），首次启用需装驱动 + 服务（触发一次 UAC）：
+
+```bash
+nemesisbot sandbox install       # 下载 + 校验 + 解压 Sandboxie Classic（无 UAC，仅取文件）
+nemesisbot sandbox start         # 激活引擎：装驱动+服务+写 ini+启动 SbieSvc（触发 UAC）
+nemesisbot sandbox status        # 查看驱动/服务/Start.exe 就绪状态
+nemesisbot sandbox pending       # 列出盒里待提交的工作区文件
+nemesisbot sandbox commit --all  # 把盒里工作区文件提交回真盘
+nemesisbot sandbox clear         # 清空盒内容（丢弃待提交）
+nemesisbot sandbox stop          # 停止并卸载引擎（--purge 连文件一起删）
+```
+
+也可在 Web Dashboard 的「沙盒」页操作（环境检查 / 启动引擎 / 查看待提交文件 / 勾选提交）。沙盒通过 cargo feature `sandbox` 控制（默认开）；裁剪掉后 `nemesisbot sandbox` 命令和 `executor.sandbox` 不可用，但 Layer 1 进程隔离（`executor.enabled`）仍保留。**Linux/macOS/Android 不适用。** 详见 `docs/PLAN/2026-07-09_sandboxie-integration.md`。
 
 ---
 
@@ -501,10 +535,11 @@ nemesisbot gateway --no-console # 仅记录到文件
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 核心模块（35 个 crate）
+├── crates/                          # 核心模块（36 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
 │   ├── nemesis-tools/               # 工具系统（32+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
+│   ├── nemesis-sandbox/             # Sandboxie 沙盒集成（执行体隔离 Layer 2，Windows）
 │   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照）
 │   ├── nemesis-channels/            # 通讯渠道（21 种通道）
 │   ├── nemesis-providers/           # LLM 提供商（含 SSE 流式）
@@ -519,7 +554,7 @@ NemesisBot_Rust/
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理；Linux 通过 plugin-ui.so 运行时加载）
-│   ├── nemesis-web/                 # Web API + SSE（19 个 Handler）
+│   ├── nemesis-web/                 # Web API + SSE（20 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -541,7 +576,7 @@ NemesisBot_Rust/
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（24 个）
+│   └── src/commands/                # CLI 命令（25 个）
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── agent.rs                 # Agent 管理
 │       ├── cluster.rs               # 集群管理
@@ -554,7 +589,7 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具（20 个项目：13 workspace member + 7 独立）
+├── test-tools/                      # 测试工具（20 个项目：12 workspace member + 独立项目）
 │   ├── TestAIServer/                # AI 服务器模拟器（Go，8 个测试模型）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
 │   ├── integration-test/            # CLI 集成测试（22 命令，298 断言）
@@ -586,12 +621,14 @@ NemesisBot_Rust/
 ## 技术特点
 
 - **800+ Rust 源文件** - 清晰的 workspace crate 架构（其中约 460 个非测试源文件，持续增长）
-- **35 个核心 crate** - 模块化设计，职责清晰
+- **36 个核心 crate** - 模块化设计，职责清晰
 - **17,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
-- **ABAC 安全引擎** - 8 层安全体系（注入→命令→凭据→DLP→SSRF→病毒→审批→审计链）
+- **ABAC 安全引擎** - 8 层安全体系（注入→命令→ABAC→凭据→DLP→SSRF→病毒扫描→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
+- **执行体隔离** - LLM 高危操作（exec/文件/grep/git）剥离到 per-call 子进程，安全层仍在 gateway 执行前跑（config: `executor.enabled`）
+- **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
@@ -621,6 +658,7 @@ nemesisbot channel          # 通道管理
 nemesisbot cluster          # 集群管理（init/status/enable/peers）
 nemesisbot security         # 安全配置（scanner/audit）
 nemesisbot scanner          # 扫描引擎管理（clamav install/enable/test）
+nemesisbot sandbox          # 沙盒管理（Sandboxie install/start/stop/pending/commit）
 nemesisbot skills           # 技能管理（search/install/add-source）
 nemesisbot persona          # 人格管理（list/search/install/activate/remove）
 nemesisbot forge            # 自学习管理（status/enable/reflect）
@@ -655,7 +693,7 @@ nemesisbot agent            # Agent 管理
 | 指标 | Go 版本 | Rust 版本 |
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
-| CLI 命令 | 21 个顶级 | 24 个顶级（含 dashboard、persona） |
+| CLI 命令 | 21 个顶级 | 25 个顶级（含 dashboard、persona、sandbox） |
 | 工具 | 20+ | 32+（含 mcp_discover、cli_reference、exec_async、cluster_rpc 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
@@ -663,6 +701,7 @@ nemesisbot agent            # Agent 管理
 | 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
+| 沙盒执行 | 无 | 有（Sandboxie 集成：执行体隔离 Layer 1 + 沙盒 Layer 2） |
 | 单元测试 | ~6,500 | ~17,000 |
 | 人格系统 | 无 | 有（agency-agents 仓库 + 运行时切换） |
 | Logs Dashboard | 无 | 有（SSE 实时流 + 会话/审计/审计链） |
@@ -704,6 +743,7 @@ nemesisbot agent            # Agent 管理
 
 **安全/审批**：
 - 审批 DLL 安全降级 — plugin-ui.dll 缺失时自动拒绝，不放行
+- 执行体隔离 + Sandboxie 沙盒 — LLM 高危本地操作（exec/文件/grep/git）可剥离到 per-call 子进程（Layer 1），进一步套进 Sandboxie 盒全隔离（Layer 2，Windows）（Go 版无）
 
 ---
 
