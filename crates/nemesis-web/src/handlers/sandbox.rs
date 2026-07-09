@@ -65,6 +65,26 @@ async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Write `executor.enabled` + `executor.sandbox` into `<home>/config.json` so the
+/// gateway picks up the sandbox on next start. Called by `start` (true,true) and
+/// `stop` (false,false) so the UI toggle fully reflects in config.
+fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> Result<(), String> {
+    let config_path = home.join("config.json");
+    let raw = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("read config.json: {e}"))?;
+    let mut val: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
+    let entry = serde_json::json!({ "enabled": enabled, "sandbox": sandbox });
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("executor".into(), entry);
+    } else {
+        return Err("config.json is not a JSON object".into());
+    }
+    let out = serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
+    std::fs::write(&config_path, out).map_err(|e| format!("write config.json: {e}"))?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for SandboxHandler {
     fn module_name(&self) -> &str {
@@ -74,7 +94,7 @@ impl ModuleHandler for SandboxHandler {
     async fn handle_cmd(
         &self,
         cmd: &str,
-        _data: Option<serde_json::Value>,
+        data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         use nemesis_sandbox::status::ServiceState;
@@ -94,6 +114,7 @@ impl ModuleHandler for SandboxHandler {
                     "sbiedrv": format!("{:?}", sbiedrv),
                     "start_exe_present": start_exe_present,
                     "ready": ready,
+                    "box_root": paths.box_root.to_string_lossy(),
                 })))
             }
             "check" => {
@@ -136,6 +157,49 @@ impl ModuleHandler for SandboxHandler {
                     .collect();
                 Ok(Some(serde_json::json!({ "files": files })))
             }
+            "commit" => {
+                // Sync selected (or all) pending workspace files box → real disk.
+                let workspace = ctx.workspace.as_deref().unwrap_or("");
+                let ws = PathBuf::from(workspace);
+                let up = user_profile();
+                let pending = nemesis_sandbox::pending::pending_workspace(
+                    &paths.box_root,
+                    &ws,
+                    &up,
+                )
+                .map_err(|e| format!("enumerate pending: {e}"))?;
+                let d = data.unwrap_or_default();
+                let all = d.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+                let files: Vec<String> = d
+                    .get("files")
+                    .and_then(|v| serde_json::from_value(v.clone()).unwrap_or(None))
+                    .unwrap_or_default();
+                let needles: Vec<String> = files.iter().map(|s| s.to_lowercase()).collect();
+                let to_commit: Vec<&nemesis_sandbox::pending::PendingFile> = if all {
+                    pending.iter().collect()
+                } else {
+                    pending
+                        .iter()
+                        .filter(|p| {
+                            let rp = p.real_path.to_string_lossy().to_lowercase();
+                            needles.iter().any(|n| rp.contains(n))
+                        })
+                        .collect()
+                };
+                let mut committed = 0usize;
+                let mut errors: Vec<String> = Vec::new();
+                for p in &to_commit {
+                    match nemesis_sandbox::pending::commit_file(p) {
+                        Ok(_) => committed += 1,
+                        Err(e) => errors.push(format!("{}: {e}", p.real_path.display())),
+                    }
+                }
+                Ok(Some(serde_json::json!({
+                    "committed": committed,
+                    "total": to_commit.len(),
+                    "errors": errors,
+                })))
+            }
             "install_7z" => {
                 nemesis_sandbox::extract::resolve_seven_zip(&paths.runtime_dir)
                     .await
@@ -151,10 +215,22 @@ impl ModuleHandler for SandboxHandler {
             }
             "start" => {
                 run_cli_subcmd(&home, "start").await?;
-                Ok(Some(serde_json::json!({ "ok": true })))
+                set_executor_config(&home, true, true)?;
+                Ok(Some(serde_json::json!({ "ok": true, "restart_required": true })))
             }
             "stop" => {
                 run_cli_subcmd(&home, "stop").await?;
+                set_executor_config(&home, false, false)?;
+                Ok(Some(serde_json::json!({ "ok": true, "restart_required": true })))
+            }
+            "open_box" => {
+                #[cfg(target_os = "windows")]
+                {
+                    std::process::Command::new("explorer")
+                        .arg(&paths.box_root)
+                        .spawn()
+                        .map_err(|e| format!("open explorer: {e}"))?;
+                }
                 Ok(Some(serde_json::json!({ "ok": true })))
             }
             other => Err(format!("unknown sandbox command: {other}")),

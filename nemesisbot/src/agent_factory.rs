@@ -296,34 +296,34 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
 
             #[cfg(feature = "sandbox")]
             if sandbox {
-                // Real Sandboxie box: probe Start.exe + SbieSvc, then wrap the spawn.
                 let paths = nemesis_sandbox::SandboxPaths::new(&shared.home);
                 let start_exe = paths.start_exe();
-                if !start_exe.exists() {
-                    anyhow::bail!(
-                        "executor.sandbox=true but Start.exe not found at {} — run \
-                         `nemesisbot sandbox install` first",
-                        start_exe.display()
-                    );
-                }
-                if !matches!(
+                let sbiesvc_running = matches!(
                     nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
                     nemesis_sandbox::status::ServiceState::Running
-                ) {
-                    anyhow::bail!(
-                        "executor.sandbox=true but SbieSvc is not running — run \
-                         `nemesisbot sandbox install`"
-                    );
-                }
-                info!(
-                    "[AgentFactory] executor separation enabled (sandbox=true, named-pipe + \
-                     Start.exe box): child {}",
-                    exe_path.display()
                 );
-                return Ok(Arc::new(
-                    nemesis_agent::ExecutorChannel::new(exe_path, workspace, true)
-                        .with_start_exe(start_exe),
-                ));
+                if start_exe.exists() && sbiesvc_running {
+                    info!(
+                        "[AgentFactory] executor separation enabled (sandbox=true, named-pipe + \
+                         Start.exe box): child {}",
+                        exe_path.display()
+                    );
+                    return Ok(Arc::new(
+                        nemesis_agent::ExecutorChannel::new(exe_path, workspace, true)
+                            .with_start_exe(start_exe),
+                    ));
+                }
+                // Sandboxie not ready — degrade gracefully instead of failing to start.
+                // (Gateway must not be held hostage by SbieSvc being stopped.)
+                tracing::warn!(
+                    "[AgentFactory] executor.sandbox=true but Sandboxie not ready \
+                     (Start.exe exists={}, SbieSvc running={}). Falling back to sandbox=false \
+                     (Layer-1 executor, NO box). Start the Sandboxie engine (UI 启动 or \
+                     `nemesisbot sandbox start`) + restart gateway to enable the box.",
+                    start_exe.exists(),
+                    sbiesvc_running
+                );
+                // Fall through to the sandbox=false (Layer-1) path below.
             }
 
             #[cfg(not(feature = "sandbox"))]

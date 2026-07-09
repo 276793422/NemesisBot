@@ -147,6 +147,10 @@ impl ExecutorChannel {
         let mut cmd = if let Some(start) = &self.start_exe {
             let mut c = Command::new(start);
             c.arg(format!("/box:{}", self.box_name));
+            // /hide_window → Start.exe passes SW_HIDE to the boxed child's
+            // STARTUPINFO (start.cpp:754-759), preventing the console window
+            // from flashing on each per-call sandboxed spawn.
+            c.arg("/hide_window");
             c.arg(&self.exe_path);
             c
         } else {
@@ -154,6 +158,14 @@ impl ExecutorChannel {
         };
         cmd.env("NEMESISBOT_ROLE", "executor")
             .env("NEMESISBOT_EXECUTOR_WORKSPACE", &self.workspace);
+        // Prevent a console window from flashing on each per-call spawn (every
+        // tool call spawns a fresh child; without this, Windows pops a black
+        // console window that disappears when the child exits).
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         cmd
     }
 

@@ -8,11 +8,12 @@ const toast = useToast()
 
 // --- State ---
 const loading = ref(true)
-const activeTab = ref<'inside' | 'config'>('config')
-const status = ref<any>(null)        // sandbox.service status
-const env = ref<any>(null)           // full env check (7z + sandboxie)
-const pending = ref<any[]>([])       // pending workspace files
-const busy = ref<string | null>(null) // action in progress
+const activeTab = ref<'config' | 'status' | 'files'>('config')
+const status = ref<any>(null)
+const env = ref<any>(null)
+const pending = ref<any[]>([])
+const busy = ref<string | null>(null)
+const selected = ref<Set<string>>(new Set())
 
 const ready = computed(() => !!status.value?.ready)
 const sevenZipOk = computed(() => !!env.value?.seven_zip?.available)
@@ -20,7 +21,7 @@ const filesAcquired = computed(() => !!env.value?.sandboxie?.files_acquired)
 const driverInstalled = computed(() => !!env.value?.sandboxie?.driver_installed)
 const sbiesvcRunning = computed(() => !!env.value?.sandboxie?.sbiesvc_running)
 
-async function refresh() {
+async function refreshAll() {
   loading.value = true
   try {
     const [st, pend] = await Promise.all([
@@ -38,7 +39,6 @@ async function checkEnv() {
   busy.value = 'check'
   try {
     env.value = await request('sandbox', 'check')
-    toast.success('环境检查完成')
   } catch (e: any) {
     toast.error('环境检查失败: ' + (e?.message ?? e))
   } finally {
@@ -63,11 +63,10 @@ async function installSandboxie() {
   busy.value = 'install_sandboxie'
   try {
     await request('sandbox', 'install_sandboxie', undefined, 0)
-    toast.success('Sandboxie 安装完成')
+    toast.success('Sandboxie 文件已下载')
     await checkEnv()
-    await refresh()
   } catch (e: any) {
-    toast.error('Sandboxie 安装失败: ' + (e?.message ?? e))
+    toast.error('下载失败: ' + (e?.message ?? e))
   } finally {
     busy.value = null
   }
@@ -77,8 +76,8 @@ async function startSandboxie() {
   busy.value = 'start'
   try {
     await request('sandbox', 'start')
-    toast.success('Sandboxie 引擎已启动')
-    await refresh()
+    toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。重启 gateway 生效。')
+    await refreshAll()
     await checkEnv()
   } catch (e: any) {
     toast.error('启动失败: ' + (e?.message ?? e))
@@ -91,11 +90,50 @@ async function stopSandboxie() {
   busy.value = 'stop'
   try {
     await request('sandbox', 'stop')
-    toast.success('Sandboxie 引擎已停止')
-    await refresh()
+    toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。重启 gateway 生效。')
+    await refreshAll()
     await checkEnv()
   } catch (e: any) {
     toast.error('停止失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+// --- File selection + sync (commit) ---
+function toggleFile(path: string) {
+  const s = new Set(selected.value)
+  if (s.has(path)) s.delete(path)
+  else s.add(path)
+  selected.value = s
+}
+function isSel(path: string) { return selected.value.has(path) }
+function selectAll() { selected.value = new Set(pending.value.map((p: any) => p.real_path)) }
+function selectNone() { selected.value = new Set() }
+
+async function syncSelected() {
+  const files = [...selected.value]
+  if (files.length === 0) { toast.error('请先勾选要同步的文件'); return }
+  busy.value = 'sync'
+  try {
+    const r = await request('sandbox', 'commit', { files })
+    toast.success(`已同步 ${r?.committed ?? 0}/${r?.total ?? files.length} 个文件到主机`)
+    await refreshAll()
+  } catch (e: any) {
+    toast.error('同步失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
+async function syncAll() {
+  busy.value = 'sync_all'
+  try {
+    const r = await request('sandbox', 'commit', { all: true })
+    toast.success(`已同步全部 ${r?.committed ?? 0} 个文件到主机`)
+    await refreshAll()
+  } catch (e: any) {
+    toast.error('同步失败: ' + (e?.message ?? e))
   } finally {
     busy.value = null
   }
@@ -108,8 +146,16 @@ function formatSize(n: number): string {
   return `${(n / 1048576).toFixed(1)}M`
 }
 
+async function openBox() {
+  try {
+    await request('sandbox', 'open_box')
+  } catch (e: any) {
+    toast.error('打开失败: ' + (e?.message ?? e))
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([refresh(), checkEnv()])
+  await Promise.all([refreshAll(), checkEnv()])
 })
 </script>
 
@@ -120,9 +166,10 @@ onMounted(async () => {
 
       <!-- Tabs -->
       <div class="tabs">
-        <button class="tab" :class="{ active: activeTab === 'inside' }" @click="activeTab = 'inside'">沙箱内部</button>
         <button class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">沙箱配置</button>
-        <button class="btn btn-sm" style="margin-left: auto;" @click="refresh" :disabled="!!busy">刷新</button>
+        <button class="tab" :class="{ active: activeTab === 'status' }" @click="activeTab = 'status'">沙箱状态</button>
+        <button class="tab" :class="{ active: activeTab === 'files' }" @click="activeTab = 'files'">沙箱文件</button>
+        <button class="btn btn-sm" style="margin-left: auto;" @click="refreshAll" :disabled="!!busy">刷新</button>
       </div>
 
       <!-- Busy banner -->
@@ -134,52 +181,9 @@ onMounted(async () => {
              : busy === 'install_sandboxie' ? '正在下载 Sandboxie 文件（下载 + 解压，无 UAC）...'
              : busy === 'start' ? '正在启动 Sandboxie 引擎（装驱动 + 服务，会弹 UAC）...'
              : busy === 'stop' ? '正在停止 Sandboxie 引擎（卸驱动 + 服务，会弹 UAC）...'
+             : busy === 'sync' || busy === 'sync_all' ? '正在同步文件到主机...'
              : '正在检查环境...' }}
           </span>
-        </div>
-      </div>
-
-      <!-- ════════ 沙箱内部 ════════ -->
-      <div v-if="activeTab === 'inside'" style="display: flex; flex-direction: column; gap: var(--space-3);">
-        <div class="card">
-          <div class="card-header"><h3 style="margin: 0;">沙箱状态</h3></div>
-          <div class="card-body">
-            <div v-if="loading" style="color: var(--text-secondary);">加载中…</div>
-            <div v-else style="display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm);">
-              <div>
-                <span :style="{ color: status?.sbiesvc === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiesvc === 'Running' ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">SbieSvc（服务）：{{ status?.sbiesvc ?? '未知' }}</span>
-              </div>
-              <div>
-                <span :style="{ color: status?.sbiedrv === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiedrv === 'Running' ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">SbieDrv（驱动）：{{ status?.sbiedrv ?? '未知' }}</span>
-              </div>
-              <div>
-                <span :style="{ color: status?.start_exe_present ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.start_exe_present ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">Start.exe：{{ status?.start_exe_present ? '存在' : '缺失' }}</span>
-              </div>
-              <div>
-                <span :style="{ color: status?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.ready ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">沙盒就绪：{{ status?.ready ? '是' : '否' }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-            <h3 style="margin: 0;">待提交文件（沙箱内工作区变更）</h3>
-            <span style="font-size: var(--text-sm); color: var(--text-secondary);">{{ pending.length }} 个</span>
-          </div>
-          <div class="card-body">
-            <div v-if="pending.length === 0" style="color: var(--text-secondary); font-size: var(--text-sm);">暂无待提交文件。</div>
-            <div v-else style="display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); font-family: var(--font-mono);">
-              <div v-for="p in pending" :key="p.real_path" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>{{ p.real_path }}</span>
-                <span style="color: var(--text-secondary);">{{ formatSize(p.size) }}</span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -206,7 +210,7 @@ onMounted(async () => {
               </div>
             </div>
 
-            <!-- Sandboxie 文件 (acquire: download + extract; no UAC) -->
+            <!-- Sandboxie 文件 (acquire; no UAC) -->
             <div style="margin-bottom: var(--space-4);">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
                 <span style="font-weight: 500;">Sandboxie 文件</span>
@@ -243,6 +247,67 @@ onMounted(async () => {
 
             <div v-if="!sevenZipOk && !filesAcquired" style="margin-top: var(--space-3); font-size: var(--text-xs); color: var(--text-secondary);">
               提示：先准备 7z 环境，再下载 Sandboxie 文件（无 UAC）。文件就绪后点"启动"激活引擎（装驱动，弹 UAC）。然后在 config.json 设 <code>executor.enabled=true, sandbox=true</code> 重启 gateway 即可启用沙盒执行。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════ 沙箱状态 ════════ -->
+      <div v-if="activeTab === 'status'">
+        <div class="card">
+          <div class="card-header"><h3 style="margin: 0;">沙箱状态</h3></div>
+          <div class="card-body">
+            <div v-if="loading" style="color: var(--text-secondary);">加载中…</div>
+            <div v-else style="display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm);">
+              <div>
+                <span :style="{ color: status?.sbiesvc === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiesvc === 'Running' ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">SbieSvc（服务）：{{ status?.sbiesvc ?? '未知' }}</span>
+              </div>
+              <div>
+                <span :style="{ color: status?.sbiedrv === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiedrv === 'Running' ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">SbieDrv（驱动）：{{ status?.sbiedrv ?? '未知' }}</span>
+              </div>
+              <div>
+                <span :style="{ color: status?.start_exe_present ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.start_exe_present ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">Start.exe：{{ status?.start_exe_present ? '存在' : '缺失' }}</span>
+              </div>
+              <div>
+                <span :style="{ color: status?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.ready ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">沙盒就绪：{{ status?.ready ? '是' : '否' }}</span>
+              </div>
+              <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                  <span style="color: var(--text-secondary);">沙箱缓存路径：</span>
+                  <code>{{ status?.box_root || '(未知)' }}</code>
+                </div>
+                <button class="btn btn-sm" @click="openBox" :disabled="!status?.box_root">打开沙箱</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════ 沙箱文件 ════════ -->
+      <div v-if="activeTab === 'files'">
+        <div class="card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">沙箱内文件（待同步）</h3>
+            <div style="display: flex; gap: var(--space-2); align-items: center;">
+              <span style="font-size: var(--text-sm); color: var(--text-secondary);">{{ pending.length }} 个 · 已选 {{ selected.size }}</span>
+              <button class="btn btn-sm" @click="selectAll" :disabled="!pending.length">全选</button>
+              <button class="btn btn-sm" @click="selectNone" :disabled="!selected.size">清空</button>
+              <button class="btn btn-sm btn-primary" @click="syncSelected" :disabled="!!busy || !selected.size">同步选中到主机</button>
+              <button class="btn btn-sm" @click="syncAll" :disabled="!!busy || !pending.length">同步全部</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div v-if="pending.length === 0" style="color: var(--text-secondary); font-size: var(--text-sm);">暂无文件。沙箱执行工具写入工作区的文件会列在这里，可勾选后同步到主机（真盘）。</div>
+            <div v-else style="display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); font-family: var(--font-mono);">
+              <label v-for="p in pending" :key="p.real_path" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; cursor: pointer;">
+                <input type="checkbox" :checked="isSel(p.real_path)" @change="toggleFile(p.real_path)" />
+                <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.real_path }}</span>
+                <span style="color: var(--text-secondary); flex-shrink: 0;">{{ formatSize(p.size) }}</span>
+              </label>
             </div>
           </div>
         </div>
