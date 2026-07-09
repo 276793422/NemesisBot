@@ -52,7 +52,8 @@ pub const FILTER_ALTITUDE: &str = "86900";
 pub const DEFAULT_BOX_NAME: &str = "NemesisBox";
 
 // ---------------------------------------------------------------------------
-// Paths — everything Sandboxie lives under <home>/sandboxie/, never C:\Windows
+// Paths — everything Sandboxie lives under <home>/workspace/tools/sandboxie/,
+// never C:\Windows
 // ---------------------------------------------------------------------------
 
 /// Resolved on-disk locations for the Sandboxie install under our app home.
@@ -70,9 +71,11 @@ pub struct SandboxPaths {
 }
 
 impl SandboxPaths {
-    /// Build paths under `<home>/sandboxie/`.
+    /// Build paths under `<home>/workspace/tools/sandboxie/` — same `workspace/tools/`
+    /// convention as ClamAV (`workspace/tools/clamav/`) and voice models. Keeps all
+    /// Sandboxie files out of `C:\Windows` (IniPath registry redirect points here).
     pub fn new(home: &Path) -> Self {
-        let base = home.join("sandboxie");
+        let base = home.join("workspace").join("tools").join("sandboxie");
         Self {
             runtime_dir: base.join("runtime"),
             ini_path: base.join("Sandboxie.ini"),

@@ -1,6 +1,6 @@
 //! Pending-file enumeration + commit (box virtual FS → real disk) + box clear.
 //!
-//! The box virtual FS lives under `FileRootPath` (=`<home>/sandboxie/box/NemesisBox`)
+//! The box virtual FS lives under `FileRootPath` (=`<home>/workspace/tools/sandboxie/box/NemesisBox`)
 //! and mirrors real paths in two forms (confirmed `user/current` empirically;
 //! `drive/<L>` is the standard Sandboxie layout for non-userprofile paths):
 //!   <box_root>/user/<marker>/<rest>  ↔  %USERPROFILE%\<rest>
