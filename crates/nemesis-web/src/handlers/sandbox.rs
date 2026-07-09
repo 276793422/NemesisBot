@@ -137,16 +137,10 @@ impl ModuleHandler for SandboxHandler {
                 })))
             }
             "pending" => {
-                let workspace = ctx.workspace.as_deref().unwrap_or("");
-                let ws = PathBuf::from(workspace);
                 let up = user_profile();
-                let pending = nemesis_sandbox::pending::pending_workspace(
-                    &paths.box_root,
-                    &ws,
-                    &up,
-                )
-                .map_err(|e| format!("enumerate pending: {e}"))?;
-                let files: Vec<_> = pending
+                let all = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
+                    .map_err(|e| format!("enumerate box: {e}"))?;
+                let files: Vec<_> = all
                     .into_iter()
                     .map(|p| {
                         serde_json::json!({
@@ -158,16 +152,10 @@ impl ModuleHandler for SandboxHandler {
                 Ok(Some(serde_json::json!({ "files": files })))
             }
             "commit" => {
-                // Sync selected (or all) pending workspace files box → real disk.
-                let workspace = ctx.workspace.as_deref().unwrap_or("");
-                let ws = PathBuf::from(workspace);
+                // Sync selected (or all) box files → real disk.
                 let up = user_profile();
-                let pending = nemesis_sandbox::pending::pending_workspace(
-                    &paths.box_root,
-                    &ws,
-                    &up,
-                )
-                .map_err(|e| format!("enumerate pending: {e}"))?;
+                let pending = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
+                    .map_err(|e| format!("enumerate box: {e}"))?;
                 let d = data.unwrap_or_default();
                 let all = d.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
                 let files: Vec<String> = d

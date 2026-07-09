@@ -42,7 +42,7 @@ pub fn real_path_for_box(box_path: &Path, box_root: &Path, user_profile: &Path) 
             // drive/<L>/<rest>  →  <L>:\<rest>
             let letter = comps.next()?.as_os_str().to_string_lossy().to_string();
             let rest: PathBuf = comps.collect();
-            Some(PathBuf::from(format!(r"{}\:", letter)).join(rest))
+            Some(PathBuf::from(format!("{}:\\", letter)).join(rest))
         }
         _ => None, // RegHive*, DONT-USE.TXT, desktop.ini, anything else
     }
@@ -58,13 +58,24 @@ pub fn enumerate_box(box_root: &Path, user_profile: &Path) -> Result<Vec<Pending
     Ok(out)
 }
 
+/// Maximum files to enumerate. Prevents slowness when the box has huge subtrees
+/// (e.g. cargo build output, browser caches). The user can browse beyond this
+/// via explorer (the 打开沙箱 button).
+const MAX_BOX_FILES: usize = 5000;
+
 fn walk(dir: &Path, box_root: &Path, user_profile: &Path, out: &mut Vec<PendingFile>) -> Result<()> {
+    if out.len() >= MAX_BOX_FILES {
+        return Ok(());
+    }
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("read_dir {}", dir.display())),
     };
     for entry in rd {
+        if out.len() >= MAX_BOX_FILES {
+            return Ok(());
+        }
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
