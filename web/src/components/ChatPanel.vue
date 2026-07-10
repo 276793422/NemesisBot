@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
 import { useWSAPI } from '../composables/useWSAPI'
+import { useSessionStore } from '../stores/session'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -49,6 +50,18 @@ const chatStore = useChatStore()
 const appStore = useAppStore()
 const auth = useAuthStore()
 const { request } = useWSAPI()
+const sessionStore = useSessionStore()
+
+// Multi-session: in the default chat module, attach the active conversation
+// id so the backend routes to `agent:main:session:{sid}` (server.rs/loop.rs).
+const isDefaultChat = computed(() => (props.module ?? 'chat') === 'chat')
+function activeModuleData(): Record<string, unknown> {
+  const md: Record<string, unknown> = { ...(props.moduleData ?? {}) }
+  if (isDefaultChat.value && sessionStore.currentId) {
+    md.session_id = sessionStore.currentId
+  }
+  return md
+}
 
 // Voice toolbar state
 const sttReady = ref(false)
@@ -267,7 +280,7 @@ function loadHistory() {
   const limit = 20
   sendHistoryRequest(requestId, limit, chatStore.oldestIndex, {
     module: props.module,
-    moduleData: props.moduleData,
+    moduleData: activeModuleData(),
   })
 
   // Safety timeout: reset loading flag if no response in 10s
@@ -297,7 +310,7 @@ function sendMessage() {
   // Send with voice_playback flag if playback is enabled
   send(content, voicePlayback.value, {
     module: props.module,
-    moduleData: props.moduleData,
+    moduleData: activeModuleData(),
   })
 
   // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
@@ -489,6 +502,19 @@ const unwatchStatus = watch(wsStatus, (val) => {
   }
 })
 
+// Multi-session: when the active conversation id changes, reset the chat
+// state and reload that conversation's history (backend routes by session_id).
+const unwatchSession = watch(
+  () => sessionStore.currentId,
+  (newId, oldId) => {
+    if (!isDefaultChat.value || newId === oldId) return
+    chatStore.reset()
+    if (newId && wsStatus.value === 'connected') {
+      loadHistory()
+    }
+  },
+)
+
 onMounted(() => {
   onMessage(handleWSMessage)
   setupScrollListener()
@@ -532,6 +558,7 @@ onUnmounted(() => {
   }
   removeMessageHandler(handleWSMessage)
   unwatchStatus()
+  unwatchSession()
   // 离开 chat 页时停掉活跃的 STT 会话，避免后端 orphan 后再回来 "already running" 卡死
   // （组件重挂载后 voiceDictation 是新 ref=false，但后端会话还在跑 → 重启报错 → 永远起不来）
   if (voiceDictation.value) {
@@ -656,6 +683,17 @@ onUnmounted(() => {
       <span v-else class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
         执行中...
       </span>
+      <button
+        class="toolbar-toggle"
+        :class="{ active: sessionStore.showSidebar }"
+        @click="sessionStore.toggleSidebar()"
+        :title="sessionStore.showSidebar ? '隐藏会话列表' : '显示会话列表'"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <line x1="9" y1="4" x2="9" y2="20" />
+        </svg>
+      </button>
       <button
         class="toolbar-toggle"
         :class="{ active: !toolbarCollapsed }"

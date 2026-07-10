@@ -155,7 +155,8 @@ fn read_jsonl_lines(path: &Path) -> Vec<serde_json::Value> {
 /// NOT depend on the memory manager, so the dashboard's "对话历史" tab works even
 /// when enhanced memory is disabled (ONNX unavailable). Each file's lines are
 /// `{role, content, timestamp}` written by `chat_log::append_chat_log`.
-fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
+pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
+    // NOTE: also reused by `handlers::sessions` (Dashboard multi-session list).
     let dir = session_log_dir(workspace);
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -184,6 +185,9 @@ fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             .chars()
             .take(100)
             .collect::<String>();
+        // User-editable title from sidecar meta ({stem}.meta.json); falls back
+        // to firstMessage when absent.
+        let title = read_meta_title(&path).unwrap_or_else(|| first_message.clone());
         sessions.push(serde_json::json!({
             "id": id,
             "channel": channel,
@@ -191,12 +195,22 @@ fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "lastTime": last["timestamp"].as_str().unwrap_or(""),
             "messageCount": lines.len(),
             "model": "",
+            "title": title,
             "firstMessage": first_message,
             "triggerCluster": false,
             "messages": [],
         }));
     }
     sessions
+}
+
+/// Read the user-editable title from the sidecar meta file
+/// (`{jsonl_stem}.meta.json` next to the chat log). None if absent/malformed.
+fn read_meta_title(jsonl_path: &Path) -> Option<String> {
+    let meta = jsonl_path.with_extension("meta.json");
+    let data = std::fs::read_to_string(&meta).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
 }
 
 #[cfg(feature = "security")]

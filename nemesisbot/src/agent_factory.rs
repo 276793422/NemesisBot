@@ -242,6 +242,9 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     // 5. Session store (disk-persisted — new instance, same directory).
     {
         let sess_dir = common::sessions_dir(&shared.home);
+        // Migrate legacy single-session main → multi-session legacy format
+        // (idempotent + best-effort) BEFORE SessionStore loads from disk.
+        nemesis_agent::session::SessionStore::migrate_legacy_main(&sess_dir);
         let store = Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
             &sess_dir,
         ));

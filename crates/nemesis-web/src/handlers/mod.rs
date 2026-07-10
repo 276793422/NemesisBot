@@ -30,6 +30,7 @@ pub mod tools;
 #[cfg(feature = "voice")]
 pub mod voice;
 pub mod persona;
+pub mod sessions;
 #[cfg(feature = "workflow")]
 pub mod workflow;
 
@@ -82,6 +83,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
         router.register(Arc::new(voice::VoiceHandler::new()));
     }
     router.register(Arc::new(persona::PersonaHandler::new()));
+    router.register(Arc::new(sessions::SessionsHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));

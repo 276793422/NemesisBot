@@ -886,13 +886,22 @@ pub async fn process_messages(
     bus: Arc<MessageBus>,
 ) {
     while let Some(msg) = rx.recv().await {
+        let session_key = match msg.metadata.get("session_id") {
+            // Multi-session: client-chosen conversation id → own session_key
+            // (agent: prefix is adopted by loop.rs:1623, bypassing routing).
+            Some(sid) if !sid.is_empty() => format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+            ),
+            _ => format!("web:{}", msg.chat_id),
+        };
         let inbound = InboundMessage {
             channel: "web".to_string(),
             sender_id: msg.sender_id.clone(),
             chat_id: msg.chat_id.clone(),
             content: msg.content,
             media: vec![],
-            session_key: format!("web:{}", msg.chat_id),
+            session_key,
             correlation_id: String::new(),
             metadata: msg.metadata,
             voice_playback: msg.voice_playback,

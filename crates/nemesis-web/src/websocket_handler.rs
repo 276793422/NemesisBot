@@ -462,6 +462,11 @@ fn handle_chat_send(
         content: String,
         #[serde(default)]
         voice_playback: Option<bool>,
+        /// Optional conversation id for multi-session support. When present,
+        /// the backend derives session_key = `agent:main:session:{sid}` so
+        /// each conversation gets its own history/context (server.rs:895).
+        #[serde(default)]
+        session_id: Option<String>,
     }
     let data: ChatData = msg.decode_data()?;
     if data.content.is_empty() {
@@ -474,12 +479,17 @@ fn handle_chat_send(
         "[WebSocket] Message forwarded to channel (new protocol)"
     );
 
+    let mut metadata = HashMap::new();
+    if let Some(sid) = data.session_id.as_ref().filter(|s| !s.is_empty()) {
+        metadata.insert("session_id".to_string(), sid.clone());
+    }
+
     Ok(Some(IncomingMessage {
         session_id: session_id.to_string(),
         sender_id: sender_id.to_string(),
         chat_id: chat_id.to_string(),
         content: data.content,
-        metadata: HashMap::new(),
+        metadata,
         voice_playback: data.voice_playback,
     }))
 }
@@ -498,6 +508,8 @@ fn handle_history_request(
         limit: Option<i64>,
         #[serde(default)]
         before_index: Option<i64>,
+        #[serde(default)]
+        session_id: Option<String>,
     }
 
     let req_data: HistoryReqData = msg.decode_data()?;
@@ -509,6 +521,9 @@ fn handle_history_request(
 
     let mut metadata = HashMap::new();
     metadata.insert("request_type".to_string(), "history".to_string());
+    if let Some(sid) = req_data.session_id.as_ref().filter(|s| !s.is_empty()) {
+        metadata.insert("session_id".to_string(), sid.clone());
+    }
 
     tracing::debug!(
         session_id = %session_id,

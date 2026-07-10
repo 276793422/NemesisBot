@@ -418,6 +418,22 @@ impl SessionStore {
         format!("{:016x}", hasher.finish())
     }
 
+    /// Sanitize a client-provided session id for embedding in a session_key.
+    /// Allows `[A-Za-z0-9_-]` only; everything else (incl. `:`, `/`, `\`)
+    /// becomes `_`. Prevents path traversal / key injection from the WS client
+    /// (the id flows into filenames: `sessions/{key}.json`, `session_logs/{key}.jsonl`).
+    pub fn sanitize_session_id(sid: &str) -> String {
+        sid.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
     /// Get the summary for a session.
     pub fn get_summary(&self, key: &str) -> String {
         self.sessions.read().unwrap()
@@ -470,8 +486,12 @@ impl SessionStore {
 
         let session_path = storage_dir.join(format!("{}.json", filename));
 
-        // Atomic write: write to temp file, then rename.
-        let tmp_name = format!("session-{}-{}.tmp", filename, std::process::id());
+        // Atomic write: write to temp file, then rename. The counter suffix
+        // prevents same-key concurrent saves (main loop + summarize task) from
+        // trampling each other's temp file — the root cause of the save race.
+        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp_name = format!("session-{}-{}-{}.tmp", filename, std::process::id(), n);
         let tmp_path = storage_dir.join(&tmp_name);
 
         std::fs::write(&tmp_path, &data)
@@ -542,6 +562,86 @@ impl SessionStore {
     /// Remove a session from memory (does not delete from disk).
     pub fn remove(&self, key: &str) -> Option<StoredSession> {
         self.sessions.write().unwrap().remove(key)
+    }
+
+    /// Delete a session completely: in-memory cache + on-disk
+    /// `sessions/*.json` (LLM context) + `session_logs/*.jsonl` (user-facing
+    /// history). Used by Dashboard multi-session management. Returns whether
+    /// the session was present in memory. Best-effort on disk (errors logged,
+    /// not fatal — a missing file is not an error).
+    pub fn delete_session(&self, key: &str) -> bool {
+        let existed = self.sessions.write().unwrap().remove(key).is_some();
+
+        // 1. sessions/{sanitize}.json (LLM context store)
+        if let Some(dir) = &self.storage_dir {
+            let path = dir.join(format!("{}.json", sanitize_filename(key)));
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(
+                        file = %path.display(),
+                        error = %e,
+                        "[SessionStore] delete_session: failed to remove json"
+                    );
+                }
+            }
+        }
+
+        // 2. session_logs/{safe}.jsonl (user-facing chat history)
+        crate::chat_log::delete_chat_log(key);
+
+        existed
+    }
+
+    /// Clear a session's messages + summary but keep the key (conversation
+    /// stays usable, history emptied). Used by "clear" in session management.
+    pub fn clear_session(&self, key: &str) {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            session.messages.clear();
+            session.summary.clear();
+            session.updated = Local::now();
+        }
+    }
+
+    /// Migrate the legacy single-session main (`agent:main:main`) to the
+    /// multi-session format (`agent:main:session:legacy`). Idempotent +
+    /// best-effort: only renames when the legacy target is absent, and a
+    /// rename failure just warns (original files stay, data not lost).
+    /// Called once at gateway startup, before SessionStore loads from disk.
+    pub fn migrate_legacy_main(storage_dir: &Path) {
+        use nemesis_path::default_path_manager;
+        let logs_dir = default_path_manager().sessions_log_dir();
+
+        // session_logs/agent_main_main.jsonl → agent_main_session_legacy.jsonl
+        let main_log = logs_dir.join("agent_main_main.jsonl");
+        let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
+        if main_log.exists() && !legacy_log.exists() {
+            match std::fs::rename(&main_log, &legacy_log) {
+                Ok(_) => info!("[migrate] session_logs: agent_main_main.jsonl → agent_main_session_legacy.jsonl"),
+                Err(e) => warn!("[migrate] failed to rename session log: {}", e),
+            }
+        }
+
+        // sessions/agent_main_main.json → agent_main_session_legacy.json (改 key 字段)
+        let main_json = storage_dir.join("agent_main_main.json");
+        let legacy_json = storage_dir.join("agent_main_session_legacy.json");
+        if main_json.exists() && !legacy_json.exists() {
+            match std::fs::read_to_string(&main_json) {
+                Ok(data) => {
+                    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if v.get("key").and_then(|k| k.as_str()) == Some("agent:main:main") {
+                            v["key"] = serde_json::Value::String("agent:main:session:legacy".to_string());
+                        }
+                        if let Ok(out) = serde_json::to_string_pretty(&v) {
+                            if std::fs::write(&legacy_json, out).is_ok() {
+                                let _ = std::fs::remove_file(&main_json);
+                                info!("[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json");
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("[migrate] failed to read main session json: {}", e),
+            }
+        }
     }
 
     /// Delete sessions whose `updated` timestamp is older than `max_age_days` days.

@@ -1804,7 +1804,16 @@ impl AgentLoop {
             .as_ref()
             .and_then(|r| r.default_agent_id())
             .unwrap_or_else(|| "main".to_string());
-        let session_key = build_agent_main_session_key(&agent_id);
+        // Multi-session: if the client sent a session_id, derive
+        // `agent:main:session:{sid}` (agent: prefix → adopted by loop.rs:1623,
+        // bypasses routing). Otherwise fall back to the default main session.
+        let session_key = match msg.metadata.get("session_id") {
+            Some(sid) if !sid.is_empty() => format!(
+                "agent:main:session:{}",
+                crate::session::SessionStore::sanitize_session_id(sid)
+            ),
+            _ => build_agent_main_session_key(&agent_id),
+        };
 
         // Read history from chat log (separate from session store).
         let (page, total_count, has_more, oldest_index) = crate::chat_log::read_chat_log(

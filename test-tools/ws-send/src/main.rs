@@ -39,6 +39,11 @@ struct Args {
     #[arg(long, default_value = "30")]
     timeout: u64,
 
+    /// Optional conversation session_id (multi-session: routes the backend to
+    /// `agent:main:session:{sid}`). Used for Dashboard multi-session E2E.
+    #[arg(long)]
+    session_id: Option<String>,
+
     /// Print verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -75,14 +80,16 @@ async fn main() -> Result<()> {
         eprintln!("Connected.");
     }
 
-    // Build protocol message: {type: "message", module: "chat", cmd: "send", data: {content: ...}}
+    // Build protocol message: {type: "message", module: "chat", cmd: "send", data: {content, session_id?}}
+    let mut data = serde_json::json!({ "content": content });
+    if let Some(sid) = &args.session_id {
+        data["session_id"] = serde_json::Value::String(sid.clone());
+    }
     let msg = serde_json::json!({
         "type": "message",
         "module": "chat",
         "cmd": "send",
-        "data": {
-            "content": content
-        }
+        "data": data
     });
 
     ws.send(Message::Text(msg.to_string().into()))

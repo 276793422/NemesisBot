@@ -89,5 +89,54 @@ fn log_path(session_key: &str) -> PathBuf {
         .join(format!("{}.jsonl", safe_key))
 }
 
+/// Delete a session's chat log file (JSONL). Used by session management
+/// (delete conversation) to clear the user-facing history. No-op if absent.
+pub fn delete_chat_log(session_key: &str) {
+    let path = log_path(session_key);
+    if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Clear (truncate) a session's chat log, keeping the file. Used by session
+/// management "clear" — empties history but the session id stays usable.
+pub fn clear_chat_log(session_key: &str) {
+    let path = log_path(session_key);
+    if let Err(e) = fs::write(&path, "") {
+        tracing::warn!("[chat_log] Failed to clear {}: {}", path.display(), e);
+    }
+}
+
+/// Path for the sidecar title meta file (`{safe_key}.meta.json`, next to the
+/// `.jsonl`). Stores a user-editable conversation title for multi-session
+/// management without touching the lazy-created SessionStore.
+fn meta_path(session_key: &str) -> PathBuf {
+    let safe_key = session_key.replace(':', "_");
+    default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.meta.json", safe_key))
+}
+
+/// Write the conversation title to the sidecar meta file.
+pub fn write_session_meta(session_key: &str, title: &str) {
+    let path = meta_path(session_key);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(&path, serde_json::json!({ "title": title }).to_string()) {
+        tracing::warn!("[chat_log] failed to write meta {}: {}", path.display(), e);
+    }
+}
+
+/// Read the conversation title from the sidecar meta file, if present.
+pub fn read_session_meta(session_key: &str) -> Option<String> {
+    let path = meta_path(session_key);
+    let data = fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string())
+}
+
 #[cfg(test)]
 mod tests;
