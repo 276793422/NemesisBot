@@ -116,6 +116,8 @@ pub struct Config {
     pub mcp: Option<McpConfig>,
     #[serde(default)]
     pub executor: Option<ExecutorSeparationConfig>,
+    #[serde(default)]
+    pub debug: Option<DebugConfig>,
 }
 
 impl Default for Config {
@@ -138,6 +140,7 @@ impl Default for Config {
             memory: None,
             mcp: None,
             executor: None,
+            debug: None,
         }
     }
 }
@@ -161,6 +164,36 @@ pub struct ExecutorSeparationConfig {
     pub enabled: bool,
     #[serde(default)]
     pub sandbox: bool,
+}
+
+// ============================================================================
+// Debug Config (diagnostic capture)
+// ============================================================================
+
+/// Debug/diagnostic switches. Currently only `capture` — the failure-triggered
+/// diagnostic capture sink for the intermittent "context error → session
+/// corruption → LLM no-response" bug. Capture writes only on failure signals,
+/// so the happy path has zero disk overhead; it defaults to enabled.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DebugConfig {
+    #[serde(default)]
+    pub capture: CaptureConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureConfig {
+    /// Enable failure-triggered diagnostic capture (writes to
+    /// `logs/capture/{session_key}/{ts}_{signal}/` only when a failure signal
+    /// fires — LLM retry exhausted / context overflow / session overwrite /
+    /// agent error funnel).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 // ============================================================================
@@ -1484,6 +1517,7 @@ pub fn default_config() -> Config {
         skills: None,
         mcp: None,
         executor: None,
+        debug: None,
     }
 }
 

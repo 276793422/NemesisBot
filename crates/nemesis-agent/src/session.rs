@@ -323,15 +323,52 @@ impl SessionStore {
 
     /// Set the conversation history for a session.
     pub fn set_history(&self, key: &str, messages: Vec<StoredMessage>) {
+        let capture_on = crate::capture_sink::CaptureSink::enabled();
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            // [capture] set_history is a wholesale replace (no merge). When the
+            // incoming vec is shorter than what's currently stored, it's an old
+            // snapshot overwriting newer writes — the suspected maybe_summarize
+            // race. Record before/after + hash so the timeline can prove it.
+            let (before_len, overwrite, first_role, last_role, incoming_hash) = if capture_on {
+                let before = session.messages.len();
+                let h = Self::hash_messages(&messages);
+                (
+                    before,
+                    messages.len() < before,
+                    messages.first().map(|m| m.role.clone()),
+                    messages.last().map(|m| m.role.clone()),
+                    h,
+                )
+            } else {
+                (0usize, false, None, None, String::new())
+            };
             session.messages = messages;
             session.updated = Local::now();
+            if capture_on {
+                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                    sink.record_session_write(
+                        key,
+                        crate::capture_sink::SessionWriteCapture {
+                            writer: "set_history".to_string(),
+                            op: "set_history".to_string(),
+                            before_len: Some(before_len),
+                            after_len: Some(session.messages.len()),
+                            first_role,
+                            last_role,
+                            messages_hash: incoming_hash,
+                            overwrite_detected: overwrite,
+                            ts: String::new(),
+                        },
+                    );
+                }
+            }
         }
     }
 
     /// Append a single message to a session's history.
     /// Mirrors Go's `agent.Sessions.AddMessage(sessionKey, role, content)`.
     pub fn add_message(&self, key: &str, role: &str, content: &str) {
+        let capture_on = crate::capture_sink::CaptureSink::enabled();
         if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
             session.messages.push(StoredMessage {
                 role: role.to_string(),
@@ -342,7 +379,43 @@ impl SessionStore {
                 reasoning_content: None,
             });
             session.updated = Local::now();
+            // [capture] main-loop append. Pairing with set_history records
+            // reveals main vs summarize write ordering on the timeline.
+            if capture_on {
+                let after_len = session.messages.len();
+                let hash = Self::hash_messages(&session.messages);
+                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                    sink.record_session_write(
+                        key,
+                        crate::capture_sink::SessionWriteCapture {
+                            writer: "add_message".to_string(),
+                            op: format!("add_message:{}", role),
+                            before_len: Some(after_len.saturating_sub(1)),
+                            after_len: Some(after_len),
+                            first_role: session.messages.first().map(|m| m.role.clone()),
+                            last_role: Some(role.to_string()),
+                            messages_hash: hash,
+                            overwrite_detected: false,
+                            ts: String::new(),
+                        },
+                    );
+                }
+            }
         }
+    }
+
+    /// [capture] Stable hash of a message vec's (role, content) sequence —
+    /// lets the write timeline distinguish wholesale replacement from
+    /// in-place growth. Associated fn (no &self) so callers reuse it.
+    fn hash_messages(messages: &[StoredMessage]) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        for m in messages {
+            m.role.hash(&mut hasher);
+            m.content.hash(&mut hasher);
+        }
+        format!("{:016x}", hasher.finish())
     }
 
     /// Get the summary for a session.

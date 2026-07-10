@@ -1120,7 +1120,22 @@ impl AgentLoop {
                     }
 
                     let response = match err {
-                        Some(e) => format!("Error processing message: {}", e),
+                        Some(e) => {
+                            // [capture] Agent error funnel: the full error
+                            // becomes the user-visible response. Flush the
+                            // session's captured evidence + the complete error
+                            // text (the user sees a short "Error: ..."; this
+                            // keeps the full source string for root-causing).
+                            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                                sink.flush(
+                                    &msg.session_key,
+                                    "agent_error",
+                                    None,
+                                    Some(e.as_str()),
+                                );
+                            }
+                            format!("Error processing message: {}", e)
+                        }
                         None => response,
                     };
 
@@ -1206,7 +1221,22 @@ impl AgentLoop {
                     }
 
                     let response = match err {
-                        Some(e) => format!("Error processing message: {}", e),
+                        Some(e) => {
+                            // [capture] Agent error funnel: the full error
+                            // becomes the user-visible response. Flush the
+                            // session's captured evidence + the complete error
+                            // text (the user sees a short "Error: ..."; this
+                            // keeps the full source string for root-causing).
+                            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                                sink.flush(
+                                    &msg.session_key,
+                                    "agent_error",
+                                    None,
+                                    Some(e.as_str()),
+                                );
+                            }
+                            format!("Error processing message: {}", e)
+                        }
                         None => response,
                     };
 
@@ -2073,6 +2103,29 @@ impl AgentLoop {
         let summarizing_flag = self.summarizing.clone(); // Arc clone for clearing after completion
         let observer_mgr = self.observer_manager.clone(); // Option<Arc<Manager>> clone
         let history_clone = history;
+        // [capture] Snapshot baseline: what the summarize task STARTED from.
+        // If a later set_history writes a vec derived from this snapshot AFTER
+        // the main loop appended newer messages, it proves the old-snapshot
+        // overwrite race. (No content hash here — ConversationTurn differs
+        // from StoredMessage; len is enough to correlate with set_history.)
+        if crate::capture_sink::CaptureSink::enabled() {
+            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                sink.record_session_write(
+                    session_key,
+                    crate::capture_sink::SessionWriteCapture {
+                        writer: "summarize_spawn".to_string(),
+                        op: "snapshot_baseline".to_string(),
+                        before_len: None,
+                        after_len: Some(history_clone.len()),
+                        first_role: None,
+                        last_role: None,
+                        messages_hash: String::new(),
+                        overwrite_detected: false,
+                        ts: String::new(),
+                    },
+                );
+            }
+        }
         let existing_summary = instance.get_summary();
         let session_key_owned = session_key.to_string();
         let channel_owned = channel.to_string();
@@ -2833,6 +2886,19 @@ impl AgentLoop {
                                     Vec::new(),
                                     None,
                                 );
+                                // [capture] LLM retries exhausted (context-error
+                                // retry path). Flush the full retry_err — the raw
+                                // provider error, likely source of the user-visible
+                                // "tools" wording — plus trace_id to correlate with
+                                // request_logs/' now-complete failed round (组1).
+                                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                                    sink.flush(
+                                        &context.session_key,
+                                        "llm_retry_exhausted",
+                                        Some(trace_id),
+                                        Some(retry_err.as_str()),
+                                    );
+                                }
                                 let formatted = context.format_rpc_message(&format!("Error: {}", retry_err));
                                 events.push(AgentEvent::Error(formatted));
                                 break;
@@ -2911,6 +2977,16 @@ impl AgentLoop {
                                 raw_response_body: None,
                             }).await;
                             instance.add_assistant_message(&format!("Error: {}", last_err), Vec::new(), None);
+                            // [capture] Non-transient error or transient retries
+                            // exhausted. Flush full last_err + trace_id.
+                            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                                sink.flush(
+                                    &context.session_key,
+                                    "llm_call_failed",
+                                    Some(trace_id),
+                                    Some(last_err.as_str()),
+                                );
+                            }
                             let formatted = context.format_rpc_message(&format!("Error: {}", last_err));
                             events.push(AgentEvent::Error(formatted));
                             break;
@@ -3078,17 +3154,39 @@ impl AgentLoop {
                     }
                 };
                 let tool_duration = tool_start.elapsed();
+                let tool_success = !result.starts_with("Error:") && !result.starts_with("Tool error:");
 
                 // Emit tool call observer event.
                 self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {
                     trace_id: trace_id.to_string(),
                     tool_name: tc.name.clone(),
-                    success: !result.starts_with("Error:") && !result.starts_with("Tool error:"),
+                    success: tool_success,
                     duration_ms: tool_duration.as_millis() as u64,
                     round: turns_used,
                     arguments: tc.arguments.clone(),
                     result: result.clone(),
                 }).await;
+
+                // [capture] Record the full pre-truncation tool result. loop.rs
+                // does NOT truncate tool results before they enter the context,
+                // so this is what catches a bloated output blowing out the
+                // context window (the suspected bug trigger). No-op unless
+                // capture is enabled; flushed only on a later failure signal.
+                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                    sink.record_tool(
+                        &context.session_key,
+                        crate::capture_sink::ToolCapture {
+                            tool_name: tc.name.clone(),
+                            arguments: tc.arguments.clone(),
+                            result: result.clone(),
+                            success: tool_success,
+                            duration_ms: tool_duration.as_millis() as u64,
+                            error: if tool_success { String::new() } else { result.clone() },
+                            llm_round: turns_used as usize,
+                            ts: String::new(),
+                        },
+                    );
+                }
 
                 // Check for async cluster_rpc result — save continuation snapshot.
                 //

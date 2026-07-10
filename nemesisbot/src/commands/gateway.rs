@@ -899,6 +899,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let cfg = nemesis_config::load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Error loading config: {}", e))?;
 
+    // [capture] Initialize the diagnostic capture sink — failure-triggered
+    // only (zero happy-path overhead). Reads `debug.capture.enabled`
+    // (defaults to true when unset). Evidence lands in
+    // `{workspace}/logs/capture/{session_key}/{ts}_{signal}/` only when a
+    // failure signal fires (LLM retry exhausted / context overflow / session
+    // overwrite / agent error funnel). Diagnostic only — does not change any
+    // control flow or business logic.
+    {
+        let capture_enabled = cfg.debug.as_ref().map_or(true, |d| d.capture.enabled);
+        nemesis_agent::capture_sink::CaptureSink::init(
+            home.join("workspace"),
+            capture_enabled,
+        );
+        if capture_enabled {
+            info!("[Gateway] Diagnostic capture armed (failure-triggered → logs/capture/)");
+        }
+    }
+
     // Step 5: Initialize logger from config
     let mut args: Vec<String> = std::env::args().skip(2).collect();
     args.extend(extra_args.iter().cloned());

@@ -263,6 +263,29 @@ impl RequestLoggerObserver {
                 let response_time = chrono::Local::now();
                 if let Some(ref resp_body) = data.raw_response_body {
                     state.logger.log_raw_response(resp_body, response_time, data.round, data.duration_ms);
+                } else if data.finish_reason == "error"
+                    || data.content.starts_with("Error:")
+                {
+                    // Failure fallback. Raw mode only writes when
+                    // `raw_response_body` is `Some`, which is hardcoded `None`
+                    // on LLM failure/cancel (loop.rs:~2828). Without this, the
+                    // failed round's error is silently dropped — the exact
+                    // reason the original bug had no response-side log even
+                    // before the user deleted the logs. Synthesize an error
+                    // envelope so the failure is always captured.
+                    let envelope = serde_json::json!({
+                        "error": data.content,
+                        "round": data.round,
+                        "duration_ms": data.duration_ms,
+                        "finish_reason": data.finish_reason,
+                        "captured_by": "failure_fallback",
+                    });
+                    state.logger.log_raw_response(
+                        &envelope.to_string(),
+                        response_time,
+                        data.round,
+                        data.duration_ms,
+                    );
                 }
             } else {
                 // Markdown mode: existing logic

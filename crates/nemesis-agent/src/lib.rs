@@ -31,6 +31,7 @@ pub mod ringbuffer;
 pub mod registry;
 pub mod request_logger;
 pub mod request_logger_observer;
+pub mod capture_sink;
 pub mod loop_continuation;
 pub mod mcp_bridge;
 pub mod remote_executor_tool;
@@ -68,6 +69,7 @@ pub use ringbuffer::RingBuffer;
 pub use registry::AgentRegistry;
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;
+pub use capture_sink::{CaptureSink, ToolCapture, SessionWriteCapture};
 pub use loop_continuation::{
     ContinuationManager, ContinuationData, ContinuationSnapshot,
     ContinuationStore, ContinuationToolResult,
