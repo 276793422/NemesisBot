@@ -924,11 +924,16 @@ pub async fn process_messages(
 // ---------------------------------------------------------------------------
 
 /// Send a chat message to a specific session using the broadcast protocol.
+///
+/// `model` (optional, `provider/name`) is forwarded into the `receive` frame
+/// so the Dashboard can render a per-message "供应商·模型名" badge; `None`
+/// omits it (non-assistant / badge-less messages).
 pub async fn send_to_session(
     session_manager: &SessionManager,
     session_id: &str,
     role: &str,
     content: &str,
+    model: Option<&str>,
 ) -> Result<(), String> {
     tracing::debug!(
         session_id = %session_id,
@@ -937,15 +942,14 @@ pub async fn send_to_session(
         "[WebServer] send_to_session called"
     );
 
-    let msg = crate::protocol::ProtocolMessage::new(
-        "message",
-        "chat",
-        "receive",
-        Some(serde_json::json!({
-            "role": role,
-            "content": content,
-        })),
-    );
+    let mut data = serde_json::json!({
+        "role": role,
+        "content": content,
+    });
+    if let Some(m) = model {
+        data["model"] = serde_json::Value::String(m.to_string());
+    }
+    let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
     let data = msg.to_json().map_err(|e| format!("failed to marshal message: {}", e))?;
 
     session_manager
@@ -1053,7 +1057,7 @@ pub async fn dispatch_outbound(
                 let result = if msg.message_type == "history" {
                     send_history_to_session(&session_manager, session_id, &msg.content).await
                 } else {
-                    send_to_session(&session_manager, session_id, "assistant", &msg.content).await
+                    send_to_session(&session_manager, session_id, "assistant", &msg.content, msg.meta.model.as_deref()).await
                 };
 
                 if let Err(e) = result {

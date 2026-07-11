@@ -94,6 +94,7 @@ async fn test_send_validates_chat_id() {
         chat_id: "wrong-chat".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -153,6 +154,7 @@ async fn test_send_not_running() {
         chat_id: "test-chat".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -345,6 +347,7 @@ async fn test_send_correct_chat_id() {
         chat_id: "test-chat".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Should succeed - correct chat_id, spawns output process
     let result = ch.send(msg).await;
@@ -508,6 +511,7 @@ async fn test_send_with_sync_to_config() {
         chat_id: "test-chat".to_string(),
         content: "sync test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Should succeed - correct chat_id
     let result = ch.send(msg).await;
@@ -548,6 +552,7 @@ async fn test_send_validates_running_state() {
         chat_id: "chat".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -585,6 +590,7 @@ async fn test_send_with_invalid_chat_id_error_message() {
         chat_id: "wrong-chat-id".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());

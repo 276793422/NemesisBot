@@ -1,6 +1,6 @@
 [
   {
-    "id": "18b9867b-a860-4937-ad67-a17955f16afa",
+    "id": "a23531d2-a267-4834-a47a-a4b2e26fcb1b",
     "name": "time-test",
     "kind": "Skill",
     "version": "0.1.0",
@@ -9,8 +9,8 @@
     "tool_signature": [
       "tool_a"
     ],
-    "created_at": "2026-07-08T17:13:02.868578600+08:00",
-    "updated_at": "2026-07-08T17:13:02.879667800+08:00",
+    "created_at": "2026-07-11T20:03:12.467285+08:00",
+    "updated_at": "2026-07-11T20:03:12.480142900+08:00",
     "usage_count": 1,
     "success_rate": 0.0,
     "last_degraded_at": null,

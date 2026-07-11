@@ -139,6 +139,16 @@ function formatTime(timestamp: string): string {
   return `${y}-${M}-${d} ${time}`
 }
 
+/** Format the model badge: "provider/name" → "provider · name".
+ *  Bare name if there's no slash (e.g. continuation path stamps model_name only).
+ *  Empty string when model is absent (caller's v-if hides the badge). */
+function modelBadge(model: string | undefined): string {
+  if (!model) return ''
+  const idx = model.indexOf('/')
+  if (idx <= 0) return model
+  return model.slice(0, idx) + ' · ' + model.slice(idx + 1)
+}
+
 function scrollToBottom() {
   if (chatMessages.value) {
     chatMessages.value.scrollTop = chatMessages.value.scrollHeight
@@ -175,6 +185,7 @@ function handleWSMessage(data: any) {
           role: data.data.role || 'assistant',
           content: data.data.content,
           timestamp: data.timestamp,
+          model: data.data.model,
         })
         chatStore.streaming = false
 
@@ -252,6 +263,7 @@ function handleHistoryResponse(data: any) {
       role: m.role,
       content: m.content,
       timestamp: m.timestamp || new Date().toISOString(),
+      model: m.model,
     }))
     chatStore.prependHistory(newMessages)
 
@@ -600,7 +612,10 @@ onUnmounted(() => {
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <span v-else>{{ msg.content }}</span>
           </div>
-          <div class="message-time">{{ formatTime(msg.timestamp) }}</div>
+          <div class="message-time">
+            <span>{{ formatTime(msg.timestamp) }}</span>
+            <span v-if="msg.role === 'assistant' && modelBadge(msg.model)" class="model-badge">{{ modelBadge(msg.model) }}</span>
+          </div>
         </div>
       </div>
 

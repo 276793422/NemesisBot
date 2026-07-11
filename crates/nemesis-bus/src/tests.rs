@@ -32,6 +32,7 @@ async fn test_publish_subscribe_outbound() {
         chat_id: "chat1".to_string(),
         content: "response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     let msg = rx.recv().await.unwrap();
@@ -191,6 +192,7 @@ async fn test_outbound_sender() {
         chat_id: "c1".to_string(),
         content: "via outbound sender".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).unwrap();
 
     let msg = rx.recv().await.unwrap();
@@ -262,6 +264,7 @@ async fn test_outbound_preserves_fields() {
         chat_id: "chat789".to_string(),
         content: "response text".to_string(),
         message_type: "text".to_string(),
+        meta: Default::default(),
     });
 
     let msg = rx.recv().await.unwrap();
@@ -287,6 +290,7 @@ async fn test_concurrent_publish_outbound() {
                 chat_id: format!("chat{}", i),
                 content: format!("outbound{}", i),
                 message_type: String::new(),
+                meta: Default::default(),
             });
         }));
     }
@@ -387,6 +391,7 @@ fn test_publish_outbound_no_receivers_no_panic() {
         chat_id: "c".to_string(),
         content: "orphan".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     assert_eq!(bus.dropped_outbound(), 1);
     assert_eq!(bus.dropped_inbound(), 0);
@@ -425,6 +430,7 @@ fn test_dropped_outbound_counter_multiple() {
             chat_id: "c".to_string(),
             content: format!("out{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         });
     }
     assert_eq!(bus.dropped_outbound(), 4);
@@ -537,6 +543,7 @@ async fn test_publish_outbound_after_close_drops_silently() {
         chat_id: "c".to_string(),
         content: "after close".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     assert_eq!(bus.dropped_outbound(), 0);
@@ -571,6 +578,7 @@ async fn test_close_prevents_both_inbound_and_outbound() {
         chat_id: "c".to_string(),
         content: "outbound after close".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     // Neither receiver should get anything.
@@ -653,6 +661,7 @@ async fn test_publish_outbound_all_receivers_dropped() {
         chat_id: "c".to_string(),
         content: "no receivers".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     assert_eq!(bus.dropped_outbound(), 1);
@@ -706,6 +715,7 @@ async fn test_publish_outbound_after_close_with_subscriber() {
         chat_id: "c".to_string(),
         content: "before close".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     bus.close();
@@ -716,6 +726,7 @@ async fn test_publish_outbound_after_close_with_subscriber() {
         chat_id: "c".to_string(),
         content: "after close".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     // The pre-close message should be receivable.
@@ -779,6 +790,7 @@ async fn test_outbound_sender_cloned_independently() {
             chat_id: "c".to_string(),
             content: "from outbound sender".to_string(),
             message_type: String::new(),
+            meta: Default::default(),
         })
         .expect("send via cloned outbound sender should succeed");
 
@@ -889,6 +901,7 @@ async fn test_outbound_sender_no_receivers_returns_error() {
         chat_id: "c".to_string(),
         content: "orphan".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     assert!(result.is_err(), "send with no receivers should return Err");
 }
@@ -926,6 +939,7 @@ fn test_publish_outbound_no_receivers_multiple_messages_drops_all() {
             chat_id: "c".to_string(),
             content: format!("out{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         });
     }
     assert_eq!(bus.dropped_outbound(), 10);
@@ -978,6 +992,7 @@ async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages
         chat_id: "c".to_string(),
         content: "lost".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     assert_eq!(bus.dropped_outbound(), 1);
 
@@ -987,6 +1002,7 @@ async fn test_publish_outbound_no_receivers_then_subscribe_delivers_new_messages
         chat_id: "c".to_string(),
         content: "delivered".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
 
     let msg = rx.recv().await.expect("should receive message after subscribing");
@@ -1136,6 +1152,7 @@ async fn test_concurrent_inbound_and_outbound_are_independent() {
                 chat_id: "c".to_string(),
                 content: format!("out{}", i),
                 message_type: String::new(),
+                meta: Default::default(),
             });
         }
     });
@@ -1376,6 +1393,7 @@ async fn test_publish_outbound_lagged_receiver_increments_dropped() {
             chat_id: "c".to_string(),
             content: format!("out{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         });
     }
 
@@ -1396,6 +1414,7 @@ async fn test_publish_outbound_lagged_receiver_increments_dropped() {
             chat_id: "c".to_string(),
             content: format!("orphan_out{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         });
     }
 
@@ -1486,6 +1505,7 @@ async fn test_outbound_send_error_path_via_direct_sender() {
             chat_id: "c".to_string(),
             content: format!("direct_out{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         });
     }
 
@@ -1579,6 +1599,7 @@ async fn test_publish_outbound_race_condition_receiver_drop_during_send() {
                 chat_id: "c".to_string(),
                 content: format!("race_out{}", i),
                 message_type: String::new(),
+                meta: Default::default(),
             });
             tokio::time::sleep(std::time::Duration::from_micros(10)).await;
         }
@@ -1673,6 +1694,7 @@ async fn test_publish_outbound_drops_message_when_all_receivers_dropped_concurre
                 chat_id: "c".to_string(),
                 content: format!("contention_out{}", i),
                 message_type: String::new(),
+                meta: Default::default(),
             });
             tokio::time::sleep(std::time::Duration::from_micros(1)).await;
         }

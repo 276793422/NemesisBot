@@ -13,6 +13,21 @@ use std::path::PathBuf;
 
 /// Append a chat message to the JSONL log file.
 pub fn append_chat_log(session_key: &str, role: &str, content: &str) {
+    append_chat_log_with_model(session_key, role, content, None);
+}
+
+/// Append a chat message with an optional model badge (`provider/name`).
+///
+/// When `model` is `Some`, an extra `"model"` field is written so the
+/// Dashboard can render a "供应商·模型名" badge on the assistant message after
+/// a history reload. `None` (user rows, legacy callers) omits the field — old
+/// jsonl entries without it parse fine (read side treats missing = no badge).
+pub fn append_chat_log_with_model(
+    session_key: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -24,11 +39,14 @@ pub fn append_chat_log(session_key: &str, role: &str, content: &str) {
             return;
         }
     };
-    let entry = serde_json::json!({
+    let mut entry = serde_json::json!({
         "role": role,
         "content": content,
         "timestamp": Local::now().to_rfc3339(),
     });
+    if let Some(m) = model {
+        entry["model"] = serde_json::Value::String(m.to_string());
+    }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
     }

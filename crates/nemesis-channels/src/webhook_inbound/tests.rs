@@ -88,6 +88,7 @@ async fn test_send_resolves_pending() {
         chat_id: "chat1".to_string(),
         content: "response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -108,6 +109,7 @@ async fn test_send_queues_when_no_pending() {
         chat_id: "chat1".to_string(),
         content: "orphaned".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -328,6 +330,7 @@ async fn test_send_resolves_correct_pending() {
         chat_id: "chat-1".to_string(),
         content: "response-1".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -343,6 +346,7 @@ async fn test_send_resolves_correct_pending() {
         chat_id: "chat-2".to_string(),
         content: "response-2".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg2).await.unwrap();
 
@@ -361,6 +365,7 @@ async fn test_send_when_not_running_fails() {
         chat_id: "chat-1".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -391,6 +396,7 @@ async fn test_drain_outbound_returns_all() {
             chat_id: format!("orphan-{}", i),
             content: format!("msg {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }

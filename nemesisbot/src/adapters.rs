@@ -415,13 +415,14 @@ impl WebServerOpsAdapter {
 }
 
 impl WebServerOps for WebServerOpsAdapter {
-    fn send_to_session(&self, session_id: &str, role: &str, content: &str) -> std::result::Result<(), String> {
+    fn send_to_session(&self, session_id: &str, role: &str, content: &str, model: Option<&str>) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
         let content = content.to_string();
+        let model = model.map(|s| s.to_string());
         tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
-                &sm, &sid, role, &content,
+                &sm, &sid, role, &content, model.as_deref(),
             ))
         })
     }

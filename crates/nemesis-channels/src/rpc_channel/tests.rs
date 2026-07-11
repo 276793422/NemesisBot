@@ -25,6 +25,7 @@ async fn test_rpc_input_and_send() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:corr-123] Hello from RPC".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -49,6 +50,7 @@ async fn test_rpc_input_with_timeout() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:corr-timeout] Long running response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -120,6 +122,7 @@ async fn test_rpc_send_channel_mismatch_ignored() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:corr-mismatch] Should be ignored".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -138,6 +141,7 @@ async fn test_rpc_send_no_pending_request() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:unknown-id] Orphan response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Should not error, just log a warning
     ch.send(msg).await.unwrap();
@@ -183,6 +187,7 @@ async fn test_rpc_cleanup_delivered_kept_until_timeout() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:delivered-me] Response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -235,6 +240,7 @@ async fn test_rpc_auto_generated_correlation_id() {
         chat_id: "chat-1".to_string(),
         content: format!("[rpc:{}] Auto response", generated_id),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -270,6 +276,7 @@ async fn test_rpc_send_no_correlation_id_prefix() {
         chat_id: "chat-1".to_string(),
         content: "No prefix here".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -288,6 +295,7 @@ async fn test_rpc_send_empty_correlation_id_prefix() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:] No ID".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     // Should not crash
@@ -354,6 +362,7 @@ async fn test_rpc_multiple_requests() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:multi-2] Response to 2".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -425,6 +434,7 @@ async fn test_rpc_channel_records_sent() {
         chat_id: "chat-1".to_string(),
         content: "[rpc:any] Response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     assert_eq!(ch.base.messages_sent(), 1);
@@ -568,6 +578,7 @@ async fn test_rpc_input_with_timeout_delivers_response() {
         chat_id: "c".to_string(),
         content: "[rpc:custom-timeout-resp] Custom timeout response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -588,6 +599,7 @@ async fn test_rpc_send_records_sent_on_every_call() {
             chat_id: "c".to_string(),
             content: format!("[rpc:id{}] msg", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -605,6 +617,7 @@ async fn test_rpc_send_with_empty_content_after_prefix() {
         chat_id: "c".to_string(),
         content: "[rpc:empty-resp]".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -623,6 +636,7 @@ async fn test_rpc_send_with_unicode_content() {
         chat_id: "c".to_string(),
         content: "[rpc:unicode-resp] 你好世界 🌍 مرحبا".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -641,6 +655,7 @@ async fn test_rpc_send_with_multiline_content() {
         chat_id: "c".to_string(),
         content: "[rpc:multi-line] Line1\nLine2\nLine3".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -660,6 +675,7 @@ async fn test_rpc_send_with_large_content() {
         chat_id: "c".to_string(),
         content: format!("[rpc:large-resp] {}", large),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -688,6 +704,7 @@ async fn test_rpc_concurrent_requests_delivered_correctly() {
             chat_id: "c".to_string(),
             content: format!("[rpc:concurrent-{}] Answer {}", idx, idx),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -822,6 +839,7 @@ async fn test_rpc_send_to_dropped_receiver() {
         chat_id: "c".to_string(),
         content: "[rpc:dropped-rx] Response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 }
@@ -839,6 +857,7 @@ async fn test_rpc_send_with_special_chars_in_correlation_id() {
         chat_id: "c".to_string(),
         content: "[rpc:test-123_abc.xyz] Response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -861,6 +880,7 @@ async fn test_rpc_pending_count_after_delivery() {
         chat_id: "c".to_string(),
         content: "[rpc:count-deliver] ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -952,6 +972,7 @@ async fn test_rpc_multiple_cycles() {
         chat_id: "c".to_string(),
         content: "[rpc:cycle-1] First".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
     let resp1 = tokio::time::timeout(Duration::from_secs(1), rx1).await;
     assert_eq!(resp1.unwrap().unwrap(), "First");
@@ -963,6 +984,7 @@ async fn test_rpc_multiple_cycles() {
         chat_id: "c".to_string(),
         content: "[rpc:cycle-2] Second".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
     let resp2 = tokio::time::timeout(Duration::from_secs(1), rx2).await;
     assert_eq!(resp2.unwrap().unwrap(), "Second");
@@ -985,6 +1007,7 @@ async fn test_rpc_send_ignores_message_type() {
         chat_id: "c".to_string(),
         content: "[rpc:msg-type] Response".to_string(),
         message_type: "history".to_string(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -1065,6 +1088,7 @@ async fn test_rpc_concurrent_input_and_send() {
                 chat_id: "c".to_string(),
                 content: format!("[rpc:{}] Answer {}", cid, i),
                 message_type: String::new(),
+                meta: Default::default(),
             }).await.unwrap();
             let resp = tokio::time::timeout(Duration::from_secs(2), rx).await;
             assert_eq!(resp.unwrap().unwrap(), format!("Answer {}", i));
@@ -1092,6 +1116,7 @@ async fn test_rpc_stop_restart_new_requests() {
         chat_id: "c".to_string(),
         content: "[rpc:before-stop] Before".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
     let _ = rx.await;
 
@@ -1107,6 +1132,7 @@ async fn test_rpc_stop_restart_new_requests() {
         chat_id: "c".to_string(),
         content: "[rpc:after-restart] After".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
     let resp = tokio::time::timeout(Duration::from_secs(1), rx2).await;
     assert_eq!(resp.unwrap().unwrap(), "After");
@@ -1163,6 +1189,7 @@ async fn test_rpc_send_mismatch_channel_still_records_sent() {
         chat_id: "c".to_string(),
         content: "[rpc:any] content".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     // Even on mismatch, sent counter should increment
@@ -1186,6 +1213,7 @@ async fn test_rpc_cleanup_only_delivered() {
         chat_id: "c".to_string(),
         content: "[rpc:delivered-only] Response".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
     let _ = rx.await;
 
@@ -1210,6 +1238,7 @@ async fn test_rpc_pending_count_many_deliveries() {
             chat_id: "c".to_string(),
             content: format!("[rpc:many-{}] ok", i),
             message_type: String::new(),
+            meta: Default::default(),
         }).await.unwrap();
         let _ = rx.await;
     }
@@ -1233,6 +1262,7 @@ async fn test_rpc_send_rpc_like_but_not_prefix() {
         chat_id: "c".to_string(),
         content: "rpc:something not a prefix".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 

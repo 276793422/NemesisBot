@@ -20,6 +20,23 @@ pub struct InboundMessage {
     pub voice_playback: Option<bool>,
 }
 
+/// Extensible per-delivery metadata attached to an `OutboundMessage`.
+///
+/// Holds attributes that are optional/channel-specific (not every channel
+/// cares about every field). Adding a future field here does **not** require
+/// touching the ~161 `OutboundMessage` construction sites — they write
+/// `meta: Default::default()` and absorb new fields automatically. Channels
+/// read what they need and ignore the rest (`#[serde(default)]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OutboundMeta {
+    /// Model that produced this assistant response, in `provider/name` form
+    /// (e.g. `deepseek/deepseek-v4-flash`). The web channel surfaces it to the
+    /// Dashboard as a per-message "供应商·模型名" badge so users can see which
+    /// model generated each reply. Other channels ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// Outbound message from the agent engine to a channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundMessage {
@@ -30,6 +47,21 @@ pub struct OutboundMessage {
     /// Mirrors Go's OutboundMessage.Type field.
     #[serde(default, rename = "type")]
     pub message_type: String,
+    /// Extensible delivery metadata (model, future fields). Default = empty.
+    #[serde(default)]
+    pub meta: OutboundMeta,
+}
+
+impl Default for OutboundMessage {
+    fn default() -> Self {
+        Self {
+            channel: String::new(),
+            chat_id: String::new(),
+            content: String::new(),
+            message_type: String::new(),
+            meta: OutboundMeta::default(),
+        }
+    }
 }
 
 impl OutboundMessage {
@@ -40,6 +72,7 @@ impl OutboundMessage {
             chat_id: chat_id.to_string(),
             content: content.to_string(),
             message_type: String::new(),
+            meta: OutboundMeta::default(),
         }
     }
 
@@ -50,6 +83,7 @@ impl OutboundMessage {
             chat_id: chat_id.to_string(),
             content: content.to_string(),
             message_type: message_type.to_string(),
+            meta: OutboundMeta::default(),
         }
     }
 }

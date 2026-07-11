@@ -1052,6 +1052,7 @@ fn test_outbound_message_construction() {
         chat_id: "user1".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert_eq!(msg.channel, "web");
     assert_eq!(msg.chat_id, "user1");

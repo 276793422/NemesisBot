@@ -601,7 +601,7 @@ async fn test_handle_health_not_running() {
 async fn test_send_to_session_no_queue() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let result = send_to_session(&mgr, &session.id, "assistant", "hello").await;
+    let result = send_to_session(&mgr, &session.id, "assistant", "hello", None).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("session not found or no send queue"));
 }
@@ -609,7 +609,7 @@ async fn test_send_to_session_no_queue() {
 #[tokio::test]
 async fn test_send_to_session_nonexistent() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
-    let result = send_to_session(&mgr, "nonexistent-session", "assistant", "hello").await;
+    let result = send_to_session(&mgr, "nonexistent-session", "assistant", "hello", None).await;
     assert!(result.is_err());
 }
 
@@ -1018,7 +1018,7 @@ async fn test_build_router_api_models_no_workspace() {
 async fn test_send_to_session_nonexistent_session() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     // No session created
-    let result = send_to_session(&mgr, "nonexistent-id", "assistant", "hello world").await;
+    let result = send_to_session(&mgr, "nonexistent-id", "assistant", "hello world", None).await;
     assert!(result.is_err());
 }
 

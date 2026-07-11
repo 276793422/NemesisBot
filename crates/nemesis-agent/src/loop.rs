@@ -1182,6 +1182,9 @@ impl AgentLoop {
                                 chat_id: msg.chat_id.clone(),
                                 content: final_content,
                                 message_type: String::new(),
+                                meta: nemesis_types::channel::OutboundMeta {
+                                    model: Some(self.current_display_model()),
+                                },
                             };
                             if let Err(e) = tx.send(outbound).await {
                                 warn!("[AgentLoop] Failed to send outbound message: {}", e);
@@ -1277,6 +1280,9 @@ impl AgentLoop {
                                 chat_id: msg.chat_id.clone(),
                                 content: final_content,
                                 message_type: String::new(),
+                                meta: nemesis_types::channel::OutboundMeta {
+                                    model: Some(self.current_display_model()),
+                                },
                             };
                             if let Err(e) = tx.send(outbound).await {
                                 warn!("[AgentLoop] Failed to send outbound message: {}", e);
@@ -1868,6 +1874,7 @@ impl AgentLoop {
                 chat_id: chat_id.to_string(),
                 content,
                 message_type: "history".to_string(),
+                meta: Default::default(),
             };
             if let Err(e) = tx.send(outbound).await {
                 warn!("[AgentLoop] Failed to send history response: {}", e);
@@ -2156,6 +2163,7 @@ impl AgentLoop {
                     content: "Memory threshold reached. Optimizing conversation history..."
                         .to_string(),
                     message_type: String::new(),
+                    meta: Default::default(),
                 };
                 let _ = tx.send(outbound).await;
             }
@@ -2525,7 +2533,12 @@ impl AgentLoop {
 
         // Append to chat log (independent of session store).
         crate::chat_log::append_chat_log(session_key, "user", user_message);
-        crate::chat_log::append_chat_log(session_key, "assistant", &final_response);
+        crate::chat_log::append_chat_log_with_model(
+            session_key,
+            "assistant",
+            &final_response,
+            Some(&self.current_display_model()),
+        );
 
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -3591,6 +3604,25 @@ impl AgentLoop {
             );
             *self.tier.write() = tier;
         }
+    }
+
+    /// Resolve the active model's display id (`provider/name`, e.g.
+    /// `deepseek/deepseek-v4-flash`) for the per-message "供应商·模型名"
+    /// badge. Reads config.json fresh each call (called once per assistant
+    /// turn, negligible cost) — no cached field, so it can never go stale when
+    /// the model switches. Falls back to the bare `active_model` when config
+    /// is unavailable (standalone mode) or the entry isn't found.
+    pub(crate) fn current_display_model(&self) -> String {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return active,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_display_model(&v, &active))
+            .unwrap_or(active)
     }
 
     /// Phase 4a: detect config.json on-disk changes (by mtime) and re-resolve

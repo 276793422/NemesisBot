@@ -641,6 +641,7 @@ fn make_outbound(channel: &str, chat_id: &str, content: &str, message_type: &str
         chat_id: chat_id.to_string(),
         content: content.to_string(),
         message_type: message_type.to_string(),
+        meta: Default::default(),
     }
 }
 
@@ -719,7 +720,7 @@ async fn test_send_to_session_with_active_queue_succeeds() {
     let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
     mgr.set_send_queue(&session.id, queue);
 
-    let send_result = send_to_session(&mgr, &session.id, "assistant", "hello world").await;
+    let send_result = send_to_session(&mgr, &session.id, "assistant", "hello world", None).await;
     assert!(send_result.is_ok());
 
     let received = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
@@ -730,6 +731,53 @@ async fn test_send_to_session_with_active_queue_succeeds() {
     assert_eq!(parsed["cmd"], "receive");
     assert_eq!(parsed["data"]["role"], "assistant");
     assert_eq!(parsed["data"]["content"], "hello world");
+}
+
+/// Badge pipeline: send_to_session must include `model` in the WS `receive`
+/// frame when provided, and omit it when None (so legacy/badge-less messages
+/// stay byte-identical).
+#[tokio::test]
+async fn test_send_to_session_includes_model_badge() {
+    use crate::websocket_handler::SendQueue;
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (_, done_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    mgr.set_send_queue(&session.id, queue);
+
+    // With a model badge.
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "badged reply",
+        Some("deepseek/deepseek-v4-flash"),
+    )
+    .await
+    .unwrap();
+    let bytes = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["cmd"], "receive");
+    assert_eq!(parsed["data"]["model"], "deepseek/deepseek-v4-flash");
+
+    // Without a model badge → field absent (badge-less messages unchanged).
+    send_to_session(&mgr, &session.id, "assistant", "plain reply", None)
+        .await
+        .unwrap();
+    let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+    assert!(
+        parsed2["data"].get("model").is_none(),
+        "None model must omit the field, not serialize null"
+    );
 }
 
 #[tokio::test]

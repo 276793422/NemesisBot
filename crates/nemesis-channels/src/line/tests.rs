@@ -277,6 +277,7 @@ async fn test_send_not_running() {
         chat_id: "test-chat".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -606,6 +607,7 @@ async fn test_send_with_reply_token_uses_reply() {
         chat_id: "chat-1".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Reply fails because no actual LINE server, but token is removed
     let _ = ch.send(msg).await;
@@ -629,6 +631,7 @@ async fn test_send_push_message_on_no_token() {
         chat_id: "U_no_token".to_string(),
         content: "push msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Will fail due to network, but exercises the push path
     let result = ch.send(msg).await;
@@ -857,6 +860,7 @@ async fn test_send_uses_push_when_no_reply_token() {
         chat_id: "chat-no-token".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Will fail (no network), but exercises push path
     let result = ch.send(msg).await;
@@ -1254,6 +1258,7 @@ async fn test_line_send_with_reply_token_consumed_in_lifecycle() {
         chat_id: "U_chat".to_string(),
         content: "hi".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Reply will fail due to network, but token must be consumed
     let _ = ch.send(msg).await;

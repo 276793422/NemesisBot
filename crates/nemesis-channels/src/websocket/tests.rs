@@ -737,6 +737,7 @@ async fn test_websocket_send_when_not_running() {
         chat_id: "websocket:c1".to_string(),
         content: "hi".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -762,6 +763,7 @@ async fn test_websocket_send_when_running_no_client() {
         chat_id: "websocket:c1".to_string(),
         content: "hi".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -808,6 +810,7 @@ async fn test_websocket_send_with_active_client() {
         chat_id: "websocket:client".to_string(),
         content: "hello from server".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok());
@@ -1277,6 +1280,7 @@ async fn test_websocket_sync_to_targets_outbound_no_assert() {
         chat_id: "test".to_string(),
         content: "sync me out".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let _ = ch.send(msg).await;
 

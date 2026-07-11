@@ -2628,6 +2628,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     chat_id,
                     content,
                     message_type: String::new(),
+                    meta: Default::default(),
                 };
                 self.bus.publish_outbound(msg);
             }
@@ -2729,6 +2730,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 chat_id: chat_id.to_string(),
                 content: content.to_string(),
                 message_type: String::new(),
+                meta: Default::default(),
             };
             bus_for_devices.publish_outbound(msg);
         }));

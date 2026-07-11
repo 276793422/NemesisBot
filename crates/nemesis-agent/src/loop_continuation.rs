@@ -749,6 +749,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     chat_id: cont_data.chat_id.clone(),
                     content: tool_result.for_user.clone(),
                     message_type: String::new(),
+                    meta: Default::default(),
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
                     warn!("[Continuation] Failed to send continuation tool output: {}", e);
@@ -796,10 +797,11 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // Skip when session_key is empty (legacy on-disk snapshots saved before
         // this field existed).
         if !cont_data.session_key.is_empty() {
-            crate::chat_log::append_chat_log(
+            crate::chat_log::append_chat_log_with_model(
                 &cont_data.session_key,
                 "assistant",
                 &final_content,
+                Some(model),
             );
             if let Some(store) = session_store {
                 store.get_or_create(&cont_data.session_key);
@@ -818,6 +820,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             chat_id: cont_data.chat_id.clone(),
             content: final_content.clone(),
             message_type: String::new(),
+            meta: nemesis_types::channel::OutboundMeta {
+                model: Some(model.to_string()),
+            },
         };
         if let Err(e) = outbound_tx.send(outbound).await {
             warn!("[Continuation] Failed to send continuation final response: {}", e);

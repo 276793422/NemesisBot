@@ -23,7 +23,18 @@ use crate::base::{BaseChannel, Channel};
 /// a direct dependency from nemesis-channels on nemesis-web.
 pub trait WebServerOps: Send + Sync {
     /// Send a message to a specific WebSocket session.
-    fn send_to_session(&self, session_id: &str, role: &str, content: &str) -> std::result::Result<(), String>;
+    ///
+    /// `model` carries the producing model (`provider/name`) for the web
+    /// channel's per-message "供应商·模型名" badge; `None` for non-assistant /
+    /// badge-less deliveries. Implementations that don't care (test mocks)
+    /// accept it via `_: Option<&str>`.
+    fn send_to_session(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+    ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
     fn send_history_to_session(&self, session_id: &str, content: &str) -> std::result::Result<(), String>;
@@ -291,7 +302,7 @@ impl Channel for WebChannel {
             "[WebChannel] sending message to session"
         );
 
-        if let Err(e) = srv.send_to_session(session_id, "assistant", &msg.content) {
+        if let Err(e) = srv.send_to_session(session_id, "assistant", &msg.content, msg.meta.model.as_deref()) {
             error!(
                 error = %e,
                 session_id = %session_id,

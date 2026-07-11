@@ -40,6 +40,7 @@ fn make_outbound(channel: &str, chat_id: &str, content: &str) -> OutboundMessage
         chat_id: chat_id.to_string(),
         content: content.to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }
 }
 

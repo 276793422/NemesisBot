@@ -90,6 +90,7 @@ async fn test_send_no_clients() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -106,6 +107,7 @@ async fn test_send_with_clients() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -336,6 +338,7 @@ async fn test_send_not_running() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -447,6 +450,7 @@ async fn test_send_queues_when_no_writers_but_has_count() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Should queue message since no writers match but count > 0
     ch.send(msg).await.unwrap();
@@ -476,6 +480,7 @@ async fn test_send_when_not_started() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -521,12 +526,14 @@ fn test_drain_outbound_multiple() {
         chat_id: "c1".to_string(),
         content: "msg1".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     ch.outbound_queue.write().push(OutboundMessage {
         channel: "maixcam".to_string(),
         chat_id: "c2".to_string(),
         content: "msg2".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     let drained = ch.drain_outbound();
     assert_eq!(drained.len(), 2);
@@ -643,6 +650,7 @@ async fn test_send_no_clients_returns_error() {
         chat_id: "default".to_string(),
         content: "hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -760,6 +768,7 @@ async fn test_start_stop_clears_writers_and_queue() {
         chat_id: "c1".to_string(),
         content: "msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     });
     assert_eq!(ch.client_count(), 1);
     assert_eq!(ch.outbound_queue.read().len(), 1);
@@ -892,6 +901,7 @@ async fn test_send_with_queued_messages_and_no_writers() {
         chat_id: "device-1".to_string(),
         content: "command".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 

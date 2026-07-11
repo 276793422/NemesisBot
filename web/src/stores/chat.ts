@@ -5,6 +5,10 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'error' | 'system'
   content: string
   timestamp: string
+  /** Producing model in `provider/name` form (assistant messages only).
+   *  Rendered as a "供应商·模型名" badge; undefined for user/error/system or
+   *  legacy messages persisted before the badge feature. */
+  model?: string
 }
 
 export const useChatStore = defineStore('chat', () => {

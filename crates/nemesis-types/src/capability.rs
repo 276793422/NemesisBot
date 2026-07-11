@@ -171,6 +171,28 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
     tier.resolve(&hint)
 }
 
+/// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
+/// for the active model alias, by looking up `model_list[]` for the matching
+/// entry (by `model_name` or `model`) and returning its `model` field. Falls
+/// back to `active_alias` itself when config is unavailable or no entry matches.
+///
+/// Used by the web channel to render a per-message "供应商·模型名" badge. Pure
+/// (no IO) so it's unit-testable; `AgentLoop::current_display_model` reads
+/// config.json fresh each call and hands the parsed value here.
+pub fn resolve_display_model(cfg: &serde_json::Value, active_alias: &str) -> String {
+    cfg.get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        })
+        .and_then(|m| m.get("model").and_then(|v| v.as_str()).map(String::from))
+        .unwrap_or_else(|| active_alias.to_string())
+}
+
 fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
     let l = name.to_lowercase();
     // Cloud flagships / known-strong (no size marker needed).
@@ -348,6 +370,25 @@ mod tests {
         assert_eq!(resolve_active_tier(&cfg, "claude-sonnet-4"), ModelTier::Big);
         // Unknown alias → Big (safest default).
         assert_eq!(resolve_active_tier(&cfg, "nonexistent"), ModelTier::Big);
+    }
+
+    #[test]
+    fn resolve_display_model_basic() {
+        let cfg = serde_json::json!({
+            "model_list": [
+                {"model": "qwen/qwen3-30b-a3b", "model_name": "qwen3-30b-a3b"},
+                {"model": "anthropic/claude-sonnet-4", "model_name": "claude-sonnet-4"}
+            ]
+        });
+        // Match by model_name → returns the `model` (provider/name) field.
+        assert_eq!(resolve_display_model(&cfg, "qwen3-30b-a3b"), "qwen/qwen3-30b-a3b");
+        assert_eq!(resolve_display_model(&cfg, "claude-sonnet-4"), "anthropic/claude-sonnet-4");
+        // Match by full `model` id also works.
+        assert_eq!(resolve_display_model(&cfg, "qwen/qwen3-30b-a3b"), "qwen/qwen3-30b-a3b");
+        // Unknown alias → falls back to the alias itself.
+        assert_eq!(resolve_display_model(&cfg, "nonexistent"), "nonexistent");
+        // No model_list at all → fallback.
+        assert_eq!(resolve_display_model(&serde_json::json!({}), "deepseek-v4-flash"), "deepseek-v4-flash");
     }
 
     #[test]

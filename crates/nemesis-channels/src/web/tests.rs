@@ -4,6 +4,8 @@ use std::sync::Mutex;
 /// Mock web server for testing.
 struct MockWebServer {
     sent: Mutex<Vec<(String, String, String)>>,
+    /// Model arg passed to each send_to_session call (badge pipeline).
+    sent_models: Mutex<Vec<Option<String>>>,
     history: Mutex<Vec<(String, String)>>,
     broadcasts: Mutex<Vec<String>>,
 }
@@ -12,6 +14,7 @@ impl MockWebServer {
     fn new() -> Self {
         Self {
             sent: Mutex::new(Vec::new()),
+            sent_models: Mutex::new(Vec::new()),
             history: Mutex::new(Vec::new()),
             broadcasts: Mutex::new(Vec::new()),
         }
@@ -23,8 +26,9 @@ impl MockWebServer {
 }
 
 impl WebServerOps for MockWebServer {
-    fn send_to_session(&self, session_id: &str, role: &str, content: &str) -> std::result::Result<(), String> {
+    fn send_to_session(&self, session_id: &str, role: &str, content: &str, model: Option<&str>) -> std::result::Result<(), String> {
         self.sent.lock().unwrap().push((session_id.to_string(), role.to_string(), content.to_string()));
+        self.sent_models.lock().unwrap().push(model.map(|s| s.to_string()));
         Ok(())
     }
 
@@ -68,6 +72,7 @@ async fn test_send_not_running() {
         chat_id: "web:test-session".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -85,6 +90,7 @@ async fn test_send_invalid_chat_id() {
         chat_id: "invalid-format".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -103,6 +109,7 @@ async fn test_send_to_session() {
         chat_id: "web:session-123".to_string(),
         content: "Hello world".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok());
@@ -112,6 +119,51 @@ async fn test_send_to_session() {
     assert_eq!(sent[0].0, "session-123");
     assert_eq!(sent[0].1, "assistant");
     assert_eq!(sent[0].2, "Hello world");
+}
+
+/// The badge pipeline: WebChannel::send must forward `OutboundMessage.meta.model`
+/// to WebServerOps::send_to_session, so the WS `receive` frame carries the model.
+#[tokio::test]
+async fn test_send_to_session_forwards_model_badge() {
+    let mock = Arc::new(MockWebServer::new());
+    let ch = WebChannel::with_defaults();
+    ch.running.store(true, Ordering::SeqCst);
+    ch.base.set_enabled(true);
+    ch.set_server(mock.clone());
+
+    let msg = OutboundMessage {
+        channel: "web".to_string(),
+        chat_id: "web:session-badge".to_string(),
+        content: "badged reply".to_string(),
+        message_type: String::new(),
+        meta: nemesis_types::channel::OutboundMeta {
+            model: Some("deepseek/deepseek-v4-flash".to_string()),
+        },
+    };
+    let result = ch.send(msg).await;
+    assert!(result.is_ok());
+
+    let models = mock.sent_models.lock().unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(
+        models[0].as_deref(),
+        Some("deepseek/deepseek-v4-flash"),
+        "WebChannel::send must forward meta.model to send_to_session"
+    );
+
+    // And a badge-less message forwards None (no panic, no badge).
+    drop(models);
+    let msg2 = OutboundMessage {
+        channel: "web".to_string(),
+        chat_id: "web:session-badge".to_string(),
+        content: "no badge".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    ch.send(msg2).await.unwrap();
+    let models = mock.sent_models.lock().unwrap();
+    assert_eq!(models.len(), 2);
+    assert!(models[1].is_none(), "missing meta.model forwards None");
 }
 
 #[tokio::test]
@@ -127,6 +179,7 @@ async fn test_broadcast() {
         chat_id: "web:broadcast".to_string(),
         content: "Broadcast message".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok());
@@ -149,6 +202,7 @@ async fn test_send_history() {
         chat_id: "web:session-456".to_string(),
         content: "[{\"role\":\"user\",\"content\":\"hi\"}]".to_string(),
         message_type: "history".to_string(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok());
@@ -211,6 +265,7 @@ async fn test_send_no_server_configured() {
         chat_id: "web:session-123".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok()); // drops silently
@@ -229,6 +284,7 @@ async fn test_send_after_stop() {
         chat_id: "web:session-123".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_err());
@@ -259,6 +315,7 @@ async fn test_send_multiple_messages() {
             chat_id: format!("web:session-{}", i),
             content: format!("Message {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -333,6 +390,7 @@ async fn test_send_with_empty_content() {
         chat_id: "web:session-123".to_string(),
         content: String::new(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = ch.send(msg).await;
     assert!(result.is_ok());
@@ -348,7 +406,7 @@ async fn test_send_with_empty_content() {
 struct FailingMockServer;
 
 impl WebServerOps for FailingMockServer {
-    fn send_to_session(&self, _: &str, _: &str, _: &str) -> std::result::Result<(), String> {
+    fn send_to_session(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> std::result::Result<(), String> {
         Err("send failed".to_string())
     }
     fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
@@ -418,6 +476,7 @@ async fn test_send_extracts_short_session_id() {
         chat_id: "web:s".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     let sent = mock.sent.lock().unwrap();
@@ -437,6 +496,7 @@ async fn test_send_extracts_uuid_session_id() {
         chat_id: "web:550e8400-e29b-41d4-a716-446655440000".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     let sent = mock.sent.lock().unwrap();
@@ -458,6 +518,7 @@ async fn test_send_to_failing_server() {
         chat_id: "web:session-1".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -475,6 +536,7 @@ async fn test_broadcast_failing_server() {
         chat_id: "web:broadcast".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -492,6 +554,7 @@ async fn test_history_to_failing_server() {
         chat_id: "web:session-1".to_string(),
         content: "history data".to_string(),
         message_type: "history".to_string(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
 }
@@ -533,6 +596,7 @@ async fn test_send_increments_sent_counter() {
             chat_id: format!("web:s{}", i),
             content: format!("msg {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -549,6 +613,7 @@ async fn test_send_not_running_no_counter() {
         chat_id: "web:s1".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     assert!(ch.send(msg).await.is_err());
     assert_eq!(ch.base.messages_sent(), 0);
@@ -634,6 +699,7 @@ async fn test_send_to_unknown_session_type() {
         chat_id: "unknown-format".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     // Should handle gracefully
     let result = ch.send(msg).await;
@@ -648,7 +714,7 @@ async fn test_send_to_unknown_session_type() {
 struct FailStartServer;
 
 impl WebServerOps for FailStartServer {
-    fn send_to_session(&self, _: &str, _: &str, _: &str) -> std::result::Result<(), String> {
+    fn send_to_session(&self, _: &str, _: &str, _: &str, _: Option<&str>) -> std::result::Result<(), String> {
         Ok(())
     }
     fn send_history_to_session(&self, _: &str, _: &str) -> std::result::Result<(), String> {
@@ -725,6 +791,7 @@ async fn test_send_tracks_sent_counter_via_broadcast() {
         chat_id: "web:broadcast".to_string(),
         content: "broadcast".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
     assert_eq!(ch.base.messages_sent(), 1);
@@ -746,6 +813,7 @@ async fn test_multiple_broadcasts() {
             chat_id: "web:broadcast".to_string(),
             content: format!("broadcast {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -770,6 +838,7 @@ async fn test_send_to_session_unicode_content() {
         chat_id: "web:session-unicode".to_string(),
         content: "你好世界 🌍 مرحبا".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -793,6 +862,7 @@ async fn test_send_history_with_long_content() {
         chat_id: "web:session-history".to_string(),
         content: long_history.clone(),
         message_type: "history".to_string(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -850,6 +920,7 @@ async fn test_send_to_empty_session_id() {
         chat_id: "web:".to_string(),
         content: "test".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     ch.send(msg).await.unwrap();
 
@@ -894,6 +965,7 @@ async fn test_send_to_multiple_sessions() {
             chat_id: format!("web:session-{}", i),
             content: format!("msg {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         ch.send(msg).await.unwrap();
     }
@@ -921,6 +993,7 @@ async fn test_send_mixed_types() {
         chat_id: "web:s1".to_string(),
         content: "session msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
 
     // Broadcast
@@ -929,6 +1002,7 @@ async fn test_send_mixed_types() {
         chat_id: "web:broadcast".to_string(),
         content: "broadcast msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
 
     // History
@@ -937,6 +1011,7 @@ async fn test_send_mixed_types() {
         chat_id: "web:s2".to_string(),
         content: "history data".to_string(),
         message_type: "history".to_string(),
+        meta: Default::default(),
     }).await.unwrap();
 
     assert_eq!(mock.sent.lock().unwrap().len(), 1);

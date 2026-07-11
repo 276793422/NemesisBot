@@ -124,6 +124,7 @@ async fn test_dispatch_outbound_success() {
         chat_id: "chat-1".to_string(),
         content: "Hello world".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
 
@@ -139,6 +140,7 @@ async fn test_dispatch_outbound_channel_not_found() {
         chat_id: "chat-1".to_string(),
         content: "Hello".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = mgr.dispatch_outbound(msg).await;
     assert!(result.is_err());
@@ -158,6 +160,7 @@ async fn test_dispatch_loop() {
         chat_id: "c1".to_string(),
         content: "via loop".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -180,6 +183,7 @@ async fn test_dispatch_loop_skips_internal_channels() {
         chat_id: "c1".to_string(),
         content: "internal msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -206,6 +210,7 @@ async fn test_allowed_channels_filter() {
         chat_id: "c1".to_string(),
         content: "ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
     assert_eq!(ch.sent_messages().len(), 1);
@@ -216,6 +221,7 @@ async fn test_allowed_channels_filter() {
         chat_id: "c1".to_string(),
         content: "dropped".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg2).await.unwrap(); // no error
     assert_eq!(mgr.metrics().dropped_filtered.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -233,6 +239,7 @@ async fn test_metrics() {
         chat_id: "c1".to_string(),
         content: "x".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let _ = mgr.dispatch_outbound(msg).await;
     assert_eq!(mgr.metrics().dropped_not_found.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -352,6 +359,7 @@ async fn test_dispatch_outbound_empty_content() {
         chat_id: "chat-1".to_string(),
         content: String::new(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
 
@@ -372,6 +380,7 @@ async fn test_dispatch_outbound_long_content() {
         chat_id: "chat-1".to_string(),
         content: long_content.clone(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
 
@@ -474,6 +483,7 @@ async fn test_metrics_dispatched_increment() {
             chat_id: format!("chat-{}", i),
             content: format!("msg {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         mgr.dispatch_outbound(msg).await.unwrap();
     }
@@ -497,6 +507,7 @@ async fn test_allowed_channels_empty_means_all() {
         chat_id: "c1".to_string(),
         content: "ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
     assert_eq!(ch.sent_messages().len(), 1);
@@ -538,6 +549,7 @@ async fn test_dispatch_throughput() {
             chat_id: format!("c{}", i),
             content: format!("msg{}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         mgr.dispatch_outbound(msg).await.unwrap();
     }
@@ -703,6 +715,7 @@ async fn test_dispatch_loop_shutdown_flag() {
         chat_id: "c1".to_string(),
         content: "before shutdown".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -724,6 +737,7 @@ async fn test_dispatch_loop_skips_cli_channel() {
         chat_id: "c1".to_string(),
         content: "cli msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -747,6 +761,7 @@ async fn test_dispatch_loop_skips_subagent_channel() {
         chat_id: "c1".to_string(),
         content: "subagent msg".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -774,6 +789,7 @@ async fn test_dispatch_loop_multiple_messages() {
             chat_id: format!("c{}", i),
             content: format!("msg {}", i),
             message_type: String::new(),
+            meta: Default::default(),
         };
         tx.send(msg).await.unwrap();
     }
@@ -807,6 +823,7 @@ async fn test_allowed_channels_multiple_allowed() {
         chat_id: "c1".to_string(),
         content: "ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg).await.unwrap();
     assert_eq!(ch_web.sent_messages().len(), 1);
@@ -817,6 +834,7 @@ async fn test_allowed_channels_multiple_allowed() {
         chat_id: "c1".to_string(),
         content: "ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg2).await.unwrap();
     assert_eq!(ch_rpc.sent_messages().len(), 1);
@@ -827,6 +845,7 @@ async fn test_allowed_channels_multiple_allowed() {
         chat_id: "c1".to_string(),
         content: "filtered".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     mgr.dispatch_outbound(msg3).await.unwrap(); // no error, just dropped
     assert_eq!(ch_other.sent_messages().len(), 0);
@@ -849,6 +868,7 @@ async fn test_metrics_send_errors() {
         chat_id: "c1".to_string(),
         content: "will fail".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     let result = mgr.dispatch_outbound(msg).await;
     assert!(result.is_err());
@@ -868,6 +888,7 @@ async fn test_metrics_multiple_not_found() {
             chat_id: "c1".to_string(),
             content: "test".to_string(),
             message_type: String::new(),
+            meta: Default::default(),
         };
         let _ = mgr.dispatch_outbound(msg).await;
     }
@@ -1006,6 +1027,7 @@ async fn test_concurrent_dispatch_outbound() {
                 chat_id: format!("c{}", i),
                 content: format!("msg {}", i),
                 message_type: String::new(),
+                meta: Default::default(),
             };
             mgr_clone.dispatch_outbound(msg).await.unwrap();
         }));
@@ -1268,6 +1290,7 @@ async fn test_dispatch_loop_with_allowed_filter() {
         chat_id: "c1".to_string(),
         content: "allowed".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg1).await.unwrap();
 
@@ -1277,6 +1300,7 @@ async fn test_dispatch_loop_with_allowed_filter() {
         chat_id: "c1".to_string(),
         content: "filtered".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg2).await.unwrap();
 
@@ -1307,6 +1331,7 @@ async fn test_dispatch_loop_with_send_error() {
         chat_id: "c1".to_string(),
         content: "will fail".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -1332,6 +1357,7 @@ async fn test_dispatch_loop_missing_channel() {
         chat_id: "c1".to_string(),
         content: "lost".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     };
     tx.send(msg).await.unwrap();
 
@@ -1400,6 +1426,7 @@ async fn test_dispatch_loop_routes_to_correct_channel() {
         chat_id: "c1".to_string(),
         content: "for A".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
 
     tx.send(OutboundMessage {
@@ -1407,6 +1434,7 @@ async fn test_dispatch_loop_routes_to_correct_channel() {
         chat_id: "c2".to_string(),
         content: "for B".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1475,6 +1503,7 @@ async fn test_metrics_comprehensive() {
         chat_id: "c1".to_string(),
         content: "ok".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await.unwrap();
 
     // Dispatch to missing channel
@@ -1483,6 +1512,7 @@ async fn test_metrics_comprehensive() {
         chat_id: "c1".to_string(),
         content: "lost".to_string(),
         message_type: String::new(),
+        meta: Default::default(),
     }).await;
 
     assert_eq!(mgr.metrics().dispatched.load(std::sync::atomic::Ordering::Relaxed), 1);

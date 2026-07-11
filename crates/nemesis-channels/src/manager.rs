@@ -472,6 +472,7 @@ impl ChannelManager {
                     chat_id: chat_id.to_string(),
                     content: content.to_string(),
                     message_type: String::new(),
+                    meta: Default::default(),
                 };
                 ch.send(msg).await
             }

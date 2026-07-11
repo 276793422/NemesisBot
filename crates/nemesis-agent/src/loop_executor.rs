@@ -1088,6 +1088,7 @@ impl AgentLoopExecutor {
                 chat_id: request_ctx.chat_id.clone(),
                 content: BUSY_MESSAGE.to_string(),
                 message_type: String::new(),
+                meta: Default::default(),
             };
             if let Err(e) = self.outbound_tx.send(outbound).await {
                 warn!("[AgentLoopExecutor] Failed to send busy message: {}", e);
@@ -1209,6 +1210,7 @@ impl AgentLoopExecutor {
             chat_id: request_ctx.chat_id.clone(),
             content: response_content,
             message_type: String::new(),
+            meta: Default::default(),
         };
 
         if let Err(e) = self.outbound_tx.send(outbound).await {
@@ -1454,6 +1456,7 @@ impl AgentLoopExecutor {
                         chat_id: context.chat_id.clone(),
                         content: tool_result.for_user.clone(),
                         message_type: String::new(),
+                        meta: Default::default(),
                     };
                     if let Err(e) = self.outbound_tx.send(outbound).await {
                         warn!("[AgentLoopExecutor] Failed to send tool result to user: {}", e);
@@ -1659,6 +1662,7 @@ impl AgentLoopExecutor {
                             content: "Context window exceeded. Compressing history and retrying..."
                                 .to_string(),
                             message_type: String::new(),
+                            meta: Default::default(),
                         };
                         let _ = self.outbound_tx.send(outbound).await;
                     }
@@ -1927,6 +1931,7 @@ impl AgentLoopExecutor {
             chat_id: context.chat_id.clone(),
             content: result.clone(),
             message_type: String::new(),
+            meta: Default::default(),
         };
 
         if let Err(e) = self.outbound_tx.send(outbound).await {
