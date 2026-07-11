@@ -986,26 +986,21 @@ fn test_session_busy_queue_mode() {
     // First acquire succeeds.
     assert!(agent_loop.try_acquire_session("sess2"));
 
-    // Subsequent acquires add to queue.
+    // Subsequent acquires fail (Queue is now treated as Reject: the old Queue
+    // path counted queue_length without storing messages, which combined with
+    // release keeping busy could deadlock the session. queue_length stays 0
+    // under both modes now.)
     assert!(!agent_loop.try_acquire_session("sess2"));
-    assert_eq!(agent_loop.session_queue_length("sess2"), 1);
+    assert_eq!(agent_loop.session_queue_length("sess2"), 0);
 
     assert!(!agent_loop.try_acquire_session("sess2"));
-    assert_eq!(agent_loop.session_queue_length("sess2"), 2);
+    assert_eq!(agent_loop.session_queue_length("sess2"), 0);
 
-    // Queue full.
-    assert!(!agent_loop.try_acquire_session("sess2"));
-    assert_eq!(agent_loop.session_queue_length("sess2"), 3);
-
-    // Exceeds queue size.
-    assert!(!agent_loop.try_acquire_session("sess2"));
-    assert_eq!(agent_loop.session_queue_length("sess2"), 3); // Capped.
-
-    // Release drains one from queue.
+    // Release clears busy (no queue to drain).
     let has_queued = agent_loop.release_session("sess2");
-    assert!(has_queued);
-    assert_eq!(agent_loop.session_queue_length("sess2"), 2);
-    assert!(agent_loop.is_session_busy("sess2"));
+    assert!(!has_queued);
+    assert_eq!(agent_loop.session_queue_length("sess2"), 0);
+    assert!(!agent_loop.is_session_busy("sess2"));
 }
 
 #[test]
@@ -2805,8 +2800,8 @@ async fn test_process_system_message_without_result_prefix() {
     assert!(response.contains("Direct content"));
 }
 
-#[test]
-fn test_summarize_history_owned_short_history() {
+#[tokio::test]
+async fn test_summarize_history_owned_short_history() {
     let provider = MockLlmProvider::new(vec![]);
     let history: Vec<crate::types::ConversationTurn> = vec![
         crate::types::ConversationTurn {
@@ -2818,12 +2813,12 @@ fn test_summarize_history_owned_short_history() {
             reasoning_content: None,
         },
     ];
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_none()); // Too short to summarize
 }
 
-#[test]
-fn test_summarize_history_owned_filters_non_user_messages() {
+#[tokio::test]
+async fn test_summarize_history_owned_filters_non_user_messages() {
     let provider = MockLlmProvider::new(vec![]);
     // 5 messages, all system/tool -> should return None (no valid messages)
     let history: Vec<crate::types::ConversationTurn> = (0..6)
@@ -2836,7 +2831,7 @@ fn test_summarize_history_owned_filters_non_user_messages() {
             reasoning_content: None,
         })
         .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_none());
 }
 
@@ -3107,7 +3102,7 @@ async fn test_maybe_summarize_no_session_store() {
         instance.add_assistant_message(&format!("Response {} with similar padding content to increase estimated tokens", i), Vec::new(), None);
     }
     // Should not panic even without session store
-    agent_loop.maybe_summarize(&instance, "test-session", "web", "chat1");
+    agent_loop.maybe_summarize(&instance, "test-session", "web", "chat1").await;
 }
 
 #[tokio::test]
@@ -3130,9 +3125,9 @@ async fn test_maybe_summarize_already_summarizing() {
     }
 
     // First call triggers summarization
-    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1");
+    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1").await;
     // Second call should be skipped (already summarizing)
-    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1");
+    agent_loop.maybe_summarize(&instance, "sess1", "web", "chat1").await;
 }
 
 // =========================================================================
@@ -4863,20 +4858,20 @@ fn llm_text(content: &str) -> LlmResponse {
     }
 }
 
-#[test]
-fn test_summarize_history_owned_batch_returns_summary() {
+#[tokio::test]
+async fn test_summarize_history_owned_batch_returns_summary() {
     let provider = MockLlmProvider::new(vec![llm_text("Batch summary")]);
     // 6 turns (>4) → to_summarize = first 2 (<=10 → batch path).
     let history: Vec<crate::types::ConversationTurn> = (0..6)
         .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
         .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_some(), "batch summarize should return a summary");
     assert!(result.unwrap().contains("Batch summary"));
 }
 
-#[test]
-fn test_summarize_history_owned_multipart_merges() {
+#[tokio::test]
+async fn test_summarize_history_owned_multipart_merges() {
     // 16 turns → to_summarize = 12 (>10 → multipart: 2 batches + 1 merge = 3 calls).
     let provider = MockLlmProvider::new(vec![
         llm_text("part one"),
@@ -4886,13 +4881,13 @@ fn test_summarize_history_owned_multipart_merges() {
     let history: Vec<crate::types::ConversationTurn> = (0..16)
         .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("msg {}", i)))
         .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None);
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", None).await;
     assert!(result.is_some(), "multipart summarize should return a summary");
     assert!(result.unwrap().contains("merged summary"));
 }
 
-#[test]
-fn test_summarize_history_owned_omits_oversized_messages() {
+#[tokio::test]
+async fn test_summarize_history_owned_omits_oversized_messages() {
     // One oversized message in to_summarize triggers the omitted-note branch.
     let provider = MockLlmProvider::new(vec![llm_text("Short summary")]);
     let mut history: Vec<crate::types::ConversationTurn> = (0..6)
@@ -4901,7 +4896,7 @@ fn test_summarize_history_owned_omits_oversized_messages() {
     // history[0] is in to_summarize (first 2); make it oversized.
     history[0].content = "x".repeat(10_000);
     // context_window=100 → max_msg_tokens=50 → the 10000-char msg is oversized.
-    let result = summarize_history_owned(&history, "", 100, &provider, "test-model", None);
+    let result = summarize_history_owned(&history, "", 100, &provider, "test-model", None).await;
     assert!(result.is_some());
     assert!(
         result.unwrap().contains("omitted"),
@@ -4909,8 +4904,8 @@ fn test_summarize_history_owned_omits_oversized_messages() {
     );
 }
 
-#[test]
-fn test_summarize_history_owned_with_observer_manager() {
+#[tokio::test]
+async fn test_summarize_history_owned_with_observer_manager() {
     // Passing observer_manager = Some covers the emit_observer_events_around_llm
     // observer branches (ConversationStart / LlmResponse / ConversationEnd emit).
     let provider = MockLlmProvider::new(vec![llm_text("observed summary")]);
@@ -4918,7 +4913,7 @@ fn test_summarize_history_owned_with_observer_manager() {
     let history: Vec<crate::types::ConversationTurn> = (0..6)
         .map(|i| turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{}", i)))
         .collect();
-    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", Some(observer));
+    let result = summarize_history_owned(&history, "", 128000, &provider, "test-model", Some(observer)).await;
     assert!(result.is_some());
     assert!(result.unwrap().contains("observed summary"));
 }

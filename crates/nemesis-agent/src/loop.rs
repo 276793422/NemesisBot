@@ -416,7 +416,12 @@ pub struct AgentLoop {
     session_busy: parking_lot::Mutex<HashMap<String, SessionBusyState>>,
     /// Concurrent request handling mode.
     concurrent_mode: ConcurrentMode,
-    /// Queue size for queue mode.
+    /// Configured queue size for queue mode. Stored for config/logging parity
+    /// but NOT read: under `run_bus_arc`'s sequential processing, queue mode is
+    /// treated as reject (see `try_start_session`), so this is dead. Remove
+    /// this field (+ the `new_bus` param + call sites) if queue mode is
+    /// permanently retired.
+    #[allow(dead_code)]
     queue_size: usize,
     /// Maximum concurrent cluster continuation tasks.
     /// 0 = inline execution in the main loop (no spawn, serialized).
@@ -1927,17 +1932,15 @@ impl AgentLoop {
             return true;
         }
 
-        // Session is busy.
-        match self.concurrent_mode {
-            ConcurrentMode::Reject => false,
-            ConcurrentMode::Queue => {
-                if state.queue_length >= self.queue_size {
-                    return false;
-                }
-                state.queue_length += 1;
-                false
-            }
-        }
+        // Session is busy — reject. Queue mode is now treated as reject: the
+        // old Queue path incremented queue_length WITHOUT storing the message,
+        // and release_session kept busy while queue_length>0 → the session
+        // could deadlock (no turn ever acquires to drain the counter). Under
+        // run_bus_arc's sequential processing there's no real concurrent
+        // queueing need, so both modes reject. (queue_length stays 0, so
+        // release_session naturally sets busy=false.)
+        let _ = self.concurrent_mode;
+        false
     }
 
     /// Release a session after processing.
@@ -2028,7 +2031,7 @@ impl AgentLoop {
     /// In Go this runs in a goroutine (`go func()`) so it doesn't block the
     /// response. We mirror this by spawning a tokio task when summarization
     /// is needed.
-    fn maybe_summarize(&self, instance: &AgentInstance, session_key: &str, channel: &str, chat_id: &str) {
+    async fn maybe_summarize(&self, instance: &AgentInstance, session_key: &str, channel: &str, chat_id: &str) {
         let history = instance.get_history();
         let context_window = instance.context_window();
         let token_estimate = estimate_tokens_for_turns(&history);
@@ -2141,56 +2144,56 @@ impl AgentLoop {
         let chat_id_owned = chat_id.to_string();
         let clear_key = summarize_key.clone();
 
-        // Spawn async summarization task, mirroring Go's `go func()`.
-        tokio::spawn(async move {
-            // Notify user if non-internal channel.
-            if !is_internal_channel(&channel_owned) {
-                if let Some(ref tx) = outbound_tx {
-                    let outbound = nemesis_types::channel::OutboundMessage {
-                        channel: channel_owned.clone(),
-                        chat_id: chat_id_owned.clone(),
-                        content: "Memory threshold reached. Optimizing conversation history..."
-                            .to_string(),
-                        message_type: String::new(),
-                    };
-                    let _ = tx.send(outbound).await;
-                }
+        // Synchronous summarization in-turn (no spawn). Because run_bus_arc is
+        // sequential, the next message's writes can't race with this one → no
+        // lost update, no stale-snapshot gap. This is the fix for the
+        // set_history overwrite defect.
+        if !is_internal_channel(&channel_owned) {
+            if let Some(ref tx) = outbound_tx {
+                let outbound = nemesis_types::channel::OutboundMessage {
+                    channel: channel_owned.clone(),
+                    chat_id: chat_id_owned.clone(),
+                    content: "Memory threshold reached. Optimizing conversation history..."
+                        .to_string(),
+                    message_type: String::new(),
+                };
+                let _ = tx.send(outbound).await;
             }
+        }
 
-            // Perform summarization (self-contained, no &self needed).
-            let summary = summarize_history_owned(
-                &history_clone,
-                &existing_summary,
-                context_window,
-                provider.as_ref(),
-                &model,
-                observer_mgr,
-            );
+        // Perform summarization (async, awaits provider.chat — no block_on).
+        let summary = summarize_history_owned(
+            &history_clone,
+            &existing_summary,
+            context_window,
+            provider.as_ref(),
+            &model,
+            observer_mgr,
+        )
+        .await;
 
-            if let Some(summary) = summary {
-                // Save summary to session store if available.
-                if let Some(ref store) = session_store {
-                    let stored_messages: Vec<crate::session::StoredMessage> = history_clone
-                        .iter()
-                        .map(|m| crate::session::StoredMessage::from(m))
-                        .collect();
+        if let Some(summary) = summary {
+            // Save summary to session store if available.
+            if let Some(ref store) = session_store {
+                let stored_messages: Vec<crate::session::StoredMessage> = history_clone
+                    .iter()
+                    .map(|m| crate::session::StoredMessage::from(m))
+                    .collect();
 
-                    // Keep last 4 messages for continuity, preserving tool message pairs.
-                    let retained = truncate_with_tool_pairs(&stored_messages, 4);
+                // Keep last 4 messages for continuity, preserving tool message pairs.
+                let retained = truncate_with_tool_pairs(&stored_messages, 4);
 
-                    store.set_history(&session_key_owned, retained);
-                    store.set_summary(&session_key_owned, &summary);
-                    let _ = store.save(&session_key_owned);
-                }
+                store.set_history(&session_key_owned, retained);
+                store.set_summary(&session_key_owned, &summary);
+                let _ = store.save(&session_key_owned);
             }
+        }
 
-            // Clear the summarizing flag so this session can be re-summarized later.
-            // Mirrors Go's `defer al.summarizing.Delete(summarizeKey)`.
-            {
-                let mut map = summarizing_flag.lock();
-                map.remove(&clear_key);
-            }
-        });
+        // Clear the summarizing flag so this session can be re-summarized later.
+        {
+            let mut map = summarizing_flag.lock();
+            map.remove(&clear_key);
+        }
     }
 
     /// Summarize the conversation history for a session.
@@ -2481,7 +2484,7 @@ impl AgentLoop {
         let events = self.run_with_trace(&instance, user_message, &context, &trace_id, voice_playback, cancel_token).await;
 
         // Maybe trigger summarization.
-        self.maybe_summarize(&instance, session_key, channel, chat_id);
+        self.maybe_summarize(&instance, session_key, channel, chat_id).await;
 
         // Persist to session store — mirrors Go's runAgentLoop exactly:
         //   Line 104: agent.Sessions.AddMessage(sessionKey, "user", userMessage)
@@ -3951,7 +3954,7 @@ fn truncate_with_tool_pairs(
 /// Standalone summarization function that can run in a spawned task.
 /// Takes ownership of all data it needs (history, provider Arc, model).
 /// Returns `Some(summary)` if summarization was performed, `None` if skipped.
-fn summarize_history_owned(
+async fn summarize_history_owned(
     history: &[crate::types::ConversationTurn],
     existing_summary: &str,
     context_window: usize,
@@ -3989,9 +3992,9 @@ fn summarize_history_owned(
 
     // Multi-part summarization.
     let final_summary = if valid_messages.len() > 10 {
-        summarize_multipart_owned(&valid_messages, provider, model, observer_manager)
+        summarize_multipart_owned(&valid_messages, provider, model, observer_manager).await
     } else {
-        summarize_batch_owned(&valid_messages, existing_summary, provider, model, observer_manager)
+        summarize_batch_owned(&valid_messages, existing_summary, provider, model, observer_manager).await
     };
 
     let final_summary = if omitted && !final_summary.is_empty() {
@@ -4011,7 +4014,7 @@ fn summarize_history_owned(
 }
 
 /// Multi-part summarization (standalone, works in spawned task).
-fn summarize_multipart_owned(
+async fn summarize_multipart_owned(
     messages: &[&crate::types::ConversationTurn],
     provider: &dyn LlmProvider,
     model: &str,
@@ -4021,8 +4024,8 @@ fn summarize_multipart_owned(
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
-    let s1 = summarize_batch_owned(part1, "", provider, model, observer_manager.clone());
-    let s2 = summarize_batch_owned(part2, "", provider, model, observer_manager.clone());
+    let s1 = summarize_batch_owned(part1, "", provider, model, observer_manager.clone()).await;
+    let s2 = summarize_batch_owned(part2, "", provider, model, observer_manager.clone()).await;
 
     // Merge via LLM.
     let merge_prompt = format!(
@@ -4042,8 +4045,9 @@ fn summarize_multipart_owned(
         observer_manager.as_ref(),
         "summarize-multipart-merge",
         model,
-        || block_on_llm_chat(provider, model, llm_messages),
-    );
+        provider.chat(model, llm_messages, None, vec![]),
+    )
+    .await;
 
     match response {
         Some(Ok(resp)) if !resp.content.is_empty() => resp.content,
@@ -4052,7 +4056,7 @@ fn summarize_multipart_owned(
 }
 
 /// Single-batch summarization (standalone, works in spawned task).
-fn summarize_batch_owned(
+async fn summarize_batch_owned(
     batch: &[&crate::types::ConversationTurn],
     existing_summary: &str,
     provider: &dyn LlmProvider,
@@ -4082,8 +4086,9 @@ fn summarize_batch_owned(
         observer_manager.as_ref(),
         "summarize-batch",
         model,
-        || block_on_llm_chat(provider, model, messages),
-    );
+        provider.chat(model, messages, None, vec![]),
+    )
+    .await;
 
     match response {
         Some(Ok(resp)) => resp.content,
@@ -4124,18 +4129,17 @@ fn block_on_llm_chat(
 
 /// Emit observer events (ConversationStart, LlmRequest, LlmResponse, ConversationEnd)
 /// around a synchronous LLM call closure. Used by standalone summarization functions.
-fn emit_observer_events_around_llm<F>(
+async fn emit_observer_events_around_llm<Fut>(
     observer_manager: Option<&Arc<nemesis_observer::Manager>>,
     label: &str,
     model: &str,
-    llm_call: F,
+    llm_call: Fut,
 ) -> Option<Result<LlmResponse, String>>
 where
-    F: FnOnce() -> Option<Result<LlmResponse, String>>,
+    Fut: std::future::Future<Output = Result<LlmResponse, String>>,
 {
     use crate::loop_executor::ObserverEvent;
 
-    // Generate trace_id for this summarization LLM call.
     let trace_id = format!(
         "{}-{}",
         label,
@@ -4145,7 +4149,7 @@ where
             .as_nanos()
     );
 
-    // Emit ConversationStart and LlmRequest before the call.
+    // Emit ConversationStart + LlmRequest before the call (await, no block_in_place).
     if let Some(mgr) = observer_manager {
         let start_event = ObserverEvent::ConversationStart {
             trace_id: trace_id.clone(),
@@ -4155,20 +4159,7 @@ where
             sender_id: "summarizer".to_string(),
             content: String::new(),
         };
-        let conv_event = start_event.to_conversation_event();
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // Inside a tokio runtime — must use block_in_place to avoid
-                // "Cannot start a runtime from within a runtime" panic.
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
-                });
-            }
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(mgr.emit_sync(conv_event));
-            }
-        }
+        mgr.emit(start_event.to_conversation_event()).await;
 
         let request_event = ObserverEvent::LlmRequest {
             trace_id: trace_id.clone(),
@@ -4182,37 +4173,26 @@ where
             api_key: String::new(),
             api_base: String::new(),
         };
-        let conv_event = request_event.to_conversation_event();
-        let mgr_clone = Arc::clone(mgr);
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(async move {
-                    mgr_clone.emit(conv_event).await;
-                });
-            }
-            Err(_) => {
-                // No runtime available, just skip async emit for request
-            }
-        }
+        mgr.emit(request_event.to_conversation_event()).await;
     }
 
-    // Execute the LLM call.
+    // Execute the LLM call (async, no block_on).
     let start = std::time::Instant::now();
-    let mut response = llm_call();
+    let mut response = llm_call.await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // Extract response content and raw fields for observer events.
     let (response_content, raw_req, raw_resp) = match &mut response {
-        Some(Ok(r)) => {
+        Ok(r) => {
             let content = r.content.clone();
             let req = r.raw_request_body.take();
             let resp = r.raw_response_body.take();
             (content, req, resp)
         }
-        _ => (String::new(), None, None),
+        Err(_) => (String::new(), None, None),
     };
 
-    // Emit LlmResponse and ConversationEnd after the call.
+    // Emit LlmResponse + ConversationEnd after the call (await, sequential —
+    // LlmResponse fully processed before ConversationEnd, as the old emit_sync intended).
     if let Some(mgr) = observer_manager {
         let response_event = ObserverEvent::LlmResponse {
             trace_id: trace_id.clone(),
@@ -4227,20 +4207,7 @@ where
             raw_request_body: raw_req,
             raw_response_body: raw_resp,
         };
-        let conv_event = response_event.to_conversation_event();
-        // Use emit_sync (not async) to guarantee LlmResponse is fully
-        // processed before ConversationEnd removes the ConversationState.
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
-                });
-            }
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(mgr.emit_sync(conv_event));
-            }
-        }
+        mgr.emit(response_event.to_conversation_event()).await;
 
         let end_event = ObserverEvent::ConversationEnd {
             trace_id,
@@ -4251,23 +4218,10 @@ where
             channel: String::new(),
             chat_id: String::new(),
         };
-        let conv_event = end_event.to_conversation_event();
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // Inside a tokio runtime — must use block_in_place to avoid
-                // "Cannot start a runtime from within a runtime" panic.
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(mgr.emit_sync(conv_event));
-                });
-            }
-            Err(_) => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(mgr.emit_sync(conv_event));
-            }
-        }
+        mgr.emit(end_event.to_conversation_event()).await;
     }
 
-    response
+    Some(response)
 }
 
 // ---------------------------------------------------------------------------
