@@ -780,6 +780,49 @@ async fn test_send_to_session_includes_model_badge() {
     );
 }
 
+/// Bug fix: a web inbound with NO session_id (the default conversation) must
+/// map to `agent:main:session:legacy` so it shows up in the session list
+/// (sessions.list filters on `agent_main_session_*`). `process_messages` is
+/// the single web inbound chokepoint, so this covers every Dashboard WS msg.
+/// Formerly fell back to `web:{chat_id}` → route-resolved to `agent:main:main`
+/// → invisible in the session list.
+#[tokio::test]
+async fn test_process_messages_default_web_session_is_legacy() {
+    use crate::websocket_handler::IncomingMessage;
+    use nemesis_bus::MessageBus;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+
+    let (tx, rx) = mpsc::unbounded_channel::<IncomingMessage>();
+    let bus = Arc::new(MessageBus::new());
+    let mut sub = bus.subscribe_inbound();
+    let bus_clone = bus.clone();
+    tokio::spawn(async move {
+        super::process_messages(rx, bus_clone).await;
+    });
+
+    // No session_id in metadata → the default conversation.
+    let inc = IncomingMessage {
+        session_id: "s".to_string(),
+        sender_id: "u".to_string(),
+        chat_id: "web:abc".to_string(),
+        content: "hi".to_string(),
+        metadata: HashMap::new(),
+        voice_playback: None,
+    };
+    tx.send(inc).unwrap();
+    drop(tx); // let process_messages drain and exit
+
+    let inbound = tokio::time::timeout(Duration::from_millis(1000), sub.recv())
+        .await
+        .expect("timed out waiting for inbound")
+        .expect("inbound channel closed");
+    assert_eq!(
+        inbound.session_key, "agent:main:session:legacy",
+        "default web conversation must use the legacy session key (appears in list)"
+    );
+}
+
 #[tokio::test]
 async fn test_send_history_to_session_with_active_queue_succeeds() {
     use crate::websocket_handler::SendQueue;
@@ -827,7 +870,9 @@ async fn test_process_messages_preserves_voice_playback_some() {
     assert!(msg.is_ok());
     let inbound = msg.unwrap().unwrap();
     assert_eq!(inbound.voice_playback, Some(true));
-    assert_eq!(inbound.session_key, "web:web:s1");
+    // No session_id → default "legacy" conversation key (was `web:{chat_id}`
+    // before the session-list-visibility fix).
+    assert_eq!(inbound.session_key, "agent:main:session:legacy");
 }
 
 #[tokio::test]

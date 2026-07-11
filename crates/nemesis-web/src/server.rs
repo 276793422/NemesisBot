@@ -893,7 +893,16 @@ pub async fn process_messages(
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             ),
-            _ => format!("web:{}", msg.chat_id),
+            // No session_id → the single shared default conversation "legacy".
+            // This is the ONLY web inbound chokepoint (process_messages handles
+            // every Dashboard WS message), so routing the default here guarantees
+            // EVERY web conversation lands in `agent:main:session:*` and thus
+            // shows up in the session list (sessions.list filters on that
+            // prefix). Must stay in lockstep with loop.rs handle_history_request
+            // (same legacy fallback) so chat-write and history-read share a key.
+            // Formerly `web:{chat_id}`, which the route resolver collapsed to
+            // `agent:main:main` — invisible to the list (the bug).
+            _ => "agent:main:session:legacy".to_string(),
         };
         let inbound = InboundMessage {
             channel: "web".to_string(),

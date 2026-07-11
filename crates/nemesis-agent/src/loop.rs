@@ -1817,13 +1817,16 @@ impl AgentLoop {
             .unwrap_or_else(|| "main".to_string());
         // Multi-session: if the client sent a session_id, derive
         // `agent:main:session:{sid}` (agent: prefix → adopted by loop.rs:1623,
-        // bypasses routing). Otherwise fall back to the default main session.
+        // bypasses routing). Otherwise fall back to the default "legacy"
+        // conversation — MUST match server.rs process_messages' fallback so
+        // history-read and chat-write share the same key (else the default
+        // conversation's history wouldn't reload).
         let session_key = match msg.metadata.get("session_id") {
             Some(sid) if !sid.is_empty() => format!(
                 "agent:main:session:{}",
                 crate::session::SessionStore::sanitize_session_id(sid)
             ),
-            _ => build_agent_main_session_key(&agent_id),
+            _ => format!("agent:{}:session:legacy", agent_id),
         };
 
         // Read history from chat log (separate from session store).

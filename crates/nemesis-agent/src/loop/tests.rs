@@ -4046,14 +4046,15 @@ fn populate_session_log(session_key: &str, count: usize) {
 }
 
 // --- Integration tests: history through AgentLoop ---
-// These use the shared "agent:main:main" session key because
-// handle_history_request() hardcodes it. Assertions use >= because other
-// parallel tests also write to this file.
+// These use the default web session key "agent:main:session:legacy" because
+// handle_history_request() (no session_id) falls back to it (must match
+// server.rs process_messages). Assertions use >= because other parallel
+// tests may also write to this file.
 
 #[tokio::test]
 async fn test_history_returns_all_messages() {
     let _lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
-    let key = "agent:main:main";
+    let key = "agent:main:session:legacy";
     let safe_key = key.replace(':', "_");
     let path = nemesis_path::default_path_manager()
         .sessions_log_dir()
@@ -4138,7 +4139,7 @@ fn test_history_read_all() {
 #[tokio::test]
 async fn test_history_e2e_via_bus_arc() {
     let _lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
-    let key = "agent:main:main";
+    let key = "agent:main:session:legacy";
     let safe_key = key.replace(':', "_");
     let path = nemesis_path::default_path_manager()
         .sessions_log_dir()
