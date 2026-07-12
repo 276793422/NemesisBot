@@ -216,6 +216,9 @@ if exist "web\package.json" (
         echo.
         goto step3_android
     )
+    echo   Cleaning stale Vite assets...
+    echo   (orphaned hashed chunks from prior builds get embedded into the binary via include_dir!, bloating it ~2MB)
+    if exist "..\crates\nemesis-web\static\assets" rmdir /s /q "..\crates\nemesis-web\static\assets"
     echo   Running Vite build...
     call npm run build
     if errorlevel 1 (

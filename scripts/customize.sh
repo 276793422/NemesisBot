@@ -26,6 +26,25 @@ if [ ! -x "$CFG" ]; then
 fi
 
 do_build() {
+    # Build Vue frontend (self-contained: clean stale assets first — orphaned
+    # chunks get embedded into the binary via include_dir!, bloating it ~2MB).
+    # Falls back to existing static/ if npm unavailable — WITHOUT cleaning, so
+    # we never embed a broken (cleaned-but-not-rebuilt) frontend (white screen).
+    if [ -f "web/package.json" ]; then
+        echo "[customize] building Vue frontend..."
+        if (cd web && npm install 2>&1) && [ -d web/node_modules ]; then
+            echo "[customize] cleaning stale Vite assets..."
+            rm -rf "crates/nemesis-web/static/assets"
+            if ! (cd web && npm run build 2>&1); then
+                echo "[customize] ERROR Vue build failed AFTER cleaning assets — aborting to avoid embedding a broken frontend (white screen)." >&2
+                exit 1
+            fi
+            echo "[customize] OK Vue frontend built"
+        else
+            echo "[customize] WARN npm not available / install failed — keeping existing static/ (NOT cleaning, to avoid white screen). Run a full build script first for a fresh frontend."
+        fi
+    fi
+
     if "$CFG" --root "$ROOT" has-config; then
         local FEATS PROFILE
         FEATS=$("$CFG" --root "$ROOT" export --features)

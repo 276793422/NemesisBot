@@ -55,6 +55,9 @@ echo [customize] opening TUI - toggle with Space, press q to save and exit
 if errorlevel 1 ( echo [customize] configurator exited with error & exit /b 1 )
 
 :do_build
+call :build_frontend
+if errorlevel 1 exit /b 1
+
 "%CFG%" --root "%ROOT%" has-config
 if errorlevel 1 (
     echo [customize] no .config - full default build, profile=release
@@ -76,4 +79,32 @@ if not exist "target\!PROFILE!\nemesisbot.exe" (
 )
 copy /y "target\!PROFILE!\nemesisbot.exe" "bin\bin_customize\nemesisbot.exe" >nul
 echo [customize] DONE -^> bin\bin_customize\nemesisbot.exe
+exit /b 0
+
+REM ============ subroutine: build Vue frontend (self-contained) ============
+REM Cleans stale Vite assets first (orphaned chunks get embedded into the
+REM binary via include_dir!, bloating it ~2MB). Falls back to existing static/
+REM if npm is unavailable -- WITHOUT cleaning, so we never embed a broken
+REM (cleaned-but-not-rebuilt) frontend that would white-screen the Web UI.
+:build_frontend
+if not exist "web\package.json" exit /b 0
+echo [customize] building Vue frontend...
+pushd web
+call npm install --silent
+if errorlevel 1 (
+    popd
+    echo [customize] WARN npm install failed - keeping existing static/ ^(NOT cleaning, to avoid white screen^).
+    echo [customize]        Run scripts\build-windows.bat first for a fresh frontend.
+    exit /b 0
+)
+echo [customize] cleaning stale Vite assets...
+if exist "..\crates\nemesis-web\static\assets" rmdir /s /q "..\crates\nemesis-web\static\assets"
+call npm run build
+if errorlevel 1 (
+    popd
+    echo [customize] ERROR Vue build failed AFTER cleaning assets - aborting to avoid embedding a broken frontend ^(white screen^).
+    exit /b 1
+)
+popd
+echo [customize] OK Vue frontend built
 exit /b 0

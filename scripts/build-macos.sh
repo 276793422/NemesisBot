@@ -143,11 +143,14 @@ if [ -f "web/package.json" ]; then
     }
 
     if [ -d "web/node_modules" ]; then
+        echo "  Cleaning stale Vite assets (orphaned hashed chunks get embedded into the binary via include_dir!, bloating it ~2MB)..."
+        rm -rf "crates/nemesis-web/static/assets"
         echo "  Running Vite build..."
         if (cd web && npm run build 2>&1); then
             echo "  OK Vue frontend built"
         else
-            echo "  WARN Vue build failed, using existing static files"
+            echo "  ERROR Vue build failed AFTER cleaning assets — aborting to avoid embedding a broken frontend (white screen). Fix the Vue build and re-run."
+            exit 1
         fi
     fi
 else
