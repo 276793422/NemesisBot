@@ -18,7 +18,7 @@ path = "src/main.rs"
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
-    "forge", "memory", "workflow", "security", "sandbox",
+    "forge", "memory", "workflow", "security", "sandbox", "usage",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -38,6 +38,11 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+
+# Frontend-only gate (no Rust code): controls the "使用统计" Dashboard page
+# (UsageView) which pulls in echarts (~558KB). Off in minimal-iot → the page +
+# echarts are tree-shaken from the embedded frontend. No-op on the Rust side.
+usage = []
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]

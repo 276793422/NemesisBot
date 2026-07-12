@@ -80,6 +80,28 @@ pub fn render_cargo_cmd(cfg: &BuildConfig) -> String {
     s
 }
 
+/// Render `web/.env` content for the Vite frontend feature-gating.
+///
+/// Emits one `VITE_FEATURE_<ID>=<bool>` line per non-enum feature, where
+/// `<ID>` is the feature id uppercased with `-`→`_` (`channels-web` →
+/// `VITE_FEATURE_CHANNELS_WEB`). The frontend gates views on
+/// `import.meta.env.VITE_FEATURE_X !== 'false'` (default-include), so only
+/// `=false` lines actually hide views — both are emitted for clarity + so a
+/// stale `.env` never silently re-enables a trimmed feature. Unset features
+/// default to `false` (matches `--no-default-features` semantics).
+pub fn frontend_env(cfg: &BuildConfig, manifest: &FeatureManifest) -> String {
+    let mut lines = Vec::new();
+    for f in &manifest.features {
+        if f.is_enum() {
+            continue;
+        }
+        let name = format!("VITE_FEATURE_{}", f.id.replace('-', "_").to_uppercase());
+        let on = cfg.get_bool(&f.id).unwrap_or(false);
+        lines.push(format!("{name}={on}"));
+    }
+    lines.join("\n") + "\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +151,34 @@ build-profile = "iotsmall"
         assert!(cmd.contains("--profile iotsmall"));
         assert!(cmd.contains("--no-default-features"));
         assert!(cmd.contains("--features \"channels-web\""));
+    }
+
+    #[test]
+    fn frontend_env_emits_all_non_enum_features() {
+        let manifest = FeatureManifest::parse(
+            r#"
+[[feature]]
+id = "cluster"
+default = false
+[[feature]]
+id = "channels-web"
+default = true
+[[feature]]
+id = "build-profile"
+type = "enum"
+default = "release"
+options = ["release"]
+"#,
+        )
+        .unwrap();
+        let mut cfg = BuildConfig::default();
+        cfg.set_bool("cluster", false);
+        cfg.set_bool("channels-web", true);
+        let env = frontend_env(&cfg, &manifest);
+        assert!(env.contains("VITE_FEATURE_CLUSTER=false"));
+        assert!(env.contains("VITE_FEATURE_CHANNELS_WEB=true"));
+        // enum feature excluded
+        assert!(!env.contains("VITE_FEATURE_BUILD_PROFILE"));
     }
 
     #[test]

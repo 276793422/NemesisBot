@@ -51,6 +51,9 @@ enum Cmd {
         profile: bool,
         #[arg(long)]
         cmd: bool,
+        /// Render `web/.env` (VITE_FEATURE_<ID>=<bool>) for frontend gating.
+        #[arg(long)]
+        frontend_env: bool,
     },
     /// Exit 0 if a .config exists, else 1.
     HasConfig,
@@ -211,13 +214,18 @@ fn run_list(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_export(root: &Path, feats: bool, profile: bool, cmd: bool) -> Result<()> {
+fn run_export(root: &Path, feats: bool, profile: bool, cmd: bool, frontend_env: bool) -> Result<()> {
     let cpath = config_path(root);
     if !cpath.exists() {
         // No customization => signal to the bridge script to do a default build.
         anyhow::bail!("no .config at {} (run `nemesis-config` to create one)", cpath.display());
     }
     let cfg = BuildConfig::load(&cpath)?;
+    if frontend_env {
+        let manifest = FeatureManifest::load(&manifest_path(root))?;
+        print!("{}", export::frontend_env(&cfg, &manifest));
+        return Ok(());
+    }
     if feats {
         println!("{}", export::features_arg(&cfg));
     } else if profile {
@@ -275,7 +283,7 @@ fn main() -> Result<()> {
         Some(Cmd::Init) => run_init(&root),
         Some(Cmd::Check) => run_check(&root),
         Some(Cmd::List) => run_list(&root),
-        Some(Cmd::Export { features, profile, cmd }) => run_export(&root, features, profile, cmd),
+        Some(Cmd::Export { features, profile, cmd, frontend_env }) => run_export(&root, features, profile, cmd, frontend_env),
         Some(Cmd::HasConfig) => run_has_config(&root),
         Some(Cmd::Load { name }) => run_load(&root, &name),
     }

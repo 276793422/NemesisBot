@@ -87,6 +87,14 @@ REM binary via include_dir!, bloating it ~2MB). Falls back to existing static/
 REM if npm is unavailable -- WITHOUT cleaning, so we never embed a broken
 REM (cleaned-but-not-rebuilt) frontend that would white-screen the Web UI.
 :build_frontend
+REM Generate web/.env (frontend feature gates) from .config; clear if no config
+REM (no config = full default build => default-include all views).
+"%CFG%" --root "%ROOT%" has-config
+if errorlevel 1 (
+    if exist "web\.env" del /q "web\.env"
+) else (
+    "%CFG%" export --frontend-env > "web\.env"
+)
 if not exist "web\package.json" exit /b 0
 echo [customize] building Vue frontend...
 pushd web

@@ -145,6 +145,7 @@ if [ -f "web/package.json" ]; then
     if [ -d "web/node_modules" ]; then
         echo "  Cleaning stale Vite assets (orphaned hashed chunks get embedded into the binary via include_dir!, bloating it ~2MB)..."
         rm -rf "crates/nemesis-web/static/assets"
+        rm -f "web/.env"
         echo "  Running Vite build..."
         if (cd web && npm run build 2>&1); then
             echo "  OK Vue frontend built"

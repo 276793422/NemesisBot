@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
+import { computed } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { useTheme } from '../composables/useTheme'
@@ -18,6 +19,31 @@ function navigate(page: string) {
 function handleLogout() {
   auth.logout()
 }
+
+// Feature-gated nav items: map item id → VITE_FEATURE_<NAME>. An item whose
+// feature is off (`VITE_FEATURE_X === 'false'`, set by customize from .config)
+// is hidden so the menu shows no dead link to a trimmed page. Items not in the
+// map are always shown. Mirrors router/index.ts gating (same `!== 'false'`).
+const itemFeature: Record<string, string> = {
+  usage: 'USAGE',
+  memory: 'MEMORY',
+  workflows: 'WORKFLOW',
+  forge: 'FORGE',
+  cluster: 'CLUSTER',
+  security: 'SECURITY',
+  scanner: 'SECURITY',
+  sandbox: 'SANDBOX',
+}
+function featureOn(id: string): boolean {
+  const f = itemFeature[id]
+  if (!f) return true
+  return (import.meta.env['VITE_FEATURE_' + f] as string | undefined) !== 'false'
+}
+const visibleNavGroups = computed(() =>
+  navGroups
+    .map(g => ({ ...g, items: g.items.filter(i => featureOn(i.id)) }))
+    .filter(g => g.items.length > 0)
+)
 
 const navGroups = [
   {
@@ -112,7 +138,7 @@ const navGroups = [
     </div>
 
     <nav class="sidebar-nav">
-      <div v-for="group in navGroups" :key="group.title" class="nav-section">
+      <div v-for="group in visibleNavGroups" :key="group.title" class="nav-section">
         <div class="nav-section-title">{{ group.title }}</div>
         <a
           v-for="item in group.items"

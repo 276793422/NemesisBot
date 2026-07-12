@@ -50,6 +50,7 @@ members = [
     "test-tools/approval-test",
     "test-tools/memory-test",
     "test-tools/cluster-node",
+    "test-tools/nemesis-build-config",
 ]
 
 [workspace.package]

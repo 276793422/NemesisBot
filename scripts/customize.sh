@@ -26,6 +26,14 @@ if [ ! -x "$CFG" ]; then
 fi
 
 do_build() {
+    # Generate web/.env (frontend feature gates) from .config; clear if no
+    # config (no config = full default build => default-include all views).
+    if "$CFG" --root "$ROOT" has-config 2>/dev/null; then
+        echo "[customize] generating frontend feature env (web/.env)..."
+        "$CFG" export --frontend-env > "web/.env"
+    else
+        rm -f "web/.env"
+    fi
     # Build Vue frontend (self-contained: clean stale assets first — orphaned
     # chunks get embedded into the binary via include_dir!, bloating it ~2MB).
     # Falls back to existing static/ if npm unavailable — WITHOUT cleaning, so
