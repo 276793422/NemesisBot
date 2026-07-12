@@ -125,14 +125,14 @@ cargo build --release
 scripts\customize.bat                    # Windows
 bash scripts/customize.sh                # Linux/macOS/git-bash
 
-# 直接编译最小 IoT 版（加载 minimal-iot 预设，产物约 12MB）
+# 直接编译最小 IoT 版（加载 minimal-iot 预设，产物约 10MB，前端按 feature 裁剪）
 bash scripts/customize.sh iot
 
 # 或手动指定 feature 子集
 cargo build --profile iotsmall -p nemesisbot --no-default-features --features "channels-web,channels-rpc"
 ```
 
-可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md`。
+可裁剪：`cluster` / `forge` / `memory` / `workflow` / `security`(含 scanner) / `voice` / `desktop` / `auth` / `migrate` / `devices` / `health` / `heartbeat` / `sandbox` / `usage`(前端使用统计页，带 echarts) 及各通道。**CLI 子命令随 feature 条件编译**（关 `cluster` 则无 `nemesisbot cluster` 子命令）。**Vue 前端也同步裁剪**——customize 按同一份 feature 选择生成 `web/.env`，router/侧栏门控，Vite 把关闭的页面 tree-shake 掉（不进二进制；minimal-iot 前端从 1.7MB 降到 ~0.6MB）。详见 `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`。
 
 ### 运行测试
 
@@ -643,7 +643,7 @@ NemesisBot_Rust/
 - **持久化记忆** - AI 持续学习和进化
 - **Skill 系统** - 远程仓库搜索 + 本地技能管理
 - **多实例部署** - 支持同一设备运行多个独立实例
-- **编译期功能裁剪** - 所有子系统（cluster/forge/memory/workflow/security/voice/desktop/各通道…）均为可选 cargo feature，默认全开，可按需关闭；提供 menuconfig 风格 TUI 配置器（`scripts/customize.{bat,sh}`）和 `iotsmall` profile（panic=abort，产物约 12MB，IoT / 低资源场景）
+- **编译期功能裁剪** - 所有子系统（cluster/forge/memory/workflow/security/voice/desktop/各通道…）均为可选 cargo feature，默认全开，可按需关闭；提供 menuconfig 风格 TUI 配置器（`scripts/customize.{bat,sh}`）和 `iotsmall` profile（panic=abort，产物约 10MB，IoT / 低资源场景）。**前端同步裁剪**：关掉的 feature 对应的 Vue 页面也不编译（Vite tree-shake），前后端同源
 
 ---
 
