@@ -2167,6 +2167,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Note: Forge injection into agent_loop is now handled at creation time above.
 
     // Build SharedResources and use the factory to create the AgentLoop.
+    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+    info!("[Gateway] Global e-stop (kill switch) initialized (released)");
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
         bus: bus.clone(),
@@ -2200,6 +2202,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
+        estop,
         #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
@@ -2311,6 +2314,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject agent service into web server for start/stop control
     web_server.set_agent_service(agent_adapter.clone());
     info!("[Gateway] Agent service injected into web server");
+
+    // Inject global e-stop state so /api/internal can trigger/release/query it
+    // (EstopState is a thread-safe Arc<AtomicBool+watch>; the web handler
+    // mutates it directly — no mpsc round-trip needed, and status returns live).
+    web_server.set_estop(shared_resources.estop.clone());
+    info!("[Gateway] E-stop state injected into web server");
 
     // Inject DataStore into web server for usage statistics API
     if let Some(ref ds) = data_store {
@@ -3116,6 +3125,21 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             if let Err(e) = stop_adapter.stop() {
                 tracing::warn!("[Gateway] Tray: failed to stop agent: {}", e);
             }
+        }));
+
+        // E-stop / release: tray is in-process, capture the same EstopState Arc
+        // the agent loop reads (shared_resources.estop). trigger()/release() are
+        // &self on a thread-safe AtomicBool+watch, safe to call from the tray thread.
+        let estop_engage = Arc::clone(&shared_resources.estop);
+        tray.set_on_estop(Box::new(move || {
+            estop_engage.trigger();
+            tracing::info!("[Gateway] Tray: e-stop engaged");
+        }));
+
+        let estop_release = Arc::clone(&shared_resources.estop);
+        tray.set_on_release(Box::new(move || {
+            estop_release.release();
+            tracing::info!("[Gateway] Tray: e-stop released");
         }));
 
         let pm = Arc::clone(&process_manager);

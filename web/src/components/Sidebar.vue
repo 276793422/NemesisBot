@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { computed } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { useTheme } from '../composables/useTheme'
+import { useWSAPI } from '../composables/useWSAPI'
 
 const router = useRouter()
 const route = useRoute()
@@ -19,6 +20,42 @@ function navigate(page: string) {
 function handleLogout() {
   auth.logout()
 }
+
+// E-stop (kill switch): reflect + toggle global agent freeze via WSAPI.
+// engage/release 操作的是 gateway 里和 agent loop 共享的同一个 EstopState。
+const { request } = useWSAPI()
+const estopEngaged = ref(false)
+const estopBusy = ref(false)
+let estopTimer: ReturnType<typeof setInterval> | undefined
+
+async function refreshEstop() {
+  try {
+    const resp = await request('estop', 'status', {}, 5000)
+    estopEngaged.value = !!(resp && resp.engaged)
+  } catch {
+    // WS 未就绪或后端不可用——保持原状态，下个轮询周期再试。
+  }
+}
+async function toggleEstop() {
+  if (estopBusy.value) return
+  estopBusy.value = true
+  try {
+    const cmd = estopEngaged.value ? 'release' : 'trigger'
+    const resp = await request('estop', cmd, {}, 5000)
+    estopEngaged.value = !!(resp && resp.engaged)
+  } catch (e) {
+    console.error('[E-Stop] toggle failed:', e)
+  } finally {
+    estopBusy.value = false
+  }
+}
+onMounted(() => {
+  refreshEstop()
+  estopTimer = setInterval(refreshEstop, 10000)
+})
+onUnmounted(() => {
+  if (estopTimer) clearInterval(estopTimer)
+})
 
 // Feature-gated nav items: map item id → VITE_FEATURE_<NAME>. An item whose
 // feature is off (`VITE_FEATURE_X === 'false'`, set by customize from .config)
@@ -156,6 +193,17 @@ const navGroups = [
     </nav>
 
     <div class="sidebar-footer">
+      <a
+        class="nav-item estop-btn"
+        :class="{ engaged: estopEngaged }"
+        :title="estopEngaged ? '急停中——点击释放' : '触发急停（冻结全部 agent 活动）'"
+        @click="toggleEstop()"
+      >
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+        </span>
+        <span class="nav-label">{{ estopBusy ? '处理中…' : (estopEngaged ? '⛔ 急停中（点此释放）' : '急停 E-Stop') }}</span>
+      </a>
       <a class="nav-item" @click="toggleTheme()">
         <span class="nav-icon">
           <svg v-if="theme === 'dark'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -176,3 +224,21 @@ const navGroups = [
     </div>
   </aside>
 </template>
+
+<style scoped>
+.estop-btn {
+  cursor: pointer;
+}
+.estop-btn.engaged {
+  color: #ff4d4d;
+  background: rgba(255, 77, 77, 0.14);
+  font-weight: 600;
+}
+.estop-btn.engaged .nav-icon {
+  animation: estop-pulse 1.4s ease-in-out infinite;
+}
+@keyframes estop-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+</style>

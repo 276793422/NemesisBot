@@ -1,3 +1,4 @@
+CLAUDE.md
 /target
 # Ralph
 plan.md
@@ -25,3 +26,4 @@ scripts/customize/.config
 /log
 /test-tools/autotest
 /cluster-uat-logs
+/test-tools/TestAIServer

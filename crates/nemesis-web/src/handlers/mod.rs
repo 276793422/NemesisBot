@@ -8,6 +8,7 @@ pub mod agent;
 pub mod channels;
 #[cfg(feature = "cluster")]
 pub mod cluster;
+pub mod estop;
 pub mod config;
 #[cfg(feature = "forge")]
 pub mod forge;
@@ -44,6 +45,7 @@ use std::sync::Arc;
 /// Register all module handlers with the given router.
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
+    router.register(Arc::new(estop::EstopHandler));
     router.register(Arc::new(config::ConfigHandler::new()));
     router.register(Arc::new(models::ModelsHandler::new()));
     router.register(Arc::new(channels::ChannelsHandler::new()));

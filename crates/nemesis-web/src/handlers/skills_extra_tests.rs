@@ -48,6 +48,7 @@ use super::*;
             chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
+            estop: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),
@@ -88,6 +89,7 @@ use super::*;
             chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
+            estop: None,
         });
         RequestContext {
             session_id: "test-session".to_string(),

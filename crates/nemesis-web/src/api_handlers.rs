@@ -115,6 +115,9 @@ pub struct AppState {
     pub webhook_rate_limiter: Arc<()>,
     /// Internal command sender (gateway → web handler bridge).
     pub internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
+    /// 全局急停状态。/api/internal 的 estop_* 命令直接操作它（无需 mpsc 往返，
+    /// status 能即时返回）。EstopState 是线程安全 Arc<AtomicBool+watch>。
+    pub estop: Option<Arc<nemesis_agent::estop::EstopState>>,
 }
 
 impl AppState {
@@ -824,6 +827,37 @@ pub async fn handle_api_internal(
     }
 
     let cmd = body.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+
+    // E-stop commands operate directly on AppState.estop (no mpsc round-trip).
+    // EstopState is a thread-safe Arc<AtomicBool + watch>, and `estop_status`
+    // needs to return the live value — both reasons rule out the fire-and-forget
+    // InternalCommand path used by `open_dashboard`.
+    match cmd {
+        "estop_engage" | "estop_release" | "estop_status" => {
+            let estop = state.estop.as_ref().ok_or_else(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({"error": "e-stop not available"})),
+                )
+            })?;
+            match cmd {
+                "estop_engage" => {
+                    estop.trigger();
+                    tracing::info!("[Web] E-stop engaged via /api/internal");
+                }
+                "estop_release" => {
+                    estop.release();
+                    tracing::info!("[Web] E-stop released via /api/internal");
+                }
+                _ => {}
+            }
+            return Ok(Json(serde_json::json!({
+                "status": "ok",
+                "engaged": estop.is_engaged(),
+            })));
+        }
+        _ => {}
+    }
 
     let tx = match &state.internal_cmd_tx {
         Some(tx) => tx,

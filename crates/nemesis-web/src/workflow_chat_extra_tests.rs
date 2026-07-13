@@ -43,6 +43,7 @@ mod workflow_chat_extra_tests {
             chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
+            estop: None,
         })
     }
 

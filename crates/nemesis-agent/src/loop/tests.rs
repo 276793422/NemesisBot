@@ -99,6 +99,314 @@ async fn simple_text_response() {
 }
 
 #[tokio::test]
+async fn estop_engaged_stops_loop_before_llm() {
+    // 触发的急停必须在 checkpoint A（轮次顶部）break，**在调用 LLM 之前**——
+    // 所以 mock provider 的回复绝不被消费，用户拿到「已急停」Done 事件。
+    use std::sync::Arc;
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "MUST NOT BE RETURNED".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+
+    // 接线 + 触发急停（模拟 SharedResources.estop → set_estop）。
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop.clone());
+    assert!(!estop.is_engaged());
+    estop.trigger();
+    assert!(estop.is_engaged());
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "Hi", &context).await;
+
+    let done_events: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // checkpoint A 触发：Done 是急停提示，不是 mock 的回复。
+    assert!(
+        !done_events.is_empty(),
+        "急停应产生 Done 事件"
+    );
+    let combined = done_events.join(" | ");
+    assert!(
+        combined.contains("急停") || combined.contains("ESTOP"),
+        "Done 事件应提到急停，实际: {}",
+        combined
+    );
+    assert!(
+        !combined.contains("MUST NOT BE RETURNED"),
+        "急停期间不应调用 LLM，但回复泄漏了: {}",
+        combined
+    );
+}
+
+#[tokio::test]
+async fn estop_disengaged_lets_loop_run_normally() {
+    // 对照组：未触发（或未接线）时行为不变——LLM 回复正常返回。
+    // 证明 checkpoint 在未触发时是纯短路（零行为变化）。
+    use std::sync::Arc;
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: "Hello!".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    // 接线但不触发。
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop);
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "Hi", &context).await;
+
+    let done_events: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1);
+    assert_eq!(done_events[0], "Hello!");
+}
+
+#[tokio::test]
+async fn estop_interrupts_in_flight_llm_call() {
+    // Phase 2：LLM 调用进行中触发急停，应通过 select 的 estop arm 中断挂起的
+    // chat future（而不是干等到 provider 永远挂起）。用 HangingProvider 验证——
+    // 它的 chat 永远 pending，但进入时翻 entered 标志，让测试确定 chat 已在等。
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct HangingProvider {
+        entered: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl LlmProvider for HangingProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            self.entered.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    }
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let agent_loop = Arc::new(AgentLoop::new(
+        Box::new(HangingProvider {
+            entered: entered.clone(),
+        }),
+        test_config(),
+    ));
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop.clone());
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let al = agent_loop.clone();
+    let run_task = tokio::spawn(async move { al.run(&instance, "Hi", &context).await });
+
+    // 等 chat() 被 poll 到（说明 select 已在等 LLM），再触发急停——
+    // 这样保证是 Phase 2 的 select arm 命中，而不是 Phase 0 的 checkpoint A。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !entered.load(Ordering::SeqCst) {
+        if std::time::Instant::now() > deadline {
+            panic!("provider.chat 从未被 poll——没走到 LLM 调用");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    estop.trigger();
+
+    let events = tokio::time::timeout(std::time::Duration::from_secs(3), run_task)
+        .await
+        .expect("run 应在 estop 中断挂起调用后返回")
+        .expect("task 不应 panic");
+
+    let done: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    let combined = done.join(" | ");
+    assert!(
+        combined.contains("急停") || combined.contains("ESTOP"),
+        "应得到 e-stop 中断的 Done 事件，实际: {}",
+        combined
+    );
+}
+
+#[tokio::test]
+async fn estop_blocks_handle_tool_call_when_engaged() {
+    // checkpoint C（handle_tool_call 顶部）：engaged 时直接返回 ESTOP 拒绝串，
+    // 不执行工具。
+    use std::sync::Arc;
+    let provider = MockLlmProvider::new(vec![]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop.clone());
+    estop.trigger();
+
+    let tc = ToolCallInfo {
+        id: "tc_1".to_string(),
+        name: "calculator".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let ctx = RequestContext::new("web", "chat1", "user1", "session1");
+    let result = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert!(
+        result.contains("ESTOP"),
+        "engaged 时应返回 ESTOP 拒绝串，实际: {}",
+        result
+    );
+    assert!(
+        !result.contains('4'),
+        "工具不应被执行（不应出现 '4'），实际: {}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn handle_tool_call_runs_when_estop_disengaged() {
+    // 对照组：estop 接线但未触发 → 工具正常执行（覆盖 handle_tool_call 的 fall-through）。
+    use std::sync::Arc;
+    let provider = MockLlmProvider::new(vec![]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
+    let estop = Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop); // 接线但不触发
+
+    let tc = ToolCallInfo {
+        id: "tc_1".to_string(),
+        name: "calculator".to_string(),
+        arguments: "{}".to_string(),
+    };
+    let ctx = RequestContext::new("web", "chat1", "user1", "session1");
+    let result = agent_loop.handle_tool_call(&tc, &ctx).await;
+    assert_eq!(result, "4");
+}
+
+#[tokio::test]
+async fn estop_blocks_remaining_tools_in_batch() {
+    // checkpoint B（批次每条工具前）：第一个工具执行时触发 estop，
+    // 第二个工具应被 checkpoint B 拦下、不执行。
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct EngageTool {
+        estop: Arc<crate::estop::EstopState>,
+    }
+    #[async_trait]
+    impl Tool for EngageTool {
+        async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+            self.estop.trigger();
+            Ok("engaged".to_string())
+        }
+    }
+    struct TrackerTool {
+        called: Arc<AtomicBool>,
+    }
+    #[async_trait]
+    impl Tool for TrackerTool {
+        async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok("should-not-run".to_string())
+        }
+    }
+
+    let estop = Arc::new(crate::estop::EstopState::new());
+    let tracker_called = Arc::new(AtomicBool::new(false));
+    let provider = MockLlmProvider::new(vec![LlmResponse {
+        content: String::new(),
+        tool_calls: vec![
+            ToolCallInfo {
+                id: "t1".to_string(),
+                name: "engage_tool".to_string(),
+                arguments: "{}".to_string(),
+            },
+            ToolCallInfo {
+                id: "t2".to_string(),
+                name: "tracker_tool".to_string(),
+                arguments: "{}".to_string(),
+            },
+        ],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.set_estop(estop.clone());
+    agent_loop.register_tool(
+        "engage_tool".to_string(),
+        Box::new(EngageTool {
+            estop: estop.clone(),
+        }),
+    );
+    agent_loop.register_tool(
+        "tracker_tool".to_string(),
+        Box::new(TrackerTool {
+            called: tracker_called.clone(),
+        }),
+    );
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+
+    assert!(
+        !tracker_called.load(Ordering::SeqCst),
+        "第二个工具不应被执行（checkpoint B 应拦下）"
+    );
+    let done_text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(m) => Some(m.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        done_text.contains("急停") || done_text.contains("ESTOP"),
+        "应有 e-stop Done 事件，实际: {}",
+        done_text
+    );
+}
+
+#[tokio::test]
 async fn tool_call_and_response() {
     let provider = MockLlmProvider::new(vec![
         // First call: LLM wants to call a tool.

@@ -22,6 +22,7 @@ pub mod auth;
 pub mod channel;
 pub mod cron;
 pub mod dashboard;
+pub mod estop;
 pub mod mcp;
 pub mod status;
 #[cfg(feature = "sandbox")]

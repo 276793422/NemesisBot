@@ -389,6 +389,8 @@ mod linux_tray {
         on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
         on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
         on_quit: Option<Box<dyn Fn() + Send + Sync>>,
+        on_estop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_release: Option<Box<dyn Fn() + Send + Sync>>,
     }
 
     /// extern "C" 回调桥接：plugin-ui 调用此函数通知菜单点击。
@@ -411,6 +413,8 @@ mod linux_tray {
             "cluster_stop" => { if let Some(ref cb) = cbs.on_cluster_stop { cb(); } }
             "dashboard" => { if let Some(ref cb) = cbs.on_open_dashboard { cb(); } }
             "chat" => { if let Some(ref cb) = cbs.on_open_chat { cb(); } }
+            "estop" => { if let Some(ref cb) = cbs.on_estop { cb(); } }
+            "release" => { if let Some(ref cb) = cbs.on_release { cb(); } }
             "quit" => { if let Some(ref cb) = cbs.on_quit { cb(); } }
             _ => {}
         }
@@ -424,6 +428,8 @@ mod linux_tray {
         on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
         on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
         on_quit: Option<Box<dyn Fn() + Send + Sync>>,
+        on_estop: Option<Box<dyn Fn() + Send + Sync>>,
+        on_release: Option<Box<dyn Fn() + Send + Sync>>,
     ) {
         // 1. 查找 plugin-ui library
         let lib_path = match nemesis_utils::find_plugin_library("plugin_ui") {
@@ -480,6 +486,8 @@ mod linux_tray {
             {"id": "cluster_stop", "label": "集群停止", "enabled": true},
             {"id": "dashboard", "label": "打开 Dashboard", "enabled": true},
             {"id": "chat", "label": "打开聊天", "enabled": true},
+            {"id": "estop", "label": "⛔ 急停 (E-Stop)", "enabled": true},
+            {"id": "release", "label": "✓ 释放急停 (Release)", "enabled": true},
             {"id": "version", "label": "NemesisBot (linux)", "enabled": false},
             {"id": "quit", "label": "退出", "enabled": true},
         ]);
@@ -503,6 +511,8 @@ mod linux_tray {
             on_open_dashboard,
             on_open_chat,
             on_quit,
+            on_estop,
+            on_release,
         });
         let cbs_ptr = Box::into_raw(cbs);
 
@@ -553,6 +563,8 @@ pub struct PlatformTray {
     on_open_dashboard: Option<Box<dyn Fn() + Send + Sync>>,
     on_open_chat: Option<Box<dyn Fn() + Send + Sync>>,
     on_quit: Option<Box<dyn Fn() + Send + Sync>>,
+    on_estop: Option<Box<dyn Fn() + Send + Sync>>,
+    on_release: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl PlatformTray {
@@ -566,6 +578,8 @@ impl PlatformTray {
             on_open_dashboard: None,
             on_open_chat: None,
             on_quit: None,
+            on_estop: None,
+            on_release: None,
         }
     }
 
@@ -611,6 +625,18 @@ impl PlatformTray {
         self.on_cluster_stop = Some(cb);
     }
 
+    /// Set callback for "E-Stop" (急停) menu item.
+    pub fn set_on_estop(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] E-Stop callback set");
+        self.on_estop = Some(cb);
+    }
+
+    /// Set callback for "Release e-stop" (释放急停) menu item.
+    pub fn set_on_release(&mut self, cb: Box<dyn Fn() + Send + Sync>) {
+        tracing::debug!("[Desktop] Release e-stop callback set");
+        self.on_release = Some(cb);
+    }
+
     /// Start the system tray on a dedicated thread.
     ///
     /// Returns the thread `JoinHandle`. The tray runs until the user
@@ -643,6 +669,8 @@ impl PlatformTray {
                 self.on_open_dashboard,
                 self.on_open_chat,
                 self.on_quit,
+                self.on_estop,
+                self.on_release,
             );
             return;
         }
@@ -744,6 +772,9 @@ impl PlatformTray {
         let sep1 = tray_icon::menu::PredefinedMenuItem::separator();
         let dashboard_item = tray_icon::menu::MenuItem::with_id("dashboard", "打开 Dashboard", true, None);
         let chat_item = tray_icon::menu::MenuItem::with_id("chat", "打开聊天", true, None);
+        let sep_estop = tray_icon::menu::PredefinedMenuItem::separator();
+        let estop_item = tray_icon::menu::MenuItem::with_id("estop", "⛔ 急停 (E-Stop)", true, None);
+        let release_item = tray_icon::menu::MenuItem::with_id("release", "✓ 释放急停 (Release)", true, None);
         let sep2 = tray_icon::menu::PredefinedMenuItem::separator();
         let version_item = tray_icon::menu::MenuItem::with_id("version", "NemesisBot (windows)", false, None);
         let sep3 = tray_icon::menu::PredefinedMenuItem::separator();
@@ -756,6 +787,9 @@ impl PlatformTray {
         let _ = menu.append(&sep1);
         let _ = menu.append(&dashboard_item);
         let _ = menu.append(&chat_item);
+        let _ = menu.append(&sep_estop);
+        let _ = menu.append(&estop_item);
+        let _ = menu.append(&release_item);
         let _ = menu.append(&sep2);
         let _ = menu.append(&version_item);
         let _ = menu.append(&sep3);
@@ -800,6 +834,8 @@ impl PlatformTray {
         let on_open_dashboard = self.on_open_dashboard;
         let on_open_chat = self.on_open_chat;
         let on_quit = self.on_quit;
+        let on_estop = self.on_estop;
+        let on_release = self.on_release;
 
         #[allow(deprecated)]
         event_loop.run(|event, el| {
@@ -834,6 +870,14 @@ impl PlatformTray {
                         "chat" => {
                             tracing::info!("[Desktop] Open Chat clicked");
                             if let Some(ref cb) = on_open_chat { cb(); }
+                        }
+                        "estop" => {
+                            tracing::info!("[Desktop] E-Stop clicked");
+                            if let Some(ref cb) = on_estop { cb(); }
+                        }
+                        "release" => {
+                            tracing::info!("[Desktop] Release e-stop clicked");
+                            if let Some(ref cb) = on_release { cb(); }
                         }
                         "quit" => {
                             tracing::info!("[Desktop] Quit clicked, exiting tray event loop");

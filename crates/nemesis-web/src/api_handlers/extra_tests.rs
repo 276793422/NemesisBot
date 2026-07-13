@@ -55,6 +55,7 @@ fn make_state(
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     })
 }
 
@@ -92,7 +93,17 @@ fn make_state_with_tx(
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
+        estop: None,
     })
+}
+
+fn make_state_with_estop(
+    auth_token: &str,
+    estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+) -> Arc<AppState> {
+    let mut s = make_state_with_tx(None, None, auth_token, None);
+    Arc::get_mut(&mut s).expect("AppState Arc unique").estop = estop;
+    s
 }
 
 // ============================================================
@@ -195,6 +206,78 @@ async fn test_handle_api_internal_correct_token_open_dashboard() {
     assert_eq!(json["status"], "ok");
     let received = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
     assert!(received.is_ok());
+}
+
+#[tokio::test]
+async fn test_handle_api_internal_estop_engage_release_status() {
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    let state = make_state_with_estop("secret", Some(estop.clone()));
+
+    let auth_hdr = |token: &str| {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("X-Auth-Token", token.parse().unwrap());
+        h
+    };
+
+    // status → 未触发
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_status"})),
+    )
+    .await;
+    assert_eq!(r.unwrap().0["engaged"], false);
+
+    // engage → 触发
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_engage"})),
+    )
+    .await;
+    let j = r.unwrap().0;
+    assert_eq!(j["engaged"], true);
+    assert_eq!(j["status"], "ok");
+    assert!(estop.is_engaged());
+
+    // release → 释放
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_release"})),
+    )
+    .await;
+    let j = r.unwrap().0;
+    assert_eq!(j["engaged"], false);
+    assert!(!estop.is_engaged());
+}
+
+#[tokio::test]
+async fn test_handle_api_internal_estop_not_available() {
+    // estop 未接线（None）→ estop_engage 返回 503 SERVICE_UNAVAILABLE。
+    let state = make_state_with_estop("secret", None);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Auth-Token", "secret".parse().unwrap());
+    let body = serde_json::json!({"cmd": "estop_engage"});
+    let result = handle_api_internal(headers, axum::extract::State(state), Json(body)).await;
+    assert!(result.is_err());
+    let (status, _) = result.unwrap_err();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_handle_api_internal_estop_unauthorized_wrong_token() {
+    // estop 命令也吃鉴权——错 token → 401。
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    let state = make_state_with_estop("secret", Some(estop));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Auth-Token", "wrong".parse().unwrap());
+    let body = serde_json::json!({"cmd": "estop_engage"});
+    let result = handle_api_internal(headers, axum::extract::State(state), Json(body)).await;
+    assert!(result.is_err());
+    let (status, _) = result.unwrap_err();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // 错 token 时 estop 不应被改动（这里 estop 初始就是 false，断言保持 false）
 }
 
 #[tokio::test]
@@ -309,6 +392,7 @@ async fn test_handle_api_status_includes_model_base() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     let resp = handle_api_status(State(state)).await;
     let json = resp.0;
@@ -657,6 +741,7 @@ async fn test_handle_api_sessions_with_count() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     let resp = handle_api_sessions(State(state)).await;
     let json = resp.0;
@@ -1029,6 +1114,7 @@ fn test_app_state_clone() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     };
     let cloned = state.clone();
     assert_eq!(cloned.auth_token, "tok");

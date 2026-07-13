@@ -44,14 +44,14 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-struct GatewayInfo {
+pub(crate) struct GatewayInfo {
     #[allow(dead_code)]
-    pid: u32,
-    web_host: String,
-    web_port: i64,
+    pub(crate) pid: u32,
+    pub(crate) web_host: String,
+    pub(crate) web_port: i64,
 }
 
-fn read_gateway_state(path: &Path) -> Option<GatewayInfo> {
+pub(crate) fn read_gateway_state(path: &Path) -> Option<GatewayInfo> {
     let content = std::fs::read_to_string(path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&content).ok()?;
     Some(GatewayInfo {
@@ -61,7 +61,7 @@ fn read_gateway_state(path: &Path) -> Option<GatewayInfo> {
     })
 }
 
-async fn check_health(base_url: &str) -> Result<(), String> {
+pub(crate) async fn check_health(base_url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
@@ -138,6 +138,32 @@ async fn send_internal_command(
     } else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        Err(format!("Internal command failed: {} {}", status, body).into())
+    }
+}
+
+/// Like `send_internal_command` but returns the parsed JSON response body.
+/// Used by `estop status` (and engage/release confirm the resulting state).
+pub(crate) async fn send_internal_command_get_json(
+    base_url: &str,
+    auth_token: &str,
+    cmd: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let url = format!("{}/api/internal", base_url);
+    let resp = client
+        .post(&url)
+        .header("X-Auth-Token", auth_token)
+        .json(&serde_json::json!({ "cmd": cmd }))
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        Ok(serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({})))
+    } else {
         Err(format!("Internal command failed: {} {}", status, body).into())
     }
 }

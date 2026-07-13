@@ -514,6 +514,12 @@ pub struct AgentLoop {
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
+    /// 全局急停状态（kill switch）。触发后，循环在每轮顶部 break、并在工具
+    /// 分发前拒绝调用。`None`（standalone/测试）时永不阻塞 = 零行为变化。
+    /// 以 `Option<Arc<...>>` 形态持有，工厂每次重建 loop 时从
+    /// `SharedResources.estop` 重新绑定到**同一个** Arc——所以急停状态在
+    /// agent 重启后自动保持。
+    estop: parking_lot::RwLock<Option<Arc<crate::estop::EstopState>>>,
 }
 
 impl AgentLoop {
@@ -580,6 +586,7 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            estop: parking_lot::RwLock::new(None),
         }
     }
 
@@ -588,6 +595,12 @@ impl AgentLoop {
     /// file's pre-edit content before execution, so a rewind can restore it.
     pub fn set_checkpoint_store(&self, store: Arc<crate::checkpoint::CheckpointStore>) {
         *self.checkpoint_store.write() = Some(store);
+    }
+
+    /// 绑定全局急停状态。工厂每次重建 loop 都调一次，所以急停状态在 agent
+    /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
+    pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
+        *self.estop.write() = Some(estop);
     }
 
     /// Stash the memory tool executor so the gateway can later attach an approval
@@ -713,6 +726,7 @@ impl AgentLoop {
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             config_path: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
+            estop: parking_lot::RwLock::new(None),
         }
     }
 
@@ -2682,6 +2696,25 @@ impl AgentLoop {
                 break;
             }
 
+            // 全局急停检查：触发则立刻结束当前轮。未接线（None）时整块跳过。
+            let estop_engaged = self
+                .estop
+                .read()
+                .as_ref()
+                .map(|e| e.is_engaged())
+                .unwrap_or(false);
+            if estop_engaged {
+                info!(
+                    "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
+                    turns_used
+                );
+                events.push(AgentEvent::Done(
+                    "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
+                        .to_string(),
+                ));
+                break;
+            }
+
             // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
             // (opt-in). On the first hit we grant one grace round (with
             // GRACE_ROUND_NUDGE injected below) so the model can finalize from
@@ -2812,12 +2845,53 @@ impl AgentLoop {
             // Clone provider Arc so RwLock guard is dropped before .await.
             let active_provider = self.provider.read().clone();
 
-            // Use tokio::select! to allow cancellation during the LLM call.
+            // 订阅急停状态——LLM 调用进行中若触发急停，能即时打断：select 命中
+            // estop arm 后，chat future 被 drop → reqwest 取消在途 HTTP 请求。
+            // `None`（未接线）时该 arm 永不 resolve（pending），等价于没这条 arm。
+            // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
+            // 拿完就能放掉 estop 的读锁。
+            let mut estop_rx = self
+                .estop
+                .read()
+                .as_ref()
+                .map(|e| e.subscribe());
+
+            // Use tokio::select! to allow cancellation / e-stop during the LLM call.
             let chat_result = tokio::select! {
                 result = active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs) => result,
                 _ = cancel_token.cancelled() => {
                     info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
                     events.push(AgentEvent::Done("已取消".to_string()));
+                    break;
+                }
+                // 急停：watch 翻成 engaged 才 resolve。
+                _ = async {
+                    match estop_rx.as_mut() {
+                        Some(rx) => {
+                            // 订阅时已经 engaged（checkpoint A → subscribe 之间的窗口）
+                            // → 立刻 return，否则 changed() 会干等下一次变化、漏掉这次。
+                            if *rx.borrow() {
+                                return;
+                            }
+                            while rx.changed().await.is_ok() {
+                                if *rx.borrow() {
+                                    return;
+                                }
+                            }
+                        }
+                        None => {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                } => {
+                    info!(
+                        "[AgentLoop] E-stop engaged during LLM call, turns_used={}",
+                        turns_used
+                    );
+                    events.push(AgentEvent::Done(
+                        "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
+                            .to_string(),
+                    ));
                     break;
                 }
             };
@@ -3151,6 +3225,25 @@ impl AgentLoop {
                     break;
                 }
 
+                // 全局急停检查：触发则拒绝后续工具调用并结束当前轮。
+                let estop_engaged = self
+                    .estop
+                    .read()
+                    .as_ref()
+                    .map(|e| e.is_engaged())
+                    .unwrap_or(false);
+                if estop_engaged {
+                    info!(
+                        "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",
+                        tc.name, turns_used
+                    );
+                    events.push(AgentEvent::Done(
+                        "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
+                            .to_string(),
+                    ));
+                    break;
+                }
+
                 let tool_start = std::time::Instant::now();
                 // Phase 2 (small-model-tool-robustness): validate args against
                 // the tool's schema before dispatch. Catches B-class failures;
@@ -3416,6 +3509,23 @@ impl AgentLoop {
         context: &RequestContext,
     ) -> String {
         info!("[AgentLoop] Executing tool: {} (id={})", tool_call.name, tool_call.id);
+
+        // 全局急停：触发时拒绝所有工具分发。这是 handle_tool_call 公开入口级
+        // 的防御深度——与 run_llm_loop 里的批次检查点互补，任何调用方都吃到。
+        let estop_engaged = self
+            .estop
+            .read()
+            .as_ref()
+            .map(|e| e.is_engaged())
+            .unwrap_or(false);
+        if estop_engaged {
+            warn!(
+                "[AgentLoop] E-stop engaged — tool {} refused.",
+                tool_call.name
+            );
+            return "⛔ ESTOP: 已急停 — 工具调用已被拒绝 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。"
+                .to_string();
+        }
 
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
         #[cfg(feature = "security")]

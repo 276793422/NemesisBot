@@ -87,6 +87,7 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -617,6 +618,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

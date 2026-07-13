@@ -166,6 +166,8 @@ pub struct WebServer {
     webhook_rate_limiter: Arc<()>,
     /// Internal command sender for /api/internal endpoint.
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
+    /// Global e-stop state for /api/internal estop commands.
+    estop: Option<Arc<nemesis_agent::estop::EstopState>>,
 }
 
 impl WebServer {
@@ -203,6 +205,7 @@ impl WebServer {
             #[cfg(not(feature = "workflow"))]
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
+            estop: None,
         }
     }
 
@@ -291,6 +294,11 @@ impl WebServer {
         self.internal_cmd_tx = Some(tx);
     }
 
+    /// Set the global e-stop state for /api/internal estop commands.
+    pub fn set_estop(&mut self, estop: Arc<nemesis_agent::estop::EstopState>) {
+        self.estop = Some(estop);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -333,6 +341,7 @@ impl WebServer {
             chat_secret_store: std::sync::Arc::new(()),
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
+            estop: self.estop.clone(),
         };
 
         let state = Arc::new(state);

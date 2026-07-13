@@ -203,6 +203,16 @@ enum Commands {
     Version,
     /// Open the dashboard UI
     Dashboard,
+    /// Emergency stop — freeze all agent activity (kill switch).
+    /// Bare `estop` engages; `--release` resumes; `--status` queries.
+    Estop {
+        /// Release the e-stop (resume agent activity). Default action is to engage.
+        #[arg(long)]
+        release: bool,
+        /// Query e-stop status without changing it.
+        #[arg(long)]
+        status: bool,
+    },
     /// Internal test commands (hidden)
     #[cfg(feature = "desktop")]
     #[command(hide = true)]
@@ -734,6 +744,14 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Dashboard => {
             common::ensure_default_logger();
             if let Err(e) = commands::dashboard::run(cli.local).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Estop { release, status } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            if let Err(e) = commands::estop::run(&home, release, status).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

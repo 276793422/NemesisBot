@@ -42,6 +42,7 @@ pub mod message_preprocess;
 pub mod args_validator;
 pub mod probe;
 pub mod turn_guard;
+pub mod estop;
 
 pub use types::*;
 pub use instance::AgentInstance;
@@ -75,3 +76,4 @@ pub use loop_continuation::{
     ContinuationStore, ContinuationToolResult,
     handle_cluster_continuation,
 };
+pub use estop::EstopState;

@@ -55,6 +55,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -98,6 +99,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -138,6 +140,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -179,6 +182,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -1527,6 +1531,7 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),
@@ -1574,6 +1579,7 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

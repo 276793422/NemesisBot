@@ -102,6 +102,11 @@ pub struct SharedResources {
     // MCP config
     pub mcp_config_path: PathBuf,
     pub mcp_enabled: bool,
+
+    /// 全局急停状态（kill switch）。gateway::run 里建一次，跨 agent 重启存活。
+    /// 两个工厂都把每个 AgentLoop 绑到这同一个 Arc，所以急停状态在 stop/start
+    /// 后自动保持——这才是真急停（不会一重启自己解除）。
+    pub estop: Arc<nemesis_agent::estop::EstopState>,
 }
 
 /// Default `SharedResources` for tests: empty/dummy infrastructure. Real
@@ -135,6 +140,7 @@ impl Default for SharedResources {
             cluster_rpc_enabled: parking_lot::RwLock::new(None),
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
+            estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         }
     }
 }
@@ -238,6 +244,9 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
+    // 所以急停状态在 agent stop/start 后自动保持）。
+    agent_loop.set_estop(shared.estop.clone());
 
     // 5. Session store (disk-persisted — new instance, same directory).
     {
@@ -631,6 +640,8 @@ pub fn build_cluster_agent_loop(
 
     // 5. Set cluster reference (enables cluster_rpc tool).
     agent_loop.set_cluster(cluster as Arc<dyn std::any::Any + Send + Sync>);
+    // 绑定全局急停状态（集群 agent 同样吃急停——peer_chat 跑完整工具链，不能漏）。
+    agent_loop.set_estop(shared.estop.clone());
 
     // 5b. Set observer callback to capture cluster task execution details (LLM + tool calls).
     {

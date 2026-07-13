@@ -551,6 +551,7 @@ async fn test_handle_health_endpoint() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -589,6 +590,7 @@ async fn test_handle_health_not_running() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
@@ -1088,6 +1090,7 @@ async fn test_handle_health_with_model_state() {
         chat_secret_store: std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
+        estop: None,
     });
     let resp = handle_health(AxumState(state)).await;
     let json = resp.0;
