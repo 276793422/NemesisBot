@@ -4,6 +4,21 @@
 [stt]
 model_name = "sensevoice-small"
 language = "auto"
+
+# ── 语言补救 lang_remedy ──────────────────────────────────────────
+# 解决什么问题：某些多语种模型在 language="auto" 下会误判语言。
+#   典型 = SenseVoice-Small（zh/en/ja/ko/yue）会把说出的英文识别成日语。
+# 怎么补救：开启后，模型若声明了补救方式（见代码 lang_restriction::default_remedy_for_model），
+#   当 auto 检测到的语言不在白名单时，用 fallback 语言把"同一句"再解一次。
+#   SenseVoice 的声明 = 只允许 zh/en，否则强制英文重解（即"只识别中英文"）。
+# 何时生效：仅 language="auto" 且模型声明了补救方式时；其余情况本开关无效。
+# 默认值：false（缺省 / 删掉本行 / 旧配置无此字段 = 不补救 = 原始 auto 行为）。
+#   本模板设 true → 新 onboarding 默认启用；已有 config.toml 需手动加这行才启用。
+# 代价：启用时多挂一个识别器实例（约 +250MB 常驻内存），误判句多一次解码（约 75ms）。
+# 怎么关：设 false，或删掉本行（= 默认 false）。
+# 换模型：不在声明表里的模型（whisper / paraformer 等）→ 自动不补救，无需改代码。
+# 详见 crates/nemesis-voice/src/lang_restriction.rs。
+lang_remedy = true
 use_itn = true
 num_threads = 1
 

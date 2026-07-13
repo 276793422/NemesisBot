@@ -24,6 +24,24 @@ pub struct AppConfig {
 pub struct SttConfig {
     pub model_name: String,
     pub language: String,
+    /// 语言补救总开关。完整说明见 `crates/nemesis-voice/src/lang_restriction.rs`。
+    ///
+    /// **作用**：某些多语种 STT 模型在 `language="auto"` 下会把目标语言误判成别的语言
+    /// （典型：SenseVoice-Small 把英文误判成日语）。开启后，若模型声明了补救方式
+    /// （`lang_restriction::default_remedy_for_model`），检测到不在白名单的语言时，
+    /// 会用 fallback 语言把同一句重解一次——即"只识别中英文"。
+    ///
+    /// **何时生效**：仅 `language="auto"` 且模型声明了补救方式时；否则本开关无效。
+    ///
+    /// **默认 `false`**：字段缺失 / 旧 config.toml 不含本字段 = 不补救 = 原始 auto 行为（安全回退）。
+    /// 发布模板 `config.toml` 里设 `true`，故新 onboarding 默认启用；
+    /// 已有 config.toml 需手动加 `lang_remedy = true` 才启用。
+    ///
+    /// **代价**：启用时多加载一个识别器实例（约 +250MB 常驻），误判句多一次解码（约 75ms）。
+    ///
+    /// **如何关闭**：设 `lang_remedy = false`，或删掉本行（= 默认 false）。
+    #[serde(default)]
+    pub lang_remedy: bool,
     pub use_itn: bool,
     pub num_threads: u32,
 }
@@ -176,6 +194,7 @@ impl Default for AppConfig {
             stt: SttConfig {
                 model_name: "sensevoice-small".into(),
                 language: "zh".into(),
+                lang_remedy: false,
                 use_itn: false,
                 num_threads: 1,
             },

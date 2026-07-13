@@ -28,7 +28,9 @@ impl LocalVoiceTranscriber {
         let stt_dir = model::ensure_stt_model(&cfg)?;
         let stt_engine = SttEngine::new(
             &stt_dir,
+            &cfg.stt.model_name,
             &cfg.stt.language,
+            cfg.stt.lang_remedy,
             cfg.stt.use_itn,
             cfg.stt.num_threads,
         )?;

@@ -1416,7 +1416,7 @@ impl VoiceHandler {
                 true
             };
 
-            let engine = nemesis_voice::SttEngine::new(&stt_dir, &cfg.stt.language, use_itn, cfg.stt.num_threads)
+            let engine = nemesis_voice::SttEngine::new(&stt_dir, &cfg.stt.model_name, &cfg.stt.language, cfg.stt.lang_remedy, use_itn, cfg.stt.num_threads)
                 .map_err(|e| format!("STT engine init failed: {}", e))?;
 
             // AEC：启用且库已下载时，加载 dll 并创建 SpeexAec 实例（采样率跟随 target_sr）。
@@ -2562,7 +2562,7 @@ fn run_stt_loop(
     session_id: &str,
     session_mgr: Arc<crate::session::SessionManager>,
 ) {
-    let stt_engine = match nemesis_voice::SttEngine::new(stt_dir, language, use_itn, num_threads) {
+    let stt_engine = match nemesis_voice::SttEngine::new(stt_dir, &cfg.stt.model_name, language, cfg.stt.lang_remedy, use_itn, num_threads) {
         Ok(e) => e,
         Err(e) => {
             tracing::error!("[STT] Engine init failed: {}", e);

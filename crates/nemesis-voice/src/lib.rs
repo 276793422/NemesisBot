@@ -32,6 +32,8 @@ pub mod sherpa;
 #[cfg(target_os = "windows")]
 pub mod stt;
 #[cfg(target_os = "windows")]
+pub mod lang_restriction;
+#[cfg(target_os = "windows")]
 pub mod tts;
 #[cfg(target_os = "windows")]
 pub mod vad;

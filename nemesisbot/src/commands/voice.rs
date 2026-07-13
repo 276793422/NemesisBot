@@ -262,7 +262,7 @@ fn cmd_stt(voice_dir: &std::path::Path) -> Result<()> {
     // Load engines
     let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)?;
     let stt_engine = Arc::new(nemesis_voice::SttEngine::new(
-        &stt_dir, &cfg.stt.language, cfg.stt.use_itn, cfg.stt.num_threads,
+        &stt_dir, &cfg.stt.model_name, &cfg.stt.language, cfg.stt.lang_remedy, cfg.stt.use_itn, cfg.stt.num_threads,
     )?);
     println!("  [STT] Engine loaded.");
 
@@ -319,7 +319,7 @@ fn cmd_chat(voice_dir: &std::path::Path) -> Result<()> {
     // Load STT
     let stt_dir = nemesis_voice::model::ensure_stt_model(&cfg)?;
     let stt_engine = Arc::new(nemesis_voice::SttEngine::new(
-        &stt_dir, &cfg.stt.language, cfg.stt.use_itn, cfg.stt.num_threads,
+        &stt_dir, &cfg.stt.model_name, &cfg.stt.language, cfg.stt.lang_remedy, cfg.stt.use_itn, cfg.stt.num_threads,
     )?);
     println!("  [STT] Engine loaded.");
 
