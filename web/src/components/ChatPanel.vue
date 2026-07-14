@@ -610,7 +610,7 @@ onUnmounted(() => {
         <div class="message-content">
           <div class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
-            <span v-else>{{ msg.content }}</span>
+            <div v-else class="message-text">{{ msg.content }}</div>
           </div>
           <div class="message-time">
             <span>{{ formatTime(msg.timestamp) }}</span>

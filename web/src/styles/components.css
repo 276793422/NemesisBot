@@ -474,6 +474,14 @@
   line-height: 1.6;
 }
 
+/* Plain-text bubbles (user / system / error): preserve the sender's newlines
+   instead of letting white-space:normal collapse them to spaces. Mirrors how
+   assistant bubbles keep their line breaks via marked(breaks:true). */
+.message-bubble .message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .message.user .message-bubble {
   background: var(--accent);
   color: #FFFFFF;

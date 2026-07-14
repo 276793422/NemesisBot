@@ -736,7 +736,12 @@ impl PersonaHandler {
 
     fn ensure_initialized(&self, workspace: &str) -> Result<(), String> {
         let personas_dir = resolve_path(workspace, "personas")?;
-        if personas_dir.exists() {
+        // Gate on the real init marker (_active.json), NOT on the personas/ dir.
+        // A persona-shop download creates personas/<id>/ (hence personas/)
+        // without writing _active.json; gating on the dir alone would skip
+        // initialization and leave _active.json missing, so cmd_current /
+        // cmd_list fail with "failed to read _active.json".
+        if personas_dir.join("_active.json").exists() {
             return Ok(());
         }
         std::fs::create_dir_all(&personas_dir)
@@ -1029,6 +1034,7 @@ impl PersonaHandler {
             return Err("cannot remove default persona".to_string());
         }
 
+        self.ensure_initialized(workspace)?;
         let active = self.read_active(workspace)?;
         if active == name {
             self.cmd_activate(workspace, "default")?;
@@ -1216,6 +1222,10 @@ impl PersonaHandler {
         workspace: &str,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
+        // Ensure the persona store (default persona + _active.json) exists so a
+        // download never leaves a half-initialized state (personas/<id>/ present
+        // but _active.json missing) — that state broke cmd_current/cmd_remove.
+        self.ensure_initialized(workspace)?;
         // Check not already installed
         let dir = resolve_path(workspace, &format!("personas/{}", id))?;
         if dir.exists() {
