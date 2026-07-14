@@ -8,6 +8,8 @@ pub mod agent;
 pub mod channels;
 #[cfg(feature = "cluster")]
 pub mod cluster;
+#[cfg(feature = "cluster")]
+pub mod cluster_persona_gen;
 pub mod estop;
 pub mod config;
 #[cfg(feature = "forge")]

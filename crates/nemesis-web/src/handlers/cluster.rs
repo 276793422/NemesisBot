@@ -6,6 +6,7 @@
 
 use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
+use super::cluster_persona_gen;
 use nemesis_cluster::cluster::Cluster;
 use nemesis_cluster::cluster_log_reader;
 use nemesis_types::cluster::{NodeRole, TaskStatus};
@@ -166,6 +167,14 @@ impl ModuleHandler for ClusterHandler {
             "identity.save_file" => {
                 let data = data.ok_or("missing data")?;
                 self.identity_save_file(&data, ctx)
+            }
+            "persona_generate" => {
+                let data = data.ok_or("missing data")?;
+                self.persona_generate(&data, ctx).await
+            }
+            "persona_apply" => {
+                let data = data.ok_or("missing data")?;
+                self.persona_apply(&data, ctx)
             }
             "peers" => self.peers(ctx),
             "firewall.check" => self.firewall_check(ctx),
@@ -1551,6 +1560,158 @@ impl ClusterHandler {
             .map_err(|e| format!("failed to write {}: {}", file, e))?;
         tracing::info!(file = %file, "[Cluster] Persona file saved");
         Ok(Some(serde_json::json!({"saved": true, "file": file})))
+    }
+
+    // -- Persona generation (JD / resume -> cluster node persona) -----------
+
+    /// Generate a persona package from pasted JD/resume text via the LLM.
+    /// Side-effect free; returns the package for dashboard preview/edit.
+    async fn persona_generate(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let kind = data
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or("missing 'kind' (expected 'jd' or 'resume')")?;
+        if kind != "jd" && kind != "resume" {
+            return Err("kind must be 'jd' or 'resume'".into());
+        }
+        let text = data
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or("missing 'text'")?;
+
+        let provider = ctx
+            .state
+            .streaming_provider
+            .as_ref()
+            .ok_or("未配置 LLM 模型，请先在「模型」页添加一个模型")?;
+        let model = ctx.state.model_name.lock().clone();
+
+        // Tier gate: generation is a complex extraction+writing task; reject mini.
+        let tier = Self::resolve_active_tier_for(ctx)?;
+        if matches!(tier, nemesis_types::capability::ModelTier::Mini) {
+            return Err(
+                "当前模型能力档为 mini，人格生成需要 normal/big 档模型，请切换或升级模型后再试".into(),
+            );
+        }
+
+        let pkg = cluster_persona_gen::generate_persona(provider, &model, kind, text, 2).await?;
+        serde_json::to_value(&pkg)
+            .map(Some)
+            .map_err(|e| format!("serialize persona failed: {}", e))
+    }
+
+    /// Apply a (possibly user-edited) persona package: write the cluster persona
+    /// files, update node identity (runtime + peers.toml), and best-effort
+    /// reload the cluster so the new prompt takes effect now.
+    fn persona_apply(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let mut pkg: cluster_persona_gen::PersonaPackage =
+            serde_json::from_value(data.clone())
+                .map_err(|e| format!("无效的人格包: {}", e))?;
+        cluster_persona_gen::validate(&mut pkg)?;
+
+        let workspace = require_workspace(ctx)?;
+
+        // 1) Write the two cluster persona files.
+        Self::write_cluster_file(workspace, "IDENTITY.md", &pkg.identity_md)?;
+        Self::write_cluster_file(workspace, "SOUL.md", &pkg.soul_md)?;
+
+        // 2) Update node identity — runtime (immediate) + peers.toml [node] (persist).
+        let cluster = require_cluster(ctx)?;
+        cluster.set_node_name(&pkg.display_name);
+        cluster.set_role(&pkg.role);
+        cluster.set_category(&pkg.category);
+        cluster.set_tags(pkg.tags.clone());
+        Self::persist_peers_identity(workspace, &pkg)?;
+
+        // 3) Best-effort reload so the new system prompt takes effect now.
+        //    Only restart when the cluster is actually running — never start a
+        //    stopped cluster just to apply a persona.
+        let mut reloaded = false;
+        let mut note = String::new();
+        if let Some(svc) = ctx.state.cluster_service.as_ref() {
+            let running =
+                nemesis_services::bot_service::LifecycleService::is_running(svc.as_ref());
+            if running {
+                match svc.stop().and_then(|_| svc.start()) {
+                    Ok(()) => reloaded = true,
+                    Err(e) => {
+                        tracing::warn!("[Cluster] persona-apply reload failed: {}", e);
+                        note = format!(
+                            "（重启集群以加载新人格失败：{e}，将在下次启动集群时生效）"
+                        );
+                    }
+                }
+            } else {
+                note = "（集群当前未运行，新人格将在下次启动集群时生效）".to_string();
+            }
+        } else {
+            note = "（集群服务不可用，新人格将在下次启动集群时生效）".to_string();
+        }
+
+        tracing::info!(name = %pkg.display_name, reloaded, "[Cluster] persona applied");
+        Ok(Some(serde_json::json!({
+            "applied": true,
+            "reloaded": reloaded,
+            "note": note,
+            "node_name": pkg.node_name,
+            "display_name": pkg.display_name,
+        })))
+    }
+
+    fn resolve_active_tier_for(
+        ctx: &RequestContext,
+    ) -> Result<nemesis_types::capability::ModelTier, String> {
+        let home = require_home(ctx)?;
+        let cfg_path = Path::new(home).join("config.json");
+        let cfg_text = std::fs::read_to_string(&cfg_path)
+            .map_err(|e| format!("读取 config.json 失败: {}", e))?;
+        let cfg: serde_json::Value =
+            serde_json::from_str(&cfg_text).map_err(|e| format!("解析 config.json 失败: {}", e))?;
+        let alias = ctx.state.model_name.lock().clone();
+        Ok(nemesis_types::capability::resolve_active_tier(&cfg, &alias))
+    }
+
+    fn write_cluster_file(workspace: &str, file: &str, content: &str) -> Result<(), String> {
+        let path = crate::handlers::resolve_path(workspace, &format!("cluster/{}", file))?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, content)
+            .map_err(|e| format!("写入 cluster/{} 失败: {}", file, e))?;
+        Ok(())
+    }
+
+    fn persist_peers_identity(
+        workspace: &str,
+        pkg: &cluster_persona_gen::PersonaPackage,
+    ) -> Result<(), String> {
+        let ppath = peers_path(workspace);
+        let mut config = if ppath.exists() {
+            nemesis_cluster::cluster_config::load_static_config(&ppath)
+                .map_err(|e| format!("加载 peers.toml 失败: {}", e))?
+        } else {
+            nemesis_cluster::cluster_config::StaticConfig {
+                node: nemesis_cluster::cluster_config::NodeInfo::default(),
+            }
+        };
+        config.node.name = pkg.display_name.clone();
+        config.node.role = pkg.role.clone();
+        config.node.category = pkg.category.clone();
+        config.node.tags = pkg.tags.clone();
+        if let Some(parent) = ppath.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        nemesis_cluster::cluster_config::save_static_config(&ppath, &config)
+            .map_err(|e| format!("保存 peers.toml 失败: {}", e))?;
+        Ok(())
     }
 }
 

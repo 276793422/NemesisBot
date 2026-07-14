@@ -16,6 +16,7 @@ const tabs = [
   { id: 'persona', label: '人格' },
   { id: 'settings', label: '配置' },
   { id: 'diagnostics', label: '诊断' },
+  { id: 'persona-gen', label: '集群人格生成' },
 ]
 </script>
 
