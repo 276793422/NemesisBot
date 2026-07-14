@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn test_ensure_initialized_self_heals_when_active_json_missing() {
+    // Regression: a persona-shop download creates personas/<id>/ (hence the
+    // personas/ dir) without writing _active.json. ensure_initialized must
+    // STILL run and create _active.json — otherwise cmd_current fails with
+    // "failed to read _active.json". The gate must be _active.json, not the
+    // mere existence of the personas/ dir.
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace = tmp.path().to_str().unwrap();
+
+    // Simulate the post-download half-initialized state.
+    let downloaded = tmp.path().join("personas").join("some-downloaded");
+    std::fs::create_dir_all(&downloaded).unwrap();
+    assert!(!tmp.path().join("personas").join("_active.json").exists());
+
+    let handler = PersonaHandler::new();
+    handler.ensure_initialized(workspace).unwrap();
+
+    // Init must have run despite personas/ already existing.
+    assert!(
+        tmp.path().join("personas").join("_active.json").exists(),
+        "_active.json should be created even when personas/ already exists"
+    );
+    // The downloaded persona dir must be preserved.
+    assert!(downloaded.exists(), "existing persona dir must not be removed");
+}
+
+#[test]
 fn test_is_agent_file() {
     assert!(is_agent_file("engineering/engineering-code-reviewer.md"));
     assert!(is_agent_file("game-development/unity/unity-architect.md"));
