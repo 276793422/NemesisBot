@@ -83,9 +83,21 @@
 
 ### 环境要求
 
-- Rust 1.85+（edition 2024）
-- Cargo
-- Windows / Linux / macOS / Android
+- Rust 1.85+（edition 2024）+ Cargo
+- Windows 上还需 **MSVC C++ 构建工具**（Rust MSVC 工具链的链接器，`cargo build` 必需）
+- Node.js（编译 Vue 前端，LTS 即可）
+- Go（仅编译 `test-tools/TestAIServer` 测试模拟器用，可选）
+- 平台：Windows / Linux / macOS / Android
+
+> **🚀 Windows 一键自动装环境（全程国内源）**
+>
+> 如果机器上还没有上面这些工具，直接双击 **`scripts\bootstrap-dev-env.bat`**（或右键“以管理员身份运行”）即可。它会自动下载并安装：MSVC 构建工具 + Rust + Node.js + Go，并配置好 cargo（rsproxy）、npm（npmmirror）、Go（goproxy.cn）的国内镜像，toolchain 也走清华 TUNA 镜像。装完最后用 `cargo check` 自检本项目能编译。
+>
+> - 需要管理员权限（会弹 UAC，点“是”）
+> - MSVC 构建工具这步较大较慢（下载 GB 级，约 10-30 分钟），其余很快
+> - 幂等：已装的工具会自动跳过，可安全重复运行
+> - 主脚本是 `scripts\bootstrap-dev-env.ps1`，`.bat` 只是启动器
+> - 详细执行流程见 `bootstrap-dev-env.ps1` 顶部注释
 
 ### 安装
 
