@@ -107,6 +107,12 @@ pub struct SharedResources {
     /// 两个工厂都把每个 AgentLoop 绑到这同一个 Arc，所以急停状态在 stop/start
     /// 后自动保持——这才是真急停（不会一重启自己解除）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
+
+    /// Runtime config cache (single source of truth). Consumers read the live
+    /// config via `config_store.handle()`; dashboard handlers mutate via
+    /// `config_store.update(...)` (in-memory + persist). Lets executor.sandbox
+    /// / tier / DLP toggles flip live without a gateway restart.
+    pub config_store: Arc<nemesis_config::ConfigStore>,
 }
 
 /// Default `SharedResources` for tests: empty/dummy infrastructure. Real
@@ -141,6 +147,10 @@ impl Default for SharedResources {
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+            config_store: Arc::new(nemesis_config::ConfigStore::from_config(
+                nemesis_config::Config::default(),
+                PathBuf::default(),
+            )),
         }
     }
 }
@@ -300,14 +310,31 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
         .executor
         .as_ref()
         .filter(|e| e.enabled)
-        .map(|e| -> anyhow::Result<Arc<nemesis_agent::ExecutorChannel>> {
+        .map(|_e| -> anyhow::Result<Arc<nemesis_agent::ExecutorChannel>> {
             let exe_path = std::env::current_exe()
                 .map_err(|err| anyhow::anyhow!("resolve current_exe for executor: {err}"))?;
             let workspace = workspace_dir.to_string_lossy().to_string();
-            let sandbox = e.sandbox;
 
+            // Live sandbox probe: read ConfigStore on EVERY tool call so
+            // toggling executor.sandbox (dashboard stop/start, config edit)
+            // takes effect WITHOUT a gateway restart. This is the fix for the
+            // "stopped Sandboxie mid-run → executor hangs 30s on the pipe" bug:
+            // the probe flips to false and the next call goes stdio, no restart.
+            let config_handle = shared.config_store.handle();
+            let sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+                config_handle
+                    .read()
+                    .executor
+                    .as_ref()
+                    .map_or(false, |ec| ec.sandbox)
+            });
+
+            // start_exe is fixed at startup (the path never changes). Attach it
+            // only if Sandboxie is actually ready now; otherwise leave None and
+            // the probe-driven path picks stdio (probe reads false once the user
+            // stops the sandbox via the dashboard, so we never hang on the pipe).
             #[cfg(feature = "sandbox")]
-            if sandbox {
+            {
                 let paths = nemesis_sandbox::SandboxPaths::new(&shared.home);
                 let start_exe = paths.start_exe();
                 let sbiesvc_running = matches!(
@@ -316,45 +343,42 @@ pub fn build_agent_loop(shared: &Arc<SharedResources>) -> Result<Arc<nemesis_age
                 );
                 if start_exe.exists() && sbiesvc_running {
                     info!(
-                        "[AgentFactory] executor separation enabled (sandbox=true, named-pipe + \
-                         Start.exe box): child {}",
+                        "[AgentFactory] executor separation enabled (sandbox = live probe via \
+                         ConfigStore, Start.exe box available): child {}",
                         exe_path.display()
                     );
                     return Ok(Arc::new(
-                        nemesis_agent::ExecutorChannel::new(exe_path, workspace, true)
+                        nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
                             .with_start_exe(start_exe),
                     ));
                 }
-                // Sandboxie not ready — degrade gracefully instead of failing to start.
-                // (Gateway must not be held hostage by SbieSvc being stopped.)
                 tracing::warn!(
-                    "[AgentFactory] executor.sandbox=true but Sandboxie not ready \
-                     (Start.exe exists={}, SbieSvc running={}). Falling back to sandbox=false \
-                     (Layer-1 executor, NO box). Start the Sandboxie engine (UI 启动 or \
+                    "[AgentFactory] Sandboxie not ready (Start.exe exists={}, SbieSvc running={}). \
+                     executor.sandbox is still honoured live via the ConfigStore probe, but \
+                     without Start.exe the box is not applied. Start the engine (UI 启动 or \
                      `nemesisbot sandbox start`) + restart gateway to enable the box.",
                     start_exe.exists(),
                     sbiesvc_running
                 );
-                // Fall through to the sandbox=false (Layer-1) path below.
             }
-
             #[cfg(not(feature = "sandbox"))]
-            if sandbox {
+            {
                 tracing::warn!(
-                    "[AgentFactory] executor.sandbox=true ignored — the 'sandbox' feature is \
-                     not compiled into this build (Layer-2 Sandboxie unavailable); tools will \
-                     run via Layer-1 executor only"
+                    "[AgentFactory] executor.sandbox is honoured live (ConfigStore probe), but \
+                     the 'sandbox' feature is not compiled into this build — tools run via \
+                     stdio, no box"
                 );
             }
 
             info!(
-                "[AgentFactory] executor separation enabled (sandbox=false, stdio transport): {}",
+                "[AgentFactory] executor separation enabled (sandbox = live probe via ConfigStore, \
+                 stdio transport): {}",
                 exe_path.display()
             );
             Ok(Arc::new(nemesis_agent::ExecutorChannel::new(
                 exe_path,
                 workspace,
-                false,
+                sandbox_probe,
             )))
         })
         .transpose()?;

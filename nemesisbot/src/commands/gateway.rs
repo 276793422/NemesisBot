@@ -895,9 +895,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         tracing::info!("[Gateway] Added exe directory to PATH for LLM shell access");
     }
 
-    // Step 4: Load configuration
-    let cfg = nemesis_config::load_config(&config_path)
-        .map_err(|e| anyhow::anyhow!("Error loading config: {}", e))?;
+    // Step 4: Load configuration into the runtime cache (single source of
+    // truth). `cfg` is a startup snapshot for one-time reads below; live
+    // consumers (executor.sandbox, …) read `config_store.handle()` so toggles
+    // flip without a gateway restart.
+    let config_store = std::sync::Arc::new(
+        nemesis_config::ConfigStore::load(&config_path)
+            .map_err(|e| anyhow::anyhow!("Error loading config: {}", e))?,
+    );
+    // Install the process-wide singleton so WSAPI handlers (sandbox/config/
+    // channels…) reach the same live config without AppState wiring. A
+    // dashboard write through the store is visible to every consumer —
+    // including the executor's sandbox probe — on the next read, no restart.
+    nemesis_config::set_global(config_store.clone());
+    let cfg = config_store.handle().read().clone();
 
     // [capture] Initialize the diagnostic capture sink — failure-triggered
     // only (zero happy-path overhead). Reads `debug.capture.enabled`
@@ -2251,6 +2262,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
         estop,
+        config_store: config_store.clone(),
         #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,

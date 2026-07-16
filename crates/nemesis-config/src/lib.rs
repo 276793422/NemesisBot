@@ -9,6 +9,10 @@ use thiserror::Error;
 use tracing::{info, warn, error};
 
 pub mod provider_resolver;
+pub mod store;
+
+// Runtime config cache (single source of truth for the live config).
+pub use store::{global, load_live, save_live, set_global, ConfigHandle, ConfigStore};
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{

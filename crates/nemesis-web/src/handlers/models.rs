@@ -62,11 +62,17 @@ fn config_path(home: &str) -> PathBuf {
 }
 
 fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+    if let Some(cfg) = nemesis_config::load_live() {
+        return Ok(cfg);
+    }
     let path = config_path(home);
     nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
 }
 
 fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    if let Some(r) = nemesis_config::save_live(config.clone()) {
+        return r.map_err(|e| format!("failed to save config: {}", e));
+    }
     let path = config_path(home);
     nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
 }

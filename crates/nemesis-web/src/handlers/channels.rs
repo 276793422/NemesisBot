@@ -50,11 +50,20 @@ impl ModuleHandler for ChannelsHandler {
 }
 
 fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+    // Live store first (single source of truth); fall back to disk in CLI mode.
+    if let Some(cfg) = nemesis_config::load_live() {
+        return Ok(cfg);
+    }
     let path = PathBuf::from(home).join("config.json");
     nemesis_config::load_config(&path).map_err(|e| format!("failed to load config: {}", e))
 }
 
 fn save_config(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+    // Live store first: update lands in-memory AND on disk, so every consumer
+    // (executor sandbox probe, tier, …) sees the change without a restart.
+    if let Some(r) = nemesis_config::save_live(config.clone()) {
+        return r.map_err(|e| format!("failed to save config: {}", e));
+    }
     let path = PathBuf::from(home).join("config.json");
     nemesis_config::save_config(&path, config).map_err(|e| format!("failed to save config: {}", e))
 }

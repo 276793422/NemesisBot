@@ -3357,6 +3357,7 @@ version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
  "nemesis-types",
+ "parking_lot",
  "serde",
  "serde_json",
  "serde_yaml",

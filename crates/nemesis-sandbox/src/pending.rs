@@ -126,6 +126,23 @@ pub fn commit_file(pending: &PendingFile) -> Result<u64> {
     Ok(n)
 }
 
+/// Delete one pending file from inside the box — removes the in-box virtual
+/// file only; the real disk path is never touched. Use this to discard selected
+/// sandbox writes without committing them. Returns `true` if a file was removed,
+/// `false` if it was already gone (not an error).
+///
+/// Only the box file is removed; empty parent dirs are left in place (mirrors
+/// [`commit_file`], which also doesn't prune dirs). [`delete_box_contents`]
+/// clears the whole box — including dirs — when a full wipe is wanted.
+pub fn delete_file(pending: &PendingFile) -> Result<bool> {
+    match std::fs::remove_file(&pending.box_path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e)
+            .with_context(|| format!("delete box file {}", pending.box_path.display())),
+    }
+}
+
 /// Delete the box's virtual-FS contents (discard pending). Uses Sandboxie's own
 /// `Start.exe /box:<name> delete_sandbox`. The box should have no running
 /// processes (the per-call executor exits between calls).
@@ -143,4 +160,51 @@ pub fn delete_box_contents(start_exe: &Path, box_name: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Build a temp box tree with one mirrored file: `<box>/drive/C/tmp/a.txt`.
+    fn one_pending() -> (TempDir, PendingFile) {
+        let tmp = TempDir::new().unwrap();
+        let box_root = tmp.path().to_path_buf();
+        let file = box_root.join("drive").join("C").join("tmp").join("a.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"hello").unwrap();
+        let pf = PendingFile {
+            box_path: file,
+            real_path: PathBuf::from(r"C:\tmp\a.txt"),
+            size: 5,
+        };
+        (tmp, pf)
+    }
+
+    #[test]
+    fn delete_file_removes_box_file() {
+        let (_tmp, pf) = one_pending();
+        assert!(pf.box_path.exists());
+        assert_eq!(delete_file(&pf).unwrap(), true);
+        assert!(!pf.box_path.exists());
+    }
+
+    #[test]
+    fn delete_file_already_gone_is_false() {
+        let (_tmp, pf) = one_pending();
+        std::fs::remove_file(&pf.box_path).unwrap();
+        // Already absent → Ok(false), NOT an error.
+        assert_eq!(delete_file(&pf).unwrap(), false);
+    }
+
+    #[test]
+    fn delete_file_never_touches_real_path() {
+        // Real path doesn't even exist in this temp setup — deleting the box
+        // file must not create or modify anything at the real path.
+        let (_tmp, pf) = one_pending();
+        assert!(!pf.real_path.exists());
+        assert_eq!(delete_file(&pf).unwrap(), true);
+        assert!(!pf.real_path.exists());
+    }
 }

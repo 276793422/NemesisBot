@@ -22,6 +22,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -98,10 +99,12 @@ pub struct ExecutorChannel {
     /// Resolved workspace path, passed to the child via env so it does not
     /// re-run path resolution (which depends on `--local` / NEMESISBOT_HOME).
     pub workspace: String,
-    /// Transport switch: true → named-pipe transport (sandbox mode); false →
-    /// stdio transport (Layer 1). NOTE: this is the TRANSPORT choice, not the
-    /// spawn-wrap choice — see `start_exe`.
-    pub sandbox: bool,
+    /// Live probe for "should this call go through the box?" — queried on
+    /// EVERY tool call so toggling `executor.sandbox` takes effect without a
+    /// gateway restart. Injected by the factory (which reads ConfigStore);
+    /// nemesis-agent deliberately does not depend on nemesis-config, so the
+    /// decision is passed in as a closure rather than a stored bool.
+    pub sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync>,
     /// Sandboxie `Start.exe` path. `Some` → spawn via `Start.exe /box:<box>`
     /// (real containment, L2.2). `None` → spawn the executor directly (Layer 1,
     /// or L2.1 transport testing without the box).
@@ -115,11 +118,18 @@ pub struct ExecutorChannel {
 impl ExecutorChannel {
     /// Construct a channel in Layer-1 / L2.1 mode (direct spawn, no Start.exe
     /// wrap). L2.2 sets `start_exe` via the `with_start_exe` builder.
-    pub fn new(exe_path: PathBuf, workspace: String, sandbox: bool) -> Self {
+    /// `sandbox_probe` is called per tool call to pick stdio vs named-pipe
+    /// transport, so it must reflect the live config (the factory wires it to
+    /// ConfigStore).
+    pub fn new(
+        exe_path: PathBuf,
+        workspace: String,
+        sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
         Self {
             exe_path,
             workspace,
-            sandbox,
+            sandbox_probe,
             start_exe: None,
             box_name: "NemesisBox".to_string(),
             timeout: Duration::from_secs(24 * 3600),
@@ -177,7 +187,7 @@ impl ExecutorChannel {
         ctx: &RequestContext,
     ) -> Result<String, String> {
         let request_line = self.build_request_line(tool, args, ctx)?;
-        if self.sandbox {
+        if (self.sandbox_probe)() {
             #[cfg(windows)]
             {
                 return self.spawn_and_call_pipe(tool, &request_line).await;
@@ -439,7 +449,11 @@ mod tests {
 
     #[test]
     fn build_command_no_start_exe_is_direct_spawn() {
-        let ch = ExecutorChannel::new(PathBuf::from("/x/nemesisbot.exe"), "/ws".into(), false);
+        let ch = ExecutorChannel::new(
+            PathBuf::from("/x/nemesisbot.exe"),
+            "/ws".into(),
+            Arc::new(|| false),
+        );
         assert!(ch.start_exe.is_none());
         // No error — direct spawn command is built.
         let _ = ch.build_command();
@@ -447,8 +461,12 @@ mod tests {
 
     #[test]
     fn build_command_with_start_exe_wraps() {
-        let ch = ExecutorChannel::new(PathBuf::from("/x/nemesisbot.exe"), "/ws".into(), true)
-            .with_start_exe(PathBuf::from("/x/Start.exe"));
+        let ch = ExecutorChannel::new(
+            PathBuf::from("/x/nemesisbot.exe"),
+            "/ws".into(),
+            Arc::new(|| true),
+        )
+        .with_start_exe(PathBuf::from("/x/Start.exe"));
         assert!(ch.start_exe.is_some());
         // No error — Start.exe wrap command is built (L2.2 form).
         let _ = ch.build_command();
