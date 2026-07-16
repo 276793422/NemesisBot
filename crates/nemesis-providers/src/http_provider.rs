@@ -212,17 +212,13 @@ impl HttpProvider {
             body["stop"] = serde_json::json!(stop);
         }
 
-        // NOTE: this `thinking: disabled` workaround was added during a test of
-        // deepseek-v4-flash that was LATER traced to a local config error (tools
-        // were not being passed to the provider, so the model received an empty
-        // tool list and understandably didn't emit standard tool_calls).
-        // deepseek-v4-flash itself has NO tool-calling defect. The block is kept
-        // pending re-test — removing it would restore thinking mode (a capability
-        // gain) for deepseek models. TODO: re-verify and likely delete this.
-        let lower = normalized.to_lowercase();
-        if lower.contains("deepseek") && !tools.is_empty() {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
-        }
+        // (Removed) Previously forced `thinking: {type: "disabled"}` for deepseek
+        // + tools. That put deepseek-v4-flash in an inconsistent state: it stopped
+        // returning `reasoning_content`, yet the API still requires `reasoning_content`
+        // to be passed back in multi-turn history → HTTP 400 ("The reasoning_content
+        // in the thinking mode must be passed back") on the 2nd turn. With thinking
+        // left on, the response carries `reasoning_content` (extracted at the parse
+        // site below), stored on the turn and replayed — correct for thinking models.
 
         body
     }

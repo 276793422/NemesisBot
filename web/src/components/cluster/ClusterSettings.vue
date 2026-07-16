@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 
@@ -16,6 +16,11 @@ const rpcPort = ref(21949)
 const broadcastInterval = ref(30)
 const llmTimeout = ref(7200)
 const authToken = ref('')
+// Snapshot of the token as last loaded/saved. "Regenerate" / editing only
+// mutates `authToken`; nothing is persisted until the user clicks 保存. This
+// drives the "modified, not yet saved" hint.
+const savedAuthToken = ref('')
+const authTokenDirty = computed(() => authToken.value !== savedAuthToken.value)
 
 const snapshots = ref<any[]>([])
 const snapshotsLoading = ref(false)
@@ -49,6 +54,7 @@ async function loadConfig() {
     broadcastInterval.value = data.broadcast_interval ?? 30
     llmTimeout.value = data.llm_timeout_secs ?? 7200
     authToken.value = data.token ?? ''
+    savedAuthToken.value = authToken.value
   } catch { /* ignore */ }
 }
 
@@ -83,7 +89,8 @@ async function saveConfig() {
       llm_timeout_secs: llmTimeout.value,
       token: authToken.value,
     })
-    toast.success('配置已保存')
+    savedAuthToken.value = authToken.value
+    toast.success('配置已保存（Token 需重启 Gateway 后生效）')
   } catch (e: any) {
     toast.error('保存失败: ' + (e || '未知错误'))
   }
@@ -193,10 +200,23 @@ onMounted(async () => {
             <input class="form-input" type="number" v-model.number="llmTimeout" style="width:120px" />
           </div>
           <div class="form-group">
-            <label class="form-label">认证 Token</label>
+            <label class="form-label">
+              认证 Token
+              <span class="form-hint" title="集群握手与 RPC 通信的鉴权密钥，所有节点必须一致。重新生成或手动修改后，需点击「保存」并重启 Gateway 才生效。">ⓘ</span>
+            </label>
             <div style="display:flex;gap:var(--space-2);align-items:center">
-              <input class="form-input" type="password" :value="authToken" readonly style="width:240px" />
+              <input
+                class="form-input"
+                type="text"
+                v-model="authToken"
+                spellcheck="false"
+                autocomplete="off"
+                style="width:300px;font-family:var(--font-mono);font-size:var(--text-sm)"
+              />
               <button class="btn btn-sm" @click="regenerateAuthToken()">重新生成</button>
+            </div>
+            <div v-if="authTokenDirty" class="auth-token-dirty">
+              ⚠ Token 已修改但未保存，点击下方「保存」生效；保存后需重启 Gateway。
             </div>
           </div>
           <div style="display:flex;gap:var(--space-2);margin-top:var(--space-4)">
@@ -307,6 +327,12 @@ onMounted(async () => {
   .settings-two-col {
     grid-template-columns: 1fr;
   }
+}
+
+.auth-token-dirty {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--warning, #f39c12);
 }
 
 .fw-results {

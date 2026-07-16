@@ -209,6 +209,21 @@ onMounted(() => {
   background: var(--bg);
 }
 
+/* ChatPanel's root (.page-chat) needs a bounded height + flex column so that
+   .chat-messages' `flex:1 + overflow-y:auto` actually produces a vertical
+   scrollbar. In the dashboard this comes from `.main-content > [class^="page-"]`
+   in layout.css; this standalone page has no .main-content wrapper, so restore
+   the constraint here (same fix as ChatView.vue's `.chat-page-layout >
+   :deep(.page-chat)`). Without it the message list grows with content and the
+   scrollbar never engages. */
+.wf-chat-standalone > :deep(.page-chat) {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .wf-chat-auth {
   display: flex;
   align-items: center;

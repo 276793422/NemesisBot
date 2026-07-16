@@ -1235,7 +1235,7 @@ impl WebSearchTool {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("request failed: {}", e))?;
+            .map_err(|e| expand_error("request failed", &e))?;
 
         let html = resp
             .text()
@@ -1473,7 +1473,7 @@ impl Tool for WebFetchTool {
         let url = extract_url(args)?;
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(60))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .map_err(|e| format!("failed to create HTTP client: {}", e))?;
@@ -1482,7 +1482,7 @@ impl Tool for WebFetchTool {
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("request failed: {}", e))?;
+            .map_err(|e| expand_error("request failed", &e))?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -1501,11 +1501,17 @@ impl Tool for WebFetchTool {
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
 
-        if body.len() > self.max_size {
+        // Download guard against truly huge responses only (OOM / bandwidth
+        // abuse). The user-facing bound is on the *extracted* text below, so
+        // large real pages (e.g. baidu.com ~680KB HTML) succeed instead of
+        // failing at the download stage. Previously this checked `max_size`
+        // (50KB) on the raw body, which rejected almost every real webpage.
+        const DOWNLOAD_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
+        if body.len() > DOWNLOAD_LIMIT {
             return Err(format!(
-                "Response too large: {} bytes (max: {})",
+                "Response too large: {} bytes (download limit: {} bytes)",
                 body.len(),
-                self.max_size
+                DOWNLOAD_LIMIT
             ));
         }
 
@@ -1538,8 +1544,8 @@ impl Tool for WebFetchTool {
             let ws_re = regex::Regex::new(r"\s+").map_err(|e| e.to_string())?;
             let text = ws_re.replace_all(&text, " ");
 
-            let extracted = text.trim();
-            if extracted.is_empty() {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
                 return Ok(format!(
                     "Content from {} ({} bytes, HTML with no extractable text)",
                     url,
@@ -1547,24 +1553,64 @@ impl Tool for WebFetchTool {
                 ));
             }
 
-            Ok(format!(
-                "Content from {} ({} bytes, extracted text):\n{}",
-                url,
-                body.len(),
-                extracted
-            ))
+            // Truncate extracted text to max_size on a UTF-8 char boundary.
+            // This is the real feed-bound (protects LLM context), and it is a
+            // truncation, not a hard failure — large pages yield partial text.
+            let (extracted, truncated) = truncate_str(trimmed, self.max_size);
+            Ok(if truncated {
+                format!(
+                    "Content from {} ({} bytes, extracted text truncated to {} bytes):\n{}",
+                    url, body.len(), self.max_size, extracted
+                )
+            } else {
+                format!(
+                    "Content from {} ({} bytes, extracted text):\n{}",
+                    url, body.len(), extracted
+                )
+            })
         } else {
-            // Non-HTML: return as-is (text, JSON, etc.)
-            let text = String::from_utf8_lossy(&body);
-            Ok(format!(
-                "Content from {} ({} bytes, {}):\n{}",
-                url,
-                body.len(),
-                content_type,
-                text
-            ))
+            // Non-HTML: return as-is (text, JSON, etc.), truncated to max_size.
+            let raw = String::from_utf8_lossy(&body);
+            let (text, truncated) = truncate_str(&raw, self.max_size);
+            Ok(if truncated {
+                format!(
+                    "Content from {} ({} bytes, {} truncated to {} bytes):\n{}",
+                    url, body.len(), content_type, self.max_size, text
+                )
+            } else {
+                format!(
+                    "Content from {} ({} bytes, {}):\n{}",
+                    url, body.len(), content_type, text
+                )
+            })
         }
     }
+}
+
+/// Truncate a string to at most `max_bytes`, cutting on a UTF-8 char boundary
+/// (never mid-character). Returns `(truncated_string, was_truncated)`.
+fn truncate_str(s: &str, max_bytes: usize) -> (String, bool) {
+    if s.len() <= max_bytes {
+        return (s.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
+}
+
+/// Format an error with its full source chain. reqwest collapses the real
+/// cause (TLS / DNS / connect / certificate) into an opaque "error sending
+/// request"; this surfaces the underlying reason for diagnosis.
+fn expand_error(prefix: &str, e: &dyn std::error::Error) -> String {
+    let mut msg = format!("{}: {}", prefix, e);
+    let mut cur = e.source();
+    while let Some(s) = cur {
+        msg.push_str(&format!(" | {}", s));
+        cur = s.source();
+    }
+    msg
 }
 
 /// Extract URL from tool arguments.

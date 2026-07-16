@@ -31,13 +31,10 @@ extra: std::collections::HashMap::new(),
 
 #[test]
 fn test_deepseek_thinking_disabled_workaround_characterization() {
-    // Characterization for the deepseek `thinking: disabled` workaround in
-    // build_request_body. The workaround was added during a test that was LATER
-    // traced to a local config error (tools weren't being passed), NOT a
-    // deepseek-v4-flash defect. These assertions pin the CURRENT behaviour so
-    // that removing the workaround (a capability gain — restores thinking mode
-    // for deepseek models) shows up as a deliberate, visible test change. See
-    // http_provider.rs for the full note + TODO.
+    // Characterization: deepseek + tools must NOT inject `thinking:disabled`.
+    // The previous workaround (which did) was removed — it dropped
+    // reasoning_content from the response while the API still required it to be
+    // replayed in multi-turn history → HTTP 400. Thinking now runs normally.
     let config = HttpProviderConfig {
         name: "test".to_string(),
         base_url: "https://api.example.com/v1".to_string(),
@@ -59,11 +56,16 @@ fn test_deepseek_thinking_disabled_workaround_characterization() {
         },
     }];
 
-    // deepseek + tools → thinking disabled (the workaround).
+    // deepseek + tools → thinking must NOT be disabled. The previous
+    // `thinking:{type:disabled}` workaround was REMOVED: it put
+    // deepseek-v4-flash in an inconsistent state (response dropped
+    // reasoning_content, yet the API still required it to be replayed in
+    // multi-turn history → HTTP 400 "reasoning_content must be passed back").
+    // Thinking now runs normally so the response carries reasoning_content.
     let body = provider.build_request_body(&[], &tools, "deepseek-v4-flash", &ChatOptions::default());
-    assert_eq!(
-        body["thinking"]["type"], "disabled",
-        "deepseek + tools currently disables thinking (workaround)"
+    assert!(
+        body.get("thinking").is_none(),
+        "deepseek + tools must NOT disable thinking (workaround removed)"
     );
 
     // deepseek + NO tools → thinking NOT set (workaround is tools-gated).
