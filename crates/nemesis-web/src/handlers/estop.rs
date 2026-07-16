@@ -94,6 +94,7 @@ mod tests {
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop,
+            cron: None,
         });
         RequestContext {
             session_id: "s".to_string(),

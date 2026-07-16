@@ -118,6 +118,10 @@ pub struct AppState {
     /// 全局急停状态。/api/internal 的 estop_* 命令直接操作它（无需 mpsc 往返，
     /// status 能即时返回）。EstopState 是线程安全 Arc<AtomicBool+watch>。
     pub estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// Runtime cron service. Lets `tasks.cron.*` handlers call the live
+    /// scheduler (add/list/update/delete/toggle/run) instead of raw file I/O.
+    /// nemesis-cron is an unconditional dependency, so no cfg gate.
+    pub cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
 }
 
 impl AppState {

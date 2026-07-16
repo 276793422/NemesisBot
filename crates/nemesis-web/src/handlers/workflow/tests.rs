@@ -154,6 +154,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     })
 }
 
@@ -258,6 +259,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
         webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     });
     RequestContext {
         session_id: "test-session".to_string(),

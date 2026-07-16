@@ -1,6 +1,21 @@
 use super::*;
 use crate::bridge::NoOpBridge;
 
+#[test]
+fn test_fm8_sanitize_report_never_leaks_secrets() {
+    // F-M8: sanitized report must never leak secrets. The sanitizer matches
+    // `token: <20+ chars>` inside a value and replaces with [REDACTED]. If
+    // replacement corrupts JSON → fail-closed returns {} (not the raw). Either
+    // way, the secret must not appear in the result.
+    let bridge = Arc::new(NoOpBridge::new("test".into()));
+    let syncer = Syncer::new(bridge);
+    let report = serde_json::json!({"content": "token: abcdefghijklmnopqrst1234567890"});
+    let result = syncer.sanitize_report_for_test(&report);
+    let result_str = serde_json::to_string(&result).unwrap_or_default();
+    assert!(!result_str.contains("abcdefghijklmnopqrst1234567890"),
+        "must never leak the secret, even on parse failure (F-M8)");
+}
+
 #[tokio::test]
 async fn test_syncer_with_noop_bridge() {
     let bridge = Arc::new(NoOpBridge::new("test-node".into()));

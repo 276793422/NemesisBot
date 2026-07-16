@@ -10,6 +10,19 @@ use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
 use crate::types::RegistryConfig;
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Monotonic counter for unique atomic-write temp filenames (F-D4). Unique per
+/// write so concurrent writes to the same path (e.g. parallel tests sharing the
+/// default index) don't collide on the temp file.
+static REGISTRY_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn atomic_tmp_path(index_path: &str) -> PathBuf {
+    let n = REGISTRY_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    PathBuf::from(format!("{}.{}.tmp", index_path, n))
+}
+
 /// The registry manages a collection of forge artifacts.
 pub struct Registry {
     config: RegistryConfig,
@@ -142,7 +155,10 @@ impl Registry {
         }
         let arts = self.artifacts.lock();
         if let Ok(json) = serde_json::to_string_pretty(&*arts) {
-            let _ = std::fs::write(&self.config.index_path, json);
+            let tmp = atomic_tmp_path(&self.config.index_path);
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, &self.config.index_path);
+            }
         }
     }
 
@@ -155,7 +171,11 @@ impl Registry {
         let json = serde_json::to_string_pretty(&*arts).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
         })?;
-        tokio::fs::write(&self.config.index_path, json).await?;
+        drop(arts);
+        // F-D4: atomic write (unique temp + rename).
+        let tmp = atomic_tmp_path(&self.config.index_path);
+        tokio::fs::write(&tmp, &json).await?;
+        tokio::fs::rename(&tmp, &self.config.index_path).await?;
         Ok(())
     }
 

@@ -4,4 +4,4 @@
 
 pub mod service;
 
-pub use service::{CronService, CronJob, CronSchedule, CronPayload};
+pub use service::{CronService, CronJob, CronSchedule, CronPayload, CronJobPatch};

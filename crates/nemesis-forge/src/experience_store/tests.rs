@@ -26,6 +26,70 @@ fn make_aggregated(hash: &str, tool: &str, count: u64) -> AggregatedExperience {
 }
 
 #[tokio::test]
+async fn test_fp2_read_recent_returns_last_n() {
+    // F-P2: read_recent parses only the last `limit` lines (bounding parse cost
+    // regardless of file size).
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let exp_dir = dir.path().join("experiences");
+    std::fs::create_dir_all(&exp_dir).unwrap();
+    let mut content = String::new();
+    for i in 0..5u32 {
+        let ce = CollectedExperience {
+            experience: Experience {
+                id: format!("id{}", i), tool_name: format!("tool{}", i),
+                input_summary: "x".into(), output_summary: "y".into(),
+                success: true, duration_ms: 1,
+                timestamp: "2026-01-01T00:00:00+08:00".into(),
+                session_key: "s".into(),
+            },
+            dedup_hash: format!("h{}", i),
+        };
+        content.push_str(&serde_json::to_string(&ce).unwrap());
+        content.push('\n');
+    }
+    std::fs::write(exp_dir.join("experiences.jsonl"), content).unwrap();
+
+    let store = ExperienceStore::from_forge_dir(dir.path());
+    let recent = store.read_recent(3).await.unwrap();
+    assert_eq!(recent.len(), 3, "should return only the last 3");
+    let names: Vec<&str> = recent.iter().map(|c| c.experience.tool_name.as_str()).collect();
+    assert_eq!(names, vec!["tool2", "tool3", "tool4"], "should be the last 3 in order");
+}
+
+#[tokio::test]
+async fn test_fd2_cleanup_trims_flat_file_by_age() {
+    // F-D2: cleanup must trim the flat experiences.jsonl by age (previously it
+    // only cleaned YYYYMM/ subdirs and skipped the flat file entirely).
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let exp_dir = dir.path().join("experiences");
+    std::fs::create_dir_all(&exp_dir).unwrap();
+    let mk = |tool: &str, ts: &str| {
+        serde_json::to_string(&CollectedExperience {
+            experience: Experience {
+                id: tool.into(), tool_name: tool.into(),
+                input_summary: "x".into(), output_summary: "y".into(),
+                success: true, duration_ms: 1, timestamp: ts.into(), session_key: "s".into(),
+            },
+            dedup_hash: tool.into(),
+        }).unwrap()
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    let content = format!("{}\n{}\n",
+        mk("old_tool", "2020-01-01T00:00:00+08:00"),
+        mk("new_tool", &now));
+    std::fs::write(exp_dir.join("experiences.jsonl"), content).unwrap();
+
+    let store = ExperienceStore::from_forge_dir(dir.path());
+    let removed = store.cleanup(30).await.unwrap();
+    assert!(removed >= 1, "should remove the old entry");
+    let remaining = std::fs::read_to_string(exp_dir.join("experiences.jsonl")).unwrap();
+    assert!(!remaining.contains("old_tool"), "old entry should be gone");
+    assert!(remaining.contains("new_tool"), "recent entry should remain");
+}
+
+#[tokio::test]
 async fn test_append_and_read_aggregated() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());

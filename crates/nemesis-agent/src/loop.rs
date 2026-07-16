@@ -1703,8 +1703,10 @@ impl AgentLoop {
             &msg.content,
             &std::env::current_dir().unwrap_or_default(),
         );
+        let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
+        let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
         let result = self
-            .run_agent_loop_internal(&session_key, &processed_content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token)
+            .run_agent_loop_internal(&session_key, &processed_content, &msg.channel, &msg.chat_id, voice_playback, &cancel_token, cron_job_id, cron_job_name)
             .await;
 
         // Clean up cancellation token and release session.
@@ -1774,6 +1776,8 @@ impl AgentLoop {
         };
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
+        let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
+        let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -1782,6 +1786,8 @@ impl AgentLoop {
                 &origin_chat_id,
                 false,
                 &cancel_token,
+                cron_job_id,
+                cron_job_name,
             )
             .await;
 
@@ -2482,6 +2488,8 @@ impl AgentLoop {
         chat_id: &str,
         voice_playback: bool,
         cancel_token: &tokio_util::sync::CancellationToken,
+        cron_job_id: Option<&str>,
+        cron_job_name: Option<&str>,
     ) -> Result<String, String> {
         // Generate trace ID and emit conversation_start event.
         let trace_id = format!("{}-{}", session_key, chrono::Local::now().timestamp_nanos_opt().unwrap_or(0));
@@ -2549,12 +2557,21 @@ impl AgentLoop {
         }
 
         // Append to chat log (independent of session store).
-        crate::chat_log::append_chat_log(session_key, "user", user_message);
-        crate::chat_log::append_chat_log_with_model(
+        crate::chat_log::append_chat_log_full(
+            session_key,
+            "user",
+            user_message,
+            None,
+            cron_job_id,
+            cron_job_name,
+        );
+        crate::chat_log::append_chat_log_full(
             session_key,
             "assistant",
             &final_response,
             Some(&self.current_display_model()),
+            cron_job_id,
+            cron_job_name,
         );
 
         // Emit conversation_end observer event.
@@ -3629,19 +3646,29 @@ impl AgentLoop {
         #[cfg(feature = "forge")]
         {
             if let Some(ref forge) = self.forge {
-                let exp = nemesis_types::forge::Experience {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    tool_name: tool_call.name.clone(),
-                    input_summary: tool_call.arguments.clone(),
-                    output_summary: result.clone(),
-                    success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
-                    duration_ms: tool_start.elapsed().as_millis() as u64,
-                    timestamp: chrono::Local::now().to_rfc3339(),
-                    session_key: format!("{}:{}", context.channel, context.chat_id),
-                };
-                let args = serde_json::from_str(&tool_call.arguments)
-                    .unwrap_or(serde_json::Value::Null);
-                let _ = forge.collector().record_with_args(exp, &args).await;
+                // Gate on the runtime master switch — without this, experiences
+                // are recorded on every tool call even when forge.enabled=false.
+                if forge.is_enabled() {
+                    // Truncate payloads: despite the "summary" field name the
+                    // previous code stored the FULL args/result (read_file/exec
+                    // could be megabytes). 500 chars is enough for reflection
+                    // stats. Note: the dedup hash below still uses the full
+                    // parsed `args`, so hashing is unaffected.
+                    let trunc = |s: &str| -> String { s.chars().take(500).collect() };
+                    let exp = nemesis_types::forge::Experience {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        tool_name: tool_call.name.clone(),
+                        input_summary: trunc(&tool_call.arguments),
+                        output_summary: trunc(&result),
+                        success: !result.contains("SECURITY BLOCKED") && !result.contains("Tool error:"),
+                        duration_ms: tool_start.elapsed().as_millis() as u64,
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        session_key: format!("{}:{}", context.channel, context.chat_id),
+                    };
+                    let args = serde_json::from_str(&tool_call.arguments)
+                        .unwrap_or(serde_json::Value::Null);
+                    let _ = forge.collector().record_with_args(exp, &args).await;
+                }
             }
         }
 

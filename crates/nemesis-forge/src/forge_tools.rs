@@ -560,6 +560,16 @@ impl ForgeToolExecutor {
             _ => unreachable!(), // skill already handled above
         };
 
+        // Security gate (F-S1): block dangerous commands / hardcoded secrets
+        // BEFORE writing script/mcp content to disk.
+        let sec_errors = crate::validator::StaticValidator::new().security_errors(&content);
+        if !sec_errors.is_empty() {
+            return ForgeToolResult::err(format!(
+                "Content failed security validation: {}",
+                sec_errors.join("; ")
+            ));
+        }
+
         let forge_dir = self.forge.workspace().join("forge");
         let artifact_path = match artifact_type.as_str() {
             "script" => {

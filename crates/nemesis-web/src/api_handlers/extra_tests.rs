@@ -56,6 +56,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     })
 }
 
@@ -94,6 +95,7 @@ fn make_state_with_tx(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
         estop: None,
+        cron: None,
     })
 }
 
@@ -393,6 +395,7 @@ async fn test_handle_api_status_includes_model_base() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     });
     let resp = handle_api_status(State(state)).await;
     let json = resp.0;
@@ -742,6 +745,7 @@ async fn test_handle_api_sessions_with_count() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     });
     let resp = handle_api_sessions(State(state)).await;
     let json = resp.0;
@@ -1115,6 +1119,7 @@ fn test_app_state_clone() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        cron: None,
     };
     let cloned = state.clone();
     assert_eq!(cloned.auth_token, "tok");

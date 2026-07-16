@@ -259,6 +259,50 @@ impl ExperienceStore {
             }
         }
 
+        // Also trim the flat experiences.jsonl by age. The loop above only
+        // descends YYYYMM/ subdirs (is_dir gate at the top), so the flat file
+        // at base_dir — where the live collector actually writes — was never
+        // cleaned and grew unbounded. Trim old CollectedExperience entries by
+        // timestamp and atomically rewrite. Legacy AggregatedExperience lines
+        // (pollution from before F-D1) are dropped during the rewrite.
+        // (F-D2)
+        let flat = self.base_dir.join("experiences.jsonl");
+        if flat.exists() {
+            let cutoff_dt = chrono::Local::now() - chrono::Duration::days(max_age_days);
+            if let Ok(content) = tokio::fs::read_to_string(&flat).await {
+                let total: usize = content.lines().filter(|l| !l.trim().is_empty()).count();
+                let mut kept = 0usize;
+                let mut new_content = String::new();
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<CollectedExperience>(line) {
+                        Ok(ce) => {
+                            let young = chrono::DateTime::parse_from_rfc3339(
+                                &ce.experience.timestamp,
+                            )
+                            .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
+                            .unwrap_or(true); // unparseable ts → keep (don't lose data)
+                            if young {
+                                new_content.push_str(line);
+                                new_content.push('\n');
+                                kept += 1;
+                            }
+                        }
+                        Err(_) => {} // drop legacy aggregate pollution
+                    }
+                }
+                // Atomic rewrite (temp + rename) so a crash can't truncate the file.
+                let tmp = flat.with_extension("jsonl.tmp");
+                if tokio::fs::write(&tmp, new_content.as_bytes()).await.is_ok() {
+                    let _ = tokio::fs::rename(&tmp, &flat).await;
+                }
+                removed += total.saturating_sub(kept);
+            }
+        }
+
         Ok(removed)
     }
 
@@ -276,6 +320,28 @@ impl ExperienceStore {
             if line.is_empty() {
                 continue;
             }
+            if let Ok(exp) = serde_json::from_str::<CollectedExperience>(line) {
+                experiences.push(exp);
+            }
+        }
+        Ok(experiences)
+    }
+
+    /// Read up to the `limit` most-recent experiences from the flat file.
+    /// Reads the file once but **parses only the last `limit` lines**, bounding
+    /// parse cost regardless of file size. Used by the reflection cycle so a
+    /// large (age-bounded) file doesn't make each 6h tick increasingly slow.
+    /// (F-P2)
+    pub async fn read_recent(&self, limit: usize) -> std::io::Result<Vec<CollectedExperience>> {
+        let file_path = self.base_dir.join("experiences.jsonl");
+        if !file_path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = tokio::fs::read_to_string(&file_path).await?;
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        let start = lines.len().saturating_sub(limit.max(1));
+        let mut experiences = Vec::new();
+        for line in &lines[start..] {
             if let Ok(exp) = serde_json::from_str::<CollectedExperience>(line) {
                 experiences.push(exp);
             }

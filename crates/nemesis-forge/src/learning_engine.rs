@@ -286,6 +286,10 @@ impl LearningEngine {
 
         // Step 2: Adjust confidence based on feedback
         self.adjust_confidence_from_outcomes(&previous_outcomes);
+        // F-F2: take monitoring effect — disable the deployed skill file of any
+        // artifact the monitor marked Degraded so the skills loader stops using
+        // it. Without this the monitor's verdict had no teeth.
+        self.disable_degraded_skills();
 
         // Step 3: Extract patterns from experiences
         let patterns = self.extract_patterns(experiences);
@@ -316,9 +320,12 @@ impl LearningEngine {
                     } else {
                         auto_count += 1;
                         self.execute_create_skill(&action);
-                        if action.status == "executed" {
-                            actions_executed += 1;
-                        }
+                        // F-M3: execute_create_skill takes &action (immutable),
+                        // so it can't set action.status — count the action here
+                        // once it runs past the max_auto gate. (Inner early-
+                        // return paths are best-effort, but the action was
+                        // processed, which is what actions_taken reports.)
+                        actions_executed += 1;
                     }
                 }
                 "suggest_prompt" => {
@@ -558,11 +565,55 @@ impl LearningEngine {
             };
             if let Some(delta) = delta {
                 self.registry.update(&outcome.artifact_id, |a| {
-                    let new_rate = (a.usage_count as f64 * 0.01 + delta).clamp(0.0, 1.0);
-                    // Adjust usage_count as a proxy for success rate
-                    let adjusted = (new_rate * 100.0) as u64;
-                    a.usage_count = adjusted.max(1);
+                    // F-F1: adjust the dedicated success_rate field, NOT
+                    // usage_count — the old code treated the integer count as
+                    // success_rate*100, corrupting its semantics.
+                    a.success_rate = (a.success_rate + delta).clamp(0.0, 1.0);
                 });
+            }
+        }
+    }
+
+    /// Disable the deployed skill file for any Degraded artifact (F-F2). The
+    /// skills loader scans `workspace/skills/*/SKILL.md`, so renaming a
+    /// degraded skill's `SKILL.md` → `SKILL.md.disabled` hides it from the
+    /// agent (reversible: rename back to re-enable). This is the "rollback"
+    /// endpoint of the Phase 6 monitor→feedback loop — without it a bad learned
+    /// skill stayed an active instruction forever.
+    fn disable_degraded_skills(&self) {
+        self.disable_degraded_skills_impl()
+    }
+
+    /// Same as `disable_degraded_skills`, exposed for tests (F-F2 verification).
+    pub(crate) fn disable_degraded_skills_impl(&self) {
+        use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
+        let workspace = match self.forge_dir.parent() {
+            Some(w) => w,
+            None => return,
+        };
+        let skills_root = workspace.join("skills");
+        for a in self.registry.list(None, None) {
+            if !matches!(a.kind, ArtifactKind::Skill) {
+                continue;
+            }
+            if !matches!(a.status, ArtifactStatus::Degraded) {
+                continue;
+            }
+            let dir = skills_root.join(format!("{}-forge", a.name));
+            let active = dir.join("SKILL.md");
+            if active.exists() {
+                let disabled = dir.join("SKILL.md.disabled");
+                match std::fs::rename(&active, &disabled) {
+                    Ok(_) => tracing::info!(
+                        artifact = %a.id,
+                        "[LearningEngine] Disabled degraded skill — rolled back from agent"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        artifact = %a.id,
+                        "[LearningEngine] Failed to disable degraded skill file"
+                    ),
+                }
             }
         }
     }
@@ -597,7 +648,7 @@ impl LearningEngine {
         };
         drop(provider);
 
-        let content = match self.generate_skill_draft(&*provider_arc, action) {
+        let mut content = match self.generate_skill_draft(&*provider_arc, action) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "[LearningEngine] LLM generation failed for skill draft");
@@ -608,8 +659,12 @@ impl LearningEngine {
         // Iterative refinement loop with pipeline validation
         let max_refine = 3u32;
 
-        let pipeline = self.pipeline.lock();
-        if let Some(ref pipeline) = *pipeline {
+        // F-M7: clone the Arc<Pipeline> out of the lock and drop the guard
+        // before the LLM round-trips (validate + refine loop). Holding the
+        // pipeline Mutex across block_in_place LLM calls pins a runtime worker
+        // and can panic on a current-thread runtime.
+        let pipeline = { self.pipeline.lock().clone() };
+        if let Some(ref pipeline) = pipeline {
             for attempt in 0..=max_refine {
                 let validation = pipeline.validate(
                     nemesis_types::forge::ArtifactKind::Skill,
@@ -661,13 +716,17 @@ impl LearningEngine {
                     return;
                 }
 
-                // Failed — try to refine
+                // Failed — refine, then loop to re-validate (F-C2: the old code
+                // discarded the refined draft `_refined` and returned after one
+                // attempt, so a skill that failed first validation could never
+                // deploy even after successful refinement).
                 if attempt < max_refine {
                     let diagnosis = build_diagnosis(&validation);
                     match self.refine_skill_draft(&*provider_arc, action, &content, &diagnosis) {
-                        Ok(_refined) => {
-                            tracing::warn!(attempt, "[LearningEngine] Skill validation failed, refinement produced");
-                            return;
+                        Ok(refined) => {
+                            tracing::debug!(attempt, "[LearningEngine] Refined skill draft, re-validating");
+                            content = refined;
+                            continue;
                         }
                         Err(e) => {
                             tracing::warn!(attempt = attempt + 1, error = %e, "[LearningEngine] Skill refinement failed");
@@ -751,12 +810,40 @@ impl LearningEngine {
     }
 
     /// Check if previously suggested prompts have been adopted (mirrors Go's checkSuggestionAdoption).
+    /// Test-only: probe whether the pipeline lock is currently free (F-M7).
+    pub(crate) fn pipeline_try_lock_for_test(&self) -> bool {
+        self.pipeline.try_lock().is_some()
+    }
+
+    /// Test-only wrapper for check_suggestion_adoption (F-M1 verification).
+    pub(crate) fn check_suggestion_adoption_for_test(&self, patterns: &[DetectedPattern]) {
+        self.check_suggestion_adoption(patterns);
+    }
+
     fn check_suggestion_adoption(&self, _patterns: &[DetectedPattern]) {
         let prompts_dir = if self.forge_dir.as_os_str().is_empty() {
             return;
         } else {
             self.forge_dir.parent().unwrap_or(&self.forge_dir).join("prompts")
         };
+
+        // F-M1: only retire prompt suggestions once at least one skill has
+        // actually been deployed (Active/Observing). The old code wiped every
+        // *_suggestion.md on each cycle, so suggestions never survived long
+        // enough to be adopted. No precise adoption signal exists, so gate on
+        // deployed-skill existence.
+        let has_deployed_skill = self
+            .registry
+            .list(None, None)
+            .iter()
+            .any(|a| {
+                use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
+                matches!(a.kind, ArtifactKind::Skill)
+                    && matches!(a.status, ArtifactStatus::Active | ArtifactStatus::Observing)
+            });
+        if !has_deployed_skill {
+            return;
+        }
 
         let entries = match std::fs::read_dir(&prompts_dir) {
             Ok(e) => e,

@@ -28,6 +28,35 @@ pub struct CronPayload {
     pub deliver: bool,
     pub channel: Option<String>,
     pub to: Option<String>,
+    /// Target agent conversation key (e.g. `agent:main:session:<sid>`). When
+    /// set, the fired InboundMessage targets that conversation so the exchange
+    /// is persisted into it (and, if a live WS tab is bound, pushed in real
+    /// time). Empty/None = fall through to routing-derived keying.
+    #[serde(default)]
+    pub session_key: Option<String>,
+}
+
+/// Partial update for a cron job. Each field is optional: `None` = leave
+/// unchanged. For the nullable string fields (`channel`/`to`/`session_key`),
+/// `Some("")` means "clear". Used by the web `tasks.cron.update` handler.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CronJobPatch {
+    pub name: Option<String>,
+    pub schedule: Option<CronSchedule>,
+    pub message: Option<String>,
+    pub channel: Option<String>,
+    pub to: Option<String>,
+    pub session_key: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+/// One executed run of a cron job (for the task's run-history view).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronRunRecord {
+    pub at_ms: i64,
+    /// "ok" | "error" | "executed" (mirrors `last_status`).
+    pub status: String,
+    pub error: Option<String>,
 }
 
 /// Cron job state.
@@ -37,6 +66,24 @@ pub struct CronJobState {
     pub last_run_at_ms: Option<i64>,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
+    /// Recent run history (newest last), capped to `MAX_HISTORY`. `#[serde(default)]`
+    /// so jobs created before this field existed load with an empty history.
+    #[serde(default)]
+    pub history: Vec<CronRunRecord>,
+}
+
+/// Maximum number of past runs kept per job in `history`.
+const MAX_HISTORY: usize = 50;
+
+impl CronJobState {
+    /// Append a run record (newest last), trimming to `MAX_HISTORY`.
+    pub fn push_history(&mut self, at_ms: i64, status: String, error: Option<String>) {
+        self.history.push(CronRunRecord { at_ms, status, error });
+        if self.history.len() > MAX_HISTORY {
+            let drop_n = self.history.len() - MAX_HISTORY;
+            self.history.drain(..drop_n);
+        }
+    }
 }
 
 /// Cron job definition.
@@ -187,6 +234,13 @@ impl CronService {
                                 }
                             }
 
+                            // Append to run history (capped).
+                            job.state.push_history(
+                                start_time,
+                                job.state.last_status.clone().unwrap_or_default(),
+                                job.state.last_error.clone(),
+                            );
+
                             // Compute next run time
                             if job.schedule.kind == "at" {
                                 if job.delete_after_run {
@@ -222,16 +276,33 @@ impl CronService {
         info!("[Cron] Cron service stopped");
     }
 
-    /// Add a new job.
+    /// Add a new job (legacy 6-param signature — kept for existing callers and
+    /// tests). Delegates to [`add_job_ext`] with `session_key=None, enabled=true`.
     pub fn add_job(&self, name: &str, schedule: CronSchedule, message: &str, deliver: bool, channel: Option<&str>, to: Option<&str>) -> Result<CronJob, String> {
+        self.add_job_ext(name, schedule, message, deliver, channel, to, None, true)
+    }
+
+    /// Add a new job with full control over `session_key` and `enabled`. This is
+    /// the path used by the web UI (`tasks.cron.add`).
+    pub fn add_job_ext(
+        &self,
+        name: &str,
+        schedule: CronSchedule,
+        message: &str,
+        deliver: bool,
+        channel: Option<&str>,
+        to: Option<&str>,
+        session_key: Option<&str>,
+        enabled: bool,
+    ) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
-        info!("[Cron] Job added: name={}, schedule_kind={}, cron={}", name, schedule.kind, cron_expr);
+        info!("[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}", name, schedule.kind, cron_expr, enabled);
         let now_ms = Local::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
             id: generate_id(),
             name: name.to_string(),
-            enabled: true,
+            enabled,
             schedule: schedule.clone(),
             payload: CronPayload {
                 kind: "agent_turn".to_string(),
@@ -240,12 +311,14 @@ impl CronService {
                 deliver,
                 channel: channel.map(|s| s.to_string()),
                 to: to.map(|s| s.to_string()),
+                session_key: session_key.map(|s| s.to_string()),
             },
             state: CronJobState {
-                next_run_at_ms: compute_next_run(&schedule, now_ms),
+                next_run_at_ms: if enabled { compute_next_run(&schedule, now_ms) } else { None },
                 last_run_at_ms: None,
                 last_status: None,
                 last_error: None,
+                history: Vec::new(),
             },
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
@@ -314,6 +387,44 @@ impl CronService {
         self.save_store()
     }
 
+    /// Patch a job's fields (name/schedule/message/channel/to/session_key/enabled).
+    /// Each `None` field is left unchanged; for `channel`/`to`/`session_key`,
+    /// `Some("")` clears the value. Returns the updated job. Used by the web
+    /// `tasks.cron.update` handler.
+    pub fn patch_job(&self, job_id: &str, patch: &CronJobPatch) -> Result<CronJob, String> {
+        info!("[Cron] Job patched: id={}", job_id);
+        let now_ms = Local::now().timestamp_millis();
+        let mut store = self.store.lock();
+        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
+            .ok_or_else(|| format!("job not found: {}", job_id))?;
+        if let Some(n) = &patch.name { job.name = n.clone(); }
+        if let Some(sched) = &patch.schedule {
+            job.schedule = sched.clone();
+            if job.enabled {
+                job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
+            }
+        }
+        if let Some(m) = &patch.message { job.payload.message = m.clone(); }
+        if let Some(c) = patch.channel.as_ref() {
+            job.payload.channel = if c.is_empty() { None } else { Some(c.clone()) };
+        }
+        if let Some(t) = patch.to.as_ref() {
+            job.payload.to = if t.is_empty() { None } else { Some(t.clone()) };
+        }
+        if let Some(sk) = patch.session_key.as_ref() {
+            job.payload.session_key = if sk.is_empty() { None } else { Some(sk.clone()) };
+        }
+        if let Some(en) = patch.enabled {
+            job.enabled = en;
+            job.state.next_run_at_ms = if en { compute_next_run(&job.schedule, now_ms) } else { None };
+        }
+        job.updated_at_ms = now_ms;
+        let updated = job.clone();
+        drop(store);
+        self.save_store()?;
+        Ok(updated)
+    }
+
     /// Toggle a job's enabled state. Returns the new state.
     pub fn toggle_job(&self, job_id: &str) -> Result<bool, String> {
         let now_ms = Local::now().timestamp_millis();
@@ -364,26 +475,65 @@ impl CronService {
         *self.on_job.lock() = Some(Box::new(handler));
     }
 
-    /// Execute a job immediately by ID.
+    /// Execute a job immediately by ID. Unlike the scheduled fire loop this
+    /// does NOT advance `next_run_at_ms` (the schedule still fires normally) —
+    /// it's a manual "run now". Invokes the `on_job` handler so the agent
+    /// actually runs (the previous implementation only updated state and never
+    /// fired the handler, so "run now" was a no-op for delivery). State is
+    /// marked `"executed"` on success / `"error"` on handler failure.
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
         let start = std::time::Instant::now();
         info!("[Cron] Executing job: id={}", job_id);
         let now_ms = Local::now().timestamp_millis();
-        let mut store = self.store.lock();
-        let job = store.jobs.iter_mut().find(|j| j.id == job_id)
-            .ok_or_else(|| {
-                error!("[Cron] Job not found for execution: id={}", job_id);
-                format!("job not found: {}", job_id)
-            })?;
-        let job_name = job.name.clone();
-        job.state.last_run_at_ms = Some(now_ms);
-        job.state.last_status = Some("executed".to_string());
-        job.state.last_error = None;
-        job.updated_at_ms = now_ms;
-        drop(store);
-        self.save_store()?;
+
+        // Read-lock: copy job for callback (mirror the fire loop pattern).
+        let callback_job = {
+            let s = self.store.lock();
+            s.jobs.iter().find(|j| j.id == job_id).cloned()
+        };
+        let Some(callback_job) = callback_job else {
+            error!("[Cron] Job not found for execution: id={}", job_id);
+            return Err(format!("job not found: {}", job_id));
+        };
+
+        // Call on_job handler (outside lock).
+        let handler_result = {
+            let on_job = self.on_job.lock();
+            match on_job.as_ref() {
+                Some(h) => Some(h(&callback_job)),
+                None => None,
+            }
+        };
+
+        // Write-lock: update state after execution.
+        {
+            let mut store = self.store.lock();
+            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
+                job.state.last_run_at_ms = Some(now_ms);
+                job.updated_at_ms = Local::now().timestamp_millis();
+                match &handler_result {
+                    Some(Ok(_)) | None => {
+                        job.state.last_status = Some("executed".to_string());
+                        job.state.last_error = None;
+                    }
+                    Some(Err(e)) => {
+                        job.state.last_status = Some("error".to_string());
+                        job.state.last_error = Some(e.clone());
+                        error!("[Cron] Manual execute failed: name={}, id={}, error={}", job.name, job.id, e);
+                    }
+                }
+                // Append to run history (capped).
+                job.state.push_history(
+                    now_ms,
+                    job.state.last_status.clone().unwrap_or_default(),
+                    job.state.last_error.clone(),
+                );
+            }
+            drop(store);
+            self.save_store()?;
+        }
         let elapsed = start.elapsed().as_millis();
-        info!("[Cron] Job executed: name={}, id={}, duration_ms={}", job_name, job_id, elapsed);
+        info!("[Cron] Job executed: name={}, id={}, duration_ms={}", callback_job.name, job_id, elapsed);
         Ok(())
     }
 
@@ -485,7 +635,7 @@ fn save_store_to_path(path: &str, data: &CronStoreData) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| format!("write: {}", e))
 }
 
-fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
+pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
     match schedule.kind.as_str() {
         "at" => schedule.at_ms.filter(|&t| t > now_ms),
         "every" => schedule.every_ms.filter(|&ms| ms > 0).map(|ms| now_ms + ms),
@@ -499,16 +649,6 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
                 .map(|dt| dt.with_timezone(&chrono::Local))
                 .unwrap_or_else(|| chrono::Local::now());
 
-            // Apply timezone if specified
-            let tz = schedule.tz.as_deref().unwrap_or("UTC");
-            let tz: chrono_tz::Tz = match tz.parse() {
-                Ok(tz) => tz,
-                Err(_) => {
-                    tracing::warn!("[cron] invalid timezone '{}', using UTC", tz);
-                    chrono_tz::Tz::UTC
-                }
-            };
-
             let cron = match croner::Cron::from_str(expr) {
                 Ok(c) => c,
                 Err(e) => {
@@ -517,8 +657,32 @@ fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
                 }
             };
 
-            match cron.find_next_occurrence(&now.with_timezone(&tz), false) {
-                Ok(next) => Some(next.with_timezone(&chrono::Local).timestamp_millis()),
+            // Interpret the cron fields in the configured timezone, or LOCAL
+            // when none is specified. The web UI never sets tz, so an expression
+            // like "0 9 * * *" must mean 09:00 local — the previous default of
+            // UTC made "0 9" fire at 09:00 UTC (e.g. 17:00 in UTC+8). `now` is
+            // already DateTime<Local>, so passing it to croner directly makes it
+            // evaluate the fields against local time.
+            let tz_to_use: Option<chrono_tz::Tz> = match schedule.tz.as_deref() {
+                Some(tz_str) => match tz_str.parse() {
+                    Ok(tz) => Some(tz),
+                    Err(_) => {
+                        tracing::warn!("[cron] invalid timezone '{}', using local", tz_str);
+                        None
+                    }
+                },
+                None => None,
+            };
+            let next_ms = match tz_to_use {
+                Some(tz) => cron
+                    .find_next_occurrence(&now.with_timezone(&tz), false)
+                    .map(|dt| dt.with_timezone(&chrono::Local).timestamp_millis()),
+                None => cron
+                    .find_next_occurrence(&now, false)
+                    .map(|dt| dt.with_timezone(&chrono::Local).timestamp_millis()),
+            };
+            match next_ms {
+                Ok(ms) => Some(ms),
                 Err(e) => {
                     tracing::warn!("[cron] failed to compute next run for expr '{}': {}", expr, e);
                     None

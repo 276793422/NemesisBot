@@ -16,6 +16,7 @@
 
 pub mod llm_bridge;
 pub mod server;
+pub mod conv_router;
 pub mod api_handlers;
 pub mod api_usage;
 pub mod cors;
@@ -39,6 +40,8 @@ pub use llm_bridge::ForgeProviderBridge;
 pub use llm_bridge::ProviderAdapter;
 pub use protocol::ProtocolMessage;
 pub use session::SessionManager;
+pub use conv_router::ConvRouter;
+pub use conv_router::SharedConvRouter;
 pub use server::WebServer;
 pub use server::WebServerConfig;
 pub use server::StaticFiles;
