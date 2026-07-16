@@ -20,6 +20,7 @@ import sql from 'highlight.js/lib/languages/sql'
 import yaml from 'highlight.js/lib/languages/yaml'
 import markdown from 'highlight.js/lib/languages/markdown'
 import 'highlight.js/styles/github-dark.min.css'
+import { decideChatInputKey } from '../lib/chatInputKeys'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('typescript', typescript)
@@ -429,10 +430,11 @@ async function saveVoiceConfig() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.ctrlKey && e.key === 'Enter') {
-    e.preventDefault()
-    sendMessage()
-  }
+  // Enter sends; Shift+Enter newline; Ctrl/Cmd+Enter also sends (legacy).
+  // Policy lives in lib/chatInputKeys so unit tests drive the real function.
+  const decision = decideChatInputKey(e)
+  if (decision.preventDefault) e.preventDefault()
+  if (decision.action === 'send') sendMessage()
 }
 
 function handleInput(e: Event) {
@@ -680,7 +682,7 @@ onUnmounted(() => {
     <div class="chat-input-area">
       <textarea
         ref="chatInput"
-        :placeholder="props.placeholderOverride || '输入消息... (Ctrl+Enter 发送)'"
+        :placeholder="props.placeholderOverride || '输入消息… Enter 发送，Shift+Enter 换行'"
         rows="1"
         v-model="chatStore.input"
         @keydown="handleKeydown"

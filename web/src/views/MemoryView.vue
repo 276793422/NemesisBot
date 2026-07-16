@@ -7,6 +7,8 @@ import { useToast } from '../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
+defineProps<{ embedded?: boolean }>()
+
 interface DocEntry { path: string; size?: number; modified?: string }
 
 // --- Document tab state ---
@@ -318,9 +320,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-memory">
-    <div class="page-header"><h2>记忆管理</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'memory-embed' : 'page-memory'">
+    <div v-if="!embedded" class="page-header"><h2>记忆管理</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'documents' }" @click="activeTab = 'documents'">文档记忆</button>
         <button class="tab" :class="{ active: activeTab === 'vector' }" @click="activeTab = 'vector'">强化记忆</button>

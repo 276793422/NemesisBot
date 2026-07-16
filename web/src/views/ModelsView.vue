@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { usePageTab } from '../lib/pageTab'
+import LocalModelsView from './LocalModelsView.vue'
+import { PROVIDER_PRESETS, findProvider } from '../lib/providerPresets'
 
 const { request } = useWSAPI()
 const toast = useToast()
+const pageTab = ref('cloud')
+const { setTab } = usePageTab(pageTab, ['cloud', 'local'] as const, 'cloud')
 
 // Backend returns: model_name, model, api_base, api_key (masked), proxy, is_default
 interface Model {
@@ -19,10 +24,23 @@ interface Model {
 const models = ref<Model[]>([])
 const loading = ref(true)
 const showAdd = ref(false)
-// Backend add expects: name, model, key, base_url?, proxy?
-const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '' })
+const providerId = ref(PROVIDER_PRESETS[0]?.id || 'openai')
+const modelChoice = ref('')
+const apiKey = ref('')
+const customModelId = ref('')
+const customBaseUrl = ref('')
+const customName = ref('')
 const testing = ref<string | null>(null)
 const switching = ref<string | null>(null)
+
+const currentProvider = computed(() => findProvider(providerId.value) || PROVIDER_PRESETS[0])
+const isCustom = computed(() => providerId.value === 'custom')
+
+watch(providerId, (id) => {
+  const p = findProvider(id)
+  if (p && p.models.length) modelChoice.value = p.models[0].id
+  else modelChoice.value = ''
+}, { immediate: true })
 
 async function loadModels() {
   try {
@@ -34,22 +52,45 @@ async function loadModels() {
   loading.value = false
 }
 
+function resetAddWizard() {
+  providerId.value = PROVIDER_PRESETS[0]?.id || 'openai'
+  apiKey.value = ''
+  customModelId.value = ''
+  customBaseUrl.value = ''
+  customName.value = ''
+  const p = findProvider(providerId.value)
+  modelChoice.value = p?.models[0]?.id || ''
+}
+
 async function addModel() {
-  if (!addForm.value.name) { toast.warn('请输入模型名称'); return }
-  if (!addForm.value.model) { toast.warn('请输入模型 ID'); return }
-  if (!addForm.value.key) { toast.warn('请输入 API Key'); return }
+  const p = currentProvider.value
+  if (!p) return
+  if (!apiKey.value.trim()) { toast.warn('请粘贴 API Key'); return }
+
+  let name = ''
+  let model = ''
+  let base_url = p.baseUrl
+
+  if (isCustom.value) {
+    if (!customModelId.value.trim()) { toast.warn('请填写模型 ID'); return }
+    if (!customBaseUrl.value.trim()) { toast.warn('请填写接口地址'); return }
+    model = customModelId.value.trim()
+    base_url = customBaseUrl.value.trim()
+    name = customName.value.trim() || model
+  } else {
+    if (!modelChoice.value) { toast.warn('请选择模型'); return }
+    model = modelChoice.value
+    const choice = p.models.find((m) => m.id === model)
+    name = `${p.namePrefix} · ${choice?.label || model}`
+  }
+
   try {
-    const payload: any = {
-      name: addForm.value.name,
-      model: addForm.value.model,
-      key: addForm.value.key,
-    }
-    if (addForm.value.base_url) payload.base_url = addForm.value.base_url
-    if (addForm.value.proxy) payload.proxy = addForm.value.proxy
+    const payload: any = { name, model, key: apiKey.value.trim() }
+    if (base_url) payload.base_url = base_url
     await request('models', 'add', payload)
     toast.success('模型已添加')
     showAdd.value = false
-    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '' }
+    resetAddWizard()
     await loadModels()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
@@ -103,39 +144,65 @@ onMounted(loadModels)
     <div class="page-header">
       <h2>模型管理</h2>
       <div class="page-header-actions">
-        <button class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
+        <button v-if="pageTab === 'cloud'" class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
       </div>
     </div>
     <div class="page-body">
-      <!-- Add form -->
+      <div class="tabs" style="margin-bottom: var(--space-4);">
+        <button class="tab" :class="{ active: pageTab === 'cloud' }" @click="setTab('cloud')">云端 / API</button>
+        <button class="tab" :class="{ active: pageTab === 'local' }" @click="setTab('local')">本地模型</button>
+      </div>
+
+      <div v-if="pageTab === 'local'">
+        <LocalModelsView embedded />
+      </div>
+
+      <template v-if="pageTab === 'cloud'">
+      <!-- Add wizard: provider → model → key -->
       <div v-if="showAdd" class="card" style="margin-bottom: var(--space-4);">
-        <div class="card-header"><h3>添加模型</h3></div>
+        <div class="card-header"><h3>添加云端模型</h3></div>
         <div class="card-body">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
-            <div class="form-group">
-              <label class="form-label">名称 *（显示名称）</label>
-              <input class="form-input" v-model="addForm.name" placeholder="例如: 我的GPT4">
-            </div>
-            <div class="form-group">
-              <label class="form-label">模型 ID *（实际调用）</label>
-              <input class="form-input" v-model="addForm.model" placeholder="例如: gpt-4o / zhipu/glm-4">
-            </div>
-            <div class="form-group">
-              <label class="form-label">API Key *</label>
-              <input class="form-input" type="password" v-model="addForm.key" placeholder="sk-...">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Base URL</label>
-              <input class="form-input" v-model="addForm.base_url" placeholder="https://api.openai.com/v1">
+          <p class="form-hint" style="margin-bottom: var(--space-4);">选择服务商并粘贴密钥即可，无需手写 Base URL / 模型 ID。</p>
+          <div class="form-group">
+            <label class="form-label">1. 服务商</label>
+            <div class="preset-grid">
+              <button
+                v-for="p in PROVIDER_PRESETS"
+                :key="p.id"
+                type="button"
+                class="preset-chip"
+                :class="{ active: providerId === p.id }"
+                @click="providerId = p.id"
+              >{{ p.label }}</button>
             </div>
           </div>
-          <div class="form-group" style="margin-top: var(--space-3);">
-            <label class="form-label">代理</label>
-            <input class="form-input" v-model="addForm.proxy" placeholder="http://proxy:port" style="max-width: 300px;">
+          <div v-if="!isCustom" class="form-group">
+            <label class="form-label">2. 模型</label>
+            <select class="form-select" v-model="modelChoice" style="max-width: 360px;">
+              <option v-for="m in currentProvider?.models || []" :key="m.id" :value="m.id">{{ m.label }}</option>
+            </select>
           </div>
-          <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end; gap: var(--space-2);">
-            <button class="btn" @click="showAdd = false">取消</button>
-            <button class="btn btn-primary" @click="addModel">添加</button>
+          <template v-else>
+            <div class="form-group">
+              <label class="form-label">显示名称（可选）</label>
+              <input class="form-input" v-model="customName" placeholder="我的模型" style="max-width: 360px;">
+            </div>
+            <div class="form-group">
+              <label class="form-label">模型 ID</label>
+              <input class="form-input" v-model="customModelId" placeholder="provider/model-name" style="max-width: 360px;">
+            </div>
+            <div class="form-group">
+              <label class="form-label">接口地址</label>
+              <input class="form-input" v-model="customBaseUrl" placeholder="https://…/v1" style="max-width: 360px;">
+            </div>
+          </template>
+          <div class="form-group">
+            <label class="form-label">{{ isCustom ? '3' : '3' }}. API Key</label>
+            <input class="form-input" type="password" v-model="apiKey" :placeholder="currentProvider?.keyHint || '粘贴密钥'" style="max-width: 360px;" autocomplete="off">
+          </div>
+          <div style="margin-top: var(--space-4); display: flex; justify-content: flex-end; gap: var(--space-2);">
+            <button class="btn" @click="showAdd = false; resetAddWizard()">取消</button>
+            <button class="btn btn-primary" @click="addModel">添加并使用</button>
           </div>
         </div>
       </div>
@@ -195,6 +262,7 @@ onMounted(loadModels)
           </div>
         </div>
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -222,5 +290,33 @@ onMounted(loadModels)
   font-size: var(--text-sm, 13px);
   color: var(--color-success, #22c55e);
   font-weight: 500;
+}
+.preset-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.preset-chip {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-radius: var(--radius-full);
+  padding: 6px 14px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.preset-chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+.form-select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
 }
 </style>

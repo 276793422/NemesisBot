@@ -10,6 +10,8 @@ const toast = useToast()
 const router = useRouter()
 const sessionStore = useSessionStore()
 
+defineProps<{ embedded?: boolean }>()
+
 // --- Records (run history) modal state ---
 const showRecordsModal = ref(false)
 const recordsJob = ref<any>(null)
@@ -309,9 +311,9 @@ onBeforeUnmount(() => clearTimeout(previewTimer))
 </script>
 
 <template>
-  <div class="page-tasks">
-    <div class="page-header"><h2>任务管理</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'tasks-embed' : 'page-tasks'">
+    <div v-if="!embedded" class="page-header"><h2>任务管理</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'boot' }" @click="switchTab('boot')">启动任务</button>
         <button class="tab" :class="{ active: activeTab === 'heartbeat' }" @click="switchTab('heartbeat')">心跳任务</button>

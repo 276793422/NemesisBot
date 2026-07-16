@@ -2,6 +2,9 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { usePageTab } from '../lib/pageTab'
+import ToolsView from './ToolsView.vue'
+import TasksView from './TasksView.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -20,12 +23,15 @@ const newOrigin = ref('')
 const tabs = [
   { id: 'agent', label: 'Agent' },
   { id: 'gateway', label: 'Gateway' },
-  { id: 'tools', label: '工具' },
+  { id: 'tools', label: '工具开关' },
+  { id: 'tools-md', label: '工具笔记' },
+  { id: 'tasks', label: '任务' },
   { id: 'services', label: '服务开关' },
   { id: 'logging', label: '日志' },
   { id: 'cors', label: 'CORS' },
-  { id: 'raw', label: '原始 JSON' },
+  { id: 'raw', label: '进阶 JSON' },
 ]
+const { setTab } = usePageTab(activeTab, tabs.map(t => t.id), 'agent')
 
 async function loadConfig() {
   try {
@@ -118,33 +124,64 @@ onMounted(async () => {
 
       <div v-if="!loading">
         <div class="tabs">
-          <button v-for="t in tabs" :key="t.id" class="tab" :class="{ active: activeTab === t.id }" @click="activeTab = t.id">{{ t.label }}</button>
+          <button v-for="t in tabs" :key="t.id" class="tab" :class="{ active: activeTab === t.id }" @click="setTab(t.id)">{{ t.label }}</button>
         </div>
 
-        <!-- Agent config -->
+        <div v-if="activeTab === 'tools-md'">
+          <ToolsView embedded />
+        </div>
+        <div v-if="activeTab === 'tasks'">
+          <TasksView embedded />
+        </div>
+
+        <!-- Agent config: presets instead of raw temperature numbers -->
         <div v-if="activeTab === 'agent'" class="card">
           <div class="card-header"><h3>Agent 配置</h3></div>
           <div class="card-body">
             <div class="form-group">
               <label class="form-label">默认模型</label>
-              <input class="form-input" :value="config.agents?.defaults?.llm || '--'" disabled style="max-width: 300px;">
-              <span class="form-hint">在模型页面修改</span>
+              <div style="display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;">
+                <code style="font-size: var(--text-sm);">{{ config.agents?.defaults?.llm || '未配置' }}</code>
+                <router-link class="btn btn-sm" to="/models">去模型页更换</router-link>
+              </div>
             </div>
             <div class="form-group">
-              <label class="form-label">温度</label>
-              <input class="form-input" type="number" step="0.1" min="0" max="2" :value="config.agents?.defaults?.temperature ?? 0.7"
-                @change="(e: any) => saveField('agents.defaults.temperature', parseFloat(e.target.value))" style="max-width: 200px;">
+              <label class="form-label">回复风格</label>
+              <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 0.2) < 0.05 }"
+                  @click="saveField('agents.defaults.temperature', 0.2)"
+                >严谨</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 0.7) < 0.05 }"
+                  @click="saveField('agents.defaults.temperature', 0.7)"
+                >均衡</button>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 1.2) < 0.05 }"
+                  @click="saveField('agents.defaults.temperature', 1.2)"
+                >创意</button>
+              </div>
+              <span class="form-hint">对应温度约 0.2 / 0.7 / 1.2，无需手填小数</span>
             </div>
             <div class="form-group">
-              <label class="form-label">最大 Tokens</label>
-              <input class="form-input" type="number" :value="config.agents?.defaults?.max_tokens ?? 4096"
-                @change="(e: any) => saveField('agents.defaults.max_tokens', parseInt(e.target.value))" style="max-width: 200px;">
+              <label class="form-label">回复长度上限</label>
+              <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">
+                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) <= 2048 }" @click="saveField('agents.defaults.max_tokens', 2048)">短</button>
+                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) > 2048 && (config.agents?.defaults?.max_tokens ?? 4096) <= 4096 }" @click="saveField('agents.defaults.max_tokens', 4096)">中</button>
+                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) > 4096 }" @click="saveField('agents.defaults.max_tokens', 8192)">长</button>
+              </div>
             </div>
             <div class="form-group">
-              <label class="form-label">工作空间限制</label>
+              <label class="form-label">限制在工作空间内操作</label>
               <div class="toggle" :class="{ active: config.agents?.defaults?.restrict_to_workspace !== false }"
                 @click="toggleService('agents.defaults.restrict_to_workspace', config.agents?.defaults?.restrict_to_workspace !== false)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.agents?.defaults?.restrict_to_workspace !== false ? '已启用' : '已禁用' }}</span>
+              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.agents?.defaults?.restrict_to_workspace !== false ? '已启用（推荐）' : '已关闭' }}</span>
             </div>
           </div>
         </div>
@@ -242,44 +279,42 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- CORS -->
+        <!-- CORS: honest CLI-only guidance — no half-disabled fake controls -->
         <div v-if="activeTab === 'cors'">
           <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header">
               <h3>CORS 管理</h3>
-              <div class="toggle" :class="{ active: corsEnabled }" @click="toggleCors(!corsEnabled)"></div>
+              <span class="badge badge-neutral">仅 CLI</span>
             </div>
             <div class="card-body">
-              <div style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--accent-muted, #e8f0fe); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
-                CORS 管理功能当前通过 WebSocket API 不可用，请使用 CLI 命令 <code>nemesisbot cors</code> 进行管理。
-              </div>
-              <div style="display: flex; gap: var(--space-2); margin-bottom: var(--space-4);">
-                <input class="form-input" v-model="newOrigin" placeholder="例如: http://localhost:3000" style="max-width: 400px;" disabled>
-                <button class="btn btn-primary" @click="addCorsOrigin" disabled>添加</button>
-              </div>
-              <div v-if="corsOrigins.length === 0" style="color: var(--text-muted); font-size: var(--text-sm);">暂无 CORS 规则</div>
-              <div v-for="origin in corsOrigins" :key="origin" style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3); border: 1px solid var(--border-light); border-radius: var(--radius-md); margin-bottom: var(--space-2);">
-                <code style="font-size: var(--text-sm);">{{ origin }}</code>
-                <button class="btn btn-sm btn-danger" @click="removeCorsOrigin(origin)">移除</button>
+              <div class="empty-state" style="padding: var(--space-6);">
+                <h3>请在终端中管理 CORS</h3>
+                <p style="margin-top: var(--space-2);">
+                  当前 Dashboard 无法通过 WebSocket 修改 CORS。请使用：
+                </p>
+                <pre style="margin-top: var(--space-3); text-align: left; padding: var(--space-3); background: var(--bg-secondary); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); overflow-x: auto;">nemesisbot cors</pre>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Raw JSON -->
+        <!-- Raw JSON (advanced only — discouraged for normal use) -->
         <div v-if="activeTab === 'raw'">
           <div class="card">
             <div class="card-header">
-              <h3>原始配置 (config.json)</h3>
+              <h3>原始配置 (进阶)</h3>
               <div style="display: flex; gap: var(--space-2);">
                 <template v-if="!editing">
-                  <button class="btn btn-sm" @click="editing = true; editConfig = JSON.stringify(config, null, 2)">编辑</button>
+                  <button class="btn btn-sm" @click="editing = true; editConfig = JSON.stringify(config, null, 2)">编辑 JSON</button>
                 </template>
                 <template v-else>
                   <button class="btn btn-sm" @click="editing = false">取消</button>
                   <button class="btn btn-sm btn-primary" @click="saveFullConfig">保存</button>
                 </template>
               </div>
+            </div>
+            <div class="card-body" style="padding-bottom: 0;">
+              <p class="form-hint">日常请用上方各 Tab 与开关。仅在排查问题时直接改 JSON。</p>
             </div>
             <div class="card-body">
               <div v-if="editing">

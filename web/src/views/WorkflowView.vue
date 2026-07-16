@@ -11,6 +11,8 @@ import WorkflowYaml from '../components/workflow/WorkflowYaml.vue'
 const store = useWorkflowStore()
 const { activeTab, listLoading } = storeToRefs(store)
 
+defineProps<{ embedded?: boolean }>()
+
 onMounted(() => {
   store.fetchList()
 })
@@ -22,13 +24,14 @@ watch(activeTab, (tab) => {
 </script>
 
 <template>
-  <div class="page-workflow">
-    <div class="page-header">
+  <div :class="embedded ? 'workflow-embed' : 'page-workflow'">
+    <div v-if="!embedded" class="page-header">
       <h2>工作流</h2>
       <span v-if="listLoading" class="loading-hint">⟳ 加载中...</span>
     </div>
+    <div v-else-if="listLoading" class="loading-hint" style="margin-bottom: var(--space-2);">⟳ 加载中...</div>
 
-    <div class="page-body page-workflow-body">
+    <div :class="embedded ? 'page-workflow-body' : 'page-body page-workflow-body'">
       <WorkflowTabs v-model="activeTab" />
 
       <div class="workflow-content">

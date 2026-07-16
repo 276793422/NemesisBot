@@ -13,6 +13,8 @@ import type {
 
 const { request } = useWSAPI()
 
+defineProps<{ embedded?: boolean }>()
+
 const activeTab = ref('events')
 
 // Per-tab data, loaded lazily on first tab activation.
@@ -104,13 +106,14 @@ function onNavigate(target: { type: string; id: string }) {
 </script>
 
 <template>
-  <div class="page-logs">
-    <div class="page-header">
+  <div :class="embedded ? 'logs-embed' : 'page-logs'">
+    <div v-if="!embedded" class="page-header">
       <h2>日志管理</h2>
       <span v-if="loadingTab" class="loading-hint">⟳ 加载中...</span>
     </div>
+    <div v-else-if="loadingTab" class="loading-hint" style="margin-bottom: var(--space-2);">⟳ 加载中...</div>
 
-    <div class="page-body page-logs-body">
+    <div :class="embedded ? 'page-logs-body' : 'page-body page-logs-body'">
       <LogsTabs v-model="activeTab" :counts="counts" />
 
       <div class="logs-content">
