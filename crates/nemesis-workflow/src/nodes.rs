@@ -582,6 +582,64 @@ fn resolve_template_value(
     }
 }
 
+/// Resolve the `items` config of a foreach loop into a concrete list.
+///
+/// Accepts:
+/// - A JSON array (literal or templated) — each element template-resolved.
+/// - A string that is a single `{{ref}}` placeholder — resolved to the **raw**
+///   context value, so an upstream node's array output is NOT stringified
+///   (which `resolve_template_value` would do). This is the common case for
+///   `items: "{{node.field}}"`.
+/// - Any other string — template-resolved, then parsed as a JSON array; if
+///   that fails, split into non-empty lines (handy for plain text lists such
+///   as one URL per line).
+fn resolve_items_list(
+    raw: &serde_json::Value,
+    context: &HashMap<String, serde_json::Value>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if let Some(arr) = raw.as_array() {
+        return Ok(arr
+            .iter()
+            .map(|v| resolve_template_value(v, context))
+            .collect());
+    }
+    let s = raw
+        .as_str()
+        .ok_or_else(|| format!("foreach `items` must be an array or a string, got {}", raw))?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Single whole-string reference: pull the raw context value (no
+    // stringification) so an array output stays an array.
+    if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
+        let inner = trimmed[2..trimmed.len() - 2].trim();
+        if !inner.is_empty() && !inner.contains("{{") && !inner.contains(' ') {
+            if let Some(val) = context.get(inner) {
+                if let Some(arr) = val.as_array() {
+                    return Ok(arr.clone());
+                }
+                // Referenced value isn't an array — fall through to string
+                // parsing (JSON-array string or newline-separated list).
+            }
+        }
+    }
+
+    // General string: resolve placeholders, then JSON-array parse, else lines.
+    let resolved = resolve_prompt_template(trimmed, context);
+    if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(&resolved)
+    {
+        return Ok(arr);
+    }
+    Ok(resolved
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::Value::String(l.to_string()))
+        .collect())
+}
+
 /// Convert a `ToolResult` into a workflow `NodeResult`.
 ///
 /// Tool success → Completed with `output = {tool, result, ...}`.
@@ -1147,6 +1205,12 @@ impl NodeExecutor for LoopNodeExecutor {
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
+        let mode = node
+            .config
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("counter")
+            .to_string();
         let max_iter = node
             .config
             .get("max_iterations")
@@ -1167,6 +1231,7 @@ impl NodeExecutor for LoopNodeExecutor {
                 output: serde_json::json!({
                     "iterations": 0,
                     "last_output": null,
+                    "mode": mode,
                 }),
                 error: None,
                 state: ExecutionState::Completed,
@@ -1176,22 +1241,76 @@ impl NodeExecutor for LoopNodeExecutor {
             });
         }
 
+        let safety_cap = max_iter.min(100);
+
+        // Resolve the iteration plan. In `foreach` mode the loop iterates over
+        // a resolved list (binding the current element to `{{item}}` /
+        // `{{item_index}}`); in `counter` mode it runs a fixed number of times.
+        let items: Vec<serde_json::Value> = if mode == "foreach" {
+            let raw_items = node
+                .config
+                .get("items")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            match resolve_items_list(&raw_items, context) {
+                Ok(list) => list,
+                Err(e) => {
+                    return Ok(NodeResult {
+                        node_id: node.id.clone(),
+                        output: serde_json::json!({ "iterations": 0, "mode": mode }),
+                        error: Some(e),
+                        state: ExecutionState::Failed,
+                        started_at: now,
+                        ended_at: Local::now(),
+                        metadata: HashMap::new(),
+                    });
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let items_total = items.len();
+        let iter_count = if mode == "foreach" {
+            items_total.min(safety_cap)
+        } else {
+            safety_cap
+        };
+
+        // Optional custom name for the per-iteration element variable
+        // (defaults to `item`; the standard `item`/`item_index` are always set).
+        let item_var = node
+            .config
+            .get("item_var")
+            .and_then(|v| v.as_str())
+            .unwrap_or("item")
+            .to_string();
+
         // Create a local context for child node execution so loop variables
         // don't pollute the parent context.
         let local_wf_ctx = WorkflowContext::new(context.clone());
-        let safety_cap = max_iter.min(100);
         let mut local_ctx = context.clone();
         let mut last_output = serde_json::Value::Null;
         let mut actual_iterations: usize = 0;
         let mut loop_error: Option<String> = None;
 
-        for i in 0..safety_cap {
+        for i in 0..iter_count {
             // Insert iteration index BEFORE condition check and child execution
             // so both `{{i}}` (form-placeholder syntax) and `{{loop_index}}`
             // (legacy) resolve correctly. Inserting at the start also means
             // iter-0 children see `i=0` instead of having no key available.
             local_ctx.insert("i".to_string(), serde_json::json!(i));
             local_ctx.insert("loop_index".to_string(), serde_json::json!(i));
+
+            // In foreach mode, bind the current element.
+            if mode == "foreach" {
+                let item = items.get(i).cloned().unwrap_or(serde_json::Value::Null);
+                local_ctx.insert("item_index".to_string(), serde_json::json!(i));
+                local_ctx.insert("item".to_string(), item.clone());
+                if item_var != "item" {
+                    local_ctx.insert(item_var.clone(), item);
+                }
+            }
 
             // Check loop condition (if provided) after the first iteration
             if !cond_expr.is_empty() && i > 0 {
@@ -1226,10 +1345,21 @@ impl NodeExecutor for LoopNodeExecutor {
                             break;
                         }
                         last_output = result.output.clone();
-                        // Merge output into local context for subsequent iterations
+                        // Merge output into local context for subsequent
+                        // iterations AND for sibling children in the same
+                        // iteration. We expose both the top-level field keys
+                        // (e.g. `result`, `text`) and `{child_id}.{field}`
+                        // keys so siblings can reference this child's output
+                        // unambiguously — matching how the top-level scheduler
+                        // exposes node outputs ({{node_id.field}}).
+                        local_ctx.insert(child_def.id.clone(), result.output.clone());
                         if let Some(obj) = result.output.as_object() {
                             for (k, v) in obj {
                                 local_ctx.insert(k.clone(), v.clone());
+                                local_ctx.insert(
+                                    format!("{}.{}", child_def.id, k),
+                                    v.clone(),
+                                );
                             }
                         }
                     }
@@ -1251,12 +1381,19 @@ impl NodeExecutor for LoopNodeExecutor {
             actual_iterations = i + 1;
         }
 
+        let mut output = serde_json::json!({
+            "iterations": actual_iterations,
+            "last_output": last_output,
+            "mode": mode,
+        });
+        if mode == "foreach" {
+            output["items_count"] = serde_json::json!(items_total);
+            output["items_iterated"] = serde_json::json!(actual_iterations);
+        }
+
         Ok(NodeResult {
             node_id: node.id.clone(),
-            output: serde_json::json!({
-                "iterations": actual_iterations,
-                "last_output": last_output,
-            }),
+            output,
             error: loop_error,
             state: ExecutionState::Completed,
             started_at: now,
@@ -2840,10 +2977,21 @@ impl NodeExecutor for LoopNodeStub {
                             break;
                         }
                         last_output = result.output.clone();
-                        // Merge output into local context for subsequent iterations
+                        // Merge output into local context for subsequent
+                        // iterations AND for sibling children in the same
+                        // iteration. We expose both the top-level field keys
+                        // (e.g. `result`, `text`) and `{child_id}.{field}`
+                        // keys so siblings can reference this child's output
+                        // unambiguously — matching how the top-level scheduler
+                        // exposes node outputs ({{node_id.field}}).
+                        local_ctx.insert(child_def.id.clone(), result.output.clone());
                         if let Some(obj) = result.output.as_object() {
                             for (k, v) in obj {
                                 local_ctx.insert(k.clone(), v.clone());
+                                local_ctx.insert(
+                                    format!("{}.{}", child_def.id, k),
+                                    v.clone(),
+                                );
                             }
                         }
                     }

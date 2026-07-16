@@ -986,6 +986,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let workflow_engine: std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>;
     #[cfg(feature = "workflow")]
     let chat_secret_store: std::sync::Arc<nemesis_workflow::chat_secrets::ChatSecretStore>;
+    // Tool registry shared with the workflow engine. Declared in the outer
+    // scope (not inside the workflow-init block below) so we can populate it
+    // *after* the agent loop is built — the agent's tools must be bridged in
+    // via `AgentToolAdapter` (the two `Tool` traits are incompatible, so the
+    // workflow registry cannot share the agent's map directly).
+    #[cfg(feature = "workflow")]
+    let workflow_tool_registry: std::sync::Arc<nemesis_tools::registry::ToolRegistry>;
     #[cfg(feature = "workflow")]
     {
         let workflow_root = home.join("workspace").join("workflow");
@@ -999,7 +1006,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
         migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
 
-        let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
         let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
             llm_provider.clone(),
             workflow_tool_registry.clone(),
@@ -2257,6 +2264,39 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
     let initial_tool_count = agent_loop.tool_count();
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
+
+    // Bridge the agent's tools into the workflow engine's tool registry so the
+    // workflow `tool` node can invoke them. The registry was created empty
+    // during workflow init above; here we wrap each agent tool in an
+    // `AgentToolAdapter` (the two `Tool` traits are incompatible) and register
+    // it. Each adapted tool runs the 8-layer security rule pipeline per call —
+    // no interactive approval popup, no guardian LLM judge — so batch
+    // workflows run unattended while still respecting workspace isolation and
+    // the other rule layers.
+    #[cfg(feature = "workflow")]
+    {
+        let tools_guard = agent_loop.tools();
+        let mut bridged = 0usize;
+        for (name, tool) in tools_guard.iter() {
+            #[cfg(feature = "security")]
+            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
+                name.clone(),
+                Arc::clone(tool),
+                security_plugin.clone(),
+            );
+            #[cfg(not(feature = "security"))]
+            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
+                name.clone(),
+                Arc::clone(tool),
+            );
+            workflow_tool_registry.register(adapted);
+            bridged += 1;
+        }
+        info!(
+            "[Gateway] Bridged {} agent tools into the workflow tool registry",
+            bridged
+        );
+    }
 
     // Wire up `agent` workflow nodes (milestone 1b-D2). Each workflow run
     // that hits an `agent` node will route through this runner, which

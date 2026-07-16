@@ -233,6 +233,7 @@ impl Syncer {
 
     /// Sanitize a report before sharing (remove sensitive data).
     /// Test-only wrapper for sanitize_report (F-M8 verification).
+    #[cfg(test)]
     pub(crate) fn sanitize_report_for_test(&self, report: &serde_json::Value) -> serde_json::Value {
         self.sanitize_report(report)
     }

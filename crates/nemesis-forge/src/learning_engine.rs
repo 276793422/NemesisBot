@@ -811,11 +811,13 @@ impl LearningEngine {
 
     /// Check if previously suggested prompts have been adopted (mirrors Go's checkSuggestionAdoption).
     /// Test-only: probe whether the pipeline lock is currently free (F-M7).
+    #[cfg(test)]
     pub(crate) fn pipeline_try_lock_for_test(&self) -> bool {
         self.pipeline.try_lock().is_some()
     }
 
     /// Test-only wrapper for check_suggestion_adoption (F-M1 verification).
+    #[cfg(test)]
     pub(crate) fn check_suggestion_adoption_for_test(&self, patterns: &[DetectedPattern]) {
         self.check_suggestion_adoption(patterns);
     }

@@ -1,0 +1,131 @@
+name: template-url-collector-report
+description: |
+  [进阶模板] 批量采集 URL 并汇总成报告（演示工具节点 + 遍历列表循环 + 跨节点引用）。
+  流程（对应"读取URL列表 → 循环抓取存盘 → 逐文件喂LLM出摘要 → 汇总 → 报告"）：
+    1. read_list      read_file(urls.txt)              → URL 文本
+    2. fetch_loop     遍历列表，逐个：web_fetch → write_file 存 pages/pN.html
+    3. list_pages     script(ls -1 pages)              → 干净文件名列表
+    4. proc_loop      遍历列表，逐个：read_file → llm 出摘要 → write_file 存 summaries/sN.txt
+    5. aggregate      script(cat summaries/*.txt)      → 拼接全部摘要
+    6. report         llm(汇总内容 → 报告)
+    7. save_report    write_file(report/final_report.md)
+  演示要点：
+    - 工具节点（read_file/write_file/web_fetch）调用宿主工具，参数走结构化 schema ——
+      即使页面内容含引号/反引号/换行等特殊字符也不会出错（比 script echo 写文件安全得多）。
+    - loop 节点「遍历列表」模式（mode: foreach），子节点用 {{item}}/{{item_index}} 引用当前元素。
+    - 循环内跨子节点引用：{{fetch.result}}（工具）、{{summarize.text}}（llm）。
+    - script 节点只用来生成干净文件列表 / 拼接文本（不消费不可信内容，无转义风险）。
+    - write_file 会自动创建 pages/、summaries/、report/ 目录。
+  准备：在工作区根目录放 urls.txt（每行一个 URL）；默认模型配好后直接运行。
+  产物：pages/pN.html、summaries/sN.txt、report/final_report.md。
+  测试方法：画布页点 ▶ 运行；或列表页点 💬 在 chat 页测试。
+version: 1.0.0
+triggers: []
+nodes:
+  - id: read_list
+    node_type: tool
+    config:
+      name: read_file
+      args:
+        path: urls.txt
+
+  - id: fetch_loop
+    node_type: loop
+    config:
+      mode: foreach
+      items: "{{read_list.result}}"
+      item_var: url
+      max_iterations: 100
+      nodes:
+        - id: fetch
+          node_type: tool
+          config:
+            name: web_fetch
+            args:
+              url: "{{item}}"
+        - id: save_page
+          node_type: tool
+          config:
+            name: write_file
+            args:
+              path: "pages/p{{item_index}}.html"
+              content: "{{fetch.result}}"
+
+  - id: list_pages
+    node_type: script
+    config:
+      language: bash
+      script: "ls -1 pages"
+
+  - id: proc_loop
+    node_type: loop
+    config:
+      mode: foreach
+      items: "{{list_pages.stdout}}"
+      item_var: name
+      max_iterations: 100
+      nodes:
+        - id: read_page
+          node_type: tool
+          config:
+            name: read_file
+            args:
+              path: "pages/{{item}}"
+        - id: summarize
+          node_type: llm
+          config:
+            system_prompt: "你是简洁的摘要助手。"
+            prompt: "请用中文总结以下网页内容的要点（200字以内）：\n\n{{read_page.result}}"
+        - id: save_sum
+          node_type: tool
+          config:
+            name: write_file
+            args:
+              path: "summaries/s{{item_index}}.txt"
+              content: "{{summarize.text}}"
+
+  - id: aggregate
+    node_type: script
+    config:
+      language: bash
+      script: "cat summaries/*.txt"
+
+  - id: report
+    node_type: llm
+    config:
+      system_prompt: "你是报告撰写助手。"
+      prompt: "以下是多份网页摘要，请汇总成一份结构化报告（含要点列表和结论）：\n\n{{aggregate.stdout}}"
+
+  - id: save_report
+    node_type: tool
+    config:
+      name: write_file
+      args:
+        path: report/final_report.md
+        content: "{{report.text}}"
+    is_terminal: true
+
+edges:
+  - from_node: read_list
+    to_node: fetch_loop
+    condition: null
+  - from_node: fetch_loop
+    to_node: list_pages
+    condition: null
+  - from_node: list_pages
+    to_node: proc_loop
+    condition: null
+  - from_node: proc_loop
+    to_node: aggregate
+    condition: null
+  - from_node: aggregate
+    to_node: report
+    condition: null
+  - from_node: report
+    to_node: save_report
+    condition: null
+
+variables: {}
+metadata:
+  difficulty: advanced
+  author: nemesisbot-template
