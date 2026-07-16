@@ -17,8 +17,10 @@
 //! (Uses `std::io::Result` rather than `anyhow` — nemesis-agent does not depend
 //! on anyhow; callers map the io error to their own error type.)
 
+#[cfg(windows)]
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 /// Build the Win32 pipe path for a unique id (`\\.\pipe\NemesisBox_<id>`).

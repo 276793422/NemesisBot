@@ -2815,6 +2815,7 @@ fn punctuate_if_loaded(text: &str) -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn push_stt_result(session_id: &str, session_mgr: Arc<crate::session::SessionManager>, text: &str) {
     let msg = crate::protocol::ProtocolMessage::push(
         "voice",
