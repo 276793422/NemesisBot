@@ -13,6 +13,28 @@ fn make_cycle(id: &str) -> LearningCycle {
 }
 
 #[tokio::test]
+async fn test_fm10_load_latest_cycle_returns_newest_by_started_at() {
+    // F-M10: load_latest_cycle must return the newest by started_at, not
+    // arbitrary read_dir order (old code used .last() on unordered read_dir).
+    let dir = tempfile::tempdir().unwrap();
+    let store = CycleStore::from_base(dir.path());
+
+    let mut old = make_cycle("old-cycle");
+    old.started_at = "2026-01-01T00:00:00+08:00".into();
+    let mut new = make_cycle("new-cycle");
+    new.started_at = "2026-07-16T12:00:00+08:00".into();
+
+    // Append in REVERSE chronological order to ensure the sort matters.
+    store.append(&new).await.unwrap();
+    store.append(&old).await.unwrap();
+
+    let latest = store.load_latest_cycle().await.unwrap();
+    assert!(latest.is_some());
+    assert_eq!(latest.unwrap().id, "new-cycle",
+        "should return the newest by started_at (F-M10)");
+}
+
+#[tokio::test]
 async fn test_append_and_read() {
     let dir = tempfile::tempdir().unwrap();
     let store = CycleStore::from_base(dir.path());

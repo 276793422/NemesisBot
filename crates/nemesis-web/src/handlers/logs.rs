@@ -188,8 +188,19 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         // User-editable title from sidecar meta ({stem}.meta.json); falls back
         // to firstMessage when absent.
         let title = read_meta_title(&path).unwrap_or_else(|| first_message.clone());
+        // Real agent session_key. chat_log stores `:` as `_` in the filename,
+        // and sanitize_session_id keeps `_`, so a naive global replace would
+        // corrupt sids that legitimately contain underscores. Web conversations
+        // use the fixed prefix `agent_main_session_` → reconstruct only that
+        // prefix; fall back to naive restore for non-web sessions.
+        let session_key = if let Some(rest) = id.strip_prefix("agent_main_session_") {
+            format!("agent:main:session:{}", rest)
+        } else {
+            id.replace('_', ":")
+        };
         sessions.push(serde_json::json!({
             "id": id,
+            "session_key": session_key,
             "channel": channel,
             "startTime": first["timestamp"].as_str().unwrap_or(""),
             "lastTime": last["timestamp"].as_str().unwrap_or(""),
@@ -1000,11 +1011,22 @@ impl LogsHandler {
         #[cfg_attr(not(feature = "memory"), allow(unused_mut))]
         let mut messages: Vec<serde_json::Value> = read_jsonl_lines(&path)
             .into_iter()
-            .map(|ln| serde_json::json!({
-                "role": ln["role"].as_str().unwrap_or("user"),
-                "content": ln["content"].as_str().unwrap_or(""),
-                "timestamp": ln["timestamp"].as_str().unwrap_or(""),
-            }))
+            .map(|ln| {
+                let mut msg = serde_json::json!({
+                    "role": ln["role"].as_str().unwrap_or("user"),
+                    "content": ln["content"].as_str().unwrap_or(""),
+                    "timestamp": ln["timestamp"].as_str().unwrap_or(""),
+                });
+                // Surface cron origin marker (if this turn was fired by a
+                // scheduled task) so the session browser can label/filter it.
+                if let Some(id) = ln["cron_job_id"].as_str() {
+                    msg["cron_job_id"] = serde_json::Value::String(id.to_string());
+                }
+                if let Some(name) = ln["cron_job_name"].as_str() {
+                    msg["cron_job_name"] = serde_json::Value::String(name.to_string());
+                }
+                msg
+            })
             .collect();
 
         // Best-effort: enrich messages with episodic tags (triggerCluster, toolCalls)

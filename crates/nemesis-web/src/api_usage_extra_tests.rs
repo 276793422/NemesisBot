@@ -52,6 +52,7 @@ mod api_usage_extra_tests {
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
+            cron: None,
         })
     }
 
@@ -85,6 +86,7 @@ mod api_usage_extra_tests {
             webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
             internal_cmd_tx: None,
             estop: None,
+            cron: None,
         };
         Arc::new(s)
     }

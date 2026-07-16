@@ -36,13 +36,13 @@ pub struct Forge {
     sanitizer: Sanitizer,
     exporter: Exporter,
     reflector: Option<Reflector>,
-    pipeline: Option<Pipeline>,
+    pipeline: Option<Arc<Pipeline>>,
     mcp_installer: Option<MCPInstaller>,
     syncer: Option<Syncer>,
     trace_collector: Option<TraceCollector>,
     trace_store: Option<TraceStore>,
     learning_engine: Option<LearningEngine>,
-    deployment_monitor: Option<DeploymentMonitor>,
+    deployment_monitor: Option<Arc<DeploymentMonitor>>,
     cycle_store: Option<CycleStore>,
     running: Mutex<bool>,
     bridge: Mutex<Option<Arc<dyn ClusterForgeBridge>>>,
@@ -112,6 +112,15 @@ impl Forge {
             started_at: Mutex::new(None),
             learning_enabled: std::sync::atomic::AtomicBool::new(learning_enabled),
         }
+    }
+
+    /// Whether the forge system is enabled (the master switch from config).
+    /// This is the truth source for "should forge collect experiences / run
+    /// learning" — the per-tool-call recording path gates on it so that
+    /// `forge.enabled = false` actually stops collection (not just the
+    /// background loops).
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
     }
 
     /// Start the forge subsystems.
@@ -214,7 +223,11 @@ impl Forge {
     /// Run a single reflection cycle: read experiences → reflect → learn → write report → share.
     async fn run_reflection_cycle(&self) {
         let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
-        let experiences = match store.read_all().await {
+        // F-P2: parse only the most-recent experiences (bounded by
+        // collection.max_experiences) instead of the whole file each cycle.
+        // (File size itself is age-bounded by cleanup — F-D2.)
+        let limit = self.config.collection.max_experiences.max(1);
+        let experiences = match store.read_recent(limit).await {
             Ok(exps) if !exps.is_empty() => exps,
             _ => return,
         };
@@ -407,7 +420,7 @@ impl Forge {
 
     /// Get the pipeline (if initialized).
     pub fn pipeline(&self) -> Option<&Pipeline> {
-        self.pipeline.as_ref()
+        self.pipeline.as_deref()
     }
 
     /// Get the MCP installer (if initialized).
@@ -437,7 +450,7 @@ impl Forge {
 
     /// Get the deployment monitor (if initialized).
     pub fn deployment_monitor(&self) -> Option<&DeploymentMonitor> {
-        self.deployment_monitor.as_ref()
+        self.deployment_monitor.as_deref()
     }
 
     /// Get the cycle store (if initialized).
@@ -454,7 +467,7 @@ impl Forge {
     }
 
     /// Initialize the pipeline subsystem.
-    pub fn init_pipeline(&mut self, pipeline: Pipeline) {
+    pub fn init_pipeline(&mut self, pipeline: Arc<Pipeline>) {
         tracing::info!("[Forge] Pipeline subsystem initialized");
         self.pipeline = Some(pipeline);
     }
@@ -484,7 +497,20 @@ impl Forge {
     }
 
     /// Initialize the learning subsystem.
-    pub fn init_learning(&mut self, engine: LearningEngine, monitor: DeploymentMonitor, store: CycleStore) {
+    pub fn init_learning(
+        &mut self,
+        engine: LearningEngine,
+        monitor: Arc<DeploymentMonitor>,
+        store: CycleStore,
+    ) {
+        // Inject pipeline + monitor into the learning engine so the Phase 6
+        // closed loop (learn -> validate -> deploy -> monitor -> feedback)
+        // actually runs. Previously never injected (F-C1). skill_creator is
+        // injected later by the gateway once Forge is wrapped in Arc.
+        if let Some(p) = &self.pipeline {
+            engine.set_pipeline(p.clone());
+        }
+        engine.set_monitor(monitor.clone());
         tracing::info!("[Forge] Learning subsystem initialized (engine + monitor + cycle store)");
         self.learning_engine = Some(engine);
         self.deployment_monitor = Some(monitor);
@@ -550,7 +576,10 @@ impl Forge {
     ) -> Result<nemesis_types::forge::Artifact, String> {
         use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
-        let skill_content = if content.contains("---") {
+        // F-M11: frontmatter must be at the very start — `contains("---")`
+        // treated any Markdown horizontal rule as existing frontmatter and
+        // skipped adding the wrapper.
+        let skill_content = if content.starts_with("---") {
             content.to_string()
         } else {
             format!(
@@ -558,6 +587,20 @@ impl Forge {
                 name, description, content
             )
         };
+
+        // Security gate (F-S1): block dangerous commands (rm -rf /, curl|bash)
+        // and hardcoded secrets BEFORE writing the file — previously the file
+        // was written first with only a weak post-write check, so such content
+        // became an active agent instruction. Length/frontmatter are quality,
+        // not security, so they don't block here.
+        let sec_errors = crate::validator::StaticValidator::new()
+            .security_errors(&skill_content);
+        if !sec_errors.is_empty() {
+            return Err(format!(
+                "Skill content failed security validation: {}",
+                sec_errors.join("; ")
+            ));
+        }
 
         // 1. Write content to forge skills directory
         let artifact_dir = self.forge_dir.join("skills").join(name);

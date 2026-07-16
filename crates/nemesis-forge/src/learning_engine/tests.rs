@@ -30,6 +30,261 @@ fn make_collected_with_duration(tool: &str, success: bool, duration: u64) -> Col
     }
 }
 
+#[test]
+fn test_ff1_adjust_confidence_uses_success_rate_not_usage_count() {
+    // F-F1: feedback must adjust the dedicated success_rate field, not corrupt
+    // usage_count (the old code treated the integer count as a rate).
+    use crate::monitor::EvaluationResult;
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    registry.add(Artifact {
+        id: "skill-x".into(), name: "x".into(),
+        kind: ArtifactKind::Skill, version: "1.0".into(),
+        status: ArtifactStatus::Active, content: "...".into(), tool_signature: vec![],
+        created_at: "2026-01-01T00:00:00+08:00".into(),
+        updated_at: "2026-01-01T00:00:00+08:00".into(),
+        usage_count: 42, last_degraded_at: None, success_rate: 0.5,
+        consecutive_observing_rounds: 0,
+    });
+    let cycle_store = CycleStore::new(dir.path());
+    let engine = LearningEngine::new(ForgeConfig::default(), registry.clone(), cycle_store);
+    engine.adjust_confidence_for_test(&[EvaluationResult {
+        artifact_id: "skill-x".into(), verdict: "positive".into(),
+        improvement_score: 0.5, sample_size: 10,
+    }]);
+    let a = registry.get("skill-x").expect("artifact present");
+    assert!((a.success_rate - 0.6).abs() < 1e-9, "success_rate should be 0.6, got {}", a.success_rate);
+    assert_eq!(a.usage_count, 42, "usage_count must be untouched (F-F1)");
+}
+
+#[test]
+fn test_ff2_disable_degraded_skill_hides_deployed_file() {
+    // F-F2: a Degraded skill's deployed SKILL.md must be renamed to .disabled
+    // so the skills loader (workspace/skills/*/SKILL.md) stops loading it.
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let forge_dir = workspace.join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let skill_dir = workspace.join("skills").join("mybad-forge");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: mybad\n---\nbody").unwrap();
+
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    registry.add(Artifact {
+        id: "skill-mybad".into(), name: "mybad".into(),
+        kind: ArtifactKind::Skill, version: "1.0".into(),
+        status: ArtifactStatus::Degraded, content: "...".into(), tool_signature: vec![],
+        created_at: "2026-01-01T00:00:00+08:00".into(),
+        updated_at: "2026-01-01T00:00:00+08:00".into(),
+        usage_count: 0, last_degraded_at: None, success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    });
+    let cycle_store = CycleStore::new(&forge_dir);
+    let engine = LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
+    engine.disable_degraded_skills_impl();
+
+    assert!(!skill_dir.join("SKILL.md").exists(), "degraded skill must be disabled");
+    assert!(skill_dir.join("SKILL.md.disabled").exists(), "should be renamed to .disabled");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fc1_closed_loop_produces_deployed_skill() {
+    // F-C1 + F-C3 end-to-end: with pipeline+monitor injected and a shared
+    // registry, a high-confidence tool_chain pattern (12 same-tool successes)
+    // must produce an actually-deployed skill (file written + registered).
+    // This is the proof that the closed loop works after the wiring fix.
+    use crate::monitor::DeploymentMonitor;
+    use crate::pipeline::Pipeline;
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let forge_dir = workspace.join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = CycleStore::new(&forge_dir);
+
+    // Shared registry across pipeline + monitor + engine (F-C3).
+    let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(), forge_dir.clone(), registry.clone(), cycle_store,
+    );
+    engine.set_pipeline(pipeline); // F-C1
+    engine.set_monitor(monitor);   // F-C1
+    // Mock LLM returns a valid draft (>=50 chars, frontmatter, no dangerous /
+    // secret content) -> passes validate_static; pipeline has no LLM so Stage 3
+    // hardcodes score 70 -> Active -> deployed.
+    struct ValidDraft;
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for ValidDraft {
+        async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+            Ok("---\nname: verify-skill\ndescription: A verification skill that does useful agent work\nversion: \"1.0\"\n---\n\n# Verify Skill\n\nFollow these steps to complete the verification task reliably and well.\n".into())
+        }
+    }
+    engine.set_provider(Arc::new(ValidDraft));
+
+    // 12 successful uses of one tool -> tool_chain freq 12, confidence ~1.0
+    // -> generate_actions emits a create_skill action.
+    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    let cycle = engine.run_cycle(&exps).await;
+
+    // F-C3: the deployed artifact is in the SHARED registry the monitor/pipeline use.
+    let has_skill = registry
+        .list(None, None)
+        .iter()
+        .any(|a| matches!(a.kind, nemesis_types::forge::ArtifactKind::Skill));
+    assert!(has_skill, "closed loop should register a Skill artifact in the shared registry");
+    // F-C1: a skill file was actually written to disk.
+    let any_skill_file = std::fs::read_dir(forge_dir.join("skills"))
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().join("SKILL.md").exists()))
+        .unwrap_or(false);
+    assert!(any_skill_file, "closed loop should write a SKILL.md under forge/skills/");
+    // F-M3: create_skill action should be counted in actions_taken.
+    assert!(cycle.actions_taken >= 1, "create_skill should be counted (F-M3)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fc2_refine_then_deploy() {
+    // F-C2: a draft that fails validation must be refined, the refined version
+    // re-validated and deployed (the old code discarded the refined output and
+    // returned after one attempt).
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use crate::monitor::DeploymentMonitor;
+    use crate::pipeline::Pipeline;
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = CycleStore::new(&forge_dir);
+    let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(), forge_dir.clone(), registry.clone(), cycle_store,
+    );
+    engine.set_pipeline(pipeline);
+    engine.set_monitor(monitor);
+
+    struct RefineMock { call: AtomicU8 }
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for RefineMock {
+        async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+            let n = self.call.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // First draft fails validate (hardcoded secret key).
+                Ok("---\nname: bad\ndescription: x\napi_key: \"leaksecret123\"\n---\nbad draft that fails\n".into())
+            } else {
+                // Refined draft passes.
+                Ok("---\nname: good\ndescription: A refined valid skill that passes validation\nversion: \"1.0\"\n---\n\n# Good\n\nDoes the work reliably for the agent.\n".into())
+            }
+        }
+    }
+    engine.set_provider(Arc::new(RefineMock { call: AtomicU8::new(0) }));
+
+    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    engine.run_cycle(&exps).await;
+
+    // Despite the first draft failing, refinement produced a deployable skill.
+    let has_skill = registry
+        .list(None, None)
+        .iter()
+        .any(|a| matches!(a.kind, nemesis_types::forge::ArtifactKind::Skill));
+    assert!(has_skill, "refined skill should be deployed after first draft failed (F-C2)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fm7_pipeline_lock_free_during_slow_llm() {
+    // F-M7: during the LLM call in execute_create_skill, the pipeline Mutex
+    // must be FREE (cloned out + guard dropped before the call). A slow mock
+    // LLM (2s sleep) + a concurrent try_lock probe proves this — with the old
+    // code (lock held across LLM), the probe would fail.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::pipeline::Pipeline;
+    use crate::monitor::DeploymentMonitor;
+    let dir = tempfile::tempdir().unwrap();
+    let forge_dir = dir.path().join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = CycleStore::new(&forge_dir);
+    let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
+    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry.clone()));
+    let engine = Arc::new(LearningEngine::with_forge_dir(
+        ForgeConfig::default(), forge_dir, registry, cycle_store,
+    ));
+    engine.set_pipeline(pipeline);
+    engine.set_monitor(monitor);
+
+    // Slow mock LLM — sleeps 2s so the probe has a window to check the lock.
+    struct SlowMock;
+    #[async_trait::async_trait]
+    impl crate::reflector_llm::LLMCaller for SlowMock {
+        async fn chat(&self, _s: &str, _u: &str, _m: Option<i64>) -> Result<String, String> {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok("---\nname: slow\ndescription: A skill made after a delay for testing\nversion: \"1.0\"\n---\n\n# Slow\n\nGenerated after a simulated 2s delay.\n".into())
+        }
+    }
+    engine.set_provider(Arc::new(SlowMock));
+
+    // Probe: 500ms into the 2s LLM sleep, check if the pipeline lock is free.
+    let lock_was_free = Arc::new(AtomicBool::new(false));
+    let flag = lock_was_free.clone();
+    let engine_probe = engine.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        flag.store(engine_probe.pipeline_try_lock_for_test(), Ordering::SeqCst);
+    });
+
+    // Trigger create_skill (12 same-tool experiences → high-confidence pattern).
+    let exps: Vec<CollectedExperience> = (0..12).map(|_| make_collected("file_read", true)).collect();
+    engine.run_cycle(&exps).await;
+
+    assert!(lock_was_free.load(Ordering::SeqCst),
+        "pipeline lock must be FREE during the LLM call (F-M7) — probe at 500ms during 2s LLM");
+}
+
+#[test]
+fn test_fm1_suggestions_kept_when_no_deployed_skill() {
+    // F-M1: prompt suggestions must NOT be wiped when no skill has been deployed
+    // (old code deleted every *_suggestion.md on each cycle unconditionally).
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let forge_dir = workspace.join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    let prompts_dir = workspace.join("prompts");
+    std::fs::create_dir_all(&prompts_dir).unwrap();
+    std::fs::write(prompts_dir.join("test_suggestion.md"), "suggestion").unwrap();
+
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    // Empty registry — no deployed skill → suggestion must survive.
+    let cycle_store = CycleStore::new(&forge_dir);
+    let engine = LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
+    engine.check_suggestion_adoption_for_test(&[]);
+    assert!(prompts_dir.join("test_suggestion.md").exists(),
+        "suggestion should survive when no deployed skill (F-M1)");
+}
+
+#[test]
+fn test_fm2a_classify_verdict_respects_configured_threshold() {
+    // F-M2a: when degrade_threshold is configured (e.g. 0.5), classify_verdict
+    // must respect it. Old code forced -0.2 whenever threshold >= 0.0.
+    use crate::monitor::DeploymentMonitor;
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let mut config = ForgeConfig::default();
+    config.learning.degrade_threshold = 0.5;
+    let monitor = DeploymentMonitor::new(config, registry);
+    let artifact = Artifact {
+        id: "x".into(), name: "x".into(), kind: ArtifactKind::Skill, version: "1.0".into(),
+        status: ArtifactStatus::Active, content: "".into(), tool_signature: vec![],
+        created_at: "".into(), updated_at: "".into(), usage_count: 0, last_degraded_at: None,
+        success_rate: 0.0, consecutive_observing_rounds: 0,
+    };
+    // improvement=-0.15: with threshold=0.5 → "negative" (new, respects config);
+    // old code forced -0.2 → "observing" (ignored user config).
+    assert_eq!(monitor.classify_verdict(-0.15, &artifact), "negative",
+        "threshold=0.5 should make -0.15 'negative', not 'observing'");
+}
+
 #[tokio::test]
 async fn test_run_cycle() {
     let dir = tempfile::tempdir().unwrap();

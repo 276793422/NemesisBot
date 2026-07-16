@@ -122,7 +122,10 @@ impl CycleStore {
 
     /// Get the latest cycle record across all files.
     pub async fn load_latest_cycle(&self) -> std::io::Result<Option<LearningCycle>> {
-        let cycles = self.read_cycles(None).await?;
+        let mut cycles = self.read_cycles(None).await?;
+        // read_dir order is unspecified — sort by started_at so .last() is the
+        // genuinely newest cycle (F-M10: the old code returned an arbitrary one).
+        cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
         Ok(cycles.into_iter().last())
     }
 

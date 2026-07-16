@@ -986,6 +986,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let workflow_engine: std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>;
     #[cfg(feature = "workflow")]
     let chat_secret_store: std::sync::Arc<nemesis_workflow::chat_secrets::ChatSecretStore>;
+    // Tool registry shared with the workflow engine. Declared in the outer
+    // scope (not inside the workflow-init block below) so we can populate it
+    // *after* the agent loop is built — the agent's tools must be bridged in
+    // via `AgentToolAdapter` (the two `Tool` traits are incompatible, so the
+    // workflow registry cannot share the agent's map directly).
+    #[cfg(feature = "workflow")]
+    let workflow_tool_registry: std::sync::Arc<nemesis_tools::registry::ToolRegistry>;
     #[cfg(feature = "workflow")]
     {
         let workflow_root = home.join("workspace").join("workflow");
@@ -999,7 +1006,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
         migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
 
-        let workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
         let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
             llm_provider.clone(),
             workflow_tool_registry.clone(),
@@ -1106,21 +1113,42 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         ),
     ));
 
+    // Opt 2: conversation→WS router, shared between the cron fire handler
+    // (lookup, here) and process_messages (bind, in the web server). Built
+    // early so the cron closure can capture a clone before set_on_job; the
+    // original Arc is later moved into the web server via set_conv_router.
+    let conv_router: nemesis_web::SharedConvRouter =
+        std::sync::Arc::new(nemesis_web::ConvRouter::new());
+
     // C3: Wire CronService — set_on_job handler + start.
     // Mirrors Go's bot_service.go:392-399, 571-579.
     {
         let bus_for_cron = bus.clone();
+        let router_for_cron = conv_router.clone();
         cron_service.lock().unwrap().set_on_job(move |job: &nemesis_cron::service::CronJob| {
             if !job.payload.message.is_empty() {
                 let channel = job.payload.channel.clone().unwrap_or_else(|| "web".to_string());
-                let to = job.payload.to.clone().unwrap_or_default();
+                // Phase 2: target the named conversation so the exchange is
+                // persisted into its history (loop.rs adopts `agent:`-prefixed
+                // session_key verbatim). Opt 2: if a live WS tab is bound for
+                // this conversation, set chat_id = web:<ws_id> so the reply
+                // also live-pushes; otherwise chat_id falls back to `to`
+                // (delivery may fail-soft, but history is still saved).
+                let session_key = job.payload.session_key.clone().unwrap_or_default();
+                let chat_id = if !session_key.is_empty() {
+                    router_for_cron
+                        .target(&session_key)
+                        .unwrap_or_else(|| job.payload.to.clone().unwrap_or_default())
+                } else {
+                    job.payload.to.clone().unwrap_or_default()
+                };
                 let inbound = nemesis_types::channel::InboundMessage {
-                    channel: channel.clone(),
+                    channel,
                     sender_id: format!("cron:{}", job.id),
-                    chat_id: to,
+                    chat_id,
                     content: job.payload.message.clone(),
                     media: vec![],
-                    session_key: String::new(),
+                    session_key,
                     correlation_id: String::new(),
                     metadata: {
                         let mut m = std::collections::HashMap::new();
@@ -1136,7 +1164,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 Ok("No message to deliver".to_string())
             }
         });
-        info!("[Gateway] Cron service handler wired (publishes to bus)");
+        info!("[Gateway] Cron service handler wired (publishes to bus; Opt2 conv_router attached)");
     }
 
     // Create Forge executor (always create instance for runtime toggle support).
@@ -1151,11 +1179,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     {
         // Load forge config from file, fall back to defaults if missing.
         let forge_config_path = home.join("workspace").join("config").join("config.forge.json");
-        let forge_config = if forge_config_path.exists() {
+        let mut forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
             nemesis_forge::config::ForgeConfig::default()
         };
+        // F-P1 truth-source fix: the master switch is config.json's `forge.enabled`
+        // (-> `forge_enabled`, which gates the background tasks). Mirror it into
+        // forge_config so `Forge::is_enabled()` (the per-tool-call recording
+        // gate) reflects the real runtime state. config.forge.json is often
+        // absent (default enabled=false) — without this, recording would be
+        // silently blocked even when forge is on.
+        forge_config.enabled = forge_enabled;
         let forge_workspace = home.join("workspace");
         let forge_dir = forge_workspace.join("forge");
         let mut forge = nemesis_forge::forge::Forge::new(
@@ -1171,17 +1206,26 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         );
         info!("[Gateway] Forge reflector initialized");
 
-        // Initialize Pipeline (3-stage validation).
-        // Create two instances: one owned by Forge, one Arc-shared with LearningEngine.
-        let forge_pipeline_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
-            nemesis_forge::types::RegistryConfig::default(),
+        // ONE shared registry for the Phase 6 closed loop (pipeline + monitor +
+        // learning engine). Previously each got its own empty Registry (default
+        // relative index_path), so deploy/monitor/feedback operated on disjoint
+        // stores. (F-C3) Dedicated path so it persists + reloads; separate from
+        // Forge's manual-create registry.json to avoid a two-instance collision.
+        let forge_shared_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
+            nemesis_forge::types::RegistryConfig {
+                index_path: forge_dir.join("learning_registry.json").to_string_lossy().to_string(),
+            },
         ));
-        forge.init_pipeline(
-            nemesis_forge::pipeline::Pipeline::new(
-                forge_config.clone(),
-                forge_pipeline_registry.clone(),
-            ),
-        );
+        // F-D3: reload prior learned artifacts so they survive restart.
+        let _ = forge_shared_registry.load().await;
+
+        // Initialize Pipeline (3-stage validation). Built as Arc + sharing the
+        // closed-loop registry so it can be injected into the LearningEngine (F-C1).
+        let forge_pipeline = std::sync::Arc::new(nemesis_forge::pipeline::Pipeline::new(
+            forge_config.clone(),
+            forge_shared_registry.clone(),
+        ));
+        forge.init_pipeline(forge_pipeline.clone());
         info!("[Gateway] Forge pipeline initialized");
 
         // Initialize trace collection (TraceCollector + TraceStore).
@@ -1194,29 +1238,23 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             info!("[Gateway] Forge trace collection initialized");
         }
 
-        // Initialize learning engine (Phase 6 closed-loop).
-        let forge_monitor_registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
-            nemesis_forge::types::RegistryConfig::default(),
+        // Initialize learning engine (Phase 6 closed-loop). Shares the same
+        // registry as pipeline + monitor (F-C3); init_learning injects the
+        // pipeline + monitor into the engine so the loop runs (F-C1).
+        let cycle_store = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
+        let learning_engine = nemesis_forge::learning_engine::LearningEngine::with_forge_dir(
+            forge_config.clone(),
+            forge_dir.clone(),
+            forge_shared_registry.clone(),
+            cycle_store,
+        );
+        let cycle_store_for_init = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
+        let forge_monitor = std::sync::Arc::new(nemesis_forge::monitor::DeploymentMonitor::new(
+            forge_config.clone(),
+            forge_shared_registry.clone(),
         ));
-        {
-            let registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
-                nemesis_forge::types::RegistryConfig::default(),
-            ));
-            let cycle_store = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
-            let learning_engine = nemesis_forge::learning_engine::LearningEngine::with_forge_dir(
-                forge_config.clone(),
-                forge_dir.clone(),
-                registry,
-                cycle_store,
-            );
-            let cycle_store_for_init = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
-            let forge_monitor = nemesis_forge::monitor::DeploymentMonitor::new(
-                forge_config.clone(),
-                forge_monitor_registry,
-            );
-            forge.init_learning(learning_engine, forge_monitor, cycle_store_for_init);
-            info!("[Gateway] Forge learning engine initialized (Phase 6)");
-        }
+        forge.init_learning(learning_engine, forge_monitor, cycle_store_for_init);
+        info!("[Gateway] Forge learning engine initialized (Phase 6; pipeline+monitor injected)");
 
         // Set bridge → init syncer.
         forge.set_bridge(std::sync::Arc::new(nemesis_forge::bridge::NoOpBridge::new("local".to_string())));
@@ -1226,6 +1264,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Set LLM provider — now handled by the factory function (agent_factory.rs).
 
         let forge = std::sync::Arc::new(forge);
+
+        // F-D3: reload Forge's manual-create registry so prior artifacts survive restart.
+        let _ = forge.registry().load().await;
+        // F-C1: inject skill_creator into the learning engine (needs Arc<Forge>,
+        // which implements SkillCreator). pipeline+monitor were injected in
+        // init_learning; this completes the Phase 6 wiring.
+        if let Some(le) = forge.learning_engine() {
+            le.set_skill_creator(forge.clone());
+            info!("[Gateway] Forge learning engine wired: skill_creator injected");
+        }
 
         // LearningEngine dependency injection is now handled by the factory function.
 
@@ -2217,6 +2265,39 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let initial_tool_count = agent_loop.tool_count();
     info!("[Gateway] AgentLoop built via factory ({} tools)", initial_tool_count);
 
+    // Bridge the agent's tools into the workflow engine's tool registry so the
+    // workflow `tool` node can invoke them. The registry was created empty
+    // during workflow init above; here we wrap each agent tool in an
+    // `AgentToolAdapter` (the two `Tool` traits are incompatible) and register
+    // it. Each adapted tool runs the 8-layer security rule pipeline per call —
+    // no interactive approval popup, no guardian LLM judge — so batch
+    // workflows run unattended while still respecting workspace isolation and
+    // the other rule layers.
+    #[cfg(feature = "workflow")]
+    {
+        let tools_guard = agent_loop.tools();
+        let mut bridged = 0usize;
+        for (name, tool) in tools_guard.iter() {
+            #[cfg(feature = "security")]
+            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
+                name.clone(),
+                Arc::clone(tool),
+                security_plugin.clone(),
+            );
+            #[cfg(not(feature = "security"))]
+            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
+                name.clone(),
+                Arc::clone(tool),
+            );
+            workflow_tool_registry.register(adapted);
+            bridged += 1;
+        }
+        info!(
+            "[Gateway] Bridged {} agent tools into the workflow tool registry",
+            bridged
+        );
+    }
+
     // Wire up `agent` workflow nodes (milestone 1b-D2). Each workflow run
     // that hits an `agent` node will route through this runner, which
     // namespaces session keys under `workflow:{agent_id}` so workflow
@@ -2321,6 +2402,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
 
+    // Inject the runtime CronService (so tasks.cron.* calls the live scheduler)
+    // and the ConvRouter (shared with the cron fire handler for Opt 2 live
+    // delivery). CronService is cloned because gateway still owns a handle to
+    // start() it later; conv_router is moved (its only other reference is the
+    // clone already captured in the cron fire closure).
+    web_server.set_cron(cron_service.clone());
+    web_server.set_conv_router(conv_router);
+    info!("[Gateway] CronService + ConvRouter injected into web server");
+
     // Inject DataStore into web server for usage statistics API
     if let Some(ref ds) = data_store {
         web_server.set_data_store(ds.clone());
@@ -2339,8 +2429,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Inject Forge into web server for runtime start/stop control
     #[cfg(feature = "forge")]
     {
-        if let Some(forge) = forge_for_web {
-            web_server.set_forge(forge);
+        if let Some(forge) = forge_for_web.as_ref() {
+            web_server.set_forge(forge.clone());
             info!("[Gateway] Forge instance injected into web server");
         }
     }
@@ -3186,6 +3276,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     println!();
     println!("Shutting down...");
     svc_mgr.shutdown();
+
+    // F-L2: graceful Forge shutdown — flush buffered aggregation + stop the
+    // background loops cleanly. Previously the spawn handle was dropped and the
+    // loops were killed by runtime teardown (losing unflushed data / mid-write).
+    #[cfg(feature = "forge")]
+    {
+        if let Some(ref forge) = forge_for_web {
+            forge.stop().await;
+            info!("[Gateway] Forge stopped cleanly");
+        }
+    }
 
     // Cancel active voice sessions and release ONNX engines
     // so spawn_blocking tasks exit before Runtime drop.

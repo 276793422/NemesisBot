@@ -232,10 +232,22 @@ impl Syncer {
     }
 
     /// Sanitize a report before sharing (remove sensitive data).
+    /// Test-only wrapper for sanitize_report (F-M8 verification).
+    #[cfg(test)]
+    pub(crate) fn sanitize_report_for_test(&self, report: &serde_json::Value) -> serde_json::Value {
+        self.sanitize_report(report)
+    }
+
     fn sanitize_report(&self, report: &serde_json::Value) -> serde_json::Value {
         let report_str = serde_json::to_string(report).unwrap_or_default();
         let sanitized = self.sanitizer.sanitize(&report_str);
-        serde_json::from_str(&sanitized).unwrap_or_else(|_| report.clone())
+        serde_json::from_str(&sanitized).unwrap_or_else(|_| {
+            // F-M8: NEVER fall back to the unsanitized report — a regex that
+            // crossed JSON structure would otherwise leak the very secrets we
+            // tried to scrub. Fail closed (drop the content) instead.
+            tracing::warn!("[Syncer] sanitized report failed to re-parse; dropping content");
+            serde_json::json!({})
+        })
     }
 }
 

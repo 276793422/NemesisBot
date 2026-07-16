@@ -160,10 +160,17 @@ async fn test_flush() {
     assert_eq!(count, 2);
     assert_eq!(collector.pattern_count(), 0); // Cleared after flush
 
-    // File should contain aggregated records
-    let content = tokio::fs::read_to_string(&path).await.unwrap();
+    // Aggregates go to a sibling aggregates.jsonl (F-D1) — NOT experiences.jsonl,
+    // which holds CollectedExperience and would be polluted by a different schema.
+    let agg_path = dir.path().join("aggregates.jsonl");
+    let content = tokio::fs::read_to_string(&agg_path).await.unwrap();
     assert!(content.contains("hash1"));
     assert!(content.contains("hash2"));
+
+    // experiences.jsonl must NOT be polluted with aggregate records.
+    let exp_content = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+    assert!(!exp_content.contains("hash1"));
+    assert!(!exp_content.contains("hash2"));
 }
 
 #[tokio::test]

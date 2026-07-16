@@ -43,6 +43,7 @@ pub mod args_validator;
 pub mod probe;
 pub mod turn_guard;
 pub mod estop;
+pub mod tool_adapter;
 
 pub use types::*;
 pub use instance::AgentInstance;

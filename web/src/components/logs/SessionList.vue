@@ -15,6 +15,7 @@ const emit = defineEmits<{
 
 const search = ref('')
 const timeFilter = ref('all')
+const onlyCron = ref(false)
 
 const filtered = computed(() => {
   let result = props.sessions
@@ -32,6 +33,19 @@ const filtered = computed(() => {
 const selected = computed(() => {
   return props.sessions.find(s => s.id === props.selectedId) || filtered.value[0]
 })
+
+// Messages shown in the detail panel. When `onlyCron` is on, keep only turns
+// fired by a scheduled task (each such turn has cron_job_id on both halves).
+const displayMessages = computed(() => {
+  const msgs = (selected.value?.messages ?? []) as any[]
+  return onlyCron.value ? msgs.filter(m => m.cron_job_id) : msgs
+})
+
+// Whether the selected conversation has ANY cron-originated message (drives
+// the visibility of the "只看定时任务" toggle).
+const hasCronMessages = computed(() =>
+  ((selected.value?.messages ?? []) as any[]).some(m => m.cron_job_id),
+)
 
 // 找出 session 关联的 request
 const relatedRequests = computed(() => {
@@ -126,6 +140,13 @@ watch(
           </div>
           <div class="detail-actions">
             <button
+              v-if="hasCronMessages"
+              class="btn btn-sm"
+              :class="{ 'btn-primary': onlyCron }"
+              @click="onlyCron = !onlyCron"
+              :title="onlyCron ? '显示全部消息' : '只显示定时任务触发的消息'"
+            >🕒 只看定时任务</button>
+            <button
               class="btn btn-sm btn-primary"
               :disabled="relatedRequests.length === 0"
               @click="viewRequests"
@@ -139,7 +160,7 @@ watch(
         <!-- 对话气泡 -->
         <div class="chat-stream scrollable">
           <div
-            v-for="(msg, idx) in selected.messages"
+            v-for="(msg, idx) in displayMessages"
             :key="idx"
             class="chat-msg"
             :class="msg.role"
@@ -148,6 +169,7 @@ watch(
               <div class="msg-content">{{ msg.content }}</div>
               <div class="msg-meta">
                 <span class="msg-role">{{ msg.role === 'user' ? '👤 user' : '🤖 assistant' }}</span>
+                <span v-if="msg.cron_job_id" class="msg-tag cron-tag" :title="msg.cron_job_id">🕒 {{ msg.cron_job_name || '定时任务' }}</span>
                 <span class="msg-time">{{ formatTime(msg.timestamp) }}</span>
                 <button
                   v-if="msg.role === 'assistant' && msg.toolCalls && msg.toolCalls > 0"
@@ -345,6 +367,12 @@ watch(
   background: rgba(239, 68, 68, 0.2);
   color: #ef4444;
   border-radius: var(--radius-sm);
+}
+
+/* Cron-originated message badge (scheduled task). */
+.cron-tag {
+  background: var(--accent-muted);
+  color: var(--accent);
 }
 
 .scrollable { overflow-y: auto; }

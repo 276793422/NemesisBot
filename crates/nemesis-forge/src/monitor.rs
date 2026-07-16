@@ -140,7 +140,10 @@ impl DeploymentMonitor {
     /// - otherwise => "negative"
     pub fn classify_verdict(&self, improvement_score: f64, _artifact: &Artifact) -> String {
         let threshold = self.config.learning.degrade_threshold;
-        let threshold = if threshold >= 0.0 { -0.2 } else { threshold };
+        // F-M2: only fall back to -0.2 when the threshold is the unset default
+        // (0.0); respect a user-configured stricter/looser threshold instead of
+        // silently overriding any non-negative value.
+        let threshold = if threshold == 0.0 { -0.2 } else { threshold };
 
         if improvement_score > 0.1 {
             "positive"
@@ -329,7 +332,11 @@ impl DeploymentMonitor {
             }
         }
 
-        // Check if consecutive observing rounds >= 3 OR directly negative
+        // try_deprecate always degrades when reached — the caller gates on the
+        // verdict (and a cooldown). The `>= 3 || < 3` is intentionally a
+        // tautology; kept (not "fixed" to `>= 3`) because the test suite asserts
+        // a single negative verdict degrades, so changing it would alter tested
+        // behavior. (F-M2b: noted as a smell, not a behavior bug.)
         if artifact.consecutive_observing_rounds >= 3
             || artifact.consecutive_observing_rounds < 3
         {

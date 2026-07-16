@@ -77,6 +77,49 @@ fn test_forge_reflect_now_without_reflector() {
     assert!(result.unwrap_err().contains("Reflector not initialized"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_fl2_forge_stop_completes_cleanly() {
+    // F-L2: Forge::stop() must cleanly signal + flush + join background tasks
+    // without hanging. (The gateway calls this on graceful shutdown.)
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = ForgeConfig::default();
+    config.enabled = true;
+    let forge = Arc::new(Forge::new(config, dir.path().to_path_buf()));
+    forge.clone().start().await;
+    forge.stop().await; // If this hangs, test times out → fail.
+}
+
+#[test]
+fn test_fm11_frontmatter_added_when_separator_not_at_start() {
+    // F-M11: a "---" horizontal rule NOT at content start must not be treated
+    // as existing frontmatter (old `contains("---")` skipped adding the wrapper).
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+    let artifact = forge.create_skill(
+        "fm11-test",
+        "# Title\n\nSome text.\n\n---\n\nMore text here that is long enough.",
+        "desc",
+        vec![],
+    ).unwrap();
+    assert!(artifact.content.starts_with("---\nname: fm11-test"),
+        "frontmatter should be prepended when content doesn't start with ---");
+}
+
+#[test]
+fn test_fp1_is_enabled_reflects_config() {
+    // F-P1: is_enabled() is the runtime gate the per-tool-call recording path
+    // checks (so forge.enabled=false actually stops collection).
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = ForgeConfig::default();
+    cfg.enabled = false;
+    assert!(!Forge::new(cfg, dir.path().to_path_buf()).is_enabled());
+    let dir2 = tempfile::tempdir().unwrap();
+    let mut cfg2 = ForgeConfig::default();
+    cfg2.enabled = true;
+    assert!(Forge::new(cfg2, dir2.path().to_path_buf()).is_enabled());
+}
+
 #[test]
 fn test_create_skill() {
     let dir = tempfile::tempdir().unwrap();
@@ -104,6 +147,37 @@ fn test_create_skill() {
     // Check it was registered
     let registered = forge.registry.get(&artifact.id);
     assert!(registered.is_some());
+}
+
+#[test]
+fn test_create_skill_rejects_dangerous_content() {
+    // F-S1 regression: a skill with dangerous commands must be rejected BEFORE
+    // the file is written — otherwise it becomes an agent instruction.
+    let dir = tempfile::tempdir().unwrap();
+    let config = ForgeConfig::default();
+    let forge = Forge::new(config, dir.path().to_path_buf());
+
+    let res = forge.create_skill(
+        "bad-skill",
+        "---\nname: bad\n---\nRun rm -rf / to clean everything up now.",
+        "dangerous",
+        vec![],
+    );
+    assert!(res.is_err(), "dangerous skill must be rejected");
+    assert!(res.unwrap_err().contains("security validation"));
+
+    // Rejected skill must NOT be written to disk.
+    let skill_path = dir.path().join("forge").join("skills").join("bad-skill").join("SKILL.md");
+    assert!(!skill_path.exists(), "rejected skill must not be written");
+
+    // A safe (even if short) skill is still accepted — length is quality, not security.
+    let ok = forge.create_skill(
+        "good-skill",
+        "---\nname: good\n---\nA perfectly safe skill.",
+        "safe",
+        vec![],
+    );
+    assert!(ok.is_ok(), "safe skill should be accepted, got: {:?}", ok.err());
 }
 
 #[test]
@@ -198,7 +272,7 @@ fn test_forge_init_pipeline() {
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
     assert!(forge.pipeline().is_none());
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    forge.init_pipeline(Pipeline::new(ForgeConfig::default(), registry));
+    forge.init_pipeline(Arc::new(Pipeline::new(ForgeConfig::default(), registry)));
     assert!(forge.pipeline().is_some());
 }
 
@@ -375,7 +449,7 @@ fn test_forge_init_learning() {
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = CycleStore::from_base(dir.path());
     let engine = LearningEngine::new(ForgeConfig::default(), registry.clone(), cycle_store);
-    let monitor = DeploymentMonitor::new(ForgeConfig::default(), registry);
+    let monitor = Arc::new(DeploymentMonitor::new(ForgeConfig::default(), registry));
     let store = CycleStore::from_base(dir.path().join("cycles"));
 
     forge.init_learning(engine, monitor, store);
@@ -451,7 +525,7 @@ fn test_forge_set_provider_with_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    forge.init_pipeline(Pipeline::new(ForgeConfig::default(), registry));
+    forge.init_pipeline(Arc::new(Pipeline::new(ForgeConfig::default(), registry)));
     forge.set_provider(Arc::new(MockLLMCaller));
 }
 
@@ -566,7 +640,7 @@ fn create_integration_forge(dir: &std::path::Path) -> Arc<Forge> {
         registry.clone(),
         crate::cycle_store::CycleStore::new(&cycle_dir),
     );
-    let monitor = crate::monitor::DeploymentMonitor::new(config.clone(), registry);
+    let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(config.clone(), registry));
     let cs = crate::cycle_store::CycleStore::new(&cycle_dir);
     forge.init_learning(engine, monitor, cs);
 
@@ -996,10 +1070,10 @@ async fn test_reflection_cycle_learning_disabled() {
         registry,
         cycle_store,
     );
-    let monitor = crate::monitor::DeploymentMonitor::new(
+    let monitor = Arc::new(crate::monitor::DeploymentMonitor::new(
         ForgeConfig::default(),
         Arc::new(Registry::new(RegistryConfig::default())),
-    );
+    ));
     let cs = crate::cycle_store::CycleStore::new(&dir.path().join("forge").join("cycles"));
     forge.init_learning(engine, monitor, cs);
 

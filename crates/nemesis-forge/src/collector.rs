@@ -3,7 +3,7 @@
 //! Deduplicates by (tool_name + args hash) and stores up to `max_size` entries
 //! in memory. Optionally persists to JSONL.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
@@ -28,7 +28,7 @@ struct PatternAggregate {
 /// Async collector of tool-call experiences.
 pub struct Collector {
     config: CollectorConfig,
-    experiences: Mutex<Vec<CollectedExperience>>,
+    experiences: Mutex<VecDeque<CollectedExperience>>,
     seen_hashes: Mutex<HashSet<String>>,
     persistence_path: Option<PathBuf>,
     /// Pattern-level aggregation for Flush.
@@ -54,7 +54,7 @@ impl Collector {
         );
         Self {
             config,
-            experiences: Mutex::new(Vec::new()),
+            experiences: Mutex::new(VecDeque::new()),
             seen_hashes: Mutex::new(HashSet::new()),
             persistence_path,
             pattern_counts: Mutex::new(HashMap::new()),
@@ -123,12 +123,12 @@ impl Collector {
             let mut exps = self.experiences.lock();
             if exps.len() >= self.config.max_size {
                 tracing::debug!("[Collector] At max capacity, evicting oldest");
-                if let Some(removed) = exps.first() {
+                if let Some(removed) = exps.front() {
                     self.seen_hashes.lock().remove(&removed.dedup_hash);
                 }
-                exps.remove(0);
+                exps.pop_front();
             }
-            exps.push(ce);
+            exps.push_back(ce);
         }
         self.seen_hashes.lock().insert(hash);
 
@@ -148,7 +148,7 @@ impl Collector {
 
     /// Return a snapshot of all collected experiences.
     pub fn experiences(&self) -> Vec<CollectedExperience> {
-        self.experiences.lock().clone()
+        self.experiences.lock().iter().cloned().collect()
     }
 
     /// Return the current count.
@@ -175,7 +175,7 @@ impl Collector {
             }
             if let Ok(ce) = serde_json::from_str::<CollectedExperience>(line) {
                 seen.insert(ce.dedup_hash.clone());
-                exps.push(ce);
+                exps.push_back(ce);
             }
         }
         Ok(())
@@ -249,8 +249,13 @@ impl Collector {
             return Ok(0);
         }
 
+        // Aggregates go to a SEPARATE file. Writing them into experiences.jsonl
+        // polluted it with a different JSON schema (AggregatedExperience) that
+        // ExperienceStore::read_all can't parse — it silently skipped every
+        // aggregate line, making aggregation write-only and corrupting the file
+        // the reflector reads. (F-D1)
         let path = match &self.persistence_path {
-            Some(p) => p.clone(),
+            Some(p) => p.with_file_name("aggregates.jsonl"),
             None => return Err("no persistence path configured".to_string()),
         };
 

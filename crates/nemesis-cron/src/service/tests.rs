@@ -110,7 +110,7 @@ fn test_compute_next_run_cron_kind() {
         at_ms: None,
         every_ms: None,
         expr: Some("0 30 9 * * *".to_string()),
-        tz: None,
+        tz: Some("UTC".to_string()),
     };
     let next = compute_next_run(&schedule, now_ms);
     assert!(next.is_some());
@@ -145,7 +145,7 @@ fn test_cron_job_with_cron_schedule() {
             at_ms: None,
             every_ms: None,
             expr: Some("0 0 12 * * *".to_string()),
-            tz: None,
+            tz: Some("UTC".to_string()),
         },
         "daily at noon",
         false,
@@ -369,6 +369,7 @@ fn test_cron_payload_serialization() {
         deliver: true,
         channel: Some("web".to_string()),
         to: Some("user1".to_string()),
+        session_key: None,
     };
     let json = serde_json::to_string(&payload).unwrap();
     let parsed: CronPayload = serde_json::from_str(&json).unwrap();
@@ -385,6 +386,7 @@ fn test_cron_job_state_serialization() {
         last_run_at_ms: Some(888),
         last_status: Some("ok".to_string()),
         last_error: None,
+        history: Vec::new(),
     };
     let json = serde_json::to_string(&state).unwrap();
     let parsed: CronJobState = serde_json::from_str(&json).unwrap();
@@ -415,12 +417,14 @@ fn test_cron_job_serialization() {
             deliver: false,
             channel: None,
             to: None,
+            session_key: None,
         },
         state: CronJobState {
             next_run_at_ms: Some(now_ms + 60000),
             last_run_at_ms: None,
             last_status: None,
             last_error: None,
+            history: Vec::new(),
         },
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
@@ -723,6 +727,32 @@ fn test_execute_job_updates_state() {
     assert!(updated.state.last_run_at_ms.is_some());
     assert_eq!(updated.state.last_status, Some("executed".to_string()));
     assert!(updated.state.last_error.is_none());
+}
+
+#[test]
+fn test_execute_job_fires_on_job_handler() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job("fire_test", CronSchedule { kind: "every".to_string(), at_ms: None, every_ms: Some(60000), expr: None, tz: None }, "msg", false, None, None)
+        .unwrap();
+
+    let fired = std::sync::Arc::new(AtomicBool::new(false));
+    let fired_clone = fired.clone();
+    svc.set_on_job(move |_job| {
+        fired_clone.store(true, Ordering::SeqCst);
+        Ok("fired".to_string())
+    });
+
+    // Regression: execute_job used to only update state and never invoke the
+    // handler, so "run now" was a no-op for the agent.
+    svc.execute_job(&job.id).unwrap();
+    assert!(fired.load(Ordering::SeqCst), "execute_job should fire the on_job handler");
+
+    let updated = svc.get_job(&job.id).unwrap();
+    assert_eq!(updated.state.last_status, Some("executed".to_string()));
 }
 
 #[test]
@@ -1545,7 +1575,7 @@ fn test_compute_next_run_5_field() {
         at_ms: None,
         every_ms: None,
         expr: Some("30 9 * * *".to_string()),
-        tz: None,
+        tz: Some("UTC".to_string()),
     };
     let next = compute_next_run(&schedule, after).unwrap();
     let next_dt = chrono::DateTime::from_timestamp_millis(next).unwrap();
@@ -1563,7 +1593,7 @@ fn test_compute_next_run_5_field_weekdays() {
         at_ms: None,
         every_ms: None,
         expr: Some("0 9 * * 1-5".to_string()),
-        tz: None,
+        tz: Some("UTC".to_string()),
     };
     let next = compute_next_run(&schedule, after).unwrap();
     let next_dt = chrono::DateTime::from_timestamp_millis(next).unwrap();
@@ -1580,7 +1610,7 @@ fn test_compute_next_run_month_names() {
         at_ms: None,
         every_ms: None,
         expr: Some("0 0 1 JAN *".to_string()),
-        tz: None,
+        tz: Some("UTC".to_string()),
     };
     let next = compute_next_run(&schedule, after).unwrap();
     let next_dt = chrono::DateTime::from_timestamp_millis(next).unwrap();
@@ -1599,12 +1629,34 @@ fn test_compute_next_run_day_names() {
         at_ms: None,
         every_ms: None,
         expr: Some("0 9 * * FRI".to_string()),
-        tz: None,
+        tz: Some("UTC".to_string()),
     };
     let next = compute_next_run(&schedule, after).unwrap();
     let next_dt = chrono::DateTime::from_timestamp_millis(next).unwrap();
     assert_eq!(next_dt.day(), 16);
     assert_eq!(next_dt.hour(), 9);
+}
+
+#[test]
+fn test_compute_next_run_defaults_to_local() {
+    // Production path: the web UI never sets tz, so cron fields must be read in
+    // LOCAL time. "0 9 * * *" → 09:00 local on whatever machine runs this.
+    // (Regression guard: the default was once UTC, which made "0 9" fire at
+    // 09:00 UTC = 17:00 in UTC+8.)
+    let after = chrono::Local::now().timestamp_millis();
+    let schedule = CronSchedule {
+        kind: "cron".to_string(),
+        at_ms: None,
+        every_ms: None,
+        expr: Some("0 9 * * *".to_string()),
+        tz: None,
+    };
+    let next = compute_next_run(&schedule, after).unwrap();
+    let next_local = chrono::DateTime::from_timestamp_millis(next)
+        .unwrap()
+        .with_timezone(&chrono::Local);
+    assert_eq!(next_local.hour(), 9);
+    assert_eq!(next_local.minute(), 0);
 }
 
 #[test]
@@ -1673,7 +1725,7 @@ fn test_add_cron_job_with_5_field_expr() {
             at_ms: None,
             every_ms: None,
             expr: Some("30 9 * * *".to_string()),
-            tz: None,
+            tz: Some("UTC".to_string()),
         },
         "daily at 9:30",
         false,

@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 /// Append a chat message to the JSONL log file.
 pub fn append_chat_log(session_key: &str, role: &str, content: &str) {
-    append_chat_log_with_model(session_key, role, content, None);
+    append_chat_log_full(session_key, role, content, None, None, None);
 }
 
 /// Append a chat message with an optional model badge (`provider/name`).
@@ -27,6 +27,23 @@ pub fn append_chat_log_with_model(
     role: &str,
     content: &str,
     model: Option<&str>,
+) {
+    append_chat_log_full(session_key, role, content, model, None, None);
+}
+
+/// Full append: optional model badge AND optional cron origin marker.
+///
+/// `cron_job_id` / `cron_job_name`: when `Some`, marks this entry as
+/// originating from a scheduled (cron) task, so the Dashboard can label it
+/// (🕒) and filter "只看定时任务" in the session browser. `None` (the common
+/// case) omits the fields — old jsonl entries without them parse fine.
+pub fn append_chat_log_full(
+    session_key: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    cron_job_id: Option<&str>,
+    cron_job_name: Option<&str>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -46,6 +63,12 @@ pub fn append_chat_log_with_model(
     });
     if let Some(m) = model {
         entry["model"] = serde_json::Value::String(m.to_string());
+    }
+    if let Some(id) = cron_job_id {
+        entry["cron_job_id"] = serde_json::Value::String(id.to_string());
+    }
+    if let Some(name) = cron_job_name {
+        entry["cron_job_name"] = serde_json::Value::String(name.to_string());
     }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);

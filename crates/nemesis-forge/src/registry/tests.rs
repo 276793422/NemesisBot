@@ -324,6 +324,30 @@ fn test_list_mixed_kinds() {
 }
 
 #[tokio::test]
+async fn test_fd3_registry_load_restores_artifacts() {
+    // F-D3: registry.load() must restore prior artifacts from disk (the gateway
+    // calls this at startup so learned artifacts survive restarts).
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    let artifact = Artifact {
+        id: "skill-persisted".into(), name: "persisted".into(),
+        kind: ArtifactKind::Skill, version: "1.0".into(),
+        status: ArtifactStatus::Active, content: "...".into(), tool_signature: vec![],
+        created_at: "2026-01-01T00:00:00+08:00".into(),
+        updated_at: "2026-01-01T00:00:00+08:00".into(),
+        usage_count: 0, last_degraded_at: None, success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+    };
+    std::fs::write(&path, serde_json::to_string_pretty(&vec![artifact]).unwrap()).unwrap();
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.load().await.unwrap();
+    assert!(registry.get("skill-persisted").is_some(), "load() should restore prior artifacts (F-D3)");
+}
+
+#[tokio::test]
 async fn test_save_no_path_noop() {
     let registry = Registry::new(RegistryConfig::default());
     registry.add(make_artifact("test", ArtifactKind::Skill));

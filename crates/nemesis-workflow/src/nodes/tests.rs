@@ -3501,3 +3501,252 @@ async fn parameter_extractor_records_each_retry_attempt_separately() {
     assert_eq!(logs.len(), 2);
     assert_ne!(logs[0].trace_id, logs[1].trace_id);
 }
+
+// ---------------------------------------------------------------------------
+// forEach loop mode (`mode: foreach`) + `resolve_items_list` helper
+// ---------------------------------------------------------------------------
+
+/// Test-only executor that echoes the current `{{item}}` / `{{item_index}}`
+/// from the loop context, so forEach element binding is observable. (The
+/// built-in `LLMNodeExecutor` stub doesn't resolve templates, so it can't
+/// surface the bound value.)
+struct LoopEchoItemExecutor;
+
+#[async_trait::async_trait]
+impl NodeExecutor for LoopEchoItemExecutor {
+    async fn execute(
+        &self,
+        node: &NodeDef,
+        context: &HashMap<String, serde_json::Value>,
+        _wf_ctx: &WorkflowContext,
+    ) -> Result<NodeResult, String> {
+        let now = Local::now();
+        let item = context
+            .get("item")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let idx = context
+            .get("item_index")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        Ok(NodeResult {
+            node_id: node.id.clone(),
+            output: serde_json::json!({ "item": item, "item_index": idx }),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: now,
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        })
+    }
+}
+
+#[test]
+fn test_resolve_items_list_array_literal() {
+    let ctx = HashMap::new();
+    let raw = serde_json::json!(["a", "b", "c"]);
+    let list = resolve_items_list(&raw, &ctx).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0].as_str().unwrap(), "a");
+}
+
+#[test]
+fn test_resolve_items_list_single_ref_to_array() {
+    // A `{{node.field}}` key stored in context holds the raw array; the single
+    // ref must extract it without stringifying.
+    let mut ctx = HashMap::new();
+    ctx.insert(
+        "node.output".to_string(),
+        serde_json::json!(["x", "y"]),
+    );
+    let raw = serde_json::json!("{{node.output}}");
+    let list = resolve_items_list(&raw, &ctx).unwrap();
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[1].as_str().unwrap(), "y");
+}
+
+#[test]
+fn test_resolve_items_list_json_array_string() {
+    let ctx = HashMap::new();
+    let raw = serde_json::json!("[1, 2, 3]");
+    let list = resolve_items_list(&raw, &ctx).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[2].as_i64().unwrap(), 3);
+}
+
+#[test]
+fn test_resolve_items_list_line_split() {
+    let ctx = HashMap::new();
+    let raw = serde_json::json!("https://a.com\nhttps://b.com\n\nhttps://c.com");
+    let list = resolve_items_list(&raw, &ctx).unwrap();
+    assert_eq!(list.len(), 3);
+    assert_eq!(list[0].as_str().unwrap(), "https://a.com");
+}
+
+#[test]
+fn test_resolve_items_list_empty() {
+    let ctx = HashMap::new();
+    assert!(resolve_items_list(&serde_json::json!(""), &ctx)
+        .unwrap()
+        .is_empty());
+    assert!(
+        resolve_items_list(&serde_json::json!([]), &ctx)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_loop_foreach_string_array() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("echo_item", std::sync::Arc::new(LoopEchoItemExecutor));
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert("items".to_string(), serde_json::json!(["a", "b", "c"]));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["mode"].as_str().unwrap(), "foreach");
+    assert_eq!(result.output["items_count"].as_u64().unwrap(), 3);
+    assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 3);
+    // last_output = last iteration's child output → item == "c", index == 2.
+    assert_eq!(result.output["last_output"]["item"].as_str().unwrap(), "c");
+    assert_eq!(
+        result.output["last_output"]["item_index"].as_u64().unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn test_loop_foreach_object_array_item_field() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("echo_item", std::sync::Arc::new(LoopEchoItemExecutor));
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert(
+        "items".to_string(),
+        serde_json::json!([{ "url": "https://1" }, { "url": "https://2" }]),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 2);
+    assert_eq!(
+        result.output["last_output"]["item"]["url"].as_str().unwrap(),
+        "https://2"
+    );
+}
+
+#[tokio::test]
+async fn test_loop_foreach_empty_array() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("echo_item", std::sync::Arc::new(LoopEchoItemExecutor));
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert("items".to_string(), serde_json::json!([]));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["items_count"].as_u64().unwrap(), 0);
+    assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn test_loop_foreach_capped_by_max_iterations() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("echo_item", std::sync::Arc::new(LoopEchoItemExecutor));
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert(
+        "items".to_string(),
+        serde_json::json!(["a", "b", "c", "d", "e"]),
+    );
+    config.insert("max_iterations".to_string(), serde_json::json!(2));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.output["items_count"].as_u64().unwrap(), 5);
+    assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn test_loop_foreach_items_via_ref() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("echo_item", std::sync::Arc::new(LoopEchoItemExecutor));
+    let exec = registry.get("loop").unwrap();
+
+    let mut context = HashMap::new();
+    context.insert(
+        "upstream.output".to_string(),
+        serde_json::json!(["p", "q", "r"]),
+    );
+    let mut config = HashMap::new();
+    config.insert("mode".to_string(), serde_json::json!("foreach"));
+    config.insert(
+        "items".to_string(),
+        serde_json::json!("{{upstream.output}}"),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "echo", "node_type": "echo_item", "config": {} }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec.execute(&node, &context, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.output["items_iterated"].as_u64().unwrap(), 3);
+}
+
+#[tokio::test]
+async fn test_loop_counter_mode_still_works() {
+    // Regression: default counter mode must behave as before, now with a
+    // `mode` field in the output.
+    let registry = NodeExecutorRegistry::new_with_composite();
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(2));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([{ "id": "inner", "node_type": "llm", "config": { "prompt": "x" } }]),
+    );
+    let node = make_node("loop1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
+    assert_eq!(result.output["mode"].as_str().unwrap(), "counter");
+}

@@ -168,6 +168,12 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
+    cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
+    /// Conversation→WS router for cron-initiated live delivery (Opt 2).
+    /// Populated on inbound in `process_messages`; read by the gateway cron
+    /// fire handler to pick a live `chat_id` for the targeted conversation.
+    conv_router: Option<crate::conv_router::SharedConvRouter>,
 }
 
 impl WebServer {
@@ -206,6 +212,8 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            cron: None,
+            conv_router: None,
         }
     }
 
@@ -299,6 +307,18 @@ impl WebServer {
         self.estop = Some(estop);
     }
 
+    /// Set the runtime cron service for `tasks.cron.*` handlers.
+    pub fn set_cron(&mut self, cron: Arc<std::sync::Mutex<nemesis_cron::CronService>>) {
+        self.cron = Some(cron);
+    }
+
+    /// Set the conversation→WS router (Opt 2). Gateway shares the same Arc
+    /// with the cron fire handler so binds (here, on inbound) and lookups
+    /// (there, on fire) see the same table.
+    pub fn set_conv_router(&mut self, router: crate::conv_router::SharedConvRouter) {
+        self.conv_router = Some(router);
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
@@ -342,6 +362,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            cron: self.cron.clone(),
         };
 
         let state = Arc::new(state);
@@ -349,8 +370,9 @@ impl WebServer {
         // Spawn the bus bridge: incoming WebSocket messages -> MessageBus.publish_inbound
         if let Some(ref bus) = self.message_bus {
             let bus = bus.clone();
+            let conv_router = self.conv_router.clone();
             tokio::spawn(async move {
-                process_messages(inbound_rx, bus).await;
+                process_messages_with_router(inbound_rx, bus, conv_router).await;
             });
         } else {
             // No bus configured; drain messages to avoid leaking the sender
@@ -889,10 +911,22 @@ pub async fn handle_events_stream(
 // ---------------------------------------------------------------------------
 
 /// Process incoming messages from the WebSocket message channel and publish
-/// them to the message bus as InboundMessage.
+/// them to the message bus as InboundMessage. (No conv_router — legacy 2-arg
+/// entry point kept for tests / simpler callers.)
 pub async fn process_messages(
+    rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
+    bus: Arc<MessageBus>,
+) {
+    process_messages_with_router(rx, bus, None).await;
+}
+
+/// Same as [`process_messages`] but also records conversation→chat_id
+/// bindings into `conv_router` (when provided) so cron jobs can live-push
+/// replies to the targeted conversation's open tab (Opt 2).
+pub async fn process_messages_with_router(
     mut rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
+    conv_router: Option<crate::conv_router::SharedConvRouter>,
 ) {
     while let Some(msg) = rx.recv().await {
         let session_key = match msg.metadata.get("session_id") {
@@ -913,6 +947,14 @@ pub async fn process_messages(
             // `agent:main:main` — invisible to the list (the bug).
             _ => "agent:main:session:legacy".to_string(),
         };
+
+        // Opt 2: record conversation → live chat_id binding so a cron job
+        // targeting this conversation can live-push its reply to this tab.
+        // (The reply is persisted to history via session_key regardless.)
+        if let Some(ref router) = conv_router {
+            router.bind(&session_key, &msg.chat_id);
+        }
+
         let inbound = InboundMessage {
             channel: "web".to_string(),
             sender_id: msg.sender_id.clone(),

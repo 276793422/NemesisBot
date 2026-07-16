@@ -44,8 +44,11 @@ impl StaticValidator {
             ArtifactKind::Mcp => self.validate_mcp(content, &mut result),
         }
 
-        // Common security checks
+        // Common security checks — apply to ALL artifact kinds (F-S1): dangerous
+        // commands were previously only checked for Scripts, so a Skill with
+        // `rm -rf /` / `curl|bash` passed and got deployed as an agent instruction.
         self.check_security(content, &mut result);
+        self.check_dangerous_commands(content, &mut result);
 
         result.stage.passed = result.stage.errors.is_empty();
         result
@@ -68,20 +71,8 @@ impl StaticValidator {
             result.stage.errors.push("Script content is empty".into());
             return;
         }
-
-        // Check for dangerous patterns
-        static DANGEROUS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
-            vec![
-                (Regex::new(r"rm\s+-rf\s+/").unwrap(), "Dangerous command: rm -rf /"),
-                (Regex::new(r"curl.*\|.*bash").unwrap(), "Dangerous pattern: curl | bash"),
-            ]
-        });
-
-        for (pattern, desc) in DANGEROUS.iter() {
-            if pattern.is_match(content) {
-                result.stage.errors.push(desc.to_string());
-            }
-        }
+        // Dangerous-command patterns are now checked for ALL kinds in
+        // check_dangerous_commands (called from validate()).
     }
 
     fn validate_mcp(&self, content: &str, result: &mut StaticValidationResult) {
@@ -110,6 +101,42 @@ impl StaticValidator {
                 result.stage.errors.push(desc.to_string());
             }
         }
+    }
+
+    /// Check for dangerous shell patterns. Applied to ALL artifact kinds (not
+    /// just Scripts) so a learned/generated Skill can't deploy `rm -rf /` /
+    /// `curl|bash` as an agent instruction. (F-S1)
+    fn check_dangerous_commands(&self, content: &str, result: &mut StaticValidationResult) {
+        static DANGEROUS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
+            vec![
+                (Regex::new(r"rm\s+-rf\s+/").unwrap(), "Dangerous command: rm -rf /"),
+                (Regex::new(r"curl.*\|.*bash").unwrap(), "Dangerous pattern: curl | bash"),
+            ]
+        });
+        for (pattern, desc) in DANGEROUS.iter() {
+            if pattern.is_match(content) {
+                result.stage.errors.push(desc.to_string());
+            }
+        }
+    }
+
+    /// Return ONLY security errors (dangerous commands + hardcoded secrets),
+    /// ignoring quality checks (length, frontmatter). Used as the write gate
+    /// for skill/script/mcp creation so a short-but-safe skill isn't rejected,
+    /// while dangerous / secret-laden content is blocked before it is written
+    /// to disk and becomes an agent instruction. (F-S1)
+    pub fn security_errors(&self, content: &str) -> Vec<String> {
+        let mut result = StaticValidationResult {
+            stage: ValidationStage {
+                passed: false,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                errors: Vec::new(),
+            },
+            warnings: Vec::new(),
+        };
+        self.check_security(content, &mut result);
+        self.check_dangerous_commands(content, &mut result);
+        result.stage.errors
     }
 }
 
