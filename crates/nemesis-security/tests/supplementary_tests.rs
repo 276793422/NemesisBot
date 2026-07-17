@@ -691,6 +691,7 @@ mod dlp_extra {
             pattern: r"\bTEST\d+\b".to_string(),
             enabled: true,
             action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
         };
         let json = serde_json::to_string(&rule).unwrap();
         let back: DlpRule = serde_json::from_str(&json).unwrap();
@@ -748,6 +749,7 @@ mod dlp_extra {
             pattern: r"CUSTOM_\d+".to_string(),
             enabled: true,
             action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
         }).unwrap();
         assert_eq!(engine.total_rule_count(), base_count + 1);
     }
@@ -1300,6 +1302,9 @@ mod pipeline_extra {
             credential_enabled: false,
             dlp_enabled: false,
             dlp_action: "warn".to_string(),
+            dlp_enabled_rules: vec![],
+            dlp_low_confidence_action: "log".to_string(),
+            dlp_inbound_action: "log".to_string(),
             ssrf_enabled: false,
             audit_chain_enabled: true,
             audit_chain_path: Some("/tmp/chain".to_string()),

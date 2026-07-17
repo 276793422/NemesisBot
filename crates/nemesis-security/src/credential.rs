@@ -94,8 +94,16 @@ impl Scanner {
                 matches.push(CredentialMatch {
                     pattern_name: name.to_string(),
                     redacted: redacted.clone(),
-                    full_match_start: if full.len() > 4 { full[..4].to_string() } else { full.to_string() },
-                    full_match_end: if full.len() > 4 { full[full.len()-4..].to_string() } else { String::new() },
+                    full_match_start: if full.len() > 4 {
+                        // floor/ceil to a char boundary — multibyte matched values
+                        // (e.g. a Chinese password) would panic on a naive byte slice.
+                        let end = utils::floor_char_boundary(full, 4);
+                        full[..end].to_string()
+                    } else { full.to_string() },
+                    full_match_end: if full.len() > 4 {
+                        let start = utils::ceil_char_boundary(full, full.len() - 4);
+                        full[start..].to_string()
+                    } else { String::new() },
                 });
             }
         }

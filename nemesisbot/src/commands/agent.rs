@@ -530,7 +530,8 @@ pub async fn run(
                                                             println!("  Conversation history ({} turns):", history.len());
                                                             for (i, turn) in history.iter().enumerate() {
                                                                 let preview = if turn.content.len() > 80 {
-                                                                        format!("{}...", &turn.content[..77])
+                                                                        let cut = nemesis_types::utils::floor_char_boundary(&turn.content, 77);
+                                                                        format!("{}...", &turn.content[..cut])
                                                                     } else {
                                                                         turn.content.clone()
                                                                     };

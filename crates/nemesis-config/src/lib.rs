@@ -958,6 +958,12 @@ pub struct DLPLayerConfig {
     pub rules: Vec<String>,
     #[serde(default)]
     pub action: String,
+    /// Action for low-confidence matches. Empty → default "log" (detect, don't block).
+    #[serde(default)]
+    pub low_confidence_action: String,
+    /// Action for DLP hits on inbound/local-storage ops. Empty → default "log".
+    #[serde(default)]
+    pub inbound_action: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

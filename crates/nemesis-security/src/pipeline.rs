@@ -13,7 +13,7 @@ use crate::audit_log::{AuditLogConfig, AuditLogger};
 use crate::auditor::{AuditorConfig, OperationRequest, SecurityAuditor};
 use crate::command::Guard as CommandGuard;
 use crate::credential::Scanner as CredentialScanner;
-use crate::dlp::DlpEngine;
+use crate::dlp::{DlpConfidence, DlpConfig, DlpEngine};
 use crate::injection::{Detector as InjectionDetector, InjectionConfig};
 use crate::integrity::{AuditChain, AuditChainConfig};
 use crate::scanner::{ScanChain, ScanChainConfig, SharedScanChain, StubScanner};
@@ -34,6 +34,15 @@ pub struct SecurityPluginConfig {
     pub credential_enabled: bool,
     pub dlp_enabled: bool,
     pub dlp_action: String,
+    /// Whitelist of DLP rule names to run (empty = all rules). Wired from
+    /// `config.security.layers.dlp.rules` at construction.
+    pub dlp_enabled_rules: Vec<String>,
+    /// Action for low-confidence matches (default "log": detect without blocking).
+    pub dlp_low_confidence_action: String,
+    /// Action for DLP hits on inbound/local-storage operations (default "log").
+    /// Set to "block" to also block when writing data locally (not recommended
+    /// when scraping arbitrary web content — its footer numbers trigger FPs).
+    pub dlp_inbound_action: String,
     pub ssrf_enabled: bool,
     pub audit_chain_enabled: bool,
     pub audit_chain_path: Option<String>,
@@ -59,6 +68,9 @@ impl Default for SecurityPluginConfig {
             credential_enabled: true,
             dlp_enabled: true,
             dlp_action: "block".to_string(),
+            dlp_enabled_rules: Vec::new(),
+            dlp_low_confidence_action: "log".to_string(),
+            dlp_inbound_action: "log".to_string(),
             ssrf_enabled: true,
             audit_chain_enabled: false,
             audit_chain_path: None,
@@ -134,7 +146,14 @@ impl SecurityPlugin {
         };
 
         let dlp_engine = if config.dlp_enabled {
-            Some(DlpEngine::new(true, &config.dlp_action))
+            Some(DlpEngine::with_config(DlpConfig {
+                enabled: true,
+                action: config.dlp_action.clone(),
+                custom_rules: Vec::new(),
+                enabled_rules: config.dlp_enabled_rules.clone(),
+                max_content_length: 0,
+                low_confidence_action: config.dlp_low_confidence_action.clone(),
+            }))
         } else {
             None
         };
@@ -545,19 +564,52 @@ impl SecurityPlugin {
             }
         }
 
-        // Layer 5: DLP
+        // Layer 5: DLP — confidence-aware + direction-aware.
+        // Only block on genuine exfiltration: an outbound operation carrying a
+        // High/Medium-confidence match (`result.should_block`). Low-confidence
+        // matches (phone/ip/email on arbitrary web content) and inbound local
+        // writes (write_file saving a scraped page) are audited as warnings but
+        // never block. This fixes the false positives that broke web-scraping
+        // (e.g. a Chinese ICP filing number 11010802047360 read as a phone).
         if let Some(ref engine) = self.dlp_engine {
             let result = engine.scan_tool_input(&invocation.tool_name, &invocation.args);
-            if result.has_matches && result.action == "block" {
-                self.log_audit_event(
-                    "denied", &op_type.to_string(), &invocation.user,
-                    &invocation.source, &target, "HIGH",
-                    &format!("DLP: {}", result.summary), "dlp_engine",
+            if result.has_matches {
+                let inbound_storage = matches!(
+                    op_type,
+                    OperationType::FileWrite | OperationType::DirCreate
                 );
-                return (false, Some(format!(
-                    "operation blocked by DLP: sensitive data detected ({})",
-                    result.summary
-                )));
+                // `result.should_block` is true for High/Medium-confidence matches,
+                // and also Low when low_confidence_action="block".
+                //
+                // Direction-aware inbound safety valve: when writing data *locally*
+                // (write_file saving a scraped page), Low-confidence matches never
+                // block — so a page footer whose filing number trips phone/ip
+                // doesn't break the scrape. High/Medium genuine secrets (keys,
+                // cards, SSN) still block inbound writes. Set dlp.inbound_action
+                // ="block" to also block Low matches on inbound writes.
+                let mut block = result.should_block;
+                if block && inbound_storage && self.config.dlp_inbound_action != "block" {
+                    block = result.matches.iter().any(|m| {
+                        m.effective_action == "block" && m.confidence != DlpConfidence::Low
+                    });
+                }
+                if block {
+                    self.log_audit_event(
+                        "denied", &op_type.to_string(), &invocation.user,
+                        &invocation.source, &target, "HIGH",
+                        &format!("DLP: {}", result.summary), "dlp_engine",
+                    );
+                    return (false, Some(format!(
+                        "operation blocked by DLP: sensitive data detected ({})",
+                        result.summary
+                    )));
+                }
+                // Non-blocking match (low-confidence or inbound write): audit as warning.
+                self.log_audit_event(
+                    "allowed", &op_type.to_string(), &invocation.user,
+                    &invocation.source, &target, "MEDIUM",
+                    &format!("DLP (non-blocking): {}", result.summary), "dlp_engine",
+                );
             }
         }
 

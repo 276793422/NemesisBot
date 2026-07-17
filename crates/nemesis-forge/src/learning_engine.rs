@@ -781,7 +781,9 @@ impl LearningEngine {
             .replace("->", "-")
             .replace(' ', "-")
             .to_lowercase();
-        filename.truncate(60);
+        // truncate() panics on non-char-boundary; floor first (draft_name may be multibyte).
+        let cut = nemesis_types::utils::floor_char_boundary(&filename, 60);
+        filename.truncate(cut);
 
         let content = format!(
             "# Prompt Suggestion: {}\n\n\
@@ -1357,7 +1359,8 @@ fn generate_skill_name(tool_chain: &str) -> String {
         .replace('_', "-")
         .to_lowercase();
     if name.len() > 50 {
-        name.truncate(50);
+        let cut = nemesis_types::utils::floor_char_boundary(&name, 50);
+        name.truncate(cut);
     }
     format!("{}-workflow", name)
 }

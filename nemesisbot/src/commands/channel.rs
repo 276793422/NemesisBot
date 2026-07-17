@@ -189,7 +189,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Port: {}", port);
                             println!("  Authentication: {}", if has_auth { "enabled" } else { "disabled" });
                             if has_auth {
-                                let last4 = if auth.len() > 4 { &auth[auth.len()-4..] } else { auth };
+                                let last4 = if auth.len() > 4 {
+    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
+    &auth[s..]
+} else { auth };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  Access URL: http://{}:{}", host, port);
@@ -253,7 +256,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     }
                     set_channel_config(&cfg_path, "web", "auth_token", &token)?;
                     println!("  Web auth token set: {}****",
-                        if token.len() > 4 { &token[..4] } else { "***" });
+                        if token.len() > 4 {
+    let e = nemesis_types::utils::floor_char_boundary(&token, 4);
+    &token[..e]
+} else { "***" });
                 }
                 WebAction::AuthSet { token } => {
                     if token.is_empty() {
@@ -265,7 +271,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     }
                     set_channel_config(&cfg_path, "web", "auth_token", &token)?;
                     println!("  Web auth token set: {}****",
-                        if token.len() > 4 { &token[..4] } else { "***" });
+                        if token.len() > 4 {
+    let e = nemesis_types::utils::floor_char_boundary(&token, 4);
+    &token[..e]
+} else { "***" });
                 }
                 WebAction::AuthGet => {
                     let masked = get_channel_config(&cfg_path, "web", "auth_token")
@@ -299,7 +308,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Port: {}", port);
                             println!("  Authentication: {}", if has_auth { "enabled" } else { "disabled" });
                             if has_auth {
-                                let last4 = if auth.len() > 4 { &auth[auth.len()-4..] } else { auth };
+                                let last4 = if auth.len() > 4 {
+    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
+    &auth[s..]
+} else { auth };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  WebSocket Path: {}", ws_path);
@@ -347,7 +359,10 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                             println!("  Port: {}", port);
                             println!("  Authentication: {}", if !auth.is_empty() { "enabled" } else { "disabled" });
                             if !auth.is_empty() {
-                                let last4 = if auth.len() > 4 { &auth[auth.len()-4..] } else { auth };
+                                let last4 = if auth.len() > 4 {
+    let s = nemesis_types::utils::ceil_char_boundary(auth, auth.len() - 4);
+    &auth[s..]
+} else { auth };
                                 println!("  Auth Token: ****{} (length: {})", last4, auth.len());
                             }
                             println!("  WebSocket Path: {}", ws_path);

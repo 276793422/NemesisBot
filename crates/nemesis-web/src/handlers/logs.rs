@@ -256,12 +256,18 @@ pub(crate) fn extract_md_header(content: &str, key: &str) -> Option<String> {
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
             .unwrap_or(trimmed);
-        if after_marker.len() >= prefix.len() {
-            let (head, rest) = after_marker.split_at(prefix.len());
-            if head.eq_ignore_ascii_case(&prefix) {
-                let rest = rest.trim_start_matches(':').trim_start_matches(' ').trim();
-                if !rest.is_empty() {
-                    return Some(rest.to_string());
+        let plen = prefix.len();
+        if after_marker.len() >= plen {
+            // prefix is ASCII (**key**); floor prevents split_at from slicing
+            // mid-codepoint on non-matching multibyte log lines.
+            let cut = nemesis_types::utils::floor_char_boundary(after_marker, plen);
+            if cut == plen {
+                let (head, rest) = after_marker.split_at(plen);
+                if head.eq_ignore_ascii_case(&prefix) {
+                    let rest = rest.trim_start_matches(':').trim_start_matches(' ').trim();
+                    if !rest.is_empty() {
+                        return Some(rest.to_string());
+                    }
                 }
             }
         }

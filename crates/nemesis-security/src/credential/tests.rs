@@ -206,6 +206,16 @@ fn test_redis_connection_detected() {
 }
 
 #[test]
+fn test_scan_content_multibyte_value_no_panic() {
+    let scanner = Scanner::new(true, "block");
+    // secret_assignment matches a Chinese password; `full[len-4..]` previously
+    // sliced mid-codepoint on the multibyte tail and panicked. Reaching the
+    // assert means the credential.rs:97 floor/ceil fix held.
+    let result = scanner.scan_content(r#"password="一二三四五六七八九""#);
+    assert!(result.has_matches, "secret_assignment should match the Chinese password");
+}
+
+#[test]
 fn test_mongodb_connection_detected() {
     let scanner = Scanner::new(true, "block");
     let result = scanner.scan_content("mongodb://admin:secret@cluster.example.com:27017/db");
