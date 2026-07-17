@@ -5058,7 +5058,12 @@ fn test_truncate_tool_pairs_trailing_asst_clears_calls() {
 #[cfg(feature = "forge")]
 fn create_test_forge() -> (Arc<nemesis_forge::forge::Forge>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let config = nemesis_forge::config::ForgeConfig::default();
+    // Enable the master switch: loop.rs gates experience recording on
+    // `forge.is_enabled()` (intentionally — see loop.rs:3649-3651), so a
+    // default-disabled forge would record nothing and the
+    // `test_forge_records_*_experience` tests would see empty experiences.
+    let mut config = nemesis_forge::config::ForgeConfig::default();
+    config.enabled = true;
     let forge = nemesis_forge::forge::Forge::new(config, dir.path().to_path_buf());
     (Arc::new(forge), dir)
 }
