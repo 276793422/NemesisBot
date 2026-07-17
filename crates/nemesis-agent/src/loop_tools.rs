@@ -697,6 +697,146 @@ impl Tool for ExecTool {
     }
 }
 
+/// Execute a script with a caller-chosen interpreter (`interpreter [flag] script`).
+///
+/// Registered as `"run_script"` and listed in [`MOVE_TOOLS`], so when executor
+/// separation is enabled it runs in the executor subprocess (Layer 1) or the
+/// Sandboxie box (Layer 2) — identical containment to `exec`. The workflow
+/// `script` node delegates to this tool to gain sandbox awareness: the spawn is
+/// byte-identical to `ScriptNodeExecutor`'s direct spawn (`Command::new(interp).
+/// arg(flag).arg(script)`), so enabling the sandbox changes only *where* the
+/// script runs, not *how*.
+///
+/// Unlike `exec` (which flattens output to a string for the LLM), this returns
+/// STRUCTURED `{stdout, stderr, exit_code}` as a JSON string, so the workflow
+/// `script` node preserves its `{stdout,stderr,exit_code,language}` output
+/// contract. The interpreter + flag are passed in by the caller (the workflow
+/// node resolves `language → (interpreter, flag)` via its own table), keeping
+/// this tool generic and free of workflow-specific mapping.
+pub struct RunScriptTool {
+    workspace: String,
+    restrict: bool,
+}
+
+impl RunScriptTool {
+    /// Create a new run_script tool. `workspace` is the default cwd; `restrict`
+    /// confines cwd to the workspace (mirrors [`ExecTool::new`]).
+    pub fn new(workspace: &str, restrict: bool) -> Self {
+        Self {
+            workspace: workspace.to_string(),
+            restrict,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for RunScriptTool {
+    fn description(&self) -> String {
+        "Run a script with a given interpreter (e.g. `bash -c <script>`, \
+         `python3 -c <script>`, `cmd /C <script>`). Returns structured \
+         {stdout, stderr, exit_code}."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "interpreter": {
+                    "type": "string",
+                    "description": "Interpreter executable (bash, sh, python3, node, cmd, powershell, ...)"
+                },
+                "flag": {
+                    "type": "string",
+                    "description": "Interpreter flag passing the script (e.g. -c, /C, -Command). Empty string for none."
+                },
+                "script": {
+                    "type": "string",
+                    "description": "The script source to execute"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds (default 60)"
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory (default: workspace)"
+                }
+            },
+            "required": ["interpreter", "script"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let val: serde_json::Value = serde_json::from_str(args)
+            .map_err(|e| format!("Invalid arguments: {}", e))?;
+
+        let interpreter = val
+            .get("interpreter")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'interpreter' argument")?;
+        let flag = val.get("flag").and_then(|v| v.as_str()).unwrap_or("");
+        let script = val
+            .get("script")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'script' argument")?;
+        let timeout_secs = val.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
+        let cwd = val
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&self.workspace);
+
+        // Workspace restriction (mirrors ExecTool).
+        if self.restrict {
+            let cwd_path = std::path::Path::new(cwd);
+            let ws_path = std::path::Path::new(&self.workspace);
+            if !cwd_path.starts_with(ws_path) {
+                return Err(format!("Access denied: path '{}' is outside workspace", cwd));
+            }
+        }
+
+        // Spawn `interpreter [flag] script` — identical to ScriptNodeExecutor's
+        // direct spawn. stdin=null + kill_on_drop so interactive prompts / hung
+        // children don't survive the timeout.
+        let mut cmd = tokio::process::Command::new(interpreter);
+        if !flag.is_empty() {
+            cmd.arg(flag);
+        }
+        cmd.arg(script)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            cmd.current_dir(cwd).output(),
+        )
+        .await;
+
+        match output {
+            Ok(Ok(out)) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                let exit_code = out.status.code().unwrap_or(-1);
+                // Always Ok: encode success/failure in exit_code so the caller
+                // (workflow script node) keeps its structured contract. Only
+                // spawn/timeout failures are Err.
+                Ok(serde_json::json!({
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "exit_code": exit_code,
+                })
+                .to_string())
+            }
+            Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
+            Err(_) => Err(format!(
+                "Script timed out after {} seconds (interpreter: {}). It may be \
+                 waiting for input (e.g. an interactive prompt).",
+                timeout_secs, interpreter
+            )),
+        }
+    }
+}
+
 /// A tool that executes shell commands asynchronously (starts and returns quickly).
 ///
 /// Mirrors Go's `AsyncExecTool` which is registered as "exec_async" in the agent.
@@ -4176,6 +4316,16 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "exec_async".to_string(),
             Box::new(AsyncExecTool::new(workspace, restrict)),
+        );
+
+        // run_script: interpreter-driven script execution for the workflow
+        // `script` node. Listed in MOVE_TOOLS so executor separation / sandbox
+        // contains workflow scripts identically to `exec`. Returns structured
+        // {stdout,stderr,exit_code} (not flattened), preserving the script
+        // node's output contract.
+        tools.insert(
+            "run_script".to_string(),
+            Box::new(RunScriptTool::new(workspace, restrict)),
         );
 
         // Bootstrap completion tool — deletes BOOTSTRAP.md after initialization.

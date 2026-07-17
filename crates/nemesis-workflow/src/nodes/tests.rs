@@ -195,7 +195,7 @@ async fn test_http_node_missing_url() {
 
 #[tokio::test]
 async fn test_script_node_executor() {
-    let exec = ScriptNodeExecutor;
+    let exec = ScriptNodeExecutor::new();
     let mut config = HashMap::new();
     config.insert("script".to_string(), serde_json::json!("echo hello"));
     config.insert("language".to_string(), serde_json::json!("bash"));
@@ -402,7 +402,7 @@ async fn test_human_review_default_message() {
 
 #[tokio::test]
 async fn test_script_node_missing_script() {
-    let exec = ScriptNodeExecutor;
+    let exec = ScriptNodeExecutor::new();
     let node = make_node("n1", "script", HashMap::new());
     let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Failed);
@@ -1145,7 +1145,7 @@ async fn test_http_node_various_methods() {
 
 #[tokio::test]
 async fn test_script_node_with_context_variables() {
-    let exec = ScriptNodeExecutor;
+    let exec = ScriptNodeExecutor::new();
     let mut config = HashMap::new();
     config.insert("script".to_string(), serde_json::json!("echo {{name}}"));
     config.insert("language".to_string(), serde_json::json!("bash"));
@@ -1161,7 +1161,7 @@ async fn test_script_node_with_context_variables() {
 
 #[tokio::test]
 async fn test_script_node_failing_script() {
-    let exec = ScriptNodeExecutor;
+    let exec = ScriptNodeExecutor::new();
     let mut config = HashMap::new();
     config.insert("script".to_string(), serde_json::json!("exit 1"));
     config.insert("language".to_string(), serde_json::json!("bash"));
@@ -1173,7 +1173,7 @@ async fn test_script_node_failing_script() {
 
 #[tokio::test]
 async fn test_script_node_sh_language() {
-    let exec = ScriptNodeExecutor;
+    let exec = ScriptNodeExecutor::new();
     let mut config = HashMap::new();
     config.insert("script".to_string(), serde_json::json!("echo sh_test"));
     config.insert("language".to_string(), serde_json::json!("sh"));
@@ -1803,6 +1803,81 @@ async fn test_real_tool_executor_passes_args_through() {
     let captured = stub.captured_args().expect("tool should have been invoked");
     assert_eq!(captured["city"], "Tokyo");
     assert_eq!(captured["units"], "metric");
+}
+
+/// ScriptNodeExecutor WITH a tool registry that has `run_script` must delegate
+/// to it (the sandbox-aware path — run_script is a MOVE_TOOL, so it is
+/// contained by RemoteExecutorTool when executor separation is on). This test
+/// mocks run_script's structured {stdout,stderr,exit_code} contract (no
+/// Sandboxie box needed) and verifies:
+///   1. the node actually calls run_script (not the direct-spawn fallback),
+///   2. it passes language-resolved interpreter/flag + the script,
+///   3. the structured output is mapped back into {stdout,stderr,exit_code,language}.
+#[tokio::test]
+async fn test_script_node_delegates_to_run_script_tool() {
+    let registry = Arc::new(ToolRegistry::new());
+    let stub = Arc::new(StubTool::success(
+        "run_script",
+        r#"{"stdout":"delegated-out\n","stderr":"","exit_code":0}"#,
+    ));
+    let stub_handle = stub.clone();
+    registry.register(stub as Arc<dyn Tool>);
+
+    let exec = ScriptNodeExecutor::with_tools(Arc::clone(&registry));
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!("echo delegated-out"));
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    let node = make_node("n1", "script", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    // (1) run_script was actually called (not the fallback)…
+    let captured = stub_handle
+        .captured_args()
+        .expect("run_script should have been called via the registry");
+    // (2) …with the language-resolved interpreter/flag + the script body.
+    assert_eq!(captured["interpreter"].as_str(), Some("bash"));
+    assert_eq!(captured["flag"].as_str(), Some("-c"));
+    assert_eq!(captured["script"].as_str(), Some("echo delegated-out"));
+
+    // (3) structured output mapped back, Completed state, no error.
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert!(result.error.is_none(), "unexpected error: {:?}", result.error);
+    assert_eq!(result.output["stdout"].as_str().unwrap().trim(), "delegated-out");
+    assert_eq!(result.output["stderr"].as_str(), Some(""));
+    assert_eq!(result.output["exit_code"].as_i64(), Some(0));
+    assert_eq!(result.output["language"].as_str(), Some("bash"));
+}
+
+/// When run_script returns a nonzero exit code (encoded in the struct, not an
+/// Err), the script node must surface Failed state + an error message — same
+/// as the direct-spawn path does.
+#[tokio::test]
+async fn test_script_node_run_script_failure_marks_node_failed() {
+    let registry = Arc::new(ToolRegistry::new());
+    registry.register(Arc::new(StubTool::success(
+        "run_script",
+        r#"{"stdout":"partial\n","stderr":"boom","exit_code":3}"#,
+    )) as Arc<dyn Tool>);
+
+    let exec = ScriptNodeExecutor::with_tools(registry);
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!("failing cmd"));
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    let node = make_node("n1", "script", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert_eq!(result.output["exit_code"].as_i64(), Some(3));
+    assert_eq!(result.output["stderr"].as_str(), Some("boom"));
+    assert!(result.error.as_ref().unwrap().contains("3"));
 }
 
 #[tokio::test]

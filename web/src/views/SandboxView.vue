@@ -73,10 +73,16 @@ async function installSandboxie() {
 }
 
 async function startSandboxie() {
+  if (!window.confirm(
+    '即将启动 Sandboxie 引擎：\n' +
+    '• 会弹出 UAC 提权框（安装内核驱动 + 服务）\n' +
+    '• ⚠️ 启动后需要重启 Agent / Gateway 才能完全生效（执行体分离 + 真盒隔离）\n\n' +
+    '确认启动？'
+  )) return
   busy.value = 'start'
   try {
     await request('sandbox', 'start')
-    toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。重启 gateway 生效。')
+    toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
     await checkEnv()
   } catch (e: any) {
@@ -87,10 +93,16 @@ async function startSandboxie() {
 }
 
 async function stopSandboxie() {
+  if (!window.confirm(
+    '即将停止 Sandboxie 引擎：\n' +
+    '• 会弹出 UAC 提权框（卸载内核驱动 + 服务）\n' +
+    '• ⚠️ 停止后需要重启 Agent / Gateway 才能完全生效\n\n' +
+    '确认停止？'
+  )) return
   busy.value = 'stop'
   try {
     await request('sandbox', 'stop')
-    toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。重启 gateway 生效。')
+    toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
     await checkEnv()
   } catch (e: any) {

@@ -3977,3 +3977,60 @@ async fn test_cli_reference_tool_all_command_arms() {
     assert!(upper.is_ok(), "uppercase command should normalize to lowercase");
     assert!(upper.unwrap().contains("scanner"));
 }
+
+// ---------------------------------------------------------------------------
+// RunScriptTool — verifies the workflow `script` node's sandboxing delegate.
+// These tests exercise the REAL tool in-process (no Sandboxie box needed —
+// box containment is the MOVE_TOOL mechanism's job, proven by the executor
+// L2.2 tests). They pin the structured {stdout,stderr,exit_code} contract
+// that ScriptNodeExecutor parses back into its NodeResult.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn run_script_returns_structured_output() {
+    let tool = RunScriptTool::new(
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        false,
+    );
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = r#"{"interpreter":"bash","flag":"-c","script":"echo run-out; echo run-err 1>&2"}"#;
+    let result = tool
+        .execute(args, &ctx)
+        .await
+        .expect("run_script spawn should succeed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&result).expect("run_script must return JSON");
+    assert_eq!(parsed["stdout"].as_str().unwrap().trim(), "run-out");
+    assert_eq!(parsed["stderr"].as_str().unwrap().trim(), "run-err");
+    assert_eq!(parsed["exit_code"].as_i64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn run_script_captures_nonzero_exit_in_struct() {
+    // A failing script is NOT an Err — the exit code is encoded in the struct
+    // so the workflow script node can decide Completed vs Failed itself.
+    let tool = RunScriptTool::new(
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        false,
+    );
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = r#"{"interpreter":"bash","flag":"-c","script":"echo bye; exit 7"}"#;
+    let result = tool.execute(args, &ctx).await.expect("spawn succeeds");
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed["exit_code"].as_i64().unwrap(), 7);
+    assert_eq!(parsed["stdout"].as_str().unwrap().trim(), "bye");
+}
+
+#[tokio::test]
+async fn run_script_missing_args_errors() {
+    let tool = RunScriptTool::new(
+        std::env::temp_dir().to_string_lossy().as_ref(),
+        false,
+    );
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let err = tool
+        .execute(r#"{"interpreter":"bash"}"#, &ctx) // no "script"
+        .await
+        .expect_err("missing 'script' should error");
+    assert!(err.contains("script"), "error should mention missing script: {err}");
+}

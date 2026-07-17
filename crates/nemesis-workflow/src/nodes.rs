@@ -1711,7 +1711,32 @@ fn select_script_interpreter(language: &str) -> (&'static str, &'static str, &'s
 /// Executes a script using the system shell. The script content is written
 /// to a temporary file and executed using the configured language interpreter.
 /// Supports bash, python, and other scripting languages.
-pub struct ScriptNodeExecutor;
+pub struct ScriptNodeExecutor {
+    /// When `Some`, delegate to the agent `run_script` tool (a MOVE_TOOL, so
+    /// executor separation / Sandboxie contains the script identically to
+    /// `exec`). `None` in unit tests / stub paths → direct spawn fallback.
+    tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
+}
+
+impl ScriptNodeExecutor {
+    /// No tool registry → direct spawn (unit tests, stub executors,
+    /// `execute_inline_node`). Preserves the pre-sandbox behaviour.
+    pub fn new() -> Self {
+        Self { tools: None }
+    }
+
+    /// With the agent tool registry bridged in by the gateway → scripts run via
+    /// the `run_script` MOVE_TOOL (sandbox-aware, security-pipelined).
+    pub fn with_tools(tools: Arc<nemesis_tools::registry::ToolRegistry>) -> Self {
+        Self { tools: Some(tools) }
+    }
+}
+
+impl Default for ScriptNodeExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl NodeExecutor for ScriptNodeExecutor {
@@ -1756,7 +1781,34 @@ impl NodeExecutor for ScriptNodeExecutor {
         // bash and immediately fail.
         let (interpreter, _ext, flag) = select_script_interpreter(language);
 
-        // Execute the script using the interpreter
+        // Sandbox-aware path: delegate to the `run_script` agent tool (a
+        // MOVE_TOOL). When executor separation is on, RemoteExecutorTool runs
+        // it in the subprocess / Sandboxie box — the SAME switch the agent's
+        // `exec` respects, so a workflow script follows the global sandbox
+        // state automatically. AgentToolAdapter also runs the security rule
+        // pipeline per call (closing the script node's historic "no security
+        // checks" gap). The tool returns structured {stdout,stderr,exit_code},
+        // preserving this node's output contract.
+        if let Some(tools) = &self.tools {
+            if tools.has("run_script") {
+                let args = serde_json::json!({
+                    "interpreter": interpreter,
+                    "flag": flag,
+                    "script": resolved_script,
+                });
+                let tool_result = tools.execute("run_script", &args).await;
+                return Ok(script_tool_result_to_node_result(
+                    &node.id,
+                    now,
+                    language,
+                    tool_result,
+                ));
+            }
+            // run_script not registered (minimal/test registry) → fall through
+            // to the direct-spawn fallback below.
+        }
+
+        // Fallback (no registry — unit tests / stub paths): direct spawn.
         let output = tokio::process::Command::new(interpreter)
             .arg(flag)
             .arg(&resolved_script)
@@ -1766,39 +1818,99 @@ impl NodeExecutor for ScriptNodeExecutor {
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(-1);
+        let exit_code = output.status.code().unwrap_or(-1) as i64;
 
-        let state = if output.status.success() {
-            ExecutionState::Completed
+        Ok(script_output_node_result(
+            &node.id,
+            now,
+            language,
+            stdout,
+            stderr,
+            exit_code,
+        ))
+    }
+}
+
+/// Build a `NodeResult` from raw script output (shared by the direct-spawn
+/// fallback and the `run_script` tool path). State is `Completed` iff
+/// `exit_code == 0`; output preserves the `{stdout,stderr,exit_code,language}`
+/// contract.
+fn script_output_node_result(
+    node_id: &str,
+    started: chrono::DateTime<Local>,
+    language: &str,
+    stdout: String,
+    stderr: String,
+    exit_code: i64,
+) -> NodeResult {
+    let state = if exit_code == 0 {
+        ExecutionState::Completed
+    } else {
+        ExecutionState::Failed
+    };
+    let error = if exit_code != 0 {
+        Some(if stderr.trim().is_empty() {
+            format!("Script exited with code {}", exit_code)
         } else {
-            ExecutionState::Failed
-        };
+            format!("Script error (exit {}): {}", exit_code, stderr.trim())
+        })
+    } else {
+        None
+    };
+    NodeResult {
+        node_id: node_id.to_string(),
+        output: serde_json::json!({
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "language": language,
+        }),
+        error,
+        state,
+        started_at: started,
+        ended_at: Local::now(),
+        metadata: HashMap::new(),
+    }
+}
 
-        let error = if !output.status.success() {
-            Some(if stderr.is_empty() {
-                format!("Script exited with code {}", exit_code)
-            } else {
-                format!("Script error (exit {}): {}", exit_code, stderr.trim())
-            })
-        } else {
-            None
-        };
-
-        Ok(NodeResult {
-            node_id: node.id.clone(),
-            output: serde_json::json!({
-                "stdout": stdout,
-                "stderr": stderr,
-                "exit_code": exit_code,
-                "language": language,
-            }),
-            error,
-            state,
-            started_at: now,
+/// Convert a `run_script` tool `ToolResult` into a `NodeResult`. The tool
+/// returns structured JSON `{stdout,stderr,exit_code}` on success (parsed back
+/// here) and an error string on spawn/timeout failure.
+fn script_tool_result_to_node_result(
+    node_id: &str,
+    started: chrono::DateTime<Local>,
+    language: &str,
+    result: nemesis_tools::types::ToolResult,
+) -> NodeResult {
+    if result.is_error {
+        return NodeResult {
+            node_id: node_id.to_string(),
+            output: serde_json::Value::Null,
+            error: Some(format!("run_script: {}", result.for_llm)),
+            state: ExecutionState::Failed,
+            started_at: started,
             ended_at: Local::now(),
             metadata: HashMap::new(),
-        })
+        };
     }
+    // The tool always returns JSON on a successful spawn; parse defensively.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&result.for_llm).unwrap_or(serde_json::Value::Null);
+    let stdout = parsed
+        .get("stdout")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let stderr = parsed
+        .get("stderr")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let exit_code = parsed
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1);
+    script_output_node_result(node_id, started, language, stdout, stderr, exit_code)
 }
 
 /// Resolve simple template variables in a string from the context.
@@ -2701,7 +2813,7 @@ impl NodeExecutorRegistry {
         executors.insert("delay".to_string(), Arc::new(DelayNodeExecutor));
         executors.insert("transform".to_string(), Arc::new(TransformNodeExecutor));
         executors.insert("http".to_string(), Arc::new(HTTPNodeExecutor));
-        executors.insert("script".to_string(), Arc::new(ScriptNodeExecutor));
+        executors.insert("script".to_string(), Arc::new(ScriptNodeExecutor::new()));
         executors.insert("human_review".to_string(), Arc::new(HumanReviewNodeExecutor));
         executors
     }
@@ -3126,7 +3238,7 @@ async fn execute_inline_node(
         "transform" => TransformNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
         "condition" => ConditionNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
         "http" => HTTPNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
-        "script" => ScriptNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
+        "script" => ScriptNodeExecutor::new().execute(node_def, context, &local_wf_ctx).await,
         "human_review" => HumanReviewNodeExecutor.execute(node_def, context, &local_wf_ctx).await,
         // For complex types (llm, tool, parallel, loop, sub_workflow),
         // surface a Failed result so tests built on the stub executors
