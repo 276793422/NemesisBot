@@ -1,0 +1,28 @@
+[package]
+name = "exe-sign-tool"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+# lib（核心签名/验证逻辑，便于 cargo test 与未来抽进主项目）
+[lib]
+name = "exe_sign_tool"
+path = "src/lib.rs"
+
+# bin（CLI：keygen / sign / verify）
+[[bin]]
+name = "exe-sign-tool"
+path = "src/main.rs"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+# chacha20poly1305 未在 workspace.dependencies，直接写版本（不动主项目 workspace 配置）
+chacha20poly1305 = "0.10"
+clap = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
