@@ -65,10 +65,24 @@ async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String>
     Ok(())
 }
 
-/// Write `executor.enabled` + `executor.sandbox` into `<home>/config.json` so the
-/// gateway picks up the sandbox on next start. Called by `start` (true,true) and
-/// `stop` (false,false) so the UI toggle fully reflects in config.
+/// Write `executor.enabled` + `executor.sandbox` into the live config so the
+/// gateway picks up the sandbox on next start. Called by `start` (true,true)
+/// and `stop` (false,false) so the UI toggle fully reflects in config.
+///
+/// Goes through the process-wide [`ConfigStore`](nemesis_config::ConfigStore)
+/// when installed (gateway mode): the update lands in-memory AND on disk, so
+/// the executor's live sandbox probe flips on the very next tool call — no
+/// gateway restart needed. Falls back to a direct disk write in CLI mode
+/// (no store installed).
 fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> Result<(), String> {
+    if let Some(store) = nemesis_config::global() {
+        return store
+            .update(|c| {
+                c.executor = Some(nemesis_config::ExecutorSeparationConfig { enabled, sandbox });
+            })
+            .map_err(|e| format!("update executor config: {e}"));
+    }
+    // CLI / no-store fallback: direct disk write.
     let config_path = home.join("config.json");
     let raw = std::fs::read_to_string(&config_path)
         .map_err(|e| format!("read config.json: {e}"))?;
@@ -83,6 +97,49 @@ fn set_executor_config(home: &std::path::Path, enabled: bool, sandbox: bool) -> 
     let out = serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
     std::fs::write(&config_path, out).map_err(|e| format!("write config.json: {e}"))?;
     Ok(())
+}
+
+/// Parse the shared `{ all?: bool, files?: string[] }` selection arg used by
+/// `commit` and `delete`. `files` entries are real-path substrings matched
+/// case-insensitively by [`select_box_files`].
+fn parse_selection(d: &serde_json::Value) -> (bool, Vec<String>) {
+    let all = d.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+    let files: Vec<String> = d
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    (all, files)
+}
+
+/// Enumerate the box and keep either ALL pending files (`all=true`) or those
+/// whose real path contains one of `files` (case-insensitive substring). The
+/// real paths come straight from [`enumerate_box`], so callers can only target
+/// files that actually exist in the box — no arbitrary path injection.
+fn select_box_files(
+    paths: &nemesis_sandbox::SandboxPaths,
+    all: bool,
+    files: &[String],
+) -> Result<Vec<nemesis_sandbox::pending::PendingFile>, String> {
+    let up = user_profile();
+    let pending = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
+        .map_err(|e| format!("enumerate box: {e}"))?;
+    if all {
+        return Ok(pending);
+    }
+    let needles: Vec<String> = files.iter().map(|s| s.to_lowercase()).collect();
+    let selected = pending
+        .into_iter()
+        .filter(|p| {
+            let rp = p.real_path.to_string_lossy().to_lowercase();
+            needles.iter().any(|n| rp.contains(n))
+        })
+        .collect();
+    Ok(selected)
 }
 
 #[async_trait::async_trait]
@@ -153,27 +210,8 @@ impl ModuleHandler for SandboxHandler {
             }
             "commit" => {
                 // Sync selected (or all) box files → real disk.
-                let up = user_profile();
-                let pending = nemesis_sandbox::pending::enumerate_box(&paths.box_root, &up)
-                    .map_err(|e| format!("enumerate box: {e}"))?;
-                let d = data.unwrap_or_default();
-                let all = d.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
-                let files: Vec<String> = d
-                    .get("files")
-                    .and_then(|v| serde_json::from_value(v.clone()).unwrap_or(None))
-                    .unwrap_or_default();
-                let needles: Vec<String> = files.iter().map(|s| s.to_lowercase()).collect();
-                let to_commit: Vec<&nemesis_sandbox::pending::PendingFile> = if all {
-                    pending.iter().collect()
-                } else {
-                    pending
-                        .iter()
-                        .filter(|p| {
-                            let rp = p.real_path.to_string_lossy().to_lowercase();
-                            needles.iter().any(|n| rp.contains(n))
-                        })
-                        .collect()
-                };
+                let (all, files) = parse_selection(&data.unwrap_or_default());
+                let to_commit = select_box_files(&paths, all, &files)?;
                 let mut committed = 0usize;
                 let mut errors: Vec<String> = Vec::new();
                 for p in &to_commit {
@@ -185,6 +223,27 @@ impl ModuleHandler for SandboxHandler {
                 Ok(Some(serde_json::json!({
                     "committed": committed,
                     "total": to_commit.len(),
+                    "errors": errors,
+                })))
+            }
+            "delete" => {
+                // Delete selected (or all) box files — removes the in-box virtual
+                // file only; the real disk path is never touched. Same selection
+                // logic as "commit".
+                let (all, files) = parse_selection(&data.unwrap_or_default());
+                let to_delete = select_box_files(&paths, all, &files)?;
+                let mut deleted = 0usize;
+                let mut errors: Vec<String> = Vec::new();
+                for p in &to_delete {
+                    match nemesis_sandbox::pending::delete_file(p) {
+                        Ok(true) => deleted += 1,
+                        Ok(false) => {} // already gone — not an error
+                        Err(e) => errors.push(format!("{}: {e}", p.real_path.display())),
+                    }
+                }
+                Ok(Some(serde_json::json!({
+                    "deleted": deleted,
+                    "total": to_delete.len(),
                     "errors": errors,
                 })))
             }

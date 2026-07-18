@@ -1876,6 +1876,8 @@ fn test_dlp_layer_config_roundtrip() {
         enabled: true,
         rules: vec!["no_credit_card".to_string(), "no_ssn".to_string()],
         action: "block".to_string(),
+        low_confidence_action: String::new(),
+        inbound_action: String::new(),
     };
     let json = serde_json::to_string(&cfg).unwrap();
     let parsed: DLPLayerConfig = serde_json::from_str(&json).unwrap();

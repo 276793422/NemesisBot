@@ -327,7 +327,8 @@ fn cmd_list(workflow_dir: &std::path::Path) -> Result<()> {
             // Try to load metadata
             if let Ok(wf) = nemesis_workflow::parser::parse_file(path) {
                 let desc = if wf.description.len() > 37 {
-                    format!("{}...", &wf.description[..34])
+                    let cut = nemesis_types::utils::floor_char_boundary(&wf.description, 34);
+                    format!("{}...", &wf.description[..cut])
                 } else if wf.description.is_empty() {
                     "-".to_string()
                 } else {
@@ -550,7 +551,8 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                             let output_str = output.to_string();
                             if output_str != "null" && !output_str.is_empty() {
                                 let truncated = if output_str.len() > 200 {
-                                    format!("{}...", &output_str[..197])
+                                    let cut = nemesis_types::utils::floor_char_boundary(&output_str, 197);
+                                    format!("{}...", &output_str[..cut])
                                 } else {
                                     output_str
                                 };

@@ -272,16 +272,19 @@ impl DiscordChannel {
                 break;
             }
 
+            // Floor to a char boundary so multibyte content (emoji/CJK) doesn't
+            // slice mid-codepoint and panic. max_len is a byte budget from caller.
+            let limit = nemesis_types::utils::floor_char_boundary(remaining, max_len);
             // Try to split at newline
-            if let Some(idx) = remaining[..max_len].rfind('\n') {
+            if let Some(idx) = remaining[..limit].rfind('\n') {
                 chunks.push(remaining[..idx].to_string());
                 remaining = &remaining[idx + 1..];
-            } else if let Some(idx) = remaining[..max_len].rfind(' ') {
+            } else if let Some(idx) = remaining[..limit].rfind(' ') {
                 chunks.push(remaining[..idx].to_string());
                 remaining = &remaining[idx + 1..];
             } else {
-                chunks.push(remaining[..max_len].to_string());
-                remaining = &remaining[max_len..];
+                chunks.push(remaining[..limit].to_string());
+                remaining = &remaining[limit..];
             }
         }
 

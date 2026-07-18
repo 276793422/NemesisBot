@@ -51,6 +51,7 @@ members = [
     "test-tools/memory-test",
     "test-tools/cluster-node",
     "test-tools/nemesis-build-config",
+    "test-tools/exe-sign-tool",
 ]
 
 [workspace.package]

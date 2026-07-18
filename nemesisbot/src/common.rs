@@ -204,7 +204,9 @@ pub fn format_token(token: &str) -> String {
         return "(not set)".to_string();
     }
     if token.len() > 8 {
-        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+        let end = nemesis_types::utils::floor_char_boundary(token, 4);
+        let start = nemesis_types::utils::ceil_char_boundary(token, token.len() - 4);
+        format!("{}...{}", &token[..end], &token[start..])
     } else {
         "***".to_string()
     }

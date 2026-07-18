@@ -1,6 +1,15 @@
 {
   "default_action": "allow",
   "log_all_operations": true,
+  "layers": {
+    "dlp": {
+      "enabled": true,
+      "action": "block",
+      "rules": [],
+      "low_confidence_action": "log",
+      "inbound_action": "log"
+    }
+  },
   "log_denials_only": false,
   "approval_timeout_seconds": 300,
   "max_pending_requests": 100,

@@ -558,6 +558,10 @@ impl WorkflowEngine {
             )),
         );
         engine.node_executors.register(
+            "script",
+            Arc::new(crate::nodes::ScriptNodeExecutor::with_tools(tools.clone())),
+        );
+        engine.node_executors.register(
             "tool",
             Arc::new(crate::nodes::RealToolNodeExecutor::new(tools)),
         );

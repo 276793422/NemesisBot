@@ -895,9 +895,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         tracing::info!("[Gateway] Added exe directory to PATH for LLM shell access");
     }
 
-    // Step 4: Load configuration
-    let cfg = nemesis_config::load_config(&config_path)
-        .map_err(|e| anyhow::anyhow!("Error loading config: {}", e))?;
+    // Step 4: Load configuration into the runtime cache (single source of
+    // truth). `cfg` is a startup snapshot for one-time reads below; live
+    // consumers (executor.sandbox, …) read `config_store.handle()` so toggles
+    // flip without a gateway restart.
+    let config_store = std::sync::Arc::new(
+        nemesis_config::ConfigStore::load(&config_path)
+            .map_err(|e| anyhow::anyhow!("Error loading config: {}", e))?,
+    );
+    // Install the process-wide singleton so WSAPI handlers (sandbox/config/
+    // channels…) reach the same live config without AppState wiring. A
+    // dashboard write through the store is visible to every consumer —
+    // including the executor's sandbox probe — on the next read, no restart.
+    nemesis_config::set_global(config_store.clone());
+    let cfg = config_store.handle().read().clone();
 
     // [capture] Initialize the diagnostic capture sink — failure-triggered
     // only (zero happy-path overhead). Reads `debug.capture.enabled`
@@ -2075,18 +2086,42 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // rules can be loaded onto it).
         let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
         let sec_config_path = common::security_config_path(&home);
-        let audit_chain_enabled = if sec_config_path.exists() {
+        // Read config.security.json once; pull both audit_chain and the DLP
+        // layer config from it. Previously the plugin was built from default()
+        // and the DLP layer config (`layers.dlp`) was never read anywhere — so
+        // the engine always ran every rule with action=block, with no way to
+        // configure a rule whitelist or low-confidence / inbound actions.
+        let sec_json: Option<serde_json::Value> = if sec_config_path.exists() {
             std::fs::read_to_string(&sec_config_path)
                 .ok()
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| {
-                    v.get("audit_chain_enabled")
-                        .and_then(|f| f.as_bool())
-                })
-                .unwrap_or(false)
+                .and_then(|s| serde_json::from_str(&s).ok())
         } else {
-            false
+            None
         };
+        if let Some(ref v) = sec_json {
+            if let Some(dlp) = v.get("layers").and_then(|l| l.get("dlp")).and_then(|d| d.as_object()) {
+                if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
+                    security_config.dlp_enabled = b;
+                }
+                if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
+                    security_config.dlp_action = s.to_string();
+                }
+                if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
+                    security_config.dlp_enabled_rules = arr.iter()
+                        .filter_map(|x| x.as_str().map(String::from)).collect();
+                }
+                if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
+                    security_config.dlp_low_confidence_action = s.to_string();
+                }
+                if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
+                    security_config.dlp_inbound_action = s.to_string();
+                }
+            }
+        }
+        let audit_chain_enabled = sec_json.as_ref()
+            .and_then(|v| v.get("audit_chain_enabled"))
+            .and_then(|f| f.as_bool())
+            .unwrap_or(false);
         if audit_chain_enabled {
             security_config.audit_chain_enabled = true;
             let chain_path = format!("{}/workspace/logs/security_logs/audit_chain.jsonl", home.display());
@@ -2251,6 +2286,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
         estop,
+        config_store: config_store.clone(),
         #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,

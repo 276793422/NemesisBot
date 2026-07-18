@@ -126,6 +126,23 @@ pub fn commit_file(pending: &PendingFile) -> Result<u64> {
     Ok(n)
 }
 
+/// Delete one pending file from inside the box — removes the in-box virtual
+/// file only; the real disk path is never touched. Use this to discard selected
+/// sandbox writes without committing them. Returns `true` if a file was removed,
+/// `false` if it was already gone (not an error).
+///
+/// Only the box file is removed; empty parent dirs are left in place (mirrors
+/// [`commit_file`], which also doesn't prune dirs). [`delete_box_contents`]
+/// clears the whole box — including dirs — when a full wipe is wanted.
+pub fn delete_file(pending: &PendingFile) -> Result<bool> {
+    match std::fs::remove_file(&pending.box_path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e)
+            .with_context(|| format!("delete box file {}", pending.box_path.display())),
+    }
+}
+
 /// Delete the box's virtual-FS contents (discard pending). Uses Sandboxie's own
 /// `Start.exe /box:<name> delete_sandbox`. The box should have no running
 /// processes (the per-call executor exits between calls).
@@ -144,3 +161,6 @@ pub fn delete_box_contents(start_exe: &Path, box_name: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

@@ -75,10 +75,16 @@ async function installSandboxie() {
 }
 
 async function startSandboxie() {
+  if (!window.confirm(
+    '即将启动 Sandboxie 引擎：\n' +
+    '• 会弹出 UAC 提权框（安装内核驱动 + 服务）\n' +
+    '• ⚠️ 启动后需要重启 Agent / Gateway 才能完全生效（执行体分离 + 真盒隔离）\n\n' +
+    '确认启动？'
+  )) return
   busy.value = 'start'
   try {
     await request('sandbox', 'start')
-    toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。重启 gateway 生效。')
+    toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
     await checkEnv()
   } catch (e: any) {
@@ -89,10 +95,16 @@ async function startSandboxie() {
 }
 
 async function stopSandboxie() {
+  if (!window.confirm(
+    '即将停止 Sandboxie 引擎：\n' +
+    '• 会弹出 UAC 提权框（卸载内核驱动 + 服务）\n' +
+    '• ⚠️ 停止后需要重启 Agent / Gateway 才能完全生效\n\n' +
+    '确认停止？'
+  )) return
   busy.value = 'stop'
   try {
     await request('sandbox', 'stop')
-    toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。重启 gateway 生效。')
+    toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
     await checkEnv()
   } catch (e: any) {
@@ -141,6 +153,29 @@ async function syncAll() {
   }
 }
 
+async function deleteSelected() {
+  const files = [...selected.value]
+  if (files.length === 0) { toast.error('请先勾选要从沙箱删除的文件'); return }
+  // Deletion is irreversible: the box file is gone and can no longer be synced
+  // to the host. Confirm before discarding.
+  if (!window.confirm(`确定从沙箱中删除选中的 ${files.length} 个文件吗？\n删除后这些文件将无法再同步到主机（真盘）。`)) return
+  busy.value = 'delete'
+  try {
+    const r = await request('sandbox', 'delete', { files })
+    if (r?.errors?.length) {
+      toast.error(`部分删除失败：${r.errors.length}/${r?.total ?? files.length}（已删 ${r?.deleted ?? 0}）`)
+    } else {
+      toast.success(`已从沙箱删除 ${r?.deleted ?? 0}/${r?.total ?? files.length} 个文件`)
+    }
+    selected.value = new Set()
+    await refreshAll()
+  } catch (e: any) {
+    toast.error('删除失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
+}
+
 function formatSize(n: number): string {
   if (!n) return '0B'
   if (n < 1024) return `${n}B`
@@ -184,6 +219,7 @@ onMounted(async () => {
              : busy === 'start' ? '正在启动 Sandboxie 引擎（装驱动 + 服务，会弹 UAC）...'
              : busy === 'stop' ? '正在停止 Sandboxie 引擎（卸驱动 + 服务，会弹 UAC）...'
              : busy === 'sync' || busy === 'sync_all' ? '正在同步文件到主机...'
+             : busy === 'delete' ? '正在从沙箱删除文件...'
              : '正在检查环境...' }}
           </span>
         </div>
@@ -299,6 +335,7 @@ onMounted(async () => {
               <button class="btn btn-sm" @click="selectAll" :disabled="!pending.length">全选</button>
               <button class="btn btn-sm" @click="selectNone" :disabled="!selected.size">清空</button>
               <button class="btn btn-sm btn-primary" @click="syncSelected" :disabled="!!busy || !selected.size">同步选中到主机</button>
+              <button class="btn btn-sm btn-danger" @click="deleteSelected" :disabled="!!busy || !selected.size">删除选中</button>
               <button class="btn btn-sm" @click="syncAll" :disabled="!!busy || !pending.length">同步全部</button>
             </div>
           </div>

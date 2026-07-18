@@ -103,7 +103,10 @@ pub fn mask_sensitive(value: &str) -> String {
     if value.len() <= 8 {
         return "****".to_string();
     }
-    format!("{}****{}", &value[..4], &value[value.len() - 4..])
+    // floor/ceil to char boundary — passwords may contain multibyte chars.
+    let end = nemesis_types::utils::floor_char_boundary(value, 4);
+    let start = nemesis_types::utils::ceil_char_boundary(value, value.len() - 4);
+    format!("{}****{}", &value[..end], &value[start..])
 }
 
 /// Check whether a field name is considered sensitive and should be masked.

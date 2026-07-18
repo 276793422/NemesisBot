@@ -38,9 +38,51 @@ fn ctx() -> RequestContext {
     RequestContext::new("web", "executor-test", "tester", "executor-test-session")
 }
 
+/// Resolve the sandbox home to the ACTIVELY-configured box, mirroring the
+/// gateway's resolution — NOT a hardcoded `~/.nemesisbot` (which on a machine
+/// that runs the packaged `bin/bin_windows/nemesisbot.exe` is the wrong dir:
+/// the box + Start.exe live in the exe-relative home). Order:
+///   1. `NEMESISBOT_HOME` env (explicit override),
+///   2. the workspace's packaged home `bin/bin_windows/.nemesisbot` (where
+///      `nemesisbot sandbox start` is typically run on Windows — auto-detected
+///      so the tests hit the real box without env hand-holding),
+///   3. `~/.nemesisbot` (default-home fallback).
+fn sandbox_home() -> PathBuf {
+    if let Ok(h) = std::env::var("NEMESISBOT_HOME") {
+        return PathBuf::from(h);
+    }
+    // Use `.parent()` (NOT `.join("..")`) so the path stays canonical —
+    // pending_workspace's `real_path.starts_with(workspace)` filter is a lexical
+    // component match, and a `..` segment would mismatch the box's canonical
+    // real_path (every file filtered out → 0 pending).
+    let dev_home = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("CARGO_MANIFEST_DIR has no parent")
+        .join("bin")
+        .join("bin_windows")
+        .join(".nemesisbot");
+    if dev_home.is_dir() {
+        return dev_home;
+    }
+    dirs::home_dir()
+        .expect("home dir")
+        .join(".nemesisbot")
+}
+
+/// Wait for the Sandboxie box session to quiesce. Sandboxie serializes box
+/// session init and flushes the virtual FS to `FileRootPath` when the session
+/// ends — so (a) a Start.exe spawn right after a previous box session timed
+/// out connecting to the pipe, and (b) a `pending` read right after a boxed
+/// write sees a not-yet-flushed box. Both race the session teardown. In
+/// production the LLM latency between tool calls masks this; the L2.2 tests
+/// run back-to-back, so they must let the box settle.
+async fn settle_sandbox_box() {
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+}
+
 #[tokio::test]
 async fn spawn_and_call_sleep_round_trips() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), false));
+    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
     let res = ch
         .spawn_and_call("sleep", r#"{"seconds":1}"#, &ctx())
         .await
@@ -50,7 +92,7 @@ async fn spawn_and_call_sleep_round_trips() {
 
 #[tokio::test]
 async fn spawn_and_call_exec_runs_command() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), false));
+    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
     let res = ch
         .spawn_and_call("exec", r#"{"command":"echo executor-integration"}"#, &ctx())
         .await
@@ -63,7 +105,7 @@ async fn spawn_and_call_exec_runs_command() {
 
 #[tokio::test]
 async fn spawn_and_call_unknown_tool_errors() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), false));
+    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
     let err = ch
         .spawn_and_call("definitely_not_a_tool", "{}", &ctx())
         .await
@@ -73,7 +115,7 @@ async fn spawn_and_call_unknown_tool_errors() {
 
 #[tokio::test]
 async fn spawn_and_call_file_write_then_read_round_trips() {
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), false));
+    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
     // Unique temp file to avoid parallel-test collisions.
     let path = std::env::temp_dir().join(format!("executor_test_{}.txt", std::process::id()));
     let write_args = format!(
@@ -105,7 +147,7 @@ async fn spawn_and_call_via_pipe_round_trips() {
     // sandbox=true → named-pipe transport. L2.1: start_exe=None → direct spawn
     // (no box), so this validates the pipe transport independently of Sandboxie.
     let ch = Arc::new(
-        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| true))
             .with_timeout(Duration::from_secs(15)),
     );
     let res = ch
@@ -122,7 +164,7 @@ async fn spawn_and_call_via_startexe_crosses_box() {
     // named pipe. Verifies the box's OpenPipePath lets the pipe through (the
     // make-or-break Layer 2 risk). Requires `nemesisbot sandbox install` to have
     // been run (driver + Start.exe present).
-    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let home = sandbox_home();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let start_exe = paths.start_exe();
     assert!(
@@ -132,7 +174,7 @@ async fn spawn_and_call_via_startexe_crosses_box() {
     );
 
     let ch = Arc::new(
-        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| true))
             .with_start_exe(start_exe)
             .with_timeout(Duration::from_secs(30)),
     );
@@ -153,7 +195,7 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
     // NOT touch the real disk — the write is contained in the box's virtual FS.
     // (write_file is a unit tool with no self-restrict, so it will happily write
     // wherever asked; the box must contain it.) Requires sandbox install.
-    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let home = sandbox_home();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let start_exe = paths.start_exe();
     assert!(
@@ -161,6 +203,12 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
         "Start.exe not found at {} — run `nemesisbot sandbox install` first",
         start_exe.display()
     );
+
+    // EXPERIMENT-CONFIRMED: consecutive Start.exe spawns into the same box need
+    // the previous box session to quiesce (Sandboxie serializes session init).
+    // In production LLM latency between tool calls provides this naturally;
+    // back-to-back tests do not.
+    settle_sandbox_box().await;
 
     // A path OUTSIDE the workspace, unique per test run, clean slate.
     let outside = std::env::temp_dir().join(format!(
@@ -170,7 +218,7 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
     let _ = std::fs::remove_file(&outside);
 
     let ch = Arc::new(
-        ExecutorChannel::new(nemesisbot_exe(), workspace(), true)
+        ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| true))
             .with_start_exe(start_exe)
             .with_timeout(Duration::from_secs(30)),
     );
@@ -200,7 +248,7 @@ async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     // pending lists it; commit copies it to real disk. (write_file is a unit tool
     // — no self-restrict — so it writes wherever asked; the box contains it until
     // commit.) Requires `nemesisbot sandbox install`.
-    let home = dirs::home_dir().expect("home dir").join(".nemesisbot");
+    let home = sandbox_home();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let start_exe = paths.start_exe();
     assert!(
@@ -216,7 +264,7 @@ async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     let _ = std::fs::remove_file(&target); // clean slate on real disk
 
     let ch = Arc::new(
-        ExecutorChannel::new(nemesisbot_exe(), workspace.to_string_lossy().to_string(), true)
+        ExecutorChannel::new(nemesisbot_exe(), workspace.to_string_lossy().to_string(), Arc::new(|| true))
             .with_start_exe(start_exe.clone())
             .with_timeout(Duration::from_secs(30)),
     );
@@ -235,6 +283,10 @@ async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
         !target.exists(),
         "real target must not exist before commit (write should be in the box)"
     );
+
+    // Let the box session flush the write to the on-disk virtual FS before
+    // pending enumerates it (otherwise pending races the flush and sees 0).
+    settle_sandbox_box().await;
 
     // pending must list the workspace file.
     let up = dirs::home_dir().expect("home dir");
@@ -277,7 +329,7 @@ fn remote_executor_tool_delegates_schema_byte_identically() {
     let local_params = local.parameters();
     let local_desc = local.description();
 
-    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), false));
+    let ch = Arc::new(ExecutorChannel::new(nemesisbot_exe(), workspace(), Arc::new(|| false)));
     let remote = RemoteExecutorTool::new("sleep".to_string(), local, ch);
 
     assert_eq!(remote.parameters(), local_params, "parameters must delegate verbatim");

@@ -1198,7 +1198,9 @@ fn mask_token(token: &str) -> String {
     if token.len() <= 8 {
         return "****".to_string();
     }
-    format!("{}****{}", &token[..4], &token[token.len() - 4..])
+    let end = nemesis_types::utils::floor_char_boundary(token, 4);
+    let start = nemesis_types::utils::ceil_char_boundary(token, token.len() - 4);
+    format!("{}****{}", &token[..end], &token[start..])
 }
 
 /// Enable or disable a specific peer in peers.toml using proper TOML parsing.

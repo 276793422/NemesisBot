@@ -44,6 +44,7 @@ fn test_add_remove_rule() {
         pattern: r"CUSTOM_SECRET_\d+".to_string(),
         enabled: true,
         action: "block".to_string(),
+        confidence: DlpConfidence::Medium,
     }).unwrap();
 
     let result = engine.scan_text("Found CUSTOM_SECRET_12345 in text");
@@ -136,6 +137,7 @@ fn test_add_invalid_rule() {
         pattern: "[invalid(regex".to_string(),
         enabled: true,
         action: "block".to_string(),
+        confidence: DlpConfidence::Medium,
     });
     assert!(result.is_err());
 }
@@ -155,6 +157,7 @@ fn test_disabled_rule_not_matched() {
         pattern: r"DISABLED_PATTERN_\d+".to_string(),
         enabled: false,
         action: "block".to_string(),
+        confidence: DlpConfidence::Medium,
     }).unwrap();
 
     let result = engine.scan_text("Found DISABLED_PATTERN_12345");
@@ -335,6 +338,19 @@ fn test_partial_mask_exact_boundary() {
 }
 
 #[test]
+fn test_partial_mask_multibyte_no_panic() {
+    // Chinese matched text must not panic (old byte-slice &s[..2] would) and
+    // should keep first 2 + last 2 chars, redacting the middle.
+    let masked = partial_mask("中文密码符"); // 5 chars
+    assert!(masked.contains("****"));
+    assert!(masked.starts_with("中文"));
+    assert!(masked.ends_with("码符"));
+    assert!(!masked.contains("密"), "middle char must be redacted");
+    // Short multibyte → fully redacted (no panic).
+    assert_eq!(partial_mask("京"), "[REDACTED]");
+}
+
+#[test]
 fn test_category_to_severity_mappings() {
     assert_eq!(category_to_severity("credential"), DlpSeverity::Critical);
     assert_eq!(category_to_severity("secret_key"), DlpSeverity::Critical);
@@ -375,6 +391,7 @@ fn test_dlp_enabled_rules_filter() {
         custom_rules: vec![],
         enabled_rules: vec!["email".to_string()],
         max_content_length: 0,
+        low_confidence_action: "log".to_string(),
     };
     let engine = DlpEngine::with_config(config);
     // Only email rule should fire
@@ -392,6 +409,7 @@ fn test_dlp_max_content_length() {
         custom_rules: vec![],
         enabled_rules: vec![],
         max_content_length: 20,
+        low_confidence_action: "log".to_string(),
     };
     let engine = DlpEngine::with_config(config);
     // Content longer than max_content_length should be truncated
@@ -440,6 +458,7 @@ fn test_enabled_rule_count_with_filter() {
         custom_rules: vec![],
         enabled_rules: vec!["email".to_string(), "us_ssn".to_string()],
         max_content_length: 0,
+        low_confidence_action: "log".to_string(),
     };
     let engine = DlpEngine::with_config(config);
     assert_eq!(engine.enabled_rule_count(), 2);
@@ -454,6 +473,7 @@ fn test_add_duplicate_dynamic_rule() {
         pattern: r"PATTERN_\d+".to_string(),
         enabled: true,
         action: "block".to_string(),
+        confidence: DlpConfidence::Medium,
     }).unwrap();
     // Adding again should succeed (appended, not replaced)
     engine.add_rule(DlpRule {
@@ -462,6 +482,7 @@ fn test_add_duplicate_dynamic_rule() {
         pattern: r"OTHER_\d+".to_string(),
         enabled: true,
         action: "block".to_string(),
+        confidence: DlpConfidence::Medium,
     }).unwrap();
     // Both patterns should match
     let result = engine.scan_text("PATTERN_123 and OTHER_456");
@@ -491,4 +512,122 @@ fn test_ib_detected() {
     let engine = DlpEngine::new(true, "block");
     let result = engine.scan_text("IBAN: GB29NWBK60161331926819");
     assert!(result.has_matches);
+}
+
+// === L1: confidence-aware blocking ===
+
+#[test]
+fn test_low_confidence_phone_does_not_block() {
+    // The url-collector bug: a Chinese ICP filing number (11010802047360) read
+    // as a phone. phone_international is Low-confidence → detect but don't block.
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("京公网安备11010802047360号");
+    assert!(r.has_matches, "phone should still match");
+    assert!(!r.should_block, "low-confidence phone must not block");
+    assert!(r.matches.iter().all(|m| m.confidence == DlpConfidence::Low));
+}
+
+#[test]
+fn test_low_confidence_ip_version_does_not_block() {
+    // ip_address_public matches a software version "2.4.1.8" → Low → no block.
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("version 2.4.1.8 released");
+    assert!(r.matches.iter().any(|m| m.rule_name == "ip_address_public"));
+    assert!(!r.should_block);
+}
+
+#[test]
+fn test_high_confidence_private_key_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA");
+    assert!(r.should_block);
+    assert!(r.matches.iter().any(|m| m.confidence == DlpConfidence::High));
+}
+
+#[test]
+fn test_medium_confidence_ssn_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("SSN: 123-45-6789");
+    assert!(r.should_block);
+    assert!(r.matches.iter().any(|m| m.confidence == DlpConfidence::Medium));
+}
+
+// === L2: checksum validation (demote fakes to Low) ===
+
+#[test]
+fn test_credit_card_luhn_demotes_fake_card() {
+    // 4111111111111112: 16 digits, starts with 4 (visa shape) but Luhn-invalid.
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("Card: 4111111111111112");
+    let visa = r.matches.iter().find(|m| m.rule_name == "visa");
+    assert!(visa.is_some(), "visa pattern should match");
+    assert_eq!(visa.unwrap().confidence, DlpConfidence::Low, "Luhn-invalid → demoted");
+    assert!(!r.should_block);
+}
+
+#[test]
+fn test_credit_card_luhn_keeps_valid_card() {
+    // 4111111111111111: Luhn-valid → stays Medium → blocks.
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("Card: 4111111111111111");
+    let visa = r.matches.iter().find(|m| m.rule_name == "visa");
+    assert!(visa.is_some());
+    assert_ne!(visa.unwrap().confidence, DlpConfidence::Low);
+    assert!(r.should_block);
+}
+
+#[test]
+fn test_china_id_valid_checksum_keeps_medium() {
+    // 110101199001011237: first-17-digit weighted sum % 11 = 5 → check char '7',
+    // matches last digit → valid checksum → stays Medium.
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("ID: 110101199001011237");
+    let cid = r.matches.iter().find(|m| m.rule_name == "china_id");
+    assert!(cid.is_some());
+    assert_ne!(cid.unwrap().confidence, DlpConfidence::Low);
+}
+
+#[test]
+fn test_china_id_invalid_checksum_demotes_low() {
+    // 110101199001011234: valid 18-digit shape, but checksum should be '7' not
+    // '4' → demoted to Low (pattern matches, not a real ID).
+    let engine = DlpEngine::new(true, "block");
+    let r = engine.scan_text("ID: 110101199001011234");
+    let cid = r.matches.iter().find(|m| m.rule_name == "china_id");
+    assert!(cid.is_some());
+    assert_eq!(cid.unwrap().confidence, DlpConfidence::Low);
+}
+
+#[test]
+fn test_low_confidence_action_config_block_makes_low_block() {
+    // When low_confidence_action="block", Low matches DO block (user opt-in).
+    let engine = DlpEngine::with_config(DlpConfig {
+        enabled: true,
+        action: "block".to_string(),
+        custom_rules: vec![],
+        enabled_rules: vec![],
+        max_content_length: 0,
+        low_confidence_action: "block".to_string(),
+    });
+    let r = engine.scan_text("京公网安备11010802047360号");
+    assert!(r.should_block, "low_confidence_action=block must block Low matches");
+}
+
+#[test]
+fn test_scan_text_max_length_multibyte_no_panic() {
+    // "京" is 3 bytes; max_content_length=4 lands mid-second-京 (bytes 3-5), a
+    // non-char-boundary. Naive `&text[..4]` would panic; floor_char_boundary
+    // floors to 3 (end of first 京), so the AKIA key (byte 9+) is truncated
+    // away and not matched. Regression guard for the pre-existing slice bug.
+    let config = DlpConfig {
+        enabled: true,
+        action: "block".to_string(),
+        custom_rules: vec![],
+        enabled_rules: vec![],
+        max_content_length: 4,
+        low_confidence_action: "log".to_string(),
+    };
+    let engine = DlpEngine::with_config(config);
+    let result = engine.scan_text("京京京AKIAIOSFODNN7EXAMPLE"); // must not panic
+    assert!(!result.has_matches, "content truncated before the key → no match");
 }

@@ -874,6 +874,55 @@ fn test_plugin_dlp_blocks_sensitive_data() {
     assert!(err.unwrap().contains("DLP"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_dlp_inbound_write_low_confidence_allowed() {
+    // The url-collector bug regression guard: writing a scraped page whose
+    // footer filing number trips phone_international (Low) must NOT be blocked.
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: true,
+        default_action: "allow".to_string(),
+        ssrf_enabled: false,
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/page.html", "content": "京公网安备11010802047360号 version 2.4.1.8"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, _err) = plugin.execute(&inv);
+    assert!(allowed, "low-confidence phone/ip on inbound write_file must not block");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_dlp_inbound_write_high_confidence_blocked() {
+    // Genuine secret written to a local file still blocks inbound (L3 only
+    // demotes Low-confidence matches, not High/Medium).
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: true,
+        default_action: "allow".to_string(),
+        ssrf_enabled: false,
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({"path": "/tmp/key.txt", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "high-confidence private key on inbound write must still block");
+    assert!(err.unwrap().contains("DLP"));
+}
+
 #[test]
 fn test_plugin_audit_logger_returns_none() {
     let plugin = make_plugin();
