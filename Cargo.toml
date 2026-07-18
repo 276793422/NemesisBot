@@ -52,6 +52,8 @@ members = [
     "test-tools/cluster-node",
     "test-tools/nemesis-build-config",
     "test-tools/exe-sign-tool",
+    "test-tools/revoke-common",
+    "test-tools/revoke-server",
 ]
 
 [workspace.package]

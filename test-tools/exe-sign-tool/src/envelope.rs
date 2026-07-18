@@ -63,8 +63,14 @@ pub const ED25519_SIG_LEN: usize = 64;
 pub const PUBKEY_LEN: usize = 32;
 /// body 明文固定前缀长度。
 pub const BODY_FIXED_LEN: usize = 144;
-/// signed_meta 字节数。
-pub const SIGNED_META_LEN: usize = 82;
+// signed_meta 变长（C1 起含 publisher/expires_at），不再有固定长度常量。
+
+/// body TLV 类型（body 固定前缀后的 TLV 扩展区）。
+pub const TLV_PUBLISHER: u16 = 0x10;
+/// expires_at TLV：value = 1B has_flag + 8B u64 LE。
+pub const TLV_EXPIRES_AT: u16 = 0x13;
+/// sig_hash TLV：value = 32B SHA-256(signature)。
+pub const TLV_SIG_HASH: u16 = 0x14;
 
 // footer 字段偏移
 const OFF_MAGIC: usize = 0;
@@ -191,7 +197,30 @@ pub fn envelope_body_range(footer_offset: usize, parsed: &ParsedFooter) -> (usiz
     (envelope_start, envelope_start + parsed.body_len)
 }
 
-/// 构造 body 明文（固定前缀；TLV 扩展由调用方追加，本工具当前不写入扩展）。
+/// 追加一条 TLV（type u16 LE + len u16 LE + value）。
+fn write_tlv(buf: &mut Vec<u8>, t: u16, value: &[u8]) {
+    buf.extend_from_slice(&t.to_le_bytes());
+    buf.extend_from_slice(&(value.len() as u16).to_le_bytes());
+    buf.extend_from_slice(value);
+}
+
+/// 解析 TLV 序列 → (type, value) 列表。忽略越界/不完整的尾部。
+fn parse_tlvs(data: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        let t = u16::from_le_bytes([data[i], data[i + 1]]);
+        let l = u16::from_le_bytes([data[i + 2], data[i + 3]]) as usize;
+        if i + 4 + l > data.len() {
+            break;
+        }
+        out.push((t, data[i + 4..i + 4 + l].to_vec()));
+        i += 4 + l;
+    }
+    out
+}
+
+/// 构造 body 明文 = 固定前缀(144B) + TLV 扩展（publisher/expires_at/sig_hash）。
 pub fn build_body_plaintext(
     flags: u16,
     signed_at: u64,
@@ -199,6 +228,9 @@ pub fn build_body_plaintext(
     key_fp: &[u8; PUBKEY_LEN],
     signature: &[u8; ED25519_SIG_LEN],
     content_hash: &[u8; 32],
+    publisher: Option<&str>,
+    expires_at: Option<u64>,
+    sig_hash: &[u8; 32],
 ) -> Vec<u8> {
     let mut b = vec![0u8; BODY_FIXED_LEN];
     b[BODY_OFF_VER] = BODY_VER;
@@ -208,10 +240,19 @@ pub fn build_body_plaintext(
     b[BODY_OFF_KEY_FP..BODY_OFF_KEY_FP + PUBKEY_LEN].copy_from_slice(key_fp);
     b[BODY_OFF_SIG..BODY_OFF_SIG + ED25519_SIG_LEN].copy_from_slice(signature);
     b[BODY_OFF_CONTENT_HASH..BODY_OFF_CONTENT_HASH + 32].copy_from_slice(content_hash);
+    // TLV 扩展（C1）
+    if let Some(p) = publisher {
+        write_tlv(&mut b, TLV_PUBLISHER, p.as_bytes());
+    }
+    let mut exp_buf = Vec::with_capacity(9);
+    exp_buf.push(if expires_at.is_some() { 1u8 } else { 0u8 });
+    exp_buf.extend_from_slice(&expires_at.unwrap_or(0).to_le_bytes());
+    write_tlv(&mut b, TLV_EXPIRES_AT, &exp_buf);
+    write_tlv(&mut b, TLV_SIG_HASH, sig_hash);
     b
 }
 
-/// 解析 body 明文。
+/// 解析 body 明文（固定前缀 + TLV 扩展）。
 pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
     if plaintext.len() < BODY_FIXED_LEN {
         return Err(anyhow!(
@@ -226,6 +267,29 @@ pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
     signature.copy_from_slice(&plaintext[BODY_OFF_SIG..BODY_OFF_SIG + ED25519_SIG_LEN]);
     let mut content_hash = [0u8; 32];
     content_hash.copy_from_slice(&plaintext[BODY_OFF_CONTENT_HASH..BODY_OFF_CONTENT_HASH + 32]);
+
+    // TLV 扩展（C1）
+    let mut publisher: Option<String> = None;
+    let mut expires_at: Option<u64> = None;
+    let mut sig_hash = [0u8; 32];
+    for (t, v) in parse_tlvs(&plaintext[BODY_FIXED_LEN..]) {
+        match t {
+            TLV_PUBLISHER => {
+                publisher = Some(String::from_utf8(v).map_err(|e| anyhow!("publisher utf8: {}", e))?);
+            }
+            TLV_EXPIRES_AT if v.len() == 9 => {
+                if v[0] == 1 {
+                    expires_at = Some(u64::from_le_bytes([
+                        v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+                    ]));
+                }
+            }
+            TLV_SIG_HASH if v.len() == 32 => {
+                sig_hash.copy_from_slice(&v);
+            }
+            _ => {} // 忽略未知 TLV（向前兼容）
+        }
+    }
     Ok(ParsedBody {
         flags: rd_u16(plaintext, BODY_OFF_FLAGS),
         signed_at: rd_u64(plaintext, BODY_OFF_SIGNED_AT),
@@ -233,6 +297,9 @@ pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
         key_fp,
         signature,
         content_hash,
+        publisher,
+        expires_at,
+        sig_hash,
     })
 }
 
@@ -245,9 +312,17 @@ pub struct ParsedBody {
     pub key_fp: [u8; PUBKEY_LEN],
     pub signature: [u8; ED25519_SIG_LEN],
     pub content_hash: [u8; 32],
+    /// 发布者（C1，TLV；旧签名可能 None）。
+    pub publisher: Option<String>,
+    /// 过期时间（C1，TLV；None=无过期）。
+    pub expires_at: Option<u64>,
+    /// sig_hash = SHA-256(signature)（C1，TLV；供云端吊销查；旧签名可能全 0）。
+    pub sig_hash: [u8; 32],
 }
 
-/// 构造 signed_meta（Ed25519 签名覆盖范围，82B）。
+/// 构造 signed_meta（Ed25519 签名覆盖范围，变长）。
+///
+/// C1 起含 publisher / expires_at（防 metadata 篡改/降级）。
 pub fn build_signed_meta(
     format_tag: u8,
     flags: u16,
@@ -255,8 +330,10 @@ pub fn build_signed_meta(
     key_id: u32,
     key_fp: &[u8; PUBKEY_LEN],
     content_hash: &[u8; 32],
+    publisher: Option<&str>,
+    expires_at: Option<u64>,
 ) -> Vec<u8> {
-    let mut m = Vec::with_capacity(SIGNED_META_LEN);
+    let mut m = Vec::new();
     m.push(FORMAT_VER);
     m.push(SIG_ALGO_ED25519);
     m.push(ENC_ALGO_CHACHA20);
@@ -266,6 +343,16 @@ pub fn build_signed_meta(
     m.extend_from_slice(&key_id.to_le_bytes());
     m.extend_from_slice(key_fp);
     m.extend_from_slice(content_hash);
+    // expires_at: 1B has + 8B value
+    m.push(if expires_at.is_some() { 1u8 } else { 0u8 });
+    m.extend_from_slice(&expires_at.unwrap_or(0).to_le_bytes());
+    // publisher: 2B len + bytes（len=0 表示无）
+    if let Some(p) = publisher {
+        m.extend_from_slice(&(p.len() as u16).to_le_bytes());
+        m.extend_from_slice(p.as_bytes());
+    } else {
+        m.extend_from_slice(&0u16.to_le_bytes());
+    }
     m
 }
 

@@ -13,17 +13,21 @@
 //! - [`hex_util`]：hex 编解码
 
 pub mod api;
+pub mod cloud;
 pub mod codec;
 pub mod crypto;
 pub mod elf;
 pub mod envelope;
 pub mod hex_util;
 pub mod pe;
+pub mod policy;
+pub mod status;
 
-pub use api::{
-    load_signing_key, sign_executable, verify_current_exe, verify_executable, VerifyOutcome,
-};
+pub use api::{load_signing_key, sign_executable, verify_current_exe, verify_executable};
+pub use cloud::CloudClient;
 pub use crypto::{generate_key_pair, get_sym_key, KeyPair};
+pub use policy::RevocationPolicy;
+pub use status::{Code, CloudState, SignatureStatus, Source};
 
 #[cfg(test)]
 mod tests;
