@@ -178,12 +178,19 @@ pub async fn health() -> &'static str {
 }
 
 fn check_admin(state: &AppState, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    // 防 admin_token 为空时被空 Authorization 绕过（"" == ""）
+    if state.admin_token.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "admin token not configured (refuse all admin ops)".into(),
+        ));
+    }
     let auth = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
-    if token != state.admin_token {
+    if token.is_empty() || token != state.admin_token {
         return Err((StatusCode::UNAUTHORIZED, "invalid admin token".into()));
     }
     Ok(())

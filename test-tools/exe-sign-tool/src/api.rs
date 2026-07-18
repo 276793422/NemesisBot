@@ -66,6 +66,13 @@ pub fn sign_executable(
         Some(l) => l,
         None => bytes.len(),
     };
+    // envelope content_len 字段是 u32（4B），>4GB 文件无法表达
+    if content_len > u32::MAX as usize {
+        return Err(anyhow!(
+            "content too large ({} bytes > 4GB); envelope content_len field is u32",
+            content_len
+        ));
+    }
     let overlay_start = if format_tag == FORMAT_TAG_RAW { 0 } else { content_len };
     let excludes = codec.overlay_excludes(&bytes);
     if find_our_footer(&bytes, overlay_start, &excludes).is_some() {
@@ -120,11 +127,19 @@ fn check_local_revocation(
             return (Code::UntrustedPublisher, None, None, None);
         }
     }
-    // ② CRL 四维度（Revoked 优先于 Expired）
+    // ② CRL 四维度（Revoked 优先于 Expired）。sig_hash 全 0（旧签名无 TLV）跳过 SigHash 维度，
+    //    防 CRL 含 SigHash="00..00" 误吊销所有旧签名。
     if let Some(crl) = policy.crl {
         let publisher = body.publisher.as_deref().unwrap_or("");
+        let sig_hash_valid = body.sig_hash != [0u8; 32];
         let hit = crl_match(crl, RevDim::KeyId, key_fp_hex)
-            .or_else(|| crl_match(crl, RevDim::SigHash, sig_hash_hex))
+            .or_else(|| {
+                if sig_hash_valid {
+                    crl_match(crl, RevDim::SigHash, sig_hash_hex)
+                } else {
+                    None
+                }
+            })
             .or_else(|| crl_match(crl, RevDim::FileHash, content_hash_hex))
             .or_else(|| crl_match(crl, RevDim::Publisher, publisher));
         if let Some(e) = hit {
@@ -242,9 +257,14 @@ pub fn verify_executable(
 
     // 云端优先（若配置）
     if let Some(c) = cloud {
+        let sig_hash_opt = if body.sig_hash == [0u8; 32] {
+            None // 旧签名（无 sig_hash TLV）不发 SigHash 维度，防误中 CRL
+        } else {
+            Some(sig_hash_hex.clone())
+        };
         let req = CloudVerifyReq {
             key_fp: Some(key_fp_hex.clone()),
-            sig_hash: Some(sig_hash_hex.clone()),
+            sig_hash: sig_hash_opt,
             content_hash: Some(content_hash_hex.clone()),
             publisher: body.publisher.clone(),
         };
