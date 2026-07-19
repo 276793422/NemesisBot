@@ -4,6 +4,7 @@ import { useUiShellStore } from '../stores/uiShell'
 import Sidebar from './Sidebar.vue'
 import FriendlySidebar from './FriendlySidebar.vue'
 import ToastContainer from './ToastContainer.vue'
+import PageTransition from './PageTransition.vue'
 
 const appStore = useAppStore()
 const uiShell = useUiShellStore()
@@ -32,7 +33,7 @@ const uiShell = useUiShellStore()
         <span class="mobile-title">NemesisBot</span>
       </div>
 
-      <router-view />
+      <PageTransition />
     </main>
 
     <ToastContainer />

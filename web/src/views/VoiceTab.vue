@@ -628,11 +628,13 @@ onUnmounted(() => {
         </div>
 
         <!-- Config editor (toggle) -->
-        <div v-if="showConfig" style="margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-4);">
-          <textarea class="form-textarea" style="min-height: 300px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="configContent" :disabled="!configExists"></textarea>
-          <div style="margin-top: var(--space-2); display: flex; justify-content: flex-end;">
+        <div v-if="showConfig" class="config-editor-wrap">
+          <div class="config-editor-header">
+            <span class="config-editor-title">原始配置（进阶）</span>
             <button class="btn btn-sm btn-primary" @click="saveConfig" :disabled="!configExists">保存</button>
           </div>
+          <p class="config-editor-hint">日常用下方开关即可。仅在排查问题时直接改配置文本。</p>
+          <textarea class="form-textarea config-editor" v-model="configContent" :disabled="!configExists" placeholder="配置文件为空，点击保存可创建"></textarea>
         </div>
       </div>
     </div>
@@ -641,88 +643,112 @@ onUnmounted(() => {
     <div class="card">
       <div class="card-header"><h3 style="margin: 0;">语音配置</h3></div>
       <div class="card-body">
-        <div class="settings-grid">
+        <div class="voice-config-grid">
           <!-- Speaker -->
-          <span class="settings-key">输出音色</span>
-          <select class="form-select" v-model.number="selectedSpeaker" style="width: 100%;">
-            <option v-for="sp in speakers" :key="sp.speaker_id" :value="sp.speaker_id">
-              {{ sp.id }} ({{ sp.gender }})
-            </option>
-          </select>
+          <div class="voice-field">
+            <span class="voice-label">输出音色</span>
+            <select class="form-select voice-select" v-model.number="selectedSpeaker">
+              <option v-for="sp in speakers" :key="sp.speaker_id" :value="sp.speaker_id">
+                {{ sp.id }} ({{ sp.gender }})
+              </option>
+            </select>
+          </div>
 
           <!-- Volume -->
-          <span class="settings-key">合成音量</span>
-          <div style="display: flex; align-items: center; gap: var(--space-3);">
-            <input type="range" min="1" max="100" v-model.number="volume" style="flex: 1;" />
-            <span style="font-size: var(--text-sm); min-width: 32px; text-align: right;">{{ volume }}</span>
+          <div class="voice-field">
+            <span class="voice-label">合成音量</span>
+            <div class="slider-row">
+              <input type="range" class="nice-slider" min="1" max="100" v-model.number="volume" />
+              <span class="slider-value">{{ volume }}</span>
+            </div>
           </div>
 
           <!-- Speed -->
-          <span class="settings-key">语速</span>
-          <div style="display: flex; align-items: center; gap: var(--space-3);">
-            <input type="range" min="0.5" max="2.0" step="0.1" v-model.number="speed" style="flex: 1;" />
-            <span style="font-size: var(--text-sm); min-width: 40px; text-align: right;">{{ speed.toFixed(1) }}x</span>
+          <div class="voice-field">
+            <span class="voice-label">语速</span>
+            <div class="slider-row">
+              <input type="range" class="nice-slider" min="0.5" max="2.0" step="0.1" v-model.number="speed" />
+              <span class="slider-value">{{ speed.toFixed(1) }}x</span>
+            </div>
           </div>
 
           <!-- Input device -->
-          <span class="settings-key">输入设备</span>
-          <select class="form-select" v-model="captureDevice" style="width: 100%;">
-            <option value="">默认麦克风</option>
-            <option v-for="dev in inputDevices" :key="dev.index" :value="dev.name">
-              {{ dev.name }}{{ dev.is_default ? ' (默认)' : '' }}
-            </option>
-          </select>
+          <div class="voice-field">
+            <span class="voice-label">输入设备</span>
+            <select class="form-select voice-select" v-model="captureDevice">
+              <option value="">默认麦克风</option>
+              <option v-for="dev in inputDevices" :key="dev.index" :value="dev.name">
+                {{ dev.name }}{{ dev.is_default ? ' (默认)' : '' }}
+              </option>
+            </select>
+          </div>
 
           <!-- Output device -->
-          <span class="settings-key">输出设备</span>
-          <select class="form-select" v-model="playbackDevice" style="width: 100%;">
-            <option value="">默认扬声器</option>
-            <option v-for="dev in outputDevices" :key="dev.index" :value="dev.name">
-              {{ dev.name }}{{ dev.is_default ? ' (默认)' : '' }}
-            </option>
-          </select>
+          <div class="voice-field">
+            <span class="voice-label">输出设备</span>
+            <select class="form-select voice-select" v-model="playbackDevice">
+              <option value="">默认扬声器</option>
+              <option v-for="dev in outputDevices" :key="dev.index" :value="dev.name">
+                {{ dev.name }}{{ dev.is_default ? ' (默认)' : '' }}
+              </option>
+            </select>
+          </div>
+
+          <!-- Auto-send timeout -->
+          <div class="voice-field">
+            <span class="voice-label">自动发送</span>
+            <div class="slider-row">
+              <input type="range" class="nice-slider" min="1" max="30" step="0.5" v-model.number="silenceTimeout" :disabled="voiceDialogueActive" />
+              <span class="slider-value">{{ silenceTimeout.toFixed(1) }}秒</span>
+            </div>
+          </div>
 
           <!-- Speaker engine toggle -->
-          <span class="settings-key">声纹模型</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="speakerEngineEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ speakerEngineEnabled ? '启用' : '停用' }}</span>
-          </label>
+          <div class="voice-field toggle-field">
+            <span class="voice-label">声纹模型</span>
+            <div class="nice-toggle" :class="{ active: speakerEngineEnabled, disabled: false }" @click="speakerEngineEnabled = !speakerEngineEnabled" role="switch" :aria-checked="speakerEngineEnabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ speakerEngineEnabled ? '启用' : '停用' }}</span>
+            </div>
+          </div>
 
           <!-- TTS toggle -->
-          <span class="settings-key">TTS 模型</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="ttsEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ ttsEnabled ? '启用' : '停用' }}</span>
-          </label>
+          <div class="voice-field toggle-field">
+            <span class="voice-label">TTS 模型</span>
+            <div class="nice-toggle" :class="{ active: ttsEnabled }" @click="ttsEnabled = !ttsEnabled" role="switch" :aria-checked="ttsEnabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ ttsEnabled ? '启用' : '停用' }}</span>
+            </div>
+          </div>
 
           <!-- STT toggle -->
-          <span class="settings-key">STT 模型</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="sttEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ sttEnabled ? '启用' : '停用' }}</span>
-          </label>
+          <div class="voice-field toggle-field">
+            <span class="voice-label">STT 模型</span>
+            <div class="nice-toggle" :class="{ active: sttEnabled }" @click="sttEnabled = !sttEnabled" role="switch" :aria-checked="sttEnabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ sttEnabled ? '启用' : '停用' }}</span>
+            </div>
+          </div>
 
           <!-- Punct toggle -->
-          <span class="settings-key">标点模型</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="punctEnabled" :disabled="sttEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ punctEnabled ? '启用' : '停用' }}</span>
-          </label>
+          <div class="voice-field toggle-field">
+            <span class="voice-label">标点模型</span>
+            <div class="nice-toggle" :class="{ active: punctEnabled, disabled: sttEnabled }" @click="!sttEnabled && (punctEnabled = !punctEnabled)" role="switch" :aria-checked="punctEnabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ punctEnabled ? '启用' : '停用' }}</span>
+            </div>
+          </div>
 
-          <!-- AEC toggle（库未下载时灰，需关 STT 才能切，下次启动 STT 生效） -->
-          <span class="settings-key">回声消除</span>
-          <label class="toggle-switch">
-            <input type="checkbox" v-model="aecEnabled" :disabled="!aecReady || sttEnabled" />
-            <span class="toggle-slider"></span>
-            <span class="toggle-label">{{ !aecReady ? '未安装' : (aecEnabled ? '启用' : '停用') }}</span>
-          </label>
+          <!-- AEC toggle -->
+          <div class="voice-field toggle-field">
+            <span class="voice-label">回声消除</span>
+            <div class="nice-toggle" :class="{ active: aecEnabled, disabled: !aecReady || sttEnabled }" @click="aecReady && !sttEnabled && (aecEnabled = !aecEnabled)" role="switch" :aria-checked="aecEnabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ !aecReady ? '未安装' : (aecEnabled ? '启用' : '停用') }}</span>
+            </div>
+          </div>
 
-          <!-- AEC 进阶参数（仅 AEC 已启用且库就绪；改后重启语音对话生效） -->
+          <!-- AEC 进阶参数 -->
           <div v-if="aecReady && aecEnabled" class="aec-advanced">
             <div class="aec-advanced-header" @click="aecAdvancedOpen = !aecAdvancedOpen">
               <span class="aec-caret">{{ aecAdvancedOpen ? '▾' : '▸' }}</span>
@@ -745,21 +771,13 @@ onUnmounted(() => {
               </div>
               <div class="aec-row">
                 <span class="aec-row-key">降噪预处理</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" v-model="aecPreprocess" />
-                  <span class="toggle-slider"></span>
-                  <span class="toggle-label">{{ aecPreprocess ? '启用' : '停用' }}</span>
-                </label>
+                <div class="nice-toggle" :class="{ active: aecPreprocess }" @click="aecPreprocess = !aecPreprocess" role="switch" :aria-checked="aecPreprocess">
+                  <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                  <span class="toggle-text">{{ aecPreprocess ? '启用' : '停用' }}</span>
+                </div>
               </div>
               <div class="aec-restart-hint">⚠ 修改后重启语音对话生效</div>
             </div>
-          </div>
-
-          <!-- Silence timeout -->
-          <span class="settings-key">自动发送</span>
-          <div style="display: flex; align-items: center; gap: var(--space-2);">
-            <input type="number" v-model.number="silenceTimeout" min="1" max="30" step="0.5" style="width: 70px; text-align: center;" :disabled="voiceDialogueActive" />
-            <span style="font-size: var(--text-sm); color: var(--text-secondary);">秒</span>
           </div>
         </div>
       </div>
@@ -775,10 +793,10 @@ onUnmounted(() => {
       <div class="card-header"><h3 style="margin: 0;">声纹识别</h3></div>
       <div class="card-body">
         <!-- Threshold -->
-        <div style="display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3);">
-          <span style="font-size: var(--text-sm); color: var(--text-secondary);">匹配阈值:</span>
-          <input type="range" min="0.3" max="0.95" step="0.01" v-model.number="speakerThreshold" @change="updateSpeakerThreshold(speakerThreshold)" style="width: 120px;" :disabled="!speakerEngineEnabled" />
-          <span style="font-size: var(--text-sm); min-width: 36px;">{{ speakerThreshold.toFixed(2) }}</span>
+        <div class="threshold-row">
+          <span class="threshold-label">匹配阈值</span>
+          <input type="range" class="nice-slider" min="0.3" max="0.95" step="0.01" v-model.number="speakerThreshold" @change="updateSpeakerThreshold(speakerThreshold)" :disabled="!speakerEngineEnabled" />
+          <span class="slider-value">{{ speakerThreshold.toFixed(2) }}</span>
         </div>
 
         <!-- Registered voiceprints -->
@@ -877,174 +895,300 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.settings-grid {
+/* ===== Voice Config Grid ===== */
+.voice-config-grid {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: var(--space-3) var(--space-4);
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4) var(--space-5);
   align-items: center;
 }
-.settings-key {
+
+.voice-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.voice-field.toggle-field {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0;
+}
+
+.voice-label {
+  font-size: var(--text-sm);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.voice-select {
+  width: 100%;
+}
+
+.toggle-field .voice-label {
+  flex: 1;
+}
+
+/* ===== Config Editor ===== */
+.config-editor-wrap {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.config-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.config-editor-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.config-editor-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+
+.config-editor {
+  min-height: 300px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* ===== Nice Slider ===== */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nice-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
+}
+
+.nice-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.nice-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px var(--accent-muted);
+}
+
+.nice-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.nice-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slider-value {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-muted);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  min-width: 50px;
+  text-align: center;
+}
+
+/* ===== Nice Toggle ===== */
+.nice-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  transition: opacity var(--duration-fast);
+}
+
+.nice-toggle.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.nice-toggle .toggle-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-fast);
+  flex-shrink: 0;
+}
+
+.nice-toggle.active .toggle-track {
+  background: var(--accent);
+}
+
+.nice-toggle .toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform var(--duration-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.nice-toggle.active .toggle-thumb {
+  transform: translateX(20px);
+}
+
+.nice-toggle .toggle-text {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   font-weight: 500;
 }
 
-/* Range slider styling */
-input[type="range"] {
-  height: 6px;
-  appearance: none;
-  background: var(--border);
-  border-radius: 3px;
-  outline: none;
-}
-input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  background: var(--accent);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.btn-danger {
-  background: var(--danger, #ef4444);
-  color: white;
-  border-color: var(--danger, #ef4444);
-}
-.btn-danger:hover {
-  opacity: 0.9;
-}
-
-/* Toggle switch */
-.toggle-switch {
-  display: inline-flex;
+/* ===== Threshold Row ===== */
+.threshold-row {
+  display: flex;
   align-items: center;
-  gap: var(--space-2);
-  cursor: pointer;
-  position: relative;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
 }
-.toggle-switch input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.toggle-slider {
-  width: 36px;
-  height: 20px;
-  background: var(--border, #d1d5db);
-  border-radius: 10px;
-  position: relative;
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-.toggle-slider::after {
-  content: '';
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  background: white;
-  border-radius: 50%;
-  top: 2px;
-  left: 2px;
-  transition: transform 0.2s;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-}
-.toggle-switch input:checked + .toggle-slider {
-  background: var(--accent, #3b82f6);
-}
-.toggle-switch input:checked + .toggle-slider::after {
-  transform: translateX(16px);
-}
-.toggle-label {
+
+.threshold-label {
   font-size: var(--text-sm);
   color: var(--text-secondary);
-  user-select: none;
-}
-.toggle-switch input:disabled + .toggle-slider {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.toggle-switch input:disabled ~ .toggle-label {
-  opacity: 0.5;
+  font-weight: 500;
+  min-width: 70px;
 }
 
-/* AEC 进阶折叠区（跨两列，仅在 AEC 启用且库就绪时出现） */
+/* ===== AEC Advanced ===== */
 .aec-advanced {
   grid-column: 1 / -1;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
+  margin-top: var(--space-2);
 }
+
 .aec-advanced-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   background: var(--bg-secondary);
   font-size: var(--text-sm);
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
+  transition: color var(--duration-fast);
 }
+
 .aec-advanced-header:hover {
   color: var(--text);
 }
+
 .aec-caret {
   display: inline-block;
   width: 12px;
 }
+
 .aec-advanced-body {
-  padding: var(--space-3);
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
+
 .aec-row {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
 }
+
 .aec-row-key {
   min-width: 90px;
   font-size: var(--text-sm);
   color: var(--text-secondary);
-  font-weight: 500;
+  font-weight: 600;
 }
+
 .aec-room-group {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
+
 .aec-room-btn {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: none;
   border-right: 1px solid var(--border);
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
 }
+
 .aec-room-btn:last-child {
   border-right: none;
 }
+
 .aec-room-btn:hover {
   background: var(--surface-hover);
   color: var(--text);
 }
+
 .aec-room-btn.active {
   background: var(--accent);
   color: #fff;
 }
+
 .aec-hint {
   font-size: var(--text-sm);
-  color: var(--text-secondary);
+  color: var(--text-muted);
 }
+
 .aec-restart-hint {
   font-size: var(--text-sm);
   color: var(--warning);
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .voice-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

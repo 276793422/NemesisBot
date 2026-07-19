@@ -274,18 +274,20 @@ onMounted(async () => {
             <template v-if="!editingServer">
               <div class="form-group">
                 <label class="form-label">选择模板</label>
-                <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+                <div class="preset-list">
                   <button
                     v-for="p in MCP_PRESETS"
                     :key="p.id"
                     type="button"
-                    class="transport-btn"
-                    style="justify-content: flex-start; text-align: left; width: 100%; padding: 10px 12px;"
+                    class="preset-card"
                     :class="{ active: presetId === p.id }"
                     @click="applyPreset(p)"
                   >
-                    <strong>{{ p.label }}</strong>
-                    <span style="display: block; font-size: var(--text-xs); opacity: 0.75; font-weight: 400;">{{ p.description }}</span>
+                    <div class="preset-card-header">
+                      <strong class="preset-card-name">{{ p.label }}</strong>
+                      <span v-if="presetId === p.id" class="preset-card-check">✓</span>
+                    </div>
+                    <span class="preset-card-desc">{{ p.description }}</span>
                   </button>
                 </div>
               </div>
@@ -318,7 +320,14 @@ onMounted(async () => {
               </div>
               <div v-if="isStdio" class="form-group">
                 <label class="form-label">环境变量</label>
-                <textarea class="form-textarea" v-model="form.envText" rows="2" style="width: 100%;"></textarea>
+                <textarea class="form-textarea" v-model="form.envText" rows="2" style="width: 100%;" placeholder="KEY=value，每行一个"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">超时</label>
+                <div class="timeout-slider">
+                  <input type="range" class="nice-slider" min="5" max="120" step="5" v-model.number="form.timeout" style="flex: 1;" />
+                  <span class="slider-value">{{ form.timeout }}s</span>
+                </div>
               </div>
             </div>
           </div>
@@ -406,6 +415,69 @@ onMounted(async () => {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
 }
+
+/* ===== Preset List ===== */
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
+}
+
+.preset-card:hover {
+  border-color: var(--text-muted);
+  background: var(--surface-hover);
+}
+
+.preset-card.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(232, 112, 90, 0.15);
+}
+
+.preset-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.preset-card-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: inherit;
+}
+
+.preset-card-check {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.preset-card-desc {
+  font-size: var(--text-xs);
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+/* ===== Transport Buttons ===== */
 .transport-btn {
   padding: 6px 16px;
   border-radius: var(--radius-md);
@@ -415,15 +487,73 @@ onMounted(async () => {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  transition: all 0.15s;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
 }
+
 .transport-btn:hover {
   border-color: var(--accent);
   color: var(--text);
 }
+
 .transport-btn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* ===== Timeout Slider ===== */
+.timeout-slider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nice-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
+}
+
+.nice-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.nice-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px var(--accent-muted);
+}
+
+.nice-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.slider-value {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-muted);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  min-width: 50px;
+  text-align: center;
 }
 </style>

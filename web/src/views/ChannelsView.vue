@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import VoiceTab from './VoiceTab.vue'
-import SimpleFieldForm from '../components/SimpleFieldForm.vue'
+import SmartFieldForm from '../components/SmartFieldForm.vue'
 import { CHANNEL_FIELD_META } from '../lib/friendlyFields'
 
 defineProps<{ embedded?: boolean }>()
@@ -68,7 +68,6 @@ async function updateChannel() {
     if (showRaw.value) {
       config = JSON.parse(editConfig.value)
     } else {
-      // Merge form primitives back into full config (preserve nested objects)
       config = { ...channelDetail.value, ...formModel.value }
     }
     await request('channels', 'update', { name: selectedChannel.value, config })
@@ -120,8 +119,8 @@ onMounted(loadChannels)
         <div v-else style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); min-height: 400px;">
           <div>
             <div v-if="activeTab === 'local'" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3);">
-              <div v-for="ch in localChannels" :key="ch.name" class="card" style="cursor: pointer;"
-                :style="{ borderColor: selectedChannel === ch.name ? 'var(--accent)' : '' }"
+              <div v-for="ch in localChannels" :key="ch.name" class="card channel-card"
+                :class="{ active: selectedChannel === ch.name }"
                 @click="loadChannelDetail(ch.name)">
                 <div style="padding: var(--space-4); text-align: center;">
                   <div style="font-weight: 600; margin-bottom: var(--space-2);">{{ channelLabels[ch.name] || ch.name }}</div>
@@ -133,8 +132,8 @@ onMounted(loadChannels)
             </div>
 
             <div v-if="activeTab === 'cloud'" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3);">
-              <div v-for="ch in cloudChannels" :key="ch.name" class="card" style="cursor: pointer;"
-                :style="{ borderColor: selectedChannel === ch.name ? 'var(--accent)' : '' }"
+              <div v-for="ch in cloudChannels" :key="ch.name" class="card channel-card"
+                :class="{ active: selectedChannel === ch.name }"
                 @click="loadChannelDetail(ch.name)">
                 <div style="padding: var(--space-4); text-align: center;">
                   <div style="font-weight: 600; margin-bottom: var(--space-2);">{{ channelLabels[ch.name] || ch.name }}</div>
@@ -162,7 +161,7 @@ onMounted(loadChannels)
               </div>
               <div v-else-if="editing">
                 <p class="form-hint" style="margin-bottom: var(--space-3);">按字段填写即可；密钥类请粘贴新值，留空或保持遮蔽则不要改。</p>
-                <SimpleFieldForm v-model="formModel" :meta-table="CHANNEL_FIELD_META" />
+                <SmartFieldForm v-model="formModel" :meta-table="CHANNEL_FIELD_META" />
                 <div style="margin-top: var(--space-4);">
                   <button type="button" class="btn btn-sm" @click="showRaw = !showRaw">{{ showRaw ? '隐藏 JSON' : '高级：原始 JSON' }}</button>
                 </div>
@@ -173,13 +172,11 @@ onMounted(loadChannels)
                 </div>
               </div>
               <div v-else>
-                <div class="settings-grid">
-                  <template v-for="(value, key) in channelDetail" :key="key">
-                    <template v-if="typeof value !== 'object'">
-                      <span class="settings-key">{{ CHANNEL_FIELD_META[key as string]?.label || key }}</span>
-                      <span class="settings-value">{{ typeof value === 'boolean' ? (value ? '是' : '否') : String(value) }}</span>
-                    </template>
-                  </template>
+                <div class="settings-readonly">
+                  <div v-for="(value, key) in channelDetail" :key="key" class="readonly-row">
+                    <span class="readonly-label">{{ CHANNEL_FIELD_META[key as string]?.label || key }}</span>
+                    <span class="readonly-value">{{ typeof value === 'boolean' ? (value ? '已启用' : '已禁用') : String(value) }}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -199,9 +196,62 @@ onMounted(loadChannels)
   cursor: pointer;
   border-bottom: 2px solid transparent;
   font: inherit;
+  transition: all var(--duration-fast);
 }
+
+.ch-tab:hover {
+  color: var(--text);
+}
+
 .ch-tab.active {
   color: var(--accent);
   border-bottom-color: var(--accent);
+}
+
+.channel-card {
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.channel-card:hover {
+  border-color: var(--text-muted);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.channel-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-muted);
+}
+
+.settings-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-row:last-child {
+  border-bottom: none;
+}
+
+.readonly-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.readonly-value {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
 }
 </style>

@@ -435,11 +435,13 @@ onUnmounted(() => {
               </div>
 
               <!-- Config editor (toggle) -->
-              <div v-if="showEmbeddingConfig" style="margin-top: var(--space-4); border-top: 1px solid var(--border); padding-top: var(--space-4);">
-                <textarea class="form-textarea" style="min-height: 200px; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="embeddingConfigContent"></textarea>
-                <div style="margin-top: var(--space-2); display: flex; justify-content: flex-end;">
+              <div v-if="showEmbeddingConfig" class="config-editor-wrap">
+                <div class="config-editor-header">
+                  <span class="config-editor-title">原始配置（进阶）</span>
                   <button class="btn btn-sm btn-primary" @click="saveEmbeddingConfig">保存</button>
                 </div>
+                <p class="config-editor-hint">日常用右侧开关即可。仅在排查问题时直接改配置文本。</p>
+                <textarea class="form-textarea config-editor" v-model="embeddingConfigContent"></textarea>
               </div>
             </div>
           </div>
@@ -448,51 +450,66 @@ onUnmounted(() => {
           <div class="card">
             <div class="card-header"><h3 style="margin: 0;">记忆配置</h3></div>
             <div class="card-body">
-              <div class="settings-grid">
+              <div class="memory-config-grid">
                 <!-- Main switch -->
-                <span class="settings-key">主开关</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" v-model="mainEnabled" />
-                  <span class="toggle-slider"></span>
-                  <span class="toggle-label">{{ mainEnabled ? '启用' : '停用' }}</span>
-                </label>
+                <div class="memory-field toggle-field">
+                  <span class="memory-label">主开关</span>
+                  <div class="nice-toggle" :class="{ active: mainEnabled }" @click="mainEnabled = !mainEnabled" role="switch" :aria-checked="mainEnabled">
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span class="toggle-text">{{ mainEnabled ? '启用' : '停用' }}</span>
+                  </div>
+                </div>
 
                 <!-- Sub switch -->
-                <span class="settings-key">强化记忆</span>
-                <label class="toggle-switch">
-                  <input type="checkbox" v-model="subEnabled" :disabled="!mainEnabled" />
-                  <span class="toggle-slider"></span>
-                  <span class="toggle-label">{{ subEnabled ? '启用' : '停用' }}</span>
-                </label>
+                <div class="memory-field toggle-field">
+                  <span class="memory-label">强化记忆</span>
+                  <div class="nice-toggle" :class="{ active: subEnabled, disabled: !mainEnabled }" @click="mainEnabled && (subEnabled = !subEnabled)" role="switch" :aria-checked="subEnabled">
+                    <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    <span class="toggle-text">{{ subEnabled ? '启用' : '停用' }}</span>
+                  </div>
+                </div>
 
                 <!-- Active tier -->
-                <span class="settings-key">模型规格</span>
-                <select class="form-select" v-model="activeTier" style="width: 100%;" :disabled="!subEnabled">
-                  <option value="large">大模型 (768d)</option>
-                  <option value="medium">中模型 (384d)</option>
-                  <option value="small">小模型 (256d)</option>
-                </select>
+                <div class="memory-field">
+                  <span class="memory-label">模型规格</span>
+                  <div class="tier-chips">
+                    <button
+                      v-for="t in [{key:'large',label:'大模型 (768d)'},{key:'medium',label:'中模型 (384d)'},{key:'small',label:'小模型 (256d)'}]"
+                      :key="t.key"
+                      type="button"
+                      class="tier-chip"
+                      :class="{ active: activeTier === t.key, disabled: !subEnabled }"
+                      :disabled="!subEnabled"
+                      @click="activeTier = t.key"
+                    >{{ t.label }}</button>
+                  </div>
+                </div>
 
                 <!-- Similarity threshold -->
-                <span class="settings-key">相似度阈值</span>
-                <div style="display: flex; align-items: center; gap: var(--space-3);">
-                  <input type="range" min="0.1" max="1.0" step="0.05" v-model.number="similarityThreshold" style="flex: 1;" :disabled="!subEnabled" />
-                  <span style="font-size: var(--text-sm); min-width: 36px; text-align: right;">{{ similarityThreshold.toFixed(2) }}</span>
+                <div class="memory-field">
+                  <span class="memory-label">相似度阈值</span>
+                  <div class="slider-row">
+                    <input type="range" class="nice-slider" min="0.1" max="1.0" step="0.05" v-model.number="similarityThreshold" :disabled="!subEnabled" />
+                    <span class="slider-value">{{ similarityThreshold.toFixed(2) }}</span>
+                  </div>
                 </div>
 
                 <!-- Max results -->
-                <span class="settings-key">最大结果数</span>
-                <div style="display: flex; align-items: center; gap: var(--space-2);">
-                  <input type="number" v-model.number="maxResults" min="1" max="50" style="width: 70px; text-align: center;" :disabled="!subEnabled" />
+                <div class="memory-field">
+                  <span class="memory-label">最大结果数</span>
+                  <div class="slider-row">
+                    <input type="range" class="nice-slider" min="1" max="50" step="1" v-model.number="maxResults" :disabled="!subEnabled" />
+                    <span class="slider-value">{{ maxResults }}</span>
+                  </div>
                 </div>
 
                 <!-- Overall status -->
-                <span class="settings-key">整体状态</span>
-                <span>
+                <div class="memory-field toggle-field">
+                  <span class="memory-label">整体状态</span>
                   <span class="badge" :class="envStatus?.overall === 'ready' ? 'badge-success' : envStatus?.overall === 'degraded' ? 'badge-warning' : 'badge-neutral'">
                     {{ envStatus?.overall === 'ready' ? '就绪' : envStatus?.overall === 'degraded' ? '降级' : '未启用' }}
                   </span>
-                </span>
+                </div>
               </div>
             </div>
           </div>
@@ -600,95 +617,224 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.settings-grid {
+/* ===== Memory Config Grid ===== */
+.memory-config-grid {
   display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: var(--space-3) var(--space-4);
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4) var(--space-5);
   align-items: center;
 }
-.settings-key {
+
+.memory-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.memory-field.toggle-field {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0;
+}
+
+.memory-label {
+  font-size: var(--text-sm);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.toggle-field .memory-label {
+  flex: 1;
+}
+
+/* ===== Config Editor ===== */
+.config-editor-wrap {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.config-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.config-editor-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.config-editor-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+
+.config-editor {
+  min-height: 200px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* ===== Tier Chips ===== */
+.tier-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tier-chip {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
+}
+
+.tier-chip:hover:not(.disabled) {
+  border-color: var(--text-muted);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.tier-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(232, 112, 90, 0.15);
+}
+
+.tier-chip.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== Nice Slider ===== */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nice-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
+}
+
+.nice-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.nice-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px var(--accent-muted);
+}
+
+.nice-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.nice-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.slider-value {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-muted);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  min-width: 50px;
+  text-align: center;
+}
+
+/* ===== Nice Toggle ===== */
+.nice-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  user-select: none;
+  transition: opacity var(--duration-fast);
+}
+
+.nice-toggle.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.nice-toggle .toggle-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-fast);
+  flex-shrink: 0;
+}
+
+.nice-toggle.active .toggle-track {
+  background: var(--accent);
+}
+
+.nice-toggle .toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform var(--duration-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.nice-toggle.active .toggle-thumb {
+  transform: translateX(20px);
+}
+
+.nice-toggle .toggle-text {
   font-size: var(--text-sm);
   color: var(--text-secondary);
   font-weight: 500;
 }
 
-/* Range slider styling */
-input[type="range"] {
-  height: 6px;
-  appearance: none;
-  background: var(--border);
-  border-radius: 3px;
-  outline: none;
-}
-input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  background: var(--accent);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.btn-danger {
-  background: var(--danger, #ef4444);
-  color: white;
-  border-color: var(--danger, #ef4444);
-}
-.btn-danger:hover {
-  opacity: 0.9;
-}
-
-/* Toggle switch */
-.toggle-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  cursor: pointer;
-  position: relative;
-}
-.toggle-switch input {
-  position: absolute;
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.toggle-slider {
-  width: 36px;
-  height: 20px;
-  background: var(--border, #d1d5db);
-  border-radius: 10px;
-  position: relative;
-  transition: background 0.2s;
-  flex-shrink: 0;
-}
-.toggle-slider::after {
-  content: '';
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  background: white;
-  border-radius: 50%;
-  top: 2px;
-  left: 2px;
-  transition: transform 0.2s;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-}
-.toggle-switch input:checked + .toggle-slider {
-  background: var(--accent, #3b82f6);
-}
-.toggle-switch input:checked + .toggle-slider::after {
-  transform: translateX(16px);
-}
-.toggle-label {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  user-select: none;
-}
-.toggle-switch input:disabled + .toggle-slider {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.toggle-switch input:disabled ~ .toggle-label {
-  opacity: 0.5;
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .memory-config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

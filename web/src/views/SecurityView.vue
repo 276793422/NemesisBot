@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { usePageTab } from '../lib/pageTab'
 import ScannerView from './ScannerView.vue'
 import SandboxView from './SandboxView.vue'
-import SimpleFieldForm from '../components/SimpleFieldForm.vue'
+import SmartFieldForm from '../components/SmartFieldForm.vue'
 import { SECURITY_FIELD_META } from '../lib/friendlyFields'
 
 const { request } = useWSAPI()
@@ -108,7 +108,7 @@ onMounted(async () => {
           <SandboxView embedded />
         </div>
 
-        <!-- Config: friendly fields first, raw JSON only as advanced -->
+        <!-- Config -->
         <div v-if="activeTab === 'config'">
           <div class="card">
             <div class="card-header">
@@ -125,21 +125,19 @@ onMounted(async () => {
             </div>
             <div class="card-body">
               <div v-if="editing">
-                <p class="form-hint" style="margin-bottom: var(--space-4);">用开关与数字调整即可，无需手写 JSON。</p>
-                <SimpleFieldForm v-model="formModel" :meta-table="SECURITY_FIELD_META" />
+                <p class="form-hint" style="margin-bottom: var(--space-4);">用开关与滑块调整即可，无需手写 JSON。</p>
+                <SmartFieldForm v-model="formModel" :meta-table="SECURITY_FIELD_META" />
                 <div style="margin-top: var(--space-4);">
                   <button type="button" class="btn btn-sm" @click="showRaw = !showRaw">{{ showRaw ? '隐藏 JSON' : '高级：原始 JSON' }}</button>
                 </div>
                 <textarea v-if="showRaw" class="form-textarea" style="min-height: 240px; margin-top: var(--space-2); font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
               </div>
               <div v-else>
-                <div class="settings-grid">
-                  <template v-for="(value, key) in config" :key="key">
-                    <template v-if="typeof value !== 'object'">
-                      <span class="settings-key">{{ SECURITY_FIELD_META[key as string]?.label || key }}</span>
-                      <span class="settings-value">{{ typeof value === 'boolean' ? (value ? '是' : '否') : String(value) }}</span>
-                    </template>
-                  </template>
+                <div class="settings-readonly">
+                  <div v-for="(value, key) in config" :key="key" class="readonly-row">
+                    <span class="readonly-label">{{ SECURITY_FIELD_META[key as string]?.label || key }}</span>
+                    <span class="readonly-value">{{ typeof value === 'boolean' ? (value ? '已启用' : '已禁用') : String(value) }}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -188,7 +186,7 @@ onMounted(async () => {
             </div>
             <div class="stat-card">
               <div class="stat-label">HIGH</div>
-              <div class="stat-value" style="color: var(--warning, #e5a00d);">{{ stats.by_level?.HIGH || 0 }}</div>
+              <div class="stat-value" style="color: var(--warning);">{{ stats.by_level?.HIGH || 0 }}</div>
             </div>
             <div class="stat-card">
               <div class="stat-label">MEDIUM</div>
@@ -204,3 +202,34 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.settings-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-row:last-child {
+  border-bottom: none;
+}
+
+.readonly-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.readonly-value {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+</style>

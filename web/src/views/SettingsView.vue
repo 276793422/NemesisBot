@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { usePageTab } from '../lib/pageTab'
 import ToolsView from './ToolsView.vue'
 import TasksView from './TasksView.vue'
+import SmartFieldForm from '../components/SmartFieldForm.vue'
+import { SETTINGS_FIELD_META } from '../lib/friendlyFields'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -17,7 +19,6 @@ const editConfig = ref('')
 
 // CORS state
 const corsOrigins = ref<string[]>([])
-const corsEnabled = ref(false)
 const newOrigin = ref('')
 
 const tabs = [
@@ -95,18 +96,83 @@ async function removeCorsOrigin(origin: string) {
   }
 }
 
-async function toggleCors(enabled: boolean) {
-  try {
-    await request('config', 'cors.toggle', { enabled })
-    corsEnabled.value = enabled
-    toast.success(enabled ? '已启用' : '已禁用')
-  } catch (e: any) {
-    toast.error('操作失败: ' + e)
+function toggleService(path: string, current: boolean) {
+  saveField(path, !current)
+}
+
+// Computed form models for smart fields
+const agentFormModel = computed(() => ({
+  'agents.defaults.temperature': config.value?.agents?.defaults?.temperature ?? 0.7,
+  'agents.defaults.max_tokens': config.value?.agents?.defaults?.max_tokens ?? 4096,
+  'agents.defaults.restrict_to_workspace': config.value?.agents?.defaults?.restrict_to_workspace !== false,
+}))
+
+const toolsFormModel = computed(() => ({
+  'tools.web.brave.enabled': config.value?.tools?.web?.brave?.enabled === true,
+  'tools.web.duckduckgo.enabled': config.value?.tools?.web?.duckduckgo?.enabled === true,
+  'tools.cron.exec_timeout_minutes': config.value?.tools?.cron?.exec_timeout_minutes ?? 60,
+}))
+
+const loggingFormModel = computed(() => ({
+  'logging.general.enabled': config.value?.logging?.general?.enabled !== false,
+  'logging.general.enable_console': config.value?.logging?.general?.enable_console !== false,
+  'logging.general.level': config.value?.logging?.general?.level || 'info',
+  'logging.llm.enabled': config.value?.logging?.llm?.enabled === true,
+}))
+
+const servicesFormModel = computed(() => ({
+  'heartbeat.enabled': config.value?.heartbeat?.enabled,
+  'devices.monitor_usb': config.value?.devices?.monitor_usb,
+  'security.enabled': config.value?.security?.enabled,
+  'forge.enabled': config.value?.forge?.enabled,
+  'mcp.enabled': config.value?.mcp?.enabled,
+}))
+
+function updateAgentForm(updated: Record<string, any>) {
+  if ('agents.defaults.temperature' in updated) {
+    saveField('agents.defaults.temperature', updated['agents.defaults.temperature'])
+  }
+  if ('agents.defaults.max_tokens' in updated) {
+    saveField('agents.defaults.max_tokens', updated['agents.defaults.max_tokens'])
+  }
+  if ('agents.defaults.restrict_to_workspace' in updated) {
+    saveField('agents.defaults.restrict_to_workspace', updated['agents.defaults.restrict_to_workspace'])
   }
 }
 
-function toggleService(path: string, current: boolean) {
-  saveField(path, !current)
+function updateToolsForm(updated: Record<string, any>) {
+  if ('tools.web.brave.enabled' in updated) {
+    saveField('tools.web.brave.enabled', updated['tools.web.brave.enabled'])
+  }
+  if ('tools.web.duckduckgo.enabled' in updated) {
+    saveField('tools.web.duckduckgo.enabled', updated['tools.web.duckduckgo.enabled'])
+  }
+  if ('tools.cron.exec_timeout_minutes' in updated) {
+    saveField('tools.cron.exec_timeout_minutes', updated['tools.cron.exec_timeout_minutes'])
+  }
+}
+
+function updateLoggingForm(updated: Record<string, any>) {
+  if ('logging.general.enabled' in updated) {
+    saveField('logging.general.enabled', updated['logging.general.enabled'])
+  }
+  if ('logging.general.enable_console' in updated) {
+    saveField('logging.general.enable_console', updated['logging.general.enable_console'])
+  }
+  if ('logging.general.level' in updated) {
+    saveField('logging.general.level', updated['logging.general.level'])
+  }
+  if ('logging.llm.enabled' in updated) {
+    saveField('logging.llm.enabled', updated['logging.llm.enabled'])
+  }
+}
+
+function updateServicesForm(updated: Record<string, any>) {
+  if ('heartbeat.enabled' in updated) saveField('heartbeat.enabled', updated['heartbeat.enabled'])
+  if ('devices.monitor_usb' in updated) saveField('devices.monitor_usb', updated['devices.monitor_usb'])
+  if ('security.enabled' in updated) saveField('security.enabled', updated['security.enabled'])
+  if ('forge.enabled' in updated) saveField('forge.enabled', updated['forge.enabled'])
+  if ('mcp.enabled' in updated) saveField('mcp.enabled', updated['mcp.enabled'])
 }
 
 onMounted(async () => {
@@ -134,7 +200,7 @@ onMounted(async () => {
           <TasksView embedded />
         </div>
 
-        <!-- Agent config: presets instead of raw temperature numbers -->
+        <!-- Agent config -->
         <div v-if="activeTab === 'agent'" class="card">
           <div class="card-header"><h3>Agent 配置</h3></div>
           <div class="card-body">
@@ -145,44 +211,11 @@ onMounted(async () => {
                 <router-link class="btn btn-sm" to="/models">去模型页更换</router-link>
               </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">回复风格</label>
-              <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 0.2) < 0.05 }"
-                  @click="saveField('agents.defaults.temperature', 0.2)"
-                >严谨</button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 0.7) < 0.05 }"
-                  @click="saveField('agents.defaults.temperature', 0.7)"
-                >均衡</button>
-                <button
-                  type="button"
-                  class="btn btn-sm"
-                  :class="{ 'btn-primary': Math.abs((config.agents?.defaults?.temperature ?? 0.7) - 1.2) < 0.05 }"
-                  @click="saveField('agents.defaults.temperature', 1.2)"
-                >创意</button>
-              </div>
-              <span class="form-hint">对应温度约 0.2 / 0.7 / 1.2，无需手填小数</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">回复长度上限</label>
-              <div style="display: flex; flex-wrap: wrap; gap: var(--space-2);">
-                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) <= 2048 }" @click="saveField('agents.defaults.max_tokens', 2048)">短</button>
-                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) > 2048 && (config.agents?.defaults?.max_tokens ?? 4096) <= 4096 }" @click="saveField('agents.defaults.max_tokens', 4096)">中</button>
-                <button type="button" class="btn btn-sm" :class="{ 'btn-primary': (config.agents?.defaults?.max_tokens ?? 4096) > 4096 }" @click="saveField('agents.defaults.max_tokens', 8192)">长</button>
-              </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">限制在工作空间内操作</label>
-              <div class="toggle" :class="{ active: config.agents?.defaults?.restrict_to_workspace !== false }"
-                @click="toggleService('agents.defaults.restrict_to_workspace', config.agents?.defaults?.restrict_to_workspace !== false)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.agents?.defaults?.restrict_to_workspace !== false ? '已启用（推荐）' : '已关闭' }}</span>
-            </div>
+            <SmartFieldForm
+              :model-value="agentFormModel"
+              :meta-table="SETTINGS_FIELD_META"
+              @update:model-value="updateAgentForm"
+            />
           </div>
         </div>
 
@@ -190,13 +223,15 @@ onMounted(async () => {
         <div v-if="activeTab === 'gateway'" class="card">
           <div class="card-header"><h3>Gateway 配置</h3></div>
           <div class="card-body">
-            <div class="form-group">
-              <label class="form-label">主机</label>
-              <input class="form-input" :value="config.gateway?.host || '0.0.0.0'" disabled style="max-width: 300px;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">端口</label>
-              <input class="form-input" :value="config.gateway?.port || 49000" disabled style="max-width: 200px;">
+            <div class="settings-readonly">
+              <div class="readonly-row">
+                <span class="readonly-label">主机</span>
+                <span class="readonly-value">{{ config.gateway?.host || '0.0.0.0' }}</span>
+              </div>
+              <div class="readonly-row">
+                <span class="readonly-label">端口</span>
+                <span class="readonly-value">{{ config.gateway?.port || 49000 }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -205,23 +240,11 @@ onMounted(async () => {
         <div v-if="activeTab === 'tools'" class="card">
           <div class="card-header"><h3>工具配置</h3></div>
           <div class="card-body">
-            <div class="form-group">
-              <label class="form-label">Brave 搜索</label>
-              <div class="toggle" :class="{ active: config.tools?.web?.brave?.enabled === true }"
-                @click="toggleService('tools.web.brave.enabled', config.tools?.web?.brave?.enabled === true)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.tools?.web?.brave?.enabled === true ? '已启用' : '已禁用' }}</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">DuckDuckGo 搜索</label>
-              <div class="toggle" :class="{ active: config.tools?.web?.duckduckgo?.enabled === true }"
-                @click="toggleService('tools.web.duckduckgo.enabled', config.tools?.web?.duckduckgo?.enabled === true)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.tools?.web?.duckduckgo?.enabled === true ? '已启用' : '已禁用' }}</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Cron 执行超时（分钟）</label>
-              <input class="form-input" type="number" :value="config.tools?.cron?.exec_timeout_minutes ?? 60"
-                @change="(e: any) => saveField('tools.cron.exec_timeout_minutes', parseInt(e.target.value))" style="max-width: 200px;">
-            </div>
+            <SmartFieldForm
+              :model-value="toolsFormModel"
+              :meta-table="SETTINGS_FIELD_META"
+              @update:model-value="updateToolsForm"
+            />
           </div>
         </div>
 
@@ -229,17 +252,11 @@ onMounted(async () => {
         <div v-if="activeTab === 'services'" class="card">
           <div class="card-header"><h3>系统服务开关</h3></div>
           <div class="card-body">
-            <div v-for="svc in [
-              { label: 'Heartbeat', path: 'heartbeat.enabled', value: config.heartbeat?.enabled },
-              { label: 'USB 监控', path: 'devices.monitor_usb', value: config.devices?.monitor_usb },
-              { label: 'Security', path: 'security.enabled', value: config.security?.enabled },
-              { label: 'Forge', path: 'forge.enabled', value: config.forge?.enabled },
-              { label: 'MCP', path: 'mcp.enabled', value: config.mcp?.enabled },
-            ]" :key="svc.path"
-              style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) 0; border-bottom: 1px solid var(--border-light);">
-              <span style="font-size: var(--text-sm); font-weight: 500;">{{ svc.label }}</span>
-              <div class="toggle" :class="{ active: svc.value !== false }" @click="toggleService(svc.path, svc.value !== false)"></div>
-            </div>
+            <SmartFieldForm
+              :model-value="servicesFormModel"
+              :meta-table="SETTINGS_FIELD_META"
+              @update:model-value="updateServicesForm"
+            />
           </div>
         </div>
 
@@ -247,39 +264,15 @@ onMounted(async () => {
         <div v-if="activeTab === 'logging'" class="card">
           <div class="card-header"><h3>日志配置</h3></div>
           <div class="card-body">
-            <div class="form-group">
-              <label class="form-label">通用日志</label>
-              <div class="toggle" :class="{ active: config.logging?.general?.enabled !== false }"
-                @click="toggleService('logging.general.enabled', config.logging?.general?.enabled !== false)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.general?.enabled !== false ? '已启用' : '已禁用' }}</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">控制台输出</label>
-              <div class="toggle" :class="{ active: config.logging?.general?.enable_console !== false }"
-                @click="toggleService('logging.general.enable_console', config.logging?.general?.enable_console !== false)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.general?.enable_console !== false ? '已启用' : '已禁用' }}</span>
-            </div>
-            <div class="form-group">
-              <label class="form-label">日志级别</label>
-              <select class="form-select" style="max-width: 200px;"
-                :value="config.logging?.general?.level || 'info'"
-                @change="(e: any) => saveField('logging.general.level', e.target.value)">
-                <option value="debug">DEBUG</option>
-                <option value="info">INFO</option>
-                <option value="warn">WARN</option>
-                <option value="error">ERROR</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">LLM 通信日志</label>
-              <div class="toggle" :class="{ active: config.logging?.llm?.enabled === true }"
-                @click="toggleService('logging.llm.enabled', config.logging?.llm?.enabled === true)"></div>
-              <span class="form-hint" style="margin-left: var(--space-2);">{{ config.logging?.llm?.enabled === true ? '已启用' : '已禁用' }}</span>
-            </div>
+            <SmartFieldForm
+              :model-value="loggingFormModel"
+              :meta-table="SETTINGS_FIELD_META"
+              @update:model-value="updateLoggingForm"
+            />
           </div>
         </div>
 
-        <!-- CORS: honest CLI-only guidance — no half-disabled fake controls -->
+        <!-- CORS -->
         <div v-if="activeTab === 'cors'">
           <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header">
@@ -298,7 +291,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- Raw JSON (advanced only — discouraged for normal use) -->
+        <!-- Raw JSON (advanced only) -->
         <div v-if="activeTab === 'raw'">
           <div class="card">
             <div class="card-header">
@@ -318,7 +311,7 @@ onMounted(async () => {
             </div>
             <div class="card-body">
               <div v-if="editing">
-                <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--warning-bg, #fef3cd); border: 1px solid var(--warning, #e5a00d); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+                <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--warning-bg); border: 1px solid var(--warning); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
                   注意：敏感字段（如 API Key、Token）已被遮蔽显示（含 **** ）。如需修改，请将遮蔽值替换为真实值；如保持遮蔽值不变，保存后该字段将被覆盖为遮蔽值。
                 </div>
                 <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
@@ -343,3 +336,35 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.settings-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-row:last-child {
+  border-bottom: none;
+}
+
+.readonly-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.readonly-value {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+</style>

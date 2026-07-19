@@ -479,9 +479,11 @@ onBeforeUnmount(() => clearTimeout(previewTimer))
             <textarea class="form-textarea" v-model="cronForm.prompt" placeholder="到点要对 bot 说什么，例如：总结今天的工作并列出明天计划" style="min-height: 90px;"></textarea>
           </div>
 
-          <div class="form-group" style="display: flex; align-items: center; gap: var(--space-2);">
-            <div class="toggle" :class="{ active: cronForm.enabled }" @click="cronForm.enabled = !cronForm.enabled"></div>
-            <span style="color: var(--text-secondary);">{{ cronForm.enabled ? '创建后立即启用' : '创建后保持暂停' }}</span>
+          <div class="form-group" style="display: flex; align-items: center; gap: var(--space-3);">
+            <div class="nice-toggle" :class="{ active: cronForm.enabled }" @click="cronForm.enabled = !cronForm.enabled" role="switch" :aria-checked="cronForm.enabled">
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              <span class="toggle-text">{{ cronForm.enabled ? '创建后立即启用' : '创建后保持暂停' }}</span>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -530,38 +532,110 @@ onBeforeUnmount(() => clearTimeout(previewTimer))
 </template>
 
 <style scoped>
+/* ===== Preset Chips ===== */
 .preset-chips {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
+
 .preset-chip {
-  opacity: 0.7;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
 }
+
+.preset-chip:hover {
+  border-color: var(--text-muted);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .preset-chip.btn-primary {
-  opacity: 1;
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(232, 112, 90, 0.15);
 }
+
 .preset-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
+
+/* ===== Cron Preview ===== */
 .cron-preview {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   margin-bottom: var(--space-3);
   background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-size: var(--text-sm);
 }
+
 .cron-preview code {
   background: var(--surface);
-  padding: 2px 6px;
+  padding: 2px 8px;
   border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+}
+
+/* ===== Nice Toggle ===== */
+.nice-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+  user-select: none;
+}
+
+.nice-toggle .toggle-track {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-fast);
+  flex-shrink: 0;
+}
+
+.nice-toggle.active .toggle-track {
+  background: var(--accent);
+}
+
+.nice-toggle .toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform var(--duration-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.nice-toggle.active .toggle-thumb {
+  transform: translateX(20px);
+}
+
+.nice-toggle .toggle-text {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 </style>
