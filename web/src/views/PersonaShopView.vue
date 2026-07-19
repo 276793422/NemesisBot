@@ -1,7 +1,7 @@
 <template>
-  <div class="page-persona-shop">
-    <div class="page-header"><h2>人格超市</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'persona-shop-embed' : 'page-persona-shop'">
+    <div v-if="!embedded" class="page-header"><h2>人格超市</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <!-- Source tabs -->
       <div class="tabs">
         <button
@@ -167,6 +167,8 @@ import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+
+defineProps<{ embedded?: boolean }>()
 
 const { request } = useWSAPI()
 const toast = useToast()

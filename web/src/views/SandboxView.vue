@@ -3,6 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
+defineProps<{ embedded?: boolean }>()
+
 const { request } = useWSAPI()
 const toast = useToast()
 
@@ -195,9 +197,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page-sandbox">
-    <div class="page-header"><h2>沙盒</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'sandbox-embed' : 'page-sandbox'">
+    <div v-if="!embedded" class="page-header"><h2>沙盒</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
 
       <!-- Tabs -->
       <div class="tabs">

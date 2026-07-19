@@ -45,6 +45,9 @@ function handleKeydown(e: KeyboardEvent) {
     <div class="auth-card">
       <h1>Nemesis<span class="brand-dot">Bot</span></h1>
       <p class="auth-subtitle">请输入访问密钥以继续</p>
+      <p class="auth-subtitle" style="margin-top: calc(-1 * var(--space-4)); margin-bottom: var(--space-4); font-size: var(--text-xs);">
+        默认密钥见启动日志；本机首次初始化一般为 README 中的默认值
+      </p>
       <div class="auth-form">
         <input
           ref="tokenInput"

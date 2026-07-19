@@ -108,10 +108,18 @@ export const useSessionStore = defineStore('session', () => {
     // ChatPanel watches currentId → chatStore.reset() + loadHistory().
   }
 
-  // Multi-session sidebar visibility — toggled from a button in ChatPanel's
-  // input area (like the toolbar-toggle). Default hidden so the chat column
-  // isn't permanently narrowed.
-  const showSidebar = ref(false)
+  // Multi-session sidebar visibility — toggled from ChatPanel.
+  // Default visible on desktop (≥769px) so conversations are discoverable;
+  // mobile starts collapsed to preserve chat width.
+  function defaultShowSidebar(): boolean {
+    if (typeof window === 'undefined') return true
+    try {
+      return window.matchMedia('(min-width: 769px)').matches
+    } catch {
+      return true
+    }
+  }
+  const showSidebar = ref(defaultShowSidebar())
   function toggleSidebar() {
     showSidebar.value = !showSidebar.value
   }

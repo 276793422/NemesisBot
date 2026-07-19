@@ -3,6 +3,10 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import VoiceTab from './VoiceTab.vue'
+import SmartFieldForm from '../components/SmartFieldForm.vue'
+import { CHANNEL_FIELD_META } from '../lib/friendlyFields'
+
+defineProps<{ embedded?: boolean }>()
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -12,10 +16,12 @@ interface ChannelInfo { name: string; enabled?: boolean; config?: any }
 const channels = ref<ChannelInfo[]>([])
 const loading = ref(true)
 const selectedChannel = ref<string | null>(null)
-const channelDetail = ref<any>({})
-const editConfig = ref('')
+const channelDetail = ref<Record<string, any>>({})
+const formModel = ref<Record<string, any>>({})
 const editing = ref(false)
 const activeTab = ref<'local' | 'cloud' | 'voice'>('local')
+const showRaw = ref(false)
+const editConfig = ref('')
 
 const channelLabels: Record<string, string> = {
   web: 'Web', websocket: 'WebSocket', telegram: 'Telegram', discord: 'Discord',
@@ -45,9 +51,11 @@ async function loadChannelDetail(name: string) {
   try {
     const data = await request('channels', 'get', { name })
     channelDetail.value = data?.config || {}
+    formModel.value = { ...(data?.config || {}) }
     editConfig.value = JSON.stringify(data?.config || {}, null, 2)
     selectedChannel.value = name
     editing.value = false
+    showRaw.value = false
   } catch (e: any) {
     toast.error('加载详情失败: ' + e)
   }
@@ -56,13 +64,33 @@ async function loadChannelDetail(name: string) {
 async function updateChannel() {
   if (!selectedChannel.value) return
   try {
-    const config = JSON.parse(editConfig.value)
+    let config: any
+    if (showRaw.value) {
+      config = JSON.parse(editConfig.value)
+    } else {
+      config = { ...channelDetail.value, ...formModel.value }
+    }
     await request('channels', 'update', { name: selectedChannel.value, config })
     toast.success('已保存')
     editing.value = false
+    showRaw.value = false
     await loadChannels()
+    await loadChannelDetail(selectedChannel.value)
   } catch (e: any) {
     toast.error('保存失败: ' + e)
+  }
+}
+
+async function toggleEnabled(ch: ChannelInfo) {
+  try {
+    const data = await request('channels', 'get', { name: ch.name })
+    const config = { ...(data?.config || {}), enabled: !ch.enabled }
+    await request('channels', 'update', { name: ch.name, config })
+    toast.success(config.enabled ? '已启用' : '已关闭')
+    await loadChannels()
+    if (selectedChannel.value === ch.name) await loadChannelDetail(ch.name)
+  } catch (e: any) {
+    toast.error('操作失败: ' + e)
   }
 }
 
@@ -70,33 +98,29 @@ onMounted(loadChannels)
 </script>
 
 <template>
-  <div class="page-channels">
-    <div class="page-header"><h2>通道管理</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'channels-embed' : 'page-channels'">
+    <div v-if="!embedded" class="page-header"><h2>通道管理</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
       </div>
 
       <div v-if="!loading">
-        <!-- Tab bar (always visible) -->
         <div style="display: flex; border-bottom: 1px solid var(--border); margin-bottom: var(--space-3);">
           <button class="ch-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'cloud' }" @click="activeTab = 'cloud'">云端通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'voice' }" @click="activeTab = 'voice'">语音通道</button>
         </div>
 
-        <!-- Voice TAB: full width -->
         <div v-if="isVoiceTab">
           <VoiceTab />
         </div>
 
-        <!-- Local/Cloud TABs: two-column layout -->
         <div v-else style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); min-height: 400px;">
           <div>
-            <!-- Local channels -->
             <div v-if="activeTab === 'local'" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3);">
-              <div v-for="ch in localChannels" :key="ch.name" class="card" style="cursor: pointer;"
-                :style="{ borderColor: selectedChannel === ch.name ? 'var(--accent)' : '' }"
+              <div v-for="ch in localChannels" :key="ch.name" class="card channel-card"
+                :class="{ active: selectedChannel === ch.name }"
                 @click="loadChannelDetail(ch.name)">
                 <div style="padding: var(--space-4); text-align: center;">
                   <div style="font-weight: 600; margin-bottom: var(--space-2);">{{ channelLabels[ch.name] || ch.name }}</div>
@@ -107,10 +131,9 @@ onMounted(loadChannels)
               </div>
             </div>
 
-            <!-- Cloud channels -->
             <div v-if="activeTab === 'cloud'" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--space-3);">
-              <div v-for="ch in cloudChannels" :key="ch.name" class="card" style="cursor: pointer;"
-                :style="{ borderColor: selectedChannel === ch.name ? 'var(--accent)' : '' }"
+              <div v-for="ch in cloudChannels" :key="ch.name" class="card channel-card"
+                :class="{ active: selectedChannel === ch.name }"
                 @click="loadChannelDetail(ch.name)">
                 <div style="padding: var(--space-4); text-align: center;">
                   <div style="font-weight: 600; margin-bottom: var(--space-2);">{{ channelLabels[ch.name] || ch.name }}</div>
@@ -122,36 +145,38 @@ onMounted(loadChannels)
             </div>
           </div>
 
-          <!-- Channel detail -->
           <div class="card">
             <div class="card-header">
               <h3>{{ selectedChannel ? (channelLabels[selectedChannel] || selectedChannel) : '选择通道' }}</h3>
               <div v-if="selectedChannel && !editing" style="display: flex; gap: var(--space-2);">
-                <button class="btn btn-sm" @click="editing = true">编辑</button>
+                <button class="btn btn-sm" @click="toggleEnabled({ name: selectedChannel, enabled: channelDetail.enabled })">
+                  {{ channelDetail.enabled ? '关闭' : '启用' }}
+                </button>
+                <button class="btn btn-sm btn-primary" @click="editing = true; formModel = { ...channelDetail }">配置</button>
               </div>
             </div>
             <div class="card-body">
               <div v-if="!selectedChannel" class="empty-state" style="padding: var(--space-6);">
-                <p>从左侧选择一个通道查看配置</p>
+                <p>从左侧选择一个通道。常见只需填 Token 并启用，无需编辑 JSON。</p>
               </div>
               <div v-else-if="editing">
-                <div style="padding: var(--space-3); margin-bottom: var(--space-3); background: var(--warning-bg, #fef3cd); border: 1px solid var(--warning, #e5a00d); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
-                  注意：敏感字段（如 API Key、Token）已被遮蔽显示（含 **** ）。如需修改，请将遮蔽值替换为真实值；如保持遮蔽值不变，保存后该字段将被覆盖为遮蔽值。
+                <p class="form-hint" style="margin-bottom: var(--space-3);">按字段填写即可；密钥类请粘贴新值，留空或保持遮蔽则不要改。</p>
+                <SmartFieldForm v-model="formModel" :meta-table="CHANNEL_FIELD_META" />
+                <div style="margin-top: var(--space-4);">
+                  <button type="button" class="btn btn-sm" @click="showRaw = !showRaw">{{ showRaw ? '隐藏 JSON' : '高级：原始 JSON' }}</button>
                 </div>
-                <textarea class="form-textarea" style="min-height: 60vh; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
+                <textarea v-if="showRaw" class="form-textarea" style="min-height: 200px; margin-top: var(--space-2); font-family: var(--font-mono); font-size: var(--text-xs);" v-model="editConfig"></textarea>
                 <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end; gap: var(--space-2);">
                   <button class="btn" @click="editing = false; loadChannelDetail(selectedChannel!)">取消</button>
                   <button class="btn btn-primary" @click="updateChannel">保存</button>
                 </div>
               </div>
               <div v-else>
-                <div class="settings-grid">
-                  <template v-for="(value, key) in channelDetail" :key="key">
-                    <template v-if="typeof value !== 'object'">
-                      <span class="settings-key">{{ key }}</span>
-                      <span class="settings-value">{{ String(value) }}</span>
-                    </template>
-                  </template>
+                <div class="settings-readonly">
+                  <div v-for="(value, key) in channelDetail" :key="key" class="readonly-row">
+                    <span class="readonly-label">{{ CHANNEL_FIELD_META[key as string]?.label || key }}</span>
+                    <span class="readonly-value">{{ typeof value === 'boolean' ? (value ? '已启用' : '已禁用') : String(value) }}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -165,18 +190,68 @@ onMounted(loadChannels)
 <style scoped>
 .ch-tab {
   padding: var(--space-2) var(--space-4);
-  background: none;
   border: none;
-  border-bottom: 2px solid transparent;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  color: var(--text-secondary);
+  background: transparent;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  border-bottom: 2px solid transparent;
+  font: inherit;
+  transition: all var(--duration-fast);
 }
-.ch-tab:hover { color: var(--text-primary); }
+
+.ch-tab:hover {
+  color: var(--text);
+}
+
 .ch-tab.active {
   color: var(--accent);
   border-bottom-color: var(--accent);
+}
+
+.channel-card {
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  box-shadow: var(--shadow-xs);
+}
+
+.channel-card:hover {
+  border-color: var(--text-muted);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.channel-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-muted);
+}
+
+.settings-readonly {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.readonly-row:last-child {
+  border-bottom: none;
+}
+
+.readonly-label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.readonly-value {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
 }
 </style>

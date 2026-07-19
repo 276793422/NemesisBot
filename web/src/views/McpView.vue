@@ -2,6 +2,9 @@
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { MCP_PRESETS, type McpPreset } from '../lib/mcpPresets'
+
+defineProps<{ embedded?: boolean }>()
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -38,7 +41,7 @@ const TRANSPORT_TYPES = [
 
 const defaultForm = () => ({
   name: '',
-  transport_type: 'stdio',
+  transport_type: 'stdio' as string,
   url: '',
   description: '',
   headersText: '',
@@ -50,8 +53,35 @@ const defaultForm = () => ({
   tagsText: '',
 })
 const form = ref(defaultForm())
+const presetId = ref('filesystem')
+const envValues = ref<Record<string, string>>({})
+const showAdvanced = ref(false)
 
 const isStdio = computed(() => form.value.transport_type === 'stdio')
+const currentPreset = computed(() => MCP_PRESETS.find((p) => p.id === presetId.value))
+
+function applyPreset(p: McpPreset) {
+  presetId.value = p.id
+  if (p.id === 'custom') {
+    showAdvanced.value = true
+    form.value = defaultForm()
+    envValues.value = {}
+    return
+  }
+  showAdvanced.value = false
+  form.value = {
+    ...defaultForm(),
+    name: p.id,
+    transport_type: p.transport_type,
+    url: p.url,
+    description: p.description,
+    argsText: (p.args || []).join(' '),
+    tagsText: (p.tags || []).join(', '),
+  }
+  const ev: Record<string, string> = {}
+  for (const k of p.envKeys || []) ev[k] = ''
+  envValues.value = ev
+}
 
 async function loadStatus() {
   try {
@@ -72,7 +102,7 @@ async function loadServers() {
 
 function openAdd() {
   editingServer.value = null
-  form.value = defaultForm()
+  applyPreset(MCP_PRESETS[0]!)
   showAddDialog.value = true
 }
 
@@ -100,8 +130,20 @@ function showDetail(s: McpServer) {
 }
 
 async function saveServer() {
+  // Merge envValues from preset keys into envText
+  const envLines = Object.entries(envValues.value)
+    .filter(([, v]) => v.trim())
+    .map(([k, v]) => `${k}=${v.trim()}`)
+  if (envLines.length) {
+    form.value.envText = [form.value.envText, ...envLines].filter(Boolean).join('\n')
+  }
   if (!form.value.name || !form.value.url) {
-    toast.warn('请填写名称和 URL/命令')
+    toast.warn('请选择模板或填写名称与命令')
+    return
+  }
+  const missingEnv = (currentPreset.value?.envKeys || []).filter((k) => !envValues.value[k]?.trim())
+  if (missingEnv.length && presetId.value !== 'custom') {
+    toast.warn('请填写：' + missingEnv.join(', '))
     return
   }
   const payload: any = {
@@ -172,21 +214,19 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page-mcp">
-    <div class="page-header">
+  <div :class="embedded ? 'mcp-embed' : 'page-mcp'">
+    <div v-if="!embedded" class="page-header">
       <h2>MCP 管理</h2>
       <div class="page-header-actions">
         <span class="badge" :class="enabled ? 'badge-success' : 'badge-neutral'">{{ enabled ? '已启用' : '未启用' }}</span>
       </div>
     </div>
-    <div class="page-body">
-      <div class="tabs">
-        <button class="tab" :class="{ active: activeTab === 'servers' }" @click="activeTab = 'servers'">服务器</button>
-        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="activeTab = 'shop'">商城</button>
-      </div>
-
-      <!-- ==================== 服务器 TAB ==================== -->
-      <div v-if="activeTab === 'servers'">
+    <div v-else style="display: flex; justify-content: flex-end; margin-bottom: var(--space-3);">
+      <span class="badge" :class="enabled ? 'badge-success' : 'badge-neutral'">{{ enabled ? '已启用' : '未启用' }}</span>
+    </div>
+    <div :class="embedded ? '' : 'page-body'">
+      <!-- ==================== 服务器 ==================== -->
+      <div>
       <!-- Server cards -->
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
@@ -231,51 +271,64 @@ onMounted(async () => {
             <button class="modal-close" @click="showAddDialog = false">&times;</button>
           </div>
           <div class="modal-body">
-            <div class="form-group">
-              <label class="form-label">名称 *</label>
-              <input class="form-input" v-model="form.name" placeholder="例如: filesystem" :disabled="!!editingServer" style="width: 100%;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">类型 *</label>
-              <div style="display: flex; gap: var(--space-2);">
-                <button v-for="t in TRANSPORT_TYPES" :key="t.id" class="transport-btn" :class="{ active: form.transport_type === t.id }" @click="form.transport_type = t.id" :title="t.desc">{{ t.name }}</button>
+            <template v-if="!editingServer">
+              <div class="form-group">
+                <label class="form-label">选择模板</label>
+                <div class="preset-list">
+                  <button
+                    v-for="p in MCP_PRESETS"
+                    :key="p.id"
+                    type="button"
+                    class="preset-card"
+                    :class="{ active: presetId === p.id }"
+                    @click="applyPreset(p)"
+                  >
+                    <div class="preset-card-header">
+                      <strong class="preset-card-name">{{ p.label }}</strong>
+                      <span v-if="presetId === p.id" class="preset-card-check">✓</span>
+                    </div>
+                    <span class="preset-card-desc">{{ p.description }}</span>
+                  </button>
+                </div>
               </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">{{ isStdio ? '命令 *' : 'URL *' }}</label>
-              <input class="form-input" v-model="form.url" :placeholder="isStdio ? '例如: npx' : '例如: https://mcp.example.com/api'" style="width: 100%;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">描述</label>
-              <input class="form-input" v-model="form.description" placeholder="简要描述服务器用途" style="width: 100%;">
-            </div>
-            <div v-if="isStdio" class="form-group">
-              <label class="form-label">参数（空格分隔）</label>
-              <input class="form-input" v-model="form.argsText" placeholder="例如: -y @mcp/server-filesystem /path" style="width: 100%;">
-            </div>
-            <div v-if="isStdio" class="form-group">
-              <label class="form-label">环境变量（每行一个 KEY=VALUE）</label>
-              <textarea class="form-textarea" v-model="form.envText" rows="3" placeholder="API_KEY=xxx&#10;DEBUG=true" style="width: 100%;"></textarea>
-            </div>
-            <div v-if="!isStdio" class="form-group">
-              <label class="form-label">请求头（每行一个 Key: Value）</label>
-              <textarea class="form-textarea" v-model="form.headersText" rows="3" placeholder="Authorization: Bearer xxx&#10;X-Custom: value" style="width: 100%;"></textarea>
-            </div>
-            <div class="form-group">
-              <label class="form-label">超时（秒）</label>
-              <input class="form-input" type="number" v-model.number="form.timeout" min="0" style="width: 120px;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">供应商名称</label>
-              <input class="form-input" v-model="form.provider_name" placeholder="例如: Anthropic" style="width: 100%;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">供应商地址</label>
-              <input class="form-input" v-model="form.provider_url" placeholder="例如: https://anthropic.com" style="width: 100%;">
-            </div>
-            <div class="form-group">
-              <label class="form-label">标签（逗号分隔）</label>
-              <input class="form-input" v-model="form.tagsText" placeholder="例如: 文件系统, 本地" style="width: 100%;">
+              <div v-for="k in (currentPreset?.envKeys || [])" :key="k" class="form-group">
+                <label class="form-label">{{ k }}</label>
+                <input class="form-input" type="password" v-model="envValues[k]" :placeholder="'粘贴 ' + k" style="width: 100%;" autocomplete="off">
+              </div>
+            </template>
+            <button type="button" class="btn btn-sm" style="margin-bottom: var(--space-3);" @click="showAdvanced = !showAdvanced">
+              {{ showAdvanced ? '收起技术选项' : '显示技术选项（进阶）' }}
+            </button>
+            <div v-if="showAdvanced || editingServer">
+              <div class="form-group">
+                <label class="form-label">名称 *</label>
+                <input class="form-input" v-model="form.name" placeholder="例如: filesystem" :disabled="!!editingServer" style="width: 100%;">
+              </div>
+              <div class="form-group">
+                <label class="form-label">类型 *</label>
+                <div style="display: flex; gap: var(--space-2);">
+                  <button v-for="t in TRANSPORT_TYPES" :key="t.id" type="button" class="transport-btn" :class="{ active: form.transport_type === t.id }" @click="form.transport_type = t.id" :title="t.desc">{{ t.name }}</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">{{ isStdio ? '命令 *' : 'URL *' }}</label>
+                <input class="form-input" v-model="form.url" :placeholder="isStdio ? 'npx' : 'https://…'" style="width: 100%;">
+              </div>
+              <div v-if="isStdio" class="form-group">
+                <label class="form-label">参数</label>
+                <input class="form-input" v-model="form.argsText" style="width: 100%;">
+              </div>
+              <div v-if="isStdio" class="form-group">
+                <label class="form-label">环境变量</label>
+                <textarea class="form-textarea" v-model="form.envText" rows="2" style="width: 100%;" placeholder="KEY=value，每行一个"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">超时</label>
+                <div class="timeout-slider">
+                  <input type="range" class="nice-slider" min="5" max="120" step="5" v-model.number="form.timeout" style="flex: 1;" />
+                  <span class="slider-value">{{ form.timeout }}s</span>
+                </div>
+              </div>
             </div>
           </div>
           <div class="modal-footer">
@@ -340,13 +393,6 @@ onMounted(async () => {
       </div>
       </div>
 
-      <!-- ==================== 商城 TAB ==================== -->
-      <div v-if="activeTab === 'shop'">
-        <div class="empty-state">
-          <h3>MCP 商城</h3>
-          <p>MCP 服务器商城功能即将上线，敬请期待</p>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -369,6 +415,69 @@ onMounted(async () => {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
 }
+
+/* ===== Preset List ===== */
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
+}
+
+.preset-card:hover {
+  border-color: var(--text-muted);
+  background: var(--surface-hover);
+}
+
+.preset-card.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(232, 112, 90, 0.15);
+}
+
+.preset-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.preset-card-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: inherit;
+}
+
+.preset-card-check {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.preset-card-desc {
+  font-size: var(--text-xs);
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+/* ===== Transport Buttons ===== */
 .transport-btn {
   padding: 6px 16px;
   border-radius: var(--radius-md);
@@ -378,15 +487,73 @@ onMounted(async () => {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-muted);
-  transition: all 0.15s;
+  transition: all var(--duration-fast);
+  font-family: var(--font-sans);
 }
+
 .transport-btn:hover {
   border-color: var(--accent);
   color: var(--text);
 }
+
 .transport-btn.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* ===== Timeout Slider ===== */
+.timeout-slider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.nice-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  background: var(--border);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
+}
+
+.nice-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.nice-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 4px var(--accent-muted);
+}
+
+.nice-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.slider-value {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-muted);
+  padding: 2px 10px;
+  border-radius: var(--radius-sm);
+  min-width: 50px;
+  text-align: center;
 }
 </style>

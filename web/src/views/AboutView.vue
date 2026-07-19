@@ -2,9 +2,12 @@
 import { ref, onMounted, computed } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { marked } from 'marked'
+import { usePageTab } from '../lib/pageTab'
+import LicenseView from './LicenseView.vue'
 
 const { request } = useWSAPI()
 const activeTab = ref('about')
+const { setTab } = usePageTab(activeTab, ['about', 'readme', 'license'] as const, 'about')
 const readmeContent = ref('')
 const readmeLoading = ref(false)
 const readmeError = ref('')
@@ -34,7 +37,7 @@ async function loadReadme() {
 }
 
 function switchTab(tab: string) {
-  activeTab.value = tab
+  setTab(tab)
   if (tab === 'readme') loadReadme()
 }
 
@@ -54,6 +57,11 @@ const renderedReadme = computed(() => {
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'about' }" @click="switchTab('about')">关于</button>
         <button class="tab" :class="{ active: activeTab === 'readme' }" @click="switchTab('readme')">Readme</button>
+        <button class="tab" :class="{ active: activeTab === 'license' }" @click="switchTab('license')">许可证</button>
+      </div>
+
+      <div v-if="activeTab === 'license'">
+        <LicenseView embedded />
       </div>
 
       <!-- About Tab -->

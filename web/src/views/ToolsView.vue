@@ -3,6 +3,8 @@ import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
+defineProps<{ embedded?: boolean }>()
+
 const { request } = useWSAPI()
 const toast = useToast()
 
@@ -41,9 +43,9 @@ onMounted(loadTools)
 </script>
 
 <template>
-  <div class="page-tools">
-    <div class="page-header"><h2>Tools</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'tools-embed' : 'page-tools'">
+    <div v-if="!embedded" class="page-header"><h2>Tools</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
       </div>

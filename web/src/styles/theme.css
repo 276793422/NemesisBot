@@ -33,53 +33,53 @@
 
 /* ===== Dark Theme (Default) ===== */
 :root {
-  /* Brand */
-  --accent: #FF5C00;
-  --accent-hover: #FF7A2E;
-  --accent-muted: rgba(255, 92, 0, 0.15);
+  /* Brand — warm coral instead of harsh orange */
+  --accent: #E8705A;
+  --accent-hover: #F08A78;
+  --accent-muted: rgba(232, 112, 90, 0.12);
 
-  /* Backgrounds */
-  --bg: #080706;
-  --bg-primary: #0F0E0E;
-  --bg-secondary: #181716;
-  --surface: #242221;
-  --surface-hover: #2E2C2A;
-  --surface-active: #383633;
+  /* Backgrounds — warm dark gray-blue instead of pure black */
+  --bg: #1A1D23;
+  --bg-primary: #1E222A;
+  --bg-secondary: #252A33;
+  --surface: #2D333D;
+  --surface-hover: #363D48;
+  --surface-active: #404852;
 
-  /* Borders */
-  --border: #363230;
-  --border-light: #2A2826;
+  /* Borders — softer, more transparent */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.05);
 
-  /* Text */
-  --text: #FFFFFF;
-  --text-secondary: #D1D1D1;
-  --text-muted: #6B6663;
-  --text-inverse: #000000;
+  /* Text — warmer whites, less harsh */
+  --text: #F0EBE5;
+  --text-secondary: #B8B2AA;
+  --text-muted: #7A756F;
+  --text-inverse: #1A1D23;
 
-  /* Status */
-  --success: #4ADE80;
-  --success-bg: rgba(74, 222, 128, 0.1);
-  --error: #EF4444;
-  --error-bg: rgba(239, 68, 68, 0.1);
-  --warning: #F59E0B;
-  --warning-bg: rgba(245, 158, 11, 0.1);
-  --info: #3B82F6;
-  --info-bg: rgba(59, 130, 246, 0.1);
+  /* Status — softer, more pastel */
+  --success: #6DD89C;
+  --success-bg: rgba(109, 216, 156, 0.1);
+  --error: #E87A7A;
+  --error-bg: rgba(232, 122, 122, 0.1);
+  --warning: #E8C87A;
+  --warning-bg: rgba(232, 200, 122, 0.1);
+  --info: #7AA8E8;
+  --info-bg: rgba(122, 168, 232, 0.1);
 
   /* Fonts */
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'Geist Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
 
-  /* Font sizes */
+  /* Font sizes — slightly larger for readability */
   --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
-  --text-base: 0.875rem;
-  --text-lg: 1rem;
-  --text-xl: 1.125rem;
-  --text-2xl: 1.25rem;
-  --text-3xl: 1.5rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 2rem;
 
-  /* Spacing */
+  /* Spacing — more generous */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -89,27 +89,27 @@
   --space-8: 2rem;
   --space-10: 2.5rem;
 
-  /* Radii */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* Radii — much rounder, friendlier */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
   --radius-full: 9999px;
 
-  /* Shadows */
-  --shadow-xs: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-sm: 0 2px 4px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
-  --shadow-xl: 0 16px 48px rgba(0,0,0,0.6);
+  /* Shadows — layered, soft, atmospheric */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.2), 0 0 1px rgba(0,0,0,0.1);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.25), 0 0 1px rgba(0,0,0,0.1);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.3), 0 0 2px rgba(0,0,0,0.1);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.35), 0 0 4px rgba(0,0,0,0.1);
+  --shadow-xl: 0 16px 48px rgba(0,0,0,0.4), 0 0 8px rgba(0,0,0,0.1);
 
-  /* Transitions */
+  /* Transitions — smoother, more organic */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --duration-fast: 150ms;
-  --duration-normal: 250ms;
-  --duration-slow: 400ms;
+  --duration-fast: 200ms;
+  --duration-normal: 300ms;
+  --duration-slow: 500ms;
 
   /* Z-index */
   --z-sidebar: 100;
@@ -118,40 +118,40 @@
   --z-toast: 400;
   --z-tooltip: 500;
 
-  /* Sidebar */
-  --sidebar-width: 240px;
-  --sidebar-collapsed-width: 56px;
+  /* Sidebar — slightly wider for better touch targets */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 64px;
 }
 
 /* ===== Light Theme ===== */
 [data-theme="light"] {
-  --bg: #F5F5F5;
+  --bg: #F7F5F2;
   --bg-primary: #FFFFFF;
-  --bg-secondary: #EEEEEE;
+  --bg-secondary: #F0EDE8;
   --surface: #FFFFFF;
-  --surface-hover: #F0F0F0;
-  --surface-active: #E5E5E5;
+  --surface-hover: #F5F3F0;
+  --surface-active: #EBE8E3;
 
-  --border: #D4D4D4;
-  --border-light: #E5E5E5;
+  --border: rgba(0, 0, 0, 0.06);
+  --border-light: rgba(0, 0, 0, 0.04);
 
-  --text: #1A1A1A;
-  --text-secondary: #525252;
-  --text-muted: #A3A3A3;
+  --text: #1E1B18;
+  --text-secondary: #5A5550;
+  --text-muted: #9A948E;
   --text-inverse: #FFFFFF;
 
-  --accent-muted: rgba(255, 92, 0, 0.08);
+  --accent-muted: rgba(232, 112, 90, 0.08);
 
-  --success-bg: rgba(74, 222, 128, 0.15);
-  --error-bg: rgba(239, 68, 68, 0.1);
-  --warning-bg: rgba(245, 158, 11, 0.15);
-  --info-bg: rgba(59, 130, 246, 0.1);
+  --success-bg: rgba(109, 216, 156, 0.12);
+  --error-bg: rgba(232, 122, 122, 0.08);
+  --warning-bg: rgba(232, 200, 122, 0.12);
+  --info-bg: rgba(122, 168, 232, 0.08);
 
-  --shadow-xs: 0 1px 2px rgba(0,0,0,0.05);
-  --shadow-sm: 0 2px 4px rgba(0,0,0,0.06);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
-  --shadow-xl: 0 16px 48px rgba(0,0,0,0.16);
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04), 0 0 1px rgba(0,0,0,0.02);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.06), 0 0 1px rgba(0,0,0,0.02);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.08), 0 0 2px rgba(0,0,0,0.02);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.1), 0 0 4px rgba(0,0,0,0.02);
+  --shadow-xl: 0 16px 48px rgba(0,0,0,0.12), 0 0 8px rgba(0,0,0,0.02);
 }
 
 /* ===== Global Reset ===== */
@@ -171,7 +171,7 @@ html {
 body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--text);
   background: var(--bg);
   overflow: hidden;
@@ -215,12 +215,12 @@ a:hover {
 }
 
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes fadeInDown {
-  from { opacity: 0; transform: translateY(-8px); }
+  from { opacity: 0; transform: translateY(-12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -235,7 +235,7 @@ a:hover {
 }
 
 @keyframes scaleIn {
-  from { opacity: 0; transform: scale(0.95); }
+  from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: scale(1); }
 }
 

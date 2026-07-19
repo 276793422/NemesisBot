@@ -6,6 +6,8 @@ import { useToast } from '../composables/useToast'
 const { request } = useWSAPI()
 const toast = useToast()
 
+defineProps<{ embedded?: boolean }>()
+
 // --- Tab state ---
 const activeTab = ref('overview')
 const loading = ref(true)
@@ -318,16 +320,20 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-forge">
-    <div class="page-header">
+  <div :class="embedded ? 'forge-embed' : 'page-forge'">
+    <div v-if="!embedded" class="page-header">
       <h2>Forge 自学习</h2>
       <div class="page-header-actions">
         <div class="toggle" :class="{ active: enabled }" @click="toggleForge"></div>
         <button class="btn" :disabled="!enabled" @click="triggerReflect">触发反思</button>
       </div>
     </div>
+    <div v-else class="page-header-actions" style="display: flex; justify-content: flex-end; gap: var(--space-2); margin-bottom: var(--space-3);">
+      <div class="toggle" :class="{ active: enabled }" @click="toggleForge"></div>
+      <button class="btn" :disabled="!enabled" @click="triggerReflect">触发反思</button>
+    </div>
 
-    <div class="page-body">
+    <div :class="embedded ? '' : 'page-body'">
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
       </div>

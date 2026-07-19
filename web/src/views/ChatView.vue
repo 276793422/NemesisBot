@@ -24,7 +24,7 @@ onMounted(async () => {
 
 <template>
   <div class="chat-page-layout">
-    <SessionSidebar v-if="sessionStore.showSidebar" />
+    <SessionSidebar />
     <ChatPanel />
   </div>
 </template>
@@ -36,14 +36,11 @@ onMounted(async () => {
   min-height: 0;
   overflow: hidden;
 }
+
 .chat-page-layout > :deep(.page-chat) {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  /* In the two-column layout, .page-chat is NOT a direct child of
-     .main-content, so it misses layout.css `.main-content > [class^="page-"]`
-     (which gives flex column + height:100%). Restore it here, otherwise
-     .chat-messages' flex:1 collapses and its overflow scrollbar is lost. */
   display: flex;
   flex-direction: column;
   height: 100%;

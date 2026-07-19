@@ -324,15 +324,17 @@ onMounted(() => {
   initDefaultDates()
   loadData()
 })
+
+defineProps<{ embedded?: boolean }>()
 </script>
 
 <template>
-  <div class="page-usage">
-    <div class="page-header">
+  <div :class="embedded ? 'usage-embed' : 'page-usage'">
+    <div v-if="!embedded" class="page-header">
       <h2>使用统计</h2>
     </div>
 
-    <div class="page-body">
+    <div :class="embedded ? '' : 'page-body'">
       <!-- Top-level tabs -->
       <div class="tab-bar">
         <button class="tab-btn" :class="{ active: activeTab === 'usage' }" @click="activeTab = 'usage'">

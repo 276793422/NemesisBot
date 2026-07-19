@@ -2,9 +2,15 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { usePageTab } from '../lib/pageTab'
+import McpView from './McpView.vue'
+import ChannelsView from './ChannelsView.vue'
+import WorkflowView from './WorkflowView.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
+
+const workflowOn = import.meta.env.VITE_FEATURE_WORKFLOW !== 'false'
 
 interface Skill { name: string; has_skill_md?: boolean; description?: string }
 interface SearchResult { name?: string; slug?: string; description?: string; source?: string; source_repo?: string; version?: string; score?: number; installed?: boolean }
@@ -15,6 +21,11 @@ interface Source {
 }
 
 const activeTab = ref('installed')
+const { setTab } = usePageTab(
+  activeTab,
+  ['installed', 'shop', 'mcp', 'channels', 'workflows', 'config'] as const,
+  'installed',
+)
 const skills = ref<Skill[]>([])
 const loading = ref(true)
 const detailContent = ref('')
@@ -410,7 +421,7 @@ function openAddDialog() {
 }
 
 function switchTab(tab: string) {
-  activeTab.value = tab
+  setTab(tab)
   if (tab === 'config') {
     loadConfig()
     loadSources()
@@ -419,17 +430,38 @@ function switchTab(tab: string) {
   }
 }
 
-onMounted(loadInstalled)
+onMounted(() => {
+  loadInstalled()
+  if (activeTab.value === 'config') {
+    loadConfig()
+    loadSources()
+  } else if (activeTab.value === 'shop' && isBrowseMode.value && browseResults.value.length === 0) {
+    browseSkills()
+  }
+})
 </script>
 
 <template>
-  <div class="page-skills">
-    <div class="page-header"><h2>Skills 管理</h2></div>
+  <div class="page-skills page-capabilities">
+    <div class="page-header"><h2>能力</h2></div>
     <div class="page-body">
       <div class="tabs">
-        <button class="tab" :class="{ active: activeTab === 'installed' }" @click="activeTab = 'installed'">已安装</button>
-        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="switchTab('shop')">商店</button>
-        <button class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">配置</button>
+        <button class="tab" :class="{ active: activeTab === 'installed' }" @click="switchTab('installed')">技能</button>
+        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="switchTab('shop')">技能商店</button>
+        <button class="tab" :class="{ active: activeTab === 'mcp' }" @click="switchTab('mcp')">MCP</button>
+        <button class="tab" :class="{ active: activeTab === 'channels' }" @click="switchTab('channels')">通道</button>
+        <button v-if="workflowOn" class="tab" :class="{ active: activeTab === 'workflows' }" @click="switchTab('workflows')">工作流</button>
+        <button class="tab" :class="{ active: activeTab === 'config' }" @click="switchTab('config')">技能配置</button>
+      </div>
+
+      <div v-if="activeTab === 'mcp'">
+        <McpView embedded />
+      </div>
+      <div v-if="activeTab === 'channels'">
+        <ChannelsView embedded />
+      </div>
+      <div v-if="activeTab === 'workflows' && workflowOn">
+        <WorkflowView embedded />
       </div>
 
       <!-- Installed tab -->

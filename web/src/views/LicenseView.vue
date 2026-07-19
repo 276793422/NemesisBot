@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
 
+defineProps<{ embedded?: boolean }>()
+
 const licenseContent = ref('')
 const loading = ref(true)
 const error = ref('')
@@ -29,9 +31,9 @@ const renderedLicense = computed(() => {
 </script>
 
 <template>
-  <div class="page-license">
-    <div class="page-header"><h2>License</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'license-embed' : 'page-license'">
+    <div v-if="!embedded" class="page-header"><h2>License</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div class="card">
         <div class="card-body">
           <div v-if="loading" style="text-align: center; padding: var(--space-8);">

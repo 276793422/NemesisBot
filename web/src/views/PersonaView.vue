@@ -8,10 +8,11 @@
         <span>当前：{{ currentPersona.name }}</span>
       </div>
 
-      <!-- Tabs -->
+      <!-- Tabs: 超市 merged in (was separate sidebar item) -->
       <div class="tabs">
-        <button class="tab" :class="{ active: activeTab === 'current' }" @click="activeTab = 'current'">当前</button>
-        <button class="tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地</button>
+        <button class="tab" :class="{ active: activeTab === 'current' }" @click="setTab('current')">当前</button>
+        <button class="tab" :class="{ active: activeTab === 'local' }" @click="setTab('local')">本地</button>
+        <button class="tab" :class="{ active: activeTab === 'shop' }" @click="setTab('shop')">超市</button>
       </div>
 
       <!-- Current tab: file editor -->
@@ -36,6 +37,11 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Shop tab: former 人格超市 page -->
+      <div v-if="activeTab === 'shop'" class="persona-shop-embed">
+        <PersonaShopView embedded />
       </div>
 
       <!-- Local tab: persona cards -->
@@ -143,6 +149,8 @@ import { marked } from 'marked'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useChatStore } from '../stores/chat'
+import { usePageTab } from '../lib/pageTab'
+import PersonaShopView from './PersonaShopView.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -167,6 +175,7 @@ interface PersonaInfo {
 }
 
 const activeTab = ref('current')
+const { setTab } = usePageTab(activeTab, ['current', 'local', 'shop'] as const, 'current')
 const loading = ref(true)
 const currentPersona = ref<any>(null)
 const personas = ref<PersonaInfo[]>([])

@@ -92,9 +92,12 @@ impl Manager {
             .to_string_lossy()
             .to_string();
 
-        // Step 2: Setup data directories
+        // Step 2: Setup data directories. Default to the ClamAV install dir:
+        // its `database/` subdir is where the virus DB already lives. Do NOT
+        // fall back to the system temp dir — that directory is empty, so clamd
+        // would load zero signatures and silently report every file as clean.
         let data_dir = if self.config.data_dir.is_empty() {
-            std::env::temp_dir().join("nemesisbot-clamav")
+            std::path::PathBuf::from(&clamav_path)
         } else {
             std::path::PathBuf::from(&self.config.data_dir)
         };

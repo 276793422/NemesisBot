@@ -4,6 +4,8 @@ import { useWSAPI } from '../composables/useWSAPI'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { useToast } from '../composables/useToast'
 
+defineProps<{ embedded?: boolean }>()
+
 const { request } = useWSAPI()
 const toast = useToast()
 
@@ -351,9 +353,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-scanner">
-    <div class="page-header"><h2>扫描器管理</h2></div>
-    <div class="page-body">
+  <div :class="embedded ? 'scanner-embed' : 'page-scanner'">
+    <div v-if="!embedded" class="page-header"><h2>扫描器管理</h2></div>
+    <div :class="embedded ? '' : 'page-body'">
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
       </div>
