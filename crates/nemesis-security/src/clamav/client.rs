@@ -71,7 +71,21 @@ impl Client {
 
     /// Scan a single file by path.
     pub async fn scan_file(&self, file_path: &Path) -> Result<ClamavScanResult, String> {
-        let cmd = format!("SCAN {}", file_path.display());
+        // clamd runs with its own working directory (clamav_path, set in
+        // daemon.rs), so a *relative* path is resolved against clamd's cwd,
+        // not ours. clamd then can't find the file and returns a not-found
+        // response, which `parse_scan_response` reads as CLEAN (infected=false)
+        // — a silent false-negative. Force an absolute path. On Windows,
+        // canonicalize() prepends the `\\?\` verbatim prefix that clamd rejects
+        // on the SCAN command line, so strip it.
+        let abs = match std::fs::canonicalize(file_path) {
+            Ok(p) => {
+                let s = p.to_string_lossy().into_owned();
+                std::path::PathBuf::from(s.strip_prefix(r#"\\?\"#).unwrap_or(&s).to_string())
+            }
+            Err(_) => file_path.to_path_buf(),
+        };
+        let cmd = format!("SCAN {}", abs.display());
         let resp = self.send_command(&cmd).await?;
         Ok(parse_scan_response(&resp))
     }

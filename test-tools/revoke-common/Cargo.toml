@@ -1,0 +1,11 @@
+[package]
+name = "revoke-common"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+anyhow = { workspace = true }

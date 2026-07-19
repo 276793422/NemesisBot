@@ -832,6 +832,10 @@ async fn install_engine_inner(
                 obj.insert("state".to_string(), state_val);
             }
             obj.insert("clamav_path".to_string(), serde_json::json!(clamav_path));
+            // Persist data_dir so the engine loads the right virus DB without
+            // depending on the runtime fallback in manager.rs (which points at
+            // clamav_path when data_dir is unset).
+            obj.insert("data_dir".to_string(), serde_json::json!(clamav_path));
         }
         cfg2.engines.insert(name.to_string(), updated);
         save_scanner_config(&path, &cfg2)
