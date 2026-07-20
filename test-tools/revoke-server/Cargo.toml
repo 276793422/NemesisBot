@@ -9,7 +9,7 @@ name = "revoke-server"
 path = "src/main.rs"
 
 [dependencies]
-revoke-common = { path = "../revoke-common" }
+nemesis-verify = { path = "../../crates/nemesis-verify" }
 axum = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true }
 serde = { workspace = true }

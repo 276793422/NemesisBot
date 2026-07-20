@@ -742,30 +742,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
-name = "chacha20"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818"
-dependencies = [
- "cfg-if",
- "cipher",
- "cpufeatures",
-]
-
-[[package]]
-name = "chacha20poly1305"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
-dependencies = [
- "aead",
- "chacha20",
- "cipher",
- "poly1305",
- "zeroize",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -797,7 +773,6 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common",
  "inout",
- "zeroize",
 ]
 
 [[package]]
@@ -1615,17 +1590,8 @@ name = "exe-sign-tool"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chacha20poly1305",
- "chrono",
  "clap",
- "ed25519-dalek",
- "rand 0.8.6",
- "reqwest",
- "revoke-common",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
+ "nemesis-verify",
 ]
 
 [[package]]
@@ -3885,6 +3851,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-verify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "ed25519-dalek",
+ "rand 0.8.6",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "nemesis-voice"
 version = "0.1.0"
 dependencies = [
@@ -4712,17 +4692,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "poly1305"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8159bd90725d2df49889a078b54f4f79e87f1f8a8444194cdca81d38f5393abf"
-dependencies = [
- "cpufeatures",
- "opaque-debug",
- "universal-hash",
-]
-
-[[package]]
 name = "polyval"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5284,20 +5253,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "revoke-common"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "chacha20poly1305",
- "ed25519-dalek",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "revoke-server"
 version = "0.1.0"
 dependencies = [
@@ -5306,9 +5261,9 @@ dependencies = [
  "chrono",
  "clap",
  "ed25519-dalek",
+ "nemesis-verify",
  "parking_lot",
  "rand 0.8.6",
- "revoke-common",
  "rusqlite",
  "serde",
  "serde_json",
@@ -6656,6 +6611,16 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "verify-loader"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "libloading 0.8.9",
+ "nemesis-verify",
+]
 
 [[package]]
 name = "version-compare"

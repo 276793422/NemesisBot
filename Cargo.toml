@@ -7,6 +7,7 @@ members = [
     "crates/nemesis-data",
     "crates/nemesis-observer",
     "crates/nemesis-security",
+    "crates/nemesis-verify",
     "crates/nemesis-sandbox",
     "crates/nemesis-providers",
     "crates/nemesis-tools",
@@ -52,8 +53,8 @@ members = [
     "test-tools/cluster-node",
     "test-tools/nemesis-build-config",
     "test-tools/exe-sign-tool",
-    "test-tools/revoke-common",
     "test-tools/revoke-server",
+    "test-tools/verify-loader",
 ]
 
 [workspace.package]
@@ -134,6 +135,7 @@ nemesis-config = { path = "crates/nemesis-config" }
 nemesis-data = { path = "crates/nemesis-data" }
 nemesis-observer = { path = "crates/nemesis-observer" }
 nemesis-security = { path = "crates/nemesis-security", default-features = false }
+nemesis-verify = { path = "crates/nemesis-verify" }
 nemesis-sandbox = { path = "crates/nemesis-sandbox" }
 nemesis-providers = { path = "crates/nemesis-providers" }
 nemesis-tools = { path = "crates/nemesis-tools" }

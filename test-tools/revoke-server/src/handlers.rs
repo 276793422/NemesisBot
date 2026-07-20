@@ -9,7 +9,7 @@ use axum::response::Response;
 use axum::Json;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use revoke_common::{
+use nemesis_verify::{
     crl_match, sign_response, Crl, CrlEntry, KeyStatus, RevDim, SignedResponse, TrustedKeyList,
 };
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,7 @@ pub async fn verify(
         reason,
         valid_until: crl.valid_until,
     };
-    let signed = sign_response(&resp, &state.crkey).map_err(internal)?;
+    let signed = sign_response(&resp, &state.hierarchy.root_sk).map_err(internal)?;
     Ok(Json(signed))
 }
 
@@ -94,7 +94,7 @@ fn compute_status(
     let hit = req
         .key_fp
         .as_deref()
-        .and_then(|v| crl_match(crl, RevDim::KeyId, v))
+        .and_then(|v| crl_match(crl, RevDim::KeyFp, v))
         .or_else(|| req.sig_hash.as_deref().and_then(|v| crl_match(crl, RevDim::SigHash, v)))
         .or_else(|| req.content_hash.as_deref().and_then(|v| crl_match(crl, RevDim::FileHash, v)))
         .or_else(|| req.publisher.as_deref().and_then(|v| crl_match(crl, RevDim::Publisher, v)));
@@ -109,8 +109,15 @@ fn compute_status(
 pub async fn get_crl(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SignedResponse<Crl>>, (StatusCode, String)> {
+    // 调试开关：模拟 /v1/crl 故障（测 OCSP fallback 路径：CRL 挂但 /v1/crl/query 活）。默认关。
+    if std::env::var("NEMESIS_DEBUG_CRL_500")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, "debug: CRL forced 500".into()));
+    }
     let crl = state.store.list_crl().map_err(internal)?;
-    let signed = sign_response(&crl, &state.crkey).map_err(internal)?;
+    let signed = sign_response(&crl, &state.hierarchy.root_sk).map_err(internal)?;
     Ok(Json(signed))
 }
 
@@ -118,7 +125,45 @@ pub async fn get_trusted_keys(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SignedResponse<TrustedKeyList>>, (StatusCode, String)> {
     let tkl = state.store.list_trusted_keys().map_err(internal)?;
-    let signed = sign_response(&tkl, &state.crkey).map_err(internal)?;
+    let signed = sign_response(&tkl, &state.hierarchy.root_sk).map_err(internal)?;
+    Ok(Json(signed))
+}
+
+// ===================== /v1/crl/query（OCSP-like 单条查询）=====================
+
+/// OCSP-like 单条查询：纯查 CRL（不查 trusted_keys），返被根签的 OcspResp。
+/// 与 `/v1/verify` 区别：verify 含 trusted_keys 准入检查；本端点纯吊销查询（DLL 用）。
+pub async fn crl_query(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<nemesis_verify::revocation::OcspReq>,
+) -> Result<Json<SignedResponse<nemesis_verify::revocation::OcspResp>>, (StatusCode, String)> {
+    let crl = state.store.list_crl().map_err(internal)?;
+    let hit = req
+        .key_fp
+        .as_deref()
+        .and_then(|v| crl_match(&crl, RevDim::KeyFp, v))
+        .or_else(|| req.sig_hash.as_deref().and_then(|v| crl_match(&crl, RevDim::SigHash, v)))
+        .or_else(|| req.content_hash.as_deref().and_then(|v| crl_match(&crl, RevDim::FileHash, v)))
+        .or_else(|| req.publisher.as_deref().and_then(|v| crl_match(&crl, RevDim::Publisher, v)));
+    let resp = match hit {
+        Some(e) => nemesis_verify::revocation::OcspResp {
+            code: "revoked".into(),
+            dim: Some(e.dim),
+            value: Some(e.value.clone()),
+            revoked_at: Some(e.revoked_at),
+            reason: Some(e.reason.clone()),
+            crl_ver: crl.version,
+        },
+        None => nemesis_verify::revocation::OcspResp {
+            code: "valid".into(),
+            dim: None,
+            value: None,
+            revoked_at: None,
+            reason: None,
+            crl_ver: crl.version,
+        },
+    };
+    let signed = sign_response(&resp, &state.hierarchy.root_sk).map_err(internal)?;
     Ok(Json(signed))
 }
 
@@ -163,7 +208,7 @@ pub async fn admin_revoke(
 pub async fn admin_trusted_key(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(req): Json<revoke_common::TrustedKey>,
+    Json(req): Json<nemesis_verify::TrustedKey>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_admin(&state, &headers)?;
     let ver = state.store.upsert_trusted_key(req.clone()).map_err(internal)?;
@@ -241,60 +286,38 @@ pub async fn sign_upload(
     let file_bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'file' field".into()))?;
     let publisher = publisher_override.or(user.publisher);
 
-    // codec 算 PE 感知 content_hash
-    let codec = revoke_common::codec::detect_codec(&file_bytes);
-    let format_tag = revoke_common::codec::detect_format(&file_bytes);
+    let signed_at = now_secs();
+
+    // v3 签发：发行方私钥签 content，envelope 带 pubkey + 完整证书链（issuer→CA→root）
+    let signed_file = nemesis_verify::verify::sign_content(
+        &file_bytes,
+        &state.hierarchy.issuer_sk,
+        signed_at,
+        Some(&state.hierarchy.issuer_chain_bytes),
+        publisher.as_deref(),
+        None,
+        None,
+    )
+    .map_err(internal)?;
+
+    // registry 元数据：content_hash（codec 算）+ key_fp（发行方公钥指纹）
+    let codec = nemesis_verify::codec::detect_codec(&file_bytes);
     let content_len = match codec.compute_l(&file_bytes).map_err(internal)? {
         Some(l) => l,
         None => file_bytes.len(),
     };
-    let content_hash = codec.content_hash(&file_bytes, content_len).map_err(internal)?;
+    let content_hash: [u8; 32] = codec.content_hash(&file_bytes, content_len).map_err(internal)?;
+    let key_fp: [u8; 32] = Sha256::digest(state.hierarchy.issuer_vk.to_bytes()).into();
+    // sig_hash = SHA-256(signature)，从签名文件 envelope 解析（CRL 单签名吊销维度）。
+    // sign_content 刚签完 envelope 必在，失败兜底 content_hash（理论上不触发）。
+    let sig_hash: [u8; 32] = nemesis_verify::view::latest_sig_hash(&signed_file)
+        .unwrap_or_else(|| Sha256::digest(content_hash).into());
 
-    // Ed25519 签名（signing_key 签 content_hash）
-    let vk = state.signing_key.verifying_key();
-    let fp: [u8; 32] = Sha256::digest(vk.to_bytes()).into();
-    let signed_at = now_secs();
-    let signed_meta = revoke_common::envelope::build_signed_meta(
-        format_tag, 0u16, signed_at, 0, &fp, &content_hash, publisher.as_deref(), None,
-    );
-    let mut signing_msg = Vec::with_capacity(revoke_common::envelope::DOMAIN.len() + signed_meta.len());
-    signing_msg.extend_from_slice(revoke_common::envelope::DOMAIN);
-    signing_msg.extend_from_slice(&signed_meta);
-    let signature = revoke_common::crypto::ed25519_sign(&state.signing_key, &signing_msg);
-    let sig_hash: [u8; 32] = Sha256::digest(signature).into();
-
-    // envelope 构造（与 exe-sign-tool sign 一致）
-    let body_plain = revoke_common::envelope::build_body_plaintext(
-        0u16, signed_at, 0, &fp, &signature, &content_hash,
-        publisher.as_deref(), None, &sig_hash,
-    );
-    let sym_key = state.sym_key;
-    let body_len = body_plain.len() + revoke_common::envelope::AEAD_TAG_LEN;
-    let total_len = revoke_common::envelope::align_up(
-        body_len + revoke_common::envelope::FOOTER_LEN,
-        revoke_common::envelope::ENVELOPE_ALIGN,
-    );
-    let mut nonce = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce);
-    let footer = revoke_common::envelope::build_footer(
-        format_tag, total_len, body_len, content_len, &nonce,
-    );
-    let ciphertext = revoke_common::crypto::aead_seal(
-        &sym_key, &nonce, &body_plain, &footer[..revoke_common::envelope::FOOTER_AAD_LEN],
-    )
-    .map_err(internal)?;
-    let envelope = revoke_common::envelope::assemble_envelope(&ciphertext, &footer);
-
-    // attach（签名文件 = 原始文件 + envelope）
-    let mut signed_file = file_bytes;
-    signed_file.extend_from_slice(&envelope);
-
-    // registry（签发记录）
     state
         .store
         .add_signature(&SignatureRecord {
             sig_hash: hex_str(&sig_hash),
-            key_fp: hex_str(&fp),
+            key_fp: hex_str(&key_fp),
             publisher: publisher.clone(),
             signed_at,
             content_hash: hex_str(&content_hash),

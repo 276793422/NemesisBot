@@ -12,7 +12,7 @@
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
-use revoke_common::{Crl, CrlEntry, KeyStatus, RevDim, TrustedKey, TrustedKeyList};
+use nemesis_verify::{Crl, CrlEntry, KeyStatus, RevDim, TrustedKey, TrustedKeyList};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -374,7 +374,7 @@ impl RevocationStore for SqliteStore {
 // ---- enum ↔ string 转换 ----
 pub fn dim_str(d: RevDim) -> &'static str {
     match d {
-        RevDim::KeyId => "key_id",
+        RevDim::KeyFp => "key_fp",
         RevDim::SigHash => "sig_hash",
         RevDim::FileHash => "file_hash",
         RevDim::Publisher => "publisher",
@@ -382,10 +382,11 @@ pub fn dim_str(d: RevDim) -> &'static str {
 }
 fn parse_dim(s: &str) -> RevDim {
     match s {
+        "key_fp" => RevDim::KeyFp,
         "sig_hash" => RevDim::SigHash,
         "file_hash" => RevDim::FileHash,
         "publisher" => RevDim::Publisher,
-        _ => RevDim::KeyId,
+        _ => RevDim::KeyFp,
     }
 }
 pub fn status_str(s: KeyStatus) -> &'static str {
@@ -413,7 +414,7 @@ mod tests {
     fn crl_add_and_query() {
         let s = store();
         let entry = CrlEntry {
-            dim: RevDim::KeyId,
+            dim: RevDim::KeyFp,
             value: "abc".into(),
             revoked_at: 100,
             reason: "leak".into(),
@@ -421,11 +422,11 @@ mod tests {
         let ver = s.add_revoke(entry.clone()).unwrap();
         assert_eq!(ver, 2); // 初始 version=1，add 后 2
         // 查
-        let hit = s.query_revoke(RevDim::KeyId, "abc").unwrap().unwrap();
+        let hit = s.query_revoke(RevDim::KeyFp, "abc").unwrap().unwrap();
         assert_eq!(hit.value, "abc");
         assert_eq!(hit.reason, "leak");
         // 不命中
-        assert!(s.query_revoke(RevDim::KeyId, "none").unwrap().is_none());
+        assert!(s.query_revoke(RevDim::KeyFp, "none").unwrap().is_none());
         // 列表
         let crl = s.list_crl().unwrap();
         assert_eq!(crl.version, 2);

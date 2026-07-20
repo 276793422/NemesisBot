@@ -62,7 +62,7 @@ pub trait ExecutableCodec: Send + Sync {
 
     /// overlay `[l, file_len)` 内需要跳过的区域（如 PE 的 Authenticode 证书表），
     /// 供 envelope 扫描时避开，避免误匹配/重复扫描。默认空（ELF / Raw 无需跳过）。
-    /// 解析失败时返回空（容错，不阻断扫描——后续 footer_crc/AEAD/验签仍把关）。
+    /// 解析失败时返回空（容错，不阻断扫描——后续 footer_crc/验签仍把关）。
     fn overlay_excludes(&self, _bytes: &[u8]) -> Vec<(usize, usize)> {
         Vec::new()
     }

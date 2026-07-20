@@ -12,7 +12,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 /// 将十六进制字符串解码为 32 字节数组。
 ///
 /// 要求输入恰为 64 个十六进制字符（不区分大小写），否则返回错误。
-/// 主要用于 Ed25519 公私钥（32 字节）与 ChaCha20 对称密钥（32 字节）。
+/// 主要用于 Ed25519 公私钥（32 字节）。
 pub fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
     let hex = hex.trim();
     if hex.len() != 64 {

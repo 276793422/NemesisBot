@@ -4,29 +4,12 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 
-# lib（核心签名/验证逻辑，便于 cargo test 与未来抽进主项目）
-[lib]
-name = "exe_sign_tool"
-path = "src/lib.rs"
-
-# bin（CLI：keygen / sign / verify）
+# v3：纯 bin（lib 直接验签，不加载 DLL）。verify 用 nemesis-verify lib（含联网吊销）。
 [[bin]]
 name = "exe-sign-tool"
 path = "src/main.rs"
 
 [dependencies]
-ed25519-dalek = { workspace = true }
-sha2 = { workspace = true }
-rand = { workspace = true }
-# chacha20poly1305 未在 workspace.dependencies，直接写版本（不动主项目 workspace 配置）
-chacha20poly1305 = "0.10"
+nemesis-verify = { path = "../../crates/nemesis-verify" }
 clap = { workspace = true }
 anyhow = { workspace = true }
-chrono = { workspace = true }
-revoke-common = { path = "../revoke-common" }
-reqwest = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"
