@@ -27,3 +27,4 @@ scripts/customize/.config
 /test-tools/autotest
 /cluster-uat-logs
 /test-tools/TestAIServer
+/dist

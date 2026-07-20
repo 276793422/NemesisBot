@@ -69,7 +69,12 @@ impl CloudClient {
             Ok(s) => s,
             Err(_) => return Ok(None),
         };
-        if !verify_response(&signed, &self.crpub)? {
+        // sig 解码/验签失败 → soft-fail（Ok(None)），不打破"不可达→本地兜底"契约
+        let sig_ok = match verify_response(&signed, &self.crpub) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        };
+        if !sig_ok {
             return Ok(None); // 响应签名无效 → 视为不可信/被篡改
         }
         Ok(Some(signed.payload))

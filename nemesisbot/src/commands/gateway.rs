@@ -3339,6 +3339,28 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
+    // Stop scanner chain — kills clamd so it doesn't orphan (holds port 3310,
+    // breaks next gateway start). SecurityService trait has no stop hook, so we
+    // call SecurityPlugin.stop_scanner directly here.
+    #[cfg(feature = "security")]
+    {
+        if let Some(ref plugin) = security_plugin {
+            plugin.stop_scanner().await;
+            info!("[Gateway] Scanner chain stopped (clamd killed)");
+        }
+    }
+
+    // Uninstall sandbox driver + service on exit (user opted for full cleanup).
+    // Needs admin → UAC fire-and-forget if gateway isn't elevated. Driver unload
+    // is BSOD-prone but mitigated: install::stop tolerant mode + KmdUtil retry,
+    // and per-call executors have exited by now (agent loop stopped earlier).
+    #[cfg(feature = "sandbox")]
+    {
+        if let Err(e) = crate::commands::sandbox::stop_for_shutdown(&home).await {
+            warn!("[Gateway] sandbox shutdown cleanup failed: {} (driver/service may remain)", e);
+        }
+    }
+
     // Close the message bus
     bus.close();
 

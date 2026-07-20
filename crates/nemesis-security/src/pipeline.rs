@@ -789,6 +789,13 @@ impl SecurityPlugin {
         Arc::clone(&self.scan_chain)
     }
 
+    /// Stop all scanner engines (kills clamd via Manager → Daemon → child.kill).
+    /// Call on gateway shutdown so the clamd child doesn't orphan.
+    pub async fn stop_scanner(&self) {
+        let chain = self.scan_chain.read().await;
+        chain.stop().await;
+    }
+
     /// Initialize the scan chain with a real scanner engine.
     ///
     /// Equivalent to Go's `initScannerChain()`.

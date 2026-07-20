@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 revoke-common = { path = "../revoke-common" }
-axum = { workspace = true }
+axum = { workspace = true, features = ["multipart"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,4 +19,6 @@ clap = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 parking_lot = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
 rusqlite = { version = "0.34", features = ["bundled"] }

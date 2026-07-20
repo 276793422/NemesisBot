@@ -304,6 +304,25 @@ fn stop(
     Ok(())
 }
 
+/// gateway 退出时卸载 sandbox 驱动 + 服务（install::stop，非 purge — 保留文件
+/// 供下次 start 免重下载）。gateway 通常未提权 → relaunch_elevated 起 UAC 子
+/// 进程 fire-and-forget（用户需点 UAC 确认，gateway 不等）；已提权则同步卸载。
+/// BSOD 风险（驱动装卸）由 install::stop 的 tolerant + KmdUtil 内置重试兜底；
+/// 调用时机在 gateway shutdown 序列靠后（agent loop 已停、per-call executor 已退）。
+pub async fn stop_for_shutdown(home: &std::path::Path) -> Result<()> {
+    let paths = nemesis_sandbox::SandboxPaths::new(home);
+    if nemesis_sandbox::elevation::is_elevated() {
+        nemesis_sandbox::install::stop(&paths, false)?;
+        println!("[sandbox] engine deactivated on gateway shutdown.");
+    } else {
+        let exe = std::env::current_exe()?;
+        let args = vec!["sandbox".to_string(), "stop".to_string(), "--internal".to_string()];
+        nemesis_sandbox::elevation::relaunch_elevated(&exe, &args)?;
+        println!("[sandbox] elevated deactivator launched on shutdown (UAC prompt).");
+    }
+    Ok(())
+}
+
 fn status(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
     let sbiesvc = nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE);
     let sbiedrv = nemesis_sandbox::status::service_state(nemesis_sandbox::DRIVER_SERVICE);

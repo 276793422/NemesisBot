@@ -32,7 +32,7 @@ impl Code {
         match self {
             Code::Valid => 0,                       // ERROR_SUCCESS
             Code::NoSignature => 0x800B_0100,       // TRUST_E_NOSIGNATURE
-            Code::BadDigest => 0x800B_0101,         // TRUST_E_BAD_DIGEST（待核）
+            Code::BadDigest => 0x8009_6001,         // TRUST_E_BAD_DIGEST（winerror.h；与 CERT_E_EXPIRED 区分）
             Code::SignatureInvalid => 0x800B_0111,  // TRUST_E_CERT_SIGNATURE
             Code::Expired => 0x800B_0101,           // CERT_E_EXPIRED（待核，与 BadDigest 区分靠上下文）
             Code::Revoked => 0x800B_010C,           // CERT_E_REVOKED

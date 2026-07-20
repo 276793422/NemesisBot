@@ -1,3 +1,4 @@
+#![allow(dead_code)] // users/signatures 待 T2 签发 API 接入后自然使用
 //! 存储抽象层：`RevocationStore` trait + SQLite 默认实现 + 审计记录。
 //!
 //! 多后端设计：trait 抽象存储，默认 [`SqliteStore`]（rusqlite bundled，无系统依赖）。
@@ -30,6 +31,28 @@ pub struct AuditRecord {
     pub detail: Option<String>,
 }
 
+/// 用户记录（签发 token 管理，多用户多 token）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserRecord {
+    pub token: String,
+    pub name: String,
+    pub publisher: Option<String>,
+    pub active: bool,
+    pub created_at: u64,
+}
+
+/// 签发记录（registry：谁/何时/签了什么 → Web UI 清单 + 一键吊销）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignatureRecord {
+    pub sig_hash: String,
+    pub key_fp: String,
+    pub publisher: Option<String>,
+    pub signed_at: u64,
+    pub content_hash: String,
+    pub user_name: Option<String>,
+    pub registered_at: u64,
+}
+
 /// 存储抽象（多后端：SQLite 默认，后续 MySQL/PG/JSON）。
 pub trait RevocationStore: Send + Sync {
     // CRL
@@ -43,6 +66,13 @@ pub trait RevocationStore: Send + Sync {
     // audit
     fn add_audit(&self, record: AuditRecord) -> Result<()>;
     fn list_audit(&self, limit: u32) -> Result<Vec<AuditRecord>>;
+    // users（签发 token 管理）
+    fn add_user(&self, token: &str, name: &str, publisher: Option<&str>, created_at: u64) -> Result<()>;
+    fn get_user_by_token(&self, token: &str) -> Result<Option<UserRecord>>;
+    fn list_users(&self) -> Result<Vec<UserRecord>>;
+    // signatures（签发 registry）
+    fn add_signature(&self, rec: &SignatureRecord) -> Result<()>;
+    fn list_signatures(&self, limit: u32) -> Result<Vec<SignatureRecord>>;
 }
 
 // ===================== SQLite 实现（默认） =====================
@@ -85,6 +115,13 @@ impl SqliteStore {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL,
                  action TEXT NOT NULL, operator TEXT NOT NULL,
                  dim TEXT, value TEXT, reason TEXT, detail TEXT);
+             CREATE TABLE IF NOT EXISTS users (
+                 token TEXT PRIMARY KEY, name TEXT NOT NULL,
+                 publisher TEXT, active INTEGER DEFAULT 1, created_at INTEGER NOT NULL);
+             CREATE TABLE IF NOT EXISTS signatures (
+                 sig_hash TEXT PRIMARY KEY, key_fp TEXT NOT NULL,
+                 publisher TEXT, signed_at INTEGER NOT NULL,
+                 content_hash TEXT NOT NULL, user_name TEXT, registered_at INTEGER NOT NULL);
              INSERT OR IGNORE INTO meta(key, value) VALUES('crl_version','1');
              INSERT OR IGNORE INTO meta(key, value) VALUES('trusted_keys_version','1');
              INSERT OR IGNORE INTO meta(key, value) VALUES('crl_valid_until','0');",
@@ -115,7 +152,7 @@ impl RevocationStore for SqliteStore {
     fn list_crl(&self) -> Result<Crl> {
         let conn = self.conn.lock();
         let version: u64 = meta_get(&conn, "crl_version")?.parse().unwrap_or(1);
-        let valid_until: u64 = meta_get(&conn, "crl_valid_until")?.parse().unwrap_or(0);
+        let valid_until: u64 = u64::MAX; // CRL 永久有效（服务端在线；valid_until 供客户端缓存参考）
         let mut stmt = conn.prepare("SELECT dim, value, revoked_at, reason FROM crl_entries")?;
         let entries = stmt
             .query_map([], |row| {
@@ -254,10 +291,88 @@ impl RevocationStore for SqliteStore {
             .collect();
         Ok(rows)
     }
+
+    // ---- users（签发 token 管理）----
+    fn add_user(&self, token: &str, name: &str, publisher: Option<&str>, created_at: u64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT OR REPLACE INTO users(token, name, publisher, active, created_at) VALUES(?,?,?,?,?)",
+            params![token, name, publisher, 1, created_at],
+        )?;
+        Ok(())
+    }
+    fn get_user_by_token(&self, token: &str) -> Result<Option<UserRecord>> {
+        let conn = self.conn.lock();
+        let row = conn
+            .query_row(
+                "SELECT token, name, publisher, active, created_at FROM users WHERE token=? AND active=1",
+                params![token],
+                |r| Ok(UserRecord {
+                    token: r.get(0)?,
+                    name: r.get(1)?,
+                    publisher: r.get(2)?,
+                    active: r.get::<_, i64>(3)? != 0,
+                    created_at: r.get(4)?,
+                }),
+            )
+            .optional()?;
+        Ok(row)
+    }
+    fn list_users(&self) -> Result<Vec<UserRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT token, name, publisher, active, created_at FROM users ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(UserRecord {
+                    token: r.get(0)?,
+                    name: r.get(1)?,
+                    publisher: r.get(2)?,
+                    active: r.get::<_, i64>(3)? != 0,
+                    created_at: r.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    // ---- signatures（签发 registry）----
+    fn add_signature(&self, rec: &SignatureRecord) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT OR REPLACE INTO signatures(sig_hash, key_fp, publisher, signed_at, content_hash, user_name, registered_at) VALUES(?,?,?,?,?,?,?)",
+            params![rec.sig_hash, rec.key_fp, rec.publisher, rec.signed_at, rec.content_hash, rec.user_name, rec.registered_at],
+        )?;
+        Ok(())
+    }
+    fn list_signatures(&self, limit: u32) -> Result<Vec<SignatureRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT sig_hash, key_fp, publisher, signed_at, content_hash, user_name, registered_at
+             FROM signatures ORDER BY registered_at DESC LIMIT ?",
+        )?;
+        let rows = stmt
+            .query_map(params![limit as i64], |r| {
+                Ok(SignatureRecord {
+                    sig_hash: r.get(0)?,
+                    key_fp: r.get(1)?,
+                    publisher: r.get(2)?,
+                    signed_at: r.get(3)?,
+                    content_hash: r.get(4)?,
+                    user_name: r.get(5)?,
+                    registered_at: r.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
 }
 
 // ---- enum ↔ string 转换 ----
-fn dim_str(d: RevDim) -> &'static str {
+pub fn dim_str(d: RevDim) -> &'static str {
     match d {
         RevDim::KeyId => "key_id",
         RevDim::SigHash => "sig_hash",
@@ -273,7 +388,7 @@ fn parse_dim(s: &str) -> RevDim {
         _ => RevDim::KeyId,
     }
 }
-fn status_str(s: KeyStatus) -> &'static str {
+pub fn status_str(s: KeyStatus) -> &'static str {
     match s {
         KeyStatus::Active => "active",
         KeyStatus::Revoked => "revoked",

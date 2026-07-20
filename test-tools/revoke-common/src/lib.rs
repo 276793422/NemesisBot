@@ -5,6 +5,14 @@
 //!
 //! 详见 `docs/PLAN/2026-07-18_signature-revocation-cloud.md`。
 
+// codec（PE/ELF/Raw 解析 + content_hash）—— 签发/验证共用，从 exe-sign-tool 移入
+pub mod codec;
+pub mod crypto;
+pub mod elf;
+pub mod envelope;
+pub mod hex_util;
+pub mod pe;
+
 use anyhow::{anyhow, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};

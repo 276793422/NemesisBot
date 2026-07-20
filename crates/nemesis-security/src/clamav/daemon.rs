@@ -54,6 +54,11 @@ impl Daemon {
         let mut cmd = Command::new(&clamd_exe);
         cmd.args(["--config-file", &self.config.config_file, "-F"]);
         cmd.current_dir(&self.config.clamav_path);
+        // Kill clamd when the Child handle drops — otherwise the daemon orphans
+        // on gateway exit, holds port 3310 (~1GB RAM), and the next gateway
+        // start hits a port conflict → ping-only fallback. Belt-and-suspenders
+        // alongside the explicit stop_scanner() in the gateway shutdown path.
+        cmd.kill_on_drop(true);
 
         let child = cmd.spawn().map_err(|e| format!("failed to start clamd: {}", e))?;
 

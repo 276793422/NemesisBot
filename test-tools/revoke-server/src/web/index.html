@@ -3,38 +3,67 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>吊销管理 — NemesisBot</title>
+<title>签名服务 — NemesisBot</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 20px; max-width: 1200px; color: #222; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 16px; max-width: 1200px; color: #222; }
   h1 { font-size: 20px; } h2 { font-size: 16px; margin-top: 24px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
-  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; font-size: 13px; word-break: break-all; }
+  h3 { font-size: 14px; margin-top: 18px; color: #555; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: left; font-size: 12px; word-break: break-all; }
   th { background: #f5f5f5; }
   input, select, button { padding: 5px 8px; font-size: 13px; box-sizing: border-box; }
-  input[type=text], input:not([type]) { min-width: 160px; }
   button { cursor: pointer; background: #2a7; color: #fff; border: 0; border-radius: 3px; padding: 6px 12px; }
   button:hover { background: #195; }
   button.sec { background: #888; } button.sec:hover { background: #666; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
-  .muted { color: #888; font-size: 12px; }
-  .err { color: #c33; } .ok { color: #2a7; }
-  #login { padding: 12px; background: #f9f9f9; border-radius: 4px; }
+  button.danger { background: #c33; } button.danger:hover { background: #a22; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 5px 0; }
+  .muted { color: #888; font-size: 12px; } .err { color: #c33; } .ok { color: #2a7; }
+  .section { padding: 10px; background: #f9f9f9; border-radius: 4px; margin-top: 8px; }
+  .sig-hash { font-family: monospace; font-size: 11px; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
-<h1>吊销管理（NemesisBot 签名验证服务端）</h1>
+<h1>NemesisBot 签名服务</h1>
 
-<div id="login">
-  <div class="row">
-    <input id="token" placeholder="admin token" style="min-width:240px">
-    <button onclick="doLogin()">登录</button>
-    <span id="loginStatus" class="muted"></span>
-  </div>
+<!-- ========== 签发区（developer，user token）========== -->
+<div class="section">
+<h2>📝 签发文件（开发者）</h2>
+<div class="row">
+  <input id="userToken" placeholder="签发 token（用户）" style="min-width:300px">
+</div>
+<div class="row">
+  <input type="file" id="signFile">
+  <input id="signPublisher" placeholder="publisher（可选，如 MyOrg）">
+  <button onclick="doSign()">签发并下载</button>
+  <span id="signMsg"></span>
+</div>
+<p class="muted">上传待签名文件 → 服务端签名 → 浏览器自动下载签名完成的文件。</p>
 </div>
 
-<div id="panel" style="display:none">
+<!-- ========== 管理区（admin token）========== -->
+<div class="section">
+<h2>⚙️ 管理（admin）</h2>
+<div class="row">
+  <input id="adminToken" placeholder="admin token" style="min-width:300px">
+  <button onclick="doAdminLogin()">登录</button>
+  <span id="adminStatus" class="muted"></span>
+</div>
 
-  <h2>CRL（吊销列表） <button class="sec" onclick="loadCrl()">刷新</button></h2>
+<div id="adminPanel" style="display:none">
+
+  <h3>📋 签发清单 <button class="sec" onclick="loadSignatures()">刷新</button></h3>
+  <table id="sigTable"><tr><th>sig_hash</th><th>publisher</th><th>signed_at</th><th>user</th><th>操作</th></tr></table>
+
+  <h3>👥 用户管理 <button class="sec" onclick="loadUsers()">刷新</button></h3>
+  <div class="row">
+    <input id="newUserName" placeholder="用户名">
+    <input id="newUserPublisher" placeholder="默认 publisher（可选）">
+    <button onclick="createUser()">创建用户</button>
+    <span id="userMsg"></span>
+  </div>
+  <table id="userTable"><tr><th>token</th><th>name</th><th>publisher</th><th>created_at</th></tr></table>
+
+  <h3>🚫 CRL（吊销列表） <button class="sec" onclick="loadCrl()">刷新</button></h3>
   <table id="crlTable"><tr><th>维度</th><th>值</th><th>吊销时间</th><th>原因</th></tr></table>
   <div class="row">
     <select id="rvDim">
@@ -43,106 +72,194 @@
       <option value="file_hash">file_hash（文件）</option>
       <option value="publisher">publisher（发布者）</option>
     </select>
-    <input id="rvValue" placeholder="值（hex 或字符串）" style="min-width:300px">
-    <input id="rvReason" placeholder="原因（如 key_leak）">
-    <button onclick="addRevoke()">吊销</button>
+    <input id="rvValue" placeholder="值" style="min-width:280px">
+    <input id="rvReason" placeholder="原因">
+    <button class="danger" onclick="addRevoke()">吊销</button>
     <span id="rvMsg"></span>
   </div>
 
-  <h2>受信任公钥 <button class="sec" onclick="loadTrusted()">刷新</button></h2>
-  <table id="tkTable"><tr><th>key_fp（hex）</th><th>状态</th></tr></table>
+  <h3>🔑 受信任公钥 <button class="sec" onclick="loadTrusted()">刷新</button></h3>
+  <table id="tkTable"><tr><th>key_fp</th><th>状态</th></tr></table>
   <div class="row">
-    <input id="tkFp" placeholder="key_fp hex（64 字符）" style="min-width:420px">
+    <input id="tkFp" placeholder="key_fp hex" style="min-width:380px">
     <select id="tkStatus"><option value="active">active</option><option value="revoked">revoked</option></select>
     <button onclick="addTrusted()">设置</button>
     <span id="tkMsg"></span>
   </div>
 
-  <h2>审计日志 <button class="sec" onclick="loadAudit()">刷新</button></h2>
+  <h3>📜 审计日志 <button class="sec" onclick="loadAudit()">刷新</button></h3>
   <table id="auTable"><tr><th>时间</th><th>操作</th><th>操作者</th><th>维度</th><th>值</th><th>原因</th></tr></table>
 
 </div>
+</div>
 
 <script>
-let TOKEN = localStorage.getItem('revAdminToken') || '';
-if (TOKEN) { document.getElementById('token').value = TOKEN; doLogin(); }
-
-function doLogin() {
-  TOKEN = document.getElementById('token').value.trim();
-  if (!TOKEN) { document.getElementById('loginStatus').innerHTML = '<span class=err>请输入 token</span>'; return; }
-  localStorage.setItem('revAdminToken', TOKEN);
-  document.getElementById('loginStatus').innerHTML = '<span class=ok>已登录</span>';
-  document.getElementById('panel').style.display = 'block';
-  loadCrl(); loadTrusted(); loadAudit();
+// ========== 签发 ==========
+async function doSign() {
+  const token = document.getElementById('userToken').value.trim();
+  const fileInput = document.getElementById('signFile');
+  const publisher = document.getElementById('signPublisher').value.trim();
+  const msg = document.getElementById('signMsg');
+  if (!token) { msg.innerHTML = '<span class=err>请输入签发 token</span>'; return; }
+  if (!fileInput.files[0]) { msg.innerHTML = '<span class=err>请选择文件</span>'; return; }
+  msg.innerHTML = '<span class=muted>签发中...</span>';
+  try {
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    if (publisher) fd.append('publisher', publisher);
+    const resp = await fetch('/v1/sign', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token },
+      body: fd,
+    });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      msg.innerHTML = '<span class=err>签发失败: HTTP ' + resp.status + ' ' + esc(txt) + '</span>';
+      return;
+    }
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileInput.files[0].name + '.signed';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    msg.innerHTML = '<span class=ok>✅ 签发成功，已下载 ' + esc(a.download) + '</span>';
+  } catch (e) {
+    msg.innerHTML = '<span class=err>失败: ' + esc(e.message) + '</span>';
+  }
 }
 
-async function api(path, method, body) {
-  const opt = { method, headers: { 'Authorization': 'Bearer ' + TOKEN } };
+// ========== 管理登录 ==========
+function doAdminLogin() {
+  const token = document.getElementById('adminToken').value.trim();
+  if (!token) { document.getElementById('adminStatus').innerHTML = '<span class=err>请输入 admin token</span>'; return; }
+  localStorage.setItem('revAdminToken', token);
+  document.getElementById('adminStatus').innerHTML = '<span class=ok>已登录</span>';
+  document.getElementById('adminPanel').style.display = 'block';
+  loadSignatures(); loadUsers(); loadCrl(); loadTrusted(); loadAudit();
+}
+
+let ADMIN_TOKEN = localStorage.getItem('revAdminToken') || '';
+if (ADMIN_TOKEN) {
+  document.getElementById('adminToken').value = ADMIN_TOKEN;
+  doAdminLogin();
+}
+
+async function adminApi(path, method, body) {
+  const opt = { method, headers: { 'Authorization': 'Bearer ' + document.getElementById('adminToken').value } };
   if (body) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const r = await fetch(path, opt);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
 
-function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : ''; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : ''; }
 
+// ========== 签发清单 ==========
+async function loadSignatures() {
+  try {
+    const list = await adminApi('/v1/signatures', 'GET');
+    let rows = list.map(s =>
+      `<tr><td class=sig-hash title="${esc(s.sig_hash)}">${esc(s.sig_hash.slice(0,16))}…</td>
+       <td>${esc(s.publisher||'')}</td><td>${fmtTime(s.signed_at)}</td><td>${esc(s.user_name||'')}</td>
+       <td><button class=danger onclick="quickRevoke('sig_hash','${esc(s.sig_hash)}')">吊销</button></td></tr>`
+    ).join('');
+    if (!rows) rows = '<tr><td colspan=5 class=muted>无签发记录</td></tr>';
+    document.getElementById('sigTable').innerHTML = '<tr><th>sig_hash</th><th>publisher</th><th>signed_at</th><th>user</th><th>操作</th></tr>' + rows;
+  } catch (e) {}
+}
+
+function quickRevoke(dim, value) {
+  document.getElementById('rvDim').value = dim;
+  document.getElementById('rvValue').value = value;
+  addRevoke();
+}
+
+// ========== 用户管理 ==========
+async function createUser() {
+  const name = document.getElementById('newUserName').value.trim();
+  const publisher = document.getElementById('newUserPublisher').value.trim();
+  const msg = document.getElementById('userMsg');
+  if (!name) { msg.innerHTML = '<span class=err>请填用户名</span>'; return; }
+  try {
+    const r = await adminApi('/v1/admin/user', 'POST', { name, publisher: publisher || null });
+    msg.innerHTML = '<span class=ok>✅ token: ' + esc(r.token) + '（请复制给开发者）</span>';
+    document.getElementById('newUserName').value = '';
+    loadUsers();
+  } catch (e) { msg.innerHTML = '<span class=err>失败: ' + esc(e.message) + '</span>'; }
+}
+async function loadUsers() {
+  try {
+    const list = await adminApi('/v1/admin/users', 'GET');
+    let rows = list.map(u =>
+      `<tr><td class=sig-hash title="${esc(u.token)}">${esc(u.token.slice(0,16))}…</td>
+       <td>${esc(u.name)}</td><td>${esc(u.publisher||'')}</td><td>${fmtTime(u.created_at)}</td></tr>`
+    ).join('');
+    if (!rows) rows = '<tr><td colspan=4 class=muted>无用户</td></tr>';
+    document.getElementById('userTable').innerHTML = '<tr><th>token</th><th>name</th><th>publisher</th><th>created_at</th></tr>' + rows;
+  } catch (e) {}
+}
+
+// ========== CRL ==========
 async function loadCrl() {
   try {
-    const signed = await api('/v1/crl', 'GET');
+    const signed = await fetch('/v1/crl').then(r => r.json());
     const crl = signed.payload;
     let rows = crl.entries.map(e =>
       `<tr><td>${esc(e.dim)}</td><td>${esc(e.value)}</td><td>${fmtTime(e.revoked_at)}</td><td>${esc(e.reason)}</td></tr>`
     ).join('');
-    if (!rows) rows = `<tr><td colspan=4 class=muted>空（无吊销）</td></tr>`;
-    rows += `<tr><td colspan=4 class=muted>CRL version ${crl.version}，共 ${crl.entries.length} 条</td></tr>`;
+    if (!rows) rows = '<tr><td colspan=4 class=muted>空</td></tr>';
     document.getElementById('crlTable').innerHTML = '<tr><th>维度</th><th>值</th><th>吊销时间</th><th>原因</th></tr>' + rows;
-  } catch (e) { /* crl 公开但签名，失败忽略 */ }
+  } catch (e) {}
 }
-
 async function addRevoke() {
   const dim = document.getElementById('rvDim').value;
   const value = document.getElementById('rvValue').value.trim();
   const reason = document.getElementById('rvReason').value.trim() || 'manual';
-  if (!value) { document.getElementById('rvMsg').innerHTML = '<span class=err>请填值</span>'; return; }
+  const msg = document.getElementById('rvMsg');
+  if (!value) { msg.innerHTML = '<span class=err>请填值</span>'; return; }
   try {
-    await api('/v1/admin/revoke', 'POST', { dim, value, reason });
-    document.getElementById('rvMsg').innerHTML = '<span class=ok>已吊销</span>';
+    await adminApi('/v1/admin/revoke', 'POST', { dim, value, reason });
+    msg.innerHTML = '<span class=ok>✅ 已吊销</span>';
     document.getElementById('rvValue').value = '';
-    loadCrl(); loadAudit();
-  } catch (e) { document.getElementById('rvMsg').innerHTML = '<span class=err>失败：' + esc(e.message) + '</span>'; }
+    loadCrl(); loadAudit(); loadSignatures();
+  } catch (e) { msg.innerHTML = '<span class=err>失败: ' + esc(e.message) + '</span>'; }
 }
 
+// ========== 受信任公钥 ==========
 async function loadTrusted() {
   try {
-    const signed = await api('/v1/trusted-keys', 'GET');
+    const signed = await fetch('/v1/trusted-keys').then(r => r.json());
     const tkl = signed.payload;
     let rows = tkl.keys.map(k => `<tr><td>${esc(k.key_fp)}</td><td>${esc(k.status)}</td></tr>`).join('');
-    if (!rows) rows = `<tr><td colspan=2 class=muted>空（不限制公钥——所有签名公钥都信任）</td></tr>`;
-    rows += `<tr><td colspan=2 class=muted>version ${tkl.version}，共 ${tkl.keys.length} 条</td></tr>`;
-    document.getElementById('tkTable').innerHTML = '<tr><th>key_fp（hex）</th><th>状态</th></tr>' + rows;
+    if (!rows) rows = '<tr><td colspan=2 class=muted>空（不限制公钥）</td></tr>';
+    document.getElementById('tkTable').innerHTML = '<tr><th>key_fp</th><th>状态</th></tr>' + rows;
   } catch (e) {}
 }
-
 async function addTrusted() {
   const key_fp = document.getElementById('tkFp').value.trim();
   const status = document.getElementById('tkStatus').value;
-  if (!key_fp) { document.getElementById('tkMsg').innerHTML = '<span class=err>请填 key_fp</span>'; return; }
+  const msg = document.getElementById('tkMsg');
+  if (!key_fp) { msg.innerHTML = '<span class=err>请填 key_fp</span>'; return; }
   try {
-    await api('/v1/admin/trusted-key', 'POST', { key_fp, status, not_after: null });
-    document.getElementById('tkMsg').innerHTML = '<span class=ok>已设置</span>';
+    await adminApi('/v1/admin/trusted-key', 'POST', { key_fp, status, not_after: null });
+    msg.innerHTML = '<span class=ok>✅ 已设置</span>';
     document.getElementById('tkFp').value = '';
     loadTrusted(); loadAudit();
-  } catch (e) { document.getElementById('tkMsg').innerHTML = '<span class=err>失败：' + esc(e.message) + '</span>'; }
+  } catch (e) { msg.innerHTML = '<span class=err>失败: ' + esc(e.message) + '</span>'; }
 }
 
+// ========== 审计 ==========
 async function loadAudit() {
   try {
-    const list = await api('/v1/audit', 'GET');
+    const list = await adminApi('/v1/audit', 'GET');
     let rows = list.map(a =>
-      `<tr><td>${fmtTime(a.timestamp)}</td><td>${esc(a.action)}</td><td>${esc(a.operator)}</td><td>${esc(a.dim)}</td><td>${esc(a.value)}</td><td>${esc(a.reason)}</td></tr>`
+      `<tr><td>${fmtTime(a.timestamp)}</td><td>${esc(a.action)}</td><td>${esc(a.operator)}</td>
+       <td>${esc(a.dim||'')}</td><td>${esc(a.value||'')}</td><td>${esc(a.reason||'')}</td></tr>`
     ).join('');
-    if (!rows) rows = `<tr><td colspan=6 class=muted>无记录</td></tr>`;
+    if (!rows) rows = '<tr><td colspan=6 class=muted>无记录</td></tr>';
     document.getElementById('auTable').innerHTML = '<tr><th>时间</th><th>操作</th><th>操作者</th><th>维度</th><th>值</th><th>原因</th></tr>' + rows;
   } catch (e) {}
 }
