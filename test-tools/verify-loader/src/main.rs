@@ -52,10 +52,12 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::GenKeys { out } => {
             let h = generate_hierarchy(0, u64::MAX);
-            println!("root pubkey: {}", hex_encode(&h.root_vk.to_bytes()));
+            let root_pub_hex = hex_encode(&h.root_vk.to_bytes());
+            println!("root pubkey: {}", root_pub_hex);
             println!("issuer pubkey: {}", hex_encode(&h.issuer_vk.to_bytes()));
             h.save(&out)?;
-            println!("✓ keys → {}", out);
+            std::fs::write("root.pub", &root_pub_hex)?; // 供 build 脚本读取固化进 DLL
+            println!("✓ keys → {} (+ root.pub)", out);
         }
         Cmd::Sign { keys, target, out } => {
             let h = KeyHierarchy::load(&keys)?;
@@ -164,16 +166,30 @@ struct NvSigInfo {
 }
 
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct NvSigCert {
     subject_pubkey: [u8; 32],
     issuer_key_fp: [u8; 32],
     valid_not_before: u64,
     valid_not_after: u64,
+    subject_meta_len: u32,
+    subject_meta: [u8; 64],
+}
+
+impl Default for NvSigCert {
+    fn default() -> Self {
+        Self {
+            subject_pubkey: [0u8; 32],
+            issuer_key_fp: [0u8; 32],
+            valid_not_before: 0,
+            valid_not_after: 0,
+            subject_meta_len: 0,
+            subject_meta: [0u8; 64],
+        }
+    }
 }
 
 #[repr(C)]
-#[derive(Default)]
 struct NvSigDetail {
     index: u32,
     signed_at: u64,
@@ -181,9 +197,26 @@ struct NvSigDetail {
     pubkey: [u8; 32],
     cert_count: u32,
     certs: [NvSigCert; 4],
+    publisher_len: u32,
+    publisher: [u8; 128],
 }
 
-/// 查看：列目标文件所有签名 + 证书链详情（离线展示，不下结论）。
+impl Default for NvSigDetail {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 32],
+            cert_count: 0,
+            certs: [NvSigCert::default(); 4],
+            publisher_len: 0,
+            publisher: [0u8; 128],
+        }
+    }
+}
+
+/// 查看：人类可读的签名详情 + 信任链（像微软文件属性→数字签名）。
 fn view_via_dll(dll_path: &str, target: &str) -> Result<()> {
     let lib = unsafe { libloading::Library::new(dll_path) }?;
     let nv_list: libloading::Symbol<
@@ -197,29 +230,62 @@ fn view_via_dll(dll_path: &str, target: &str) -> Result<()> {
     let mut count: u32 = 8;
     let mut infos: [NvSigInfo; 8] = [NvSigInfo::default(); 8];
     let rc = unsafe { nv_list(c_path.as_ptr(), infos.as_mut_ptr(), &mut count) };
-    println!("nv_list_signatures({}): rc={}, total={}", target, rc, count);
-    for i in 0..(count as usize).min(8) {
-        println!(
-            "  [{}] signed_at={} key_fp={}",
-            infos[i].index, infos[i].signed_at, hex_encode(&infos[i].key_fp)
-        );
+    if rc != 0 {
+        println!("nv_list_signatures failed: rc={}", rc);
+        return Ok(());
     }
+    println!("文件: {}", target);
+    println!("签名数: {}", count);
     for idx in 0..count.min(4) {
         let mut detail = NvSigDetail::default();
         let rc = unsafe { nv_get(c_path.as_ptr(), idx, &mut detail) };
-        println!("  detail[{}] rc={} cert_count={}", idx, rc, detail.cert_count);
+        if rc != 0 {
+            println!("\n#{}: detail 读取失败 rc={}", idx, rc);
+            continue;
+        }
+        let signer = if detail.cert_count > 0 {
+            meta_str(&detail.certs[0].subject_meta, detail.certs[0].subject_meta_len)
+        } else {
+            "(无证书链)".to_string()
+        };
+        let publisher = meta_str(&detail.publisher, detail.publisher_len);
+        println!("\n═══ 签名 #{} ═══", idx);
+        println!("  签名者 : {}  (公钥 {}…)", signer, hex_short(&detail.pubkey));
+        if !publisher.is_empty() {
+            println!("  发布者 : {}  (签给谁)", publisher);
+        }
+        println!("  签名时间: {}", detail.signed_at);
+        println!("  信任链:");
         for c in 0..detail.cert_count as usize {
+            let name = meta_str(&detail.certs[c].subject_meta, detail.certs[c].subject_meta_len);
+            let issuer_name = if c + 1 < detail.cert_count as usize {
+                meta_str(&detail.certs[c + 1].subject_meta, detail.certs[c + 1].subject_meta_len)
+            } else {
+                "root（内置根，验证时确认链到根）".to_string()
+            };
             println!(
-                "    cert[{}] subject={} issuer_fp={} valid=[{},{}]",
+                "    [{}] {} ({}) → 由 {} 签发",
                 c,
-                hex_encode(&detail.certs[c].subject_pubkey),
-                hex_encode(&detail.certs[c].issuer_key_fp),
-                detail.certs[c].valid_not_before,
-                detail.certs[c].valid_not_after
+                name,
+                hex_short(&detail.certs[c].subject_pubkey),
+                issuer_name
             );
         }
     }
     Ok(())
+}
+
+fn meta_str(buf: &[u8], len: u32) -> String {
+    let n = (len as usize).min(buf.len());
+    String::from_utf8_lossy(&buf[..n]).to_string()
+}
+
+fn hex_short(b: &[u8]) -> String {
+    if b.len() >= 8 {
+        hex_encode(&b[..8]) + "…"
+    } else {
+        hex_encode(b)
+    }
 }
 
 /// R7 A2/A3：加载 DLL 后调 nv_self_verify 验 DLL 自身签名（防替换）。

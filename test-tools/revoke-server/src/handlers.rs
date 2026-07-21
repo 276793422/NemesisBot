@@ -1,7 +1,7 @@
 //! axum 路由 handler（吊销 + 签发 + 用户管理）。
 
 use crate::state::{now_secs, AppState};
-use crate::store::{dim_str, status_str, AuditRecord, SignatureRecord, UserRecord};
+use crate::store::{dim_str, status_str, AuditRecord, IssuerRecord, SignatureRecord, UserRecord};
 use axum::body::Body;
 use axum::extract::{Multipart, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -288,12 +288,35 @@ pub async fn sign_upload(
 
     let signed_at = now_secs();
 
+    // 按用户关联发行方选 issuer 私钥 + 链（default=keygen 默认 issuer；其他=动态发行方）
+    let (issuer_sk, issuer_chain, issuer_pub): (
+        ed25519_dalek::SigningKey,
+        Vec<u8>,
+        ed25519_dalek::VerifyingKey,
+    ) = if user.issuer_name == "default" {
+        (
+            state.hierarchy.issuer_sk.clone(),
+            state.hierarchy.issuer_chain_bytes.clone(),
+            state.hierarchy.issuer_vk,
+        )
+    } else {
+        let issuer = state
+            .store
+            .get_issuer_by_name(&user.issuer_name)
+            .map_err(internal)?
+            .ok_or((StatusCode::BAD_REQUEST, format!("issuer '{}' not found", user.issuer_name)))?;
+        let sk = nemesis_verify::crypto::signing_key_from_hex(&issuer.issuer_sk).map_err(internal)?;
+        let chain = nemesis_verify::hex_util::hex_decode_vec(&issuer.chain).map_err(internal)?;
+        let vk = nemesis_verify::crypto::verifying_key_from_hex(&issuer.issuer_pub).map_err(internal)?;
+        (sk, chain, vk)
+    };
+
     // v3 签发：发行方私钥签 content，envelope 带 pubkey + 完整证书链（issuer→CA→root）
     let signed_file = nemesis_verify::verify::sign_content(
         &file_bytes,
-        &state.hierarchy.issuer_sk,
+        &issuer_sk,
         signed_at,
-        Some(&state.hierarchy.issuer_chain_bytes),
+        Some(&issuer_chain),
         publisher.as_deref(),
         None,
         None,
@@ -307,7 +330,7 @@ pub async fn sign_upload(
         None => file_bytes.len(),
     };
     let content_hash: [u8; 32] = codec.content_hash(&file_bytes, content_len).map_err(internal)?;
-    let key_fp: [u8; 32] = Sha256::digest(state.hierarchy.issuer_vk.to_bytes()).into();
+    let key_fp: [u8; 32] = Sha256::digest(issuer_pub.to_bytes()).into();
     // sig_hash = SHA-256(signature)，从签名文件 envelope 解析（CRL 单签名吊销维度）。
     // sign_content 刚签完 envelope 必在，失败兜底 content_hash（理论上不触发）。
     let sig_hash: [u8; 32] = nemesis_verify::view::latest_sig_hash(&signed_file)
@@ -322,6 +345,7 @@ pub async fn sign_upload(
             signed_at,
             content_hash: hex_str(&content_hash),
             user_name: Some(user.name.clone()),
+            issuer_name: Some(user.issuer_name.clone()),
             registered_at: now_secs(),
         })
         .map_err(internal)?;
@@ -340,6 +364,8 @@ pub async fn sign_upload(
 pub struct CreateUserReq {
     pub name: String,
     pub publisher: Option<String>,
+    /// 关联发行方（缺省 default = keygen 默认 issuer）
+    pub issuer_name: Option<String>,
 }
 
 pub async fn admin_create_user(
@@ -348,14 +374,93 @@ pub async fn admin_create_user(
     Json(req): Json<CreateUserReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     check_admin(&state, &headers)?;
+    let issuer_name = req.issuer_name.clone().unwrap_or_else(|| "default".to_string());
+    // 校验发行方存在（default 跳过；动态发行方要在 issuers 表）
+    if issuer_name != "default" {
+        let exists = state.store.get_issuer_by_name(&issuer_name).map_err(internal)?;
+        if exists.is_none() {
+            return Err((StatusCode::BAD_REQUEST, format!("issuer '{}' not found", issuer_name)));
+        }
+    }
     let mut token_bytes = [0u8; 32];
     OsRng.fill_bytes(&mut token_bytes);
     let token = hex_str(&token_bytes);
     state
         .store
-        .add_user(&token, &req.name, req.publisher.as_deref(), now_secs())
+        .add_user(&token, &req.name, req.publisher.as_deref(), &issuer_name, now_secs())
         .map_err(internal)?;
-    Ok(Json(serde_json::json!({ "token": token, "name": req.name })))
+    Ok(Json(serde_json::json!({ "token": token, "name": req.name, "issuer_name": issuer_name })))
+}
+
+// ===================== /v1/admin/issuer（创建动态发行方证书）=====================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateIssuerReq {
+    pub name: String,
+}
+
+/// 创建发行方：生成 Ed25519 keypair → CA 私钥签 issuer 证书 → 存 issuers 表。
+/// 私钥 server 持有（开发者拿 token，签发时 server 用对应发行方私钥签）。
+pub async fn admin_create_issuer(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateIssuerReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_admin(&state, &headers)?;
+    if req.name == "default" {
+        return Err((StatusCode::BAD_REQUEST, "name 'default' is reserved".into()));
+    }
+    let kp = nemesis_verify::crypto::generate_key_pair();
+    let issuer_vk = nemesis_verify::crypto::verifying_key_from_hex(&kp.public_key).map_err(internal)?;
+    // CA 签 issuer 证书（有效期 [0, MAX]）
+    let issuer_cert = nemesis_verify::cert::issue_certificate(
+        &state.hierarchy.ca_sk,
+        &issuer_vk.to_bytes(),
+        req.name.as_bytes(),
+        0,
+        u64::MAX,
+    );
+    // chain = [issuer_cert, ca_cert]（leaf 在前，不含根证书）
+    let chain = nemesis_verify::cert::serialize_chain(&[issuer_cert.clone(), state.hierarchy.ca_cert.clone()]);
+    let rec = IssuerRecord {
+        name: req.name.clone(),
+        issuer_sk: kp.private_key,
+        issuer_pub: kp.public_key,
+        issuer_cert: hex_str(&issuer_cert.to_bytes()),
+        chain: hex_str(&chain),
+        created_at: now_secs(),
+    };
+    state.store.add_issuer(&rec).map_err(internal)?;
+    state
+        .store
+        .add_audit(AuditRecord {
+            id: 0,
+            timestamp: now_secs(),
+            action: "issuer_create".into(),
+            operator: "admin".into(),
+            dim: None,
+            value: Some(req.name.clone()),
+            reason: None,
+            detail: Some(rec.issuer_pub.clone()),
+        })
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({ "name": req.name, "issuer_pub": rec.issuer_pub })))
+}
+
+/// 列发行方（不返私钥）。
+pub async fn list_issuers(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    check_admin(&state, &headers)?;
+    let issuers = state.store.list_issuers().map_err(internal)?;
+    let out: Vec<serde_json::Value> = issuers
+        .iter()
+        .map(|i| {
+            serde_json::json!({ "name": i.name, "issuer_pub": i.issuer_pub, "created_at": i.created_at })
+        })
+        .collect();
+    Ok(Json(serde_json::Value::Array(out)))
 }
 
 // ===================== health + 鉴权 =====================

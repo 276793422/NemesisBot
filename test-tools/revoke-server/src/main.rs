@@ -24,9 +24,14 @@ use nemesis_verify::hex_util::hex_encode;
 
 /// Web UI（嵌入式单页：登录 + CRL/吊销/trusted-keys/审计）。
 const INDEX_HTML: &str = include_str!("web/index.html");
+const ADMIN_HTML: &str = include_str!("web/admin.html");
 
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn admin_page() -> Html<&'static str> {
+    Html(ADMIN_HTML)
 }
 
 #[derive(Parser)]
@@ -65,6 +70,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/admin", get(admin_page))
         .route("/v1/verify", post(handlers::verify))
         .route("/v1/crl", get(handlers::get_crl))
         .route("/v1/crl/query", post(handlers::crl_query))
@@ -73,6 +79,8 @@ async fn main() -> Result<()> {
         .route("/v1/admin/revoke", post(handlers::admin_revoke))
         .route("/v1/admin/trusted-key", post(handlers::admin_trusted_key))
         .route("/v1/admin/user", post(handlers::admin_create_user))
+        .route("/v1/admin/issuer", post(handlers::admin_create_issuer))
+        .route("/v1/admin/issuers", get(handlers::list_issuers))
         .route("/v1/audit", get(handlers::get_audit))
         .route("/v1/signatures", get(handlers::list_signatures))
         .route("/v1/admin/users", get(handlers::list_users))

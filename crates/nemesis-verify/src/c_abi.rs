@@ -179,16 +179,31 @@ pub struct NvSigInfo {
 }
 
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct NvSigCert {
     pub subject_pubkey: [u8; 32],
     pub issuer_key_fp: [u8; 32],
     pub valid_not_before: u64,
     pub valid_not_after: u64,
+    pub subject_meta_len: u32,
+    /// 主体名（UTF-8，≤64B；如发行方名 "org-a" / "CA"）
+    pub subject_meta: [u8; 64],
+}
+
+impl Default for NvSigCert {
+    fn default() -> Self {
+        Self {
+            subject_pubkey: [0u8; 32],
+            issuer_key_fp: [0u8; 32],
+            valid_not_before: 0,
+            valid_not_after: 0,
+            subject_meta_len: 0,
+            subject_meta: [0u8; 64],
+        }
+    }
 }
 
 #[repr(C)]
-#[derive(Default)]
 pub struct NvSigDetail {
     pub index: u32,
     pub signed_at: u64,
@@ -197,6 +212,24 @@ pub struct NvSigDetail {
     pub cert_count: u32,
     /// 最多 4 级证书（leaf + intermediates）。cert_count 为实际数（可能 < 4）。
     pub certs: [NvSigCert; 4],
+    pub publisher_len: u32,
+    /// publisher（签给谁/发布者，UTF-8，≤128B）
+    pub publisher: [u8; 128],
+}
+
+impl Default for NvSigDetail {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 32],
+            cert_count: 0,
+            certs: [NvSigCert::default(); 4],
+            publisher_len: 0,
+            publisher: [0u8; 128],
+        }
+    }
 }
 
 /// 列所有签名（多签名）。`count` 入参 = 缓冲容量（NvSigInfo 数组大小），出参 = 实际总数。
@@ -256,13 +289,26 @@ pub extern "C" fn nv_get_signature(path: *const c_char, index: u32, out: *mut Nv
     let mut certs = [NvSigCert::default(); 4];
     let cert_count = detail.certs.len().min(4) as u32;
     for (i, c) in detail.certs.iter().take(4).enumerate() {
+        let mut subject_meta = [0u8; 64];
+        let mlen = c.subject_meta.len().min(64);
+        subject_meta[..mlen].copy_from_slice(&c.subject_meta[..mlen]);
         certs[i] = NvSigCert {
             subject_pubkey: c.subject_pubkey,
             issuer_key_fp: c.issuer_key_fp,
             valid_not_before: c.valid_not_before,
             valid_not_after: c.valid_not_after,
+            subject_meta_len: mlen as u32,
+            subject_meta,
         };
     }
+    let mut publisher = [0u8; 128];
+    let publisher_len = if let Some(p) = &detail.publisher {
+        let pl = p.len().min(128);
+        publisher[..pl].copy_from_slice(&p.as_bytes()[..pl]);
+        pl as u32
+    } else {
+        0
+    };
     unsafe {
         *out = NvSigDetail {
             index: detail.info.index as u32,
@@ -271,6 +317,8 @@ pub extern "C" fn nv_get_signature(path: *const c_char, index: u32, out: *mut Nv
             pubkey: detail.info.pubkey,
             cert_count,
             certs,
+            publisher_len,
+            publisher,
         };
     }
     0

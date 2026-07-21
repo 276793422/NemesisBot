@@ -49,7 +49,16 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// 编译期固化 server URL（build 时 `NEMESIS_BUILD_REVOCATION_URL` 注入，如 `http://127.0.0.1:7878`）。
+/// 固化优先（部署确定），fallback 运行时 `NEMESIS_REVOCATION_URL` 环境变量。
+const BUILTIN_REVOCATION_URL: Option<&str> = option_env!("NEMESIS_BUILD_REVOCATION_URL");
+
 fn revocation_url() -> Option<String> {
+    if let Some(url) = BUILTIN_REVOCATION_URL {
+        if !url.is_empty() {
+            return Some(url.to_string());
+        }
+    }
     std::env::var("NEMESIS_REVOCATION_URL")
         .ok()
         .filter(|s| !s.is_empty())

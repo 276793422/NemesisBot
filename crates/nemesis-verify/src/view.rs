@@ -21,6 +21,8 @@ pub struct SigDetail {
     pub info: SigInfo,
     /// 证书链（leaf + intermediates，envelope.cert_chain 解析；空 = 无链/单根自签）。
     pub certs: Vec<cert::Certificate>,
+    /// publisher（签给谁/发布者，envelope body）
+    pub publisher: Option<String>,
 }
 
 /// 列所有签名（多签名场景，索引 0 = 最近）。
@@ -56,6 +58,7 @@ pub fn get_signature_detail(bytes: &[u8], index: usize) -> Option<SigDetail> {
             pubkey: body.pubkey,
         },
         certs,
+        publisher: body.publisher,
     })
 }
 
