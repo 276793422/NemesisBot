@@ -53,7 +53,9 @@ jobs:
         with:
           node-version: '22'      # Node 20 已于 2026-04 EOL，GitHub Actions 2026-06-16 起默认 Node 24；用 22（Active LTS）
           cache: 'npm'
-          cache-dependency-path: web/package-lock.json
+          # 项目 gitignore 了 package-lock.json（用 npm install 策略，对照 build-linux.sh），
+          # CI 上没有 lockfile；用被跟踪的 package.json 做 cache key
+          cache-dependency-path: web/package.json
 
       # plugin-ui.so 在 Linux 上依赖：GTK3 + webkit2gtk(4.1) + libayatana-appindicator + librsvg
       # （plugin-ui/Cargo.toml 的 webkit2gtk="2.0" 对应 libwebkit2gtk-4.1）
@@ -75,7 +77,8 @@ jobs:
         shell: bash              # 必须 bash：rm -rf 在默认 PowerShell 下会报错（-rf 不是 Remove-Item 参数）
         run: |
           cd web
-          npm ci
+          # 项目 gitignore 了 package-lock.json、用 npm install 策略（对照 build-linux.sh），不能用 npm ci
+          npm install
           # vite.config.ts 里 emptyOutDir:false，vite 不会自动清 outDir；
           # 手动清旧 hashed chunk，避免被 include_dir! 重复嵌入（对照 build-linux.sh）
           rm -rf ../crates/nemesis-web/static/assets
