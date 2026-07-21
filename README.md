@@ -234,6 +234,10 @@ nemesisbot security scanner install
 nemesisbot security scanner list
 ```
 
+#### 杀毒软件效果
+
+![杀毒软件效果](test-tools/resource/security/clamav.png)
+
 ---
 
 ## 执行体隔离与沙盒（安全第 9 层 / 最终防线）
@@ -547,7 +551,7 @@ nemesisbot gateway --no-console # 仅记录到文件
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 核心模块（36 个 crate）
+├── crates/                          # 核心模块（37 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
 │   ├── nemesis-tools/               # 工具系统（32+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
@@ -583,6 +587,7 @@ NemesisBot_Rust/
 │   ├── nemesis-state/               # 状态管理
 │   ├── nemesis-utils/               # 工具函数
 │   ├── nemesis-devices/             # 设备管理
+│   ├── nemesis-verify/              # 签名验证核心（v3：DLL 验证模块 + 公钥随签名走 + 证书链，与 Authenticode 同构；独立子系统，待接入主程序）
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
@@ -601,7 +606,7 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具（20 个项目：12 workspace member + 独立项目）
+├── test-tools/                      # 测试工具（25 个项目：16 workspace member + 独立项目）
 │   ├── TestAIServer/                # AI 服务器模拟器（Go，8 个测试模型）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
 │   ├── integration-test/            # CLI 集成测试（22 命令，298 断言）
@@ -610,6 +615,9 @@ NemesisBot_Rust/
 │   ├── e2e-tests/                   # 端到端 AI 管线测试
 │   ├── memory-test/                 # 内存系统集成测试
 │   ├── approval-test/               # 安全审批流程测试
+│   ├── exe-sign-tool/               # 可执行文件签名/验签 CLI（v3，依赖 nemesis-verify）
+│   ├── revoke-server/               # 云端签发 + 吊销服务端（v3，axum + rusqlite）
+│   ├── verify-loader/               # 加载 nemesis_verify.dll 的签名验证测试工具
 │   └── ...                          # mcp / http-test-server / websocket-client / ws-send 等
 ├── docs/                            # 文档目录
 │   ├── BUG/                         # 已知问题和调查
@@ -633,7 +641,7 @@ NemesisBot_Rust/
 ## 技术特点
 
 - **800+ Rust 源文件** - 清晰的 workspace crate 架构（其中约 460 个非测试源文件，持续增长）
-- **36 个核心 crate** - 模块化设计，职责清晰
+- **37 个核心 crate** - 模块化设计，职责清晰
 - **17,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
@@ -641,6 +649,7 @@ NemesisBot_Rust/
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **执行体隔离** - LLM 高危操作（exec/文件/grep/git）剥离到 per-call 子进程，安全层仍在 gateway 执行前跑（config: `executor.enabled`）
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
+- **可执行文件签名验证（v3，独立子系统）** - PE/ELF/Raw 文件 Ed25519 签名 + 证书链 + 云端吊销（CRL），架构参照微软 Authenticode（DLL 验证模块 + 公钥随签名走 + 根锚）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，D3 防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
