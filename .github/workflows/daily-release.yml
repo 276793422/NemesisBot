@@ -51,7 +51,7 @@ jobs:
       - name: Setup Node.js (Vue 前端)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'      # Node 20 已于 2026-04 EOL，GitHub Actions 2026-06-16 起默认 Node 24；用 22（Active LTS）
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
 
