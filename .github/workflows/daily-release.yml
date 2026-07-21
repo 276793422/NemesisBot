@@ -1,0 +1,209 @@
+name: Daily Nightly Release
+
+on:
+  schedule:
+    # 每天 UTC 2:00（北京时间 10:00）触发
+    - cron: '0 2 * * *'
+  # 允许手动触发，方便首次验证 / 临时重跑
+  workflow_dispatch:
+
+# contents:write = 发 Release / 删 tag；actions:write = upload-artifact@v4 需要
+permissions:
+  contents: write
+  actions: write
+
+# 同一时间只放行一个 nightly 流程（后续排队），避免两个 run 同时 delete/create Release 冲突
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================
+  # Job 1: 构建（Linux + Windows 并行 matrix）
+  # ============================================================
+  build:
+    name: Build (${{ matrix.platform }})
+    strategy:
+      fail-fast: false            # 一个平台挂了不影响另一个
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            binary: nemesisbot          # Linux 产物无后缀
+            archive: nightly-linux.tar.gz
+          - os: windows-latest
+            platform: windows
+            binary: nemesisbot.exe      # Windows 产物带 .exe
+            archive: nightly-windows.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 完整历史，commit id 可用
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js (Vue 前端)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # plugin-ui.so 在 Linux 上依赖：GTK3 + webkit2gtk(4.1) + libayatana-appindicator + librsvg
+      # （plugin-ui/Cargo.toml 的 webkit2gtk="2.0" 对应 libwebkit2gtk-4.1）
+      # 主 nemesisbot 二进制不依赖它们（用 rustls，无需 OpenSSL）
+      - name: Install Linux plugin deps (GTK / webkit2gtk / appindicator)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      # 顺序关键：Vue 必须先于 cargo build——nemesisbot 编译时经 include_dir!
+      # 嵌入 crates/nemesis-web/static/（embedded.rs:17），前端没建好 = 白屏二进制。
+      - name: Build Vue frontend
+        shell: bash              # 必须 bash：rm -rf 在默认 PowerShell 下会报错（-rf 不是 Remove-Item 参数）
+        run: |
+          cd web
+          npm ci
+          # vite.config.ts 里 emptyOutDir:false，vite 不会自动清 outDir；
+          # 手动清旧 hashed chunk，避免被 include_dir! 重复嵌入（对照 build-linux.sh）
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+          echo "=== 前端产物 ==="
+          ls -la ../crates/nemesis-web/static/
+
+      - name: Build nemesisbot (release)
+        shell: bash
+        run: cargo build --release -p nemesisbot
+
+      # plugin 是可选附件：构建失败不影响主程序发布
+      - name: Build plugins (non-fatal)
+        shell: bash
+        continue-on-error: true
+        run: |
+          (cd plugins/plugin-ui  && cargo build --release)
+          (cd plugins/plugin-onnx && cargo build --release)
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p staging/plugins
+          # 主二进制（workspace 根 target/release/）
+          cp "target/release/${{ matrix.binary }}" staging/
+          # plugin-ui / plugin-onnx 是独立 workspace（各自 Cargo.toml 带 [workspace] 声明），
+          # 产物在各自 plugins/<name>/target/release/ 下；crate 名连字符→下划线：
+          #   plugin-ui   → libplugin_ui.so (Linux) / plugin_ui.dll (Windows)
+          #   plugin-onnx → libplugin_onnx.so / plugin_onnx.dll
+          # 编译失败（non-fatal）则文件不存在，跳过，不影响主程序发布
+          cp plugins/plugin-ui/target/release/libplugin_ui.so    staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-ui/target/release/plugin_ui.dll     staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-onnx/target/release/libplugin_onnx.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-onnx/target/release/plugin_onnx.dll   staging/plugins/ 2>/dev/null || true
+          echo "=== staging 内容 ==="
+          ls -la staging staging/plugins
+
+      - name: Write version info
+        shell: bash
+        run: |
+          cat > staging/version.txt <<EOF
+          NemesisBot Nightly Build
+          ========================
+          Build Date : $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          Commit     : ${{ github.sha }}
+          Branch     : ${{ github.ref_name }}
+          Repository : ${{ github.repository }}
+          Workflow   : ${{ github.workflow }}
+          Run ID     : ${{ github.run_id }}
+          Trigger    : ${{ github.event_name }}
+          EOF
+          cat staging/version.txt
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: tar -czf ${{ matrix.archive }} -C staging .
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        # cd 进 staging 再打包 → zip 内是扁平结构（nemesisbot.exe / plugins/ / version.txt），
+        # 和 Linux 的 `tar -C staging .` 解压结构一致
+        run: |
+          cd staging
+          7z a "../${{ matrix.archive }}" '*'
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          retention-days: 7
+
+  # ============================================================
+  # Job 2: 发布（等两个平台都构建完，统一发 Release）
+  # ============================================================
+  release:
+    name: Publish nightly release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Show artifacts
+        run: ls -la artifacts
+
+      # 删掉旧的 nightly-build Release + Tag，实现"覆盖式"最新链接
+      - name: Delete previous nightly release + tag
+        run: |
+          gh release delete nightly-build --yes || true
+          git push origin :refs/tags/nightly-build || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create new nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly-build
+          name: "🌙 Nightly Build (${{ github.ref_name }} #${{ github.run_number }})"
+          prerelease: true
+          files: |
+            artifacts/nightly-linux.tar.gz
+            artifacts/nightly-windows.zip
+          body: |
+            ## 📦 Nightly Build
+
+            自动每日编译的开发版本（Windows + Linux）。
+
+            | 项 | 值 |
+            |---|---|
+            | Commit | `${{ github.sha }}` |
+            | Branch | `${{ github.ref_name }}` |
+            | Trigger | ${{ github.event_name }} |
+            | Run ID | ${{ github.run_id }} |
+
+            ### 下载
+            - **Windows**: `nightly-windows.zip`（解压后运行 `nemesisbot.exe gateway`）
+            - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
+
+            > ⚠️ 此为开发版本，可能包含未测试的功能，仅供测试使用。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
