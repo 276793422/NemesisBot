@@ -38,7 +38,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，commit id 可用
 
@@ -49,7 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js (Vue 前端)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '22'      # Node 20 已于 2026-04 EOL，GitHub Actions 2026-06-16 起默认 Node 24；用 22（Active LTS）
           cache: 'npm'
@@ -158,7 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
