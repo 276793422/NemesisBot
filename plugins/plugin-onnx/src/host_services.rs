@@ -28,11 +28,8 @@ pub struct HostServices {
     /// 获取 plugin 专属数据目录路径 (如 workspace/plugins/plugin-onnx/)。
     /// host 保证目录存在（自动创建）。
     /// 返回写入字节数（不含 \\0），负数为错误码。
-    pub get_plugin_data_dir: Option<extern "C" fn(
-        plugin_name: *const c_char,
-        buf: *mut c_char,
-        buf_len: usize,
-    ) -> i32>,
+    pub get_plugin_data_dir:
+        Option<extern "C" fn(plugin_name: *const c_char, buf: *mut c_char, buf_len: usize) -> i32>,
 
     /// 获取 plugin 专属配置目录路径 (如 workspace/config/plugins/)。
     /// 返回写入字节数（不含 \\0），负数为错误码。
@@ -47,24 +44,23 @@ pub struct HostServices {
 
     /// 同步下载文件。host 负责重试、重定向、代理。
     /// 返回 0=成功, 负数=错误。
-    pub download_file: Option<extern "C" fn(
-        url: *const c_char,
-        dest_path: *const c_char,
-    ) -> i32>,
+    pub download_file: Option<extern "C" fn(url: *const c_char, dest_path: *const c_char) -> i32>,
 
     // ---- 内存管理 ----
     /// 释放 host 分配的字符串内存。
     pub free_string: Option<extern "C" fn(ptr: *mut c_char)>,
 
     // ---- 图像解码 ----
-    pub decode_png: Option<extern "C" fn(
-        png_data: *const u8,
-        png_len: usize,
-        out_rgba: *mut u8,
-        out_rgba_len: usize,
-        out_width: *mut u32,
-        out_height: *mut u32,
-    ) -> i32>,
+    pub decode_png: Option<
+        extern "C" fn(
+            png_data: *const u8,
+            png_len: usize,
+            out_rgba: *mut u8,
+            out_rgba_len: usize,
+            out_width: *mut u32,
+            out_height: *mut u32,
+        ) -> i32,
+    >,
 }
 
 /// Helper: call host log if available.

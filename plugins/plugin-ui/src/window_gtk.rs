@@ -11,11 +11,8 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::{
-    get_approval_result_value,
-    is_close_requested,
-    set_approval_result,
-    take_bring_to_front_requested,
-    WindowConfig, PLUGIN_ERR_WINDOW,
+    get_approval_result_value, is_close_requested, set_approval_result,
+    take_bring_to_front_requested, WindowConfig, PLUGIN_ERR_WINDOW,
 };
 
 // Embedded brand icon (shared with window.rs)
@@ -166,7 +163,11 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
         if uri.contains("/__approval_page") {
             let bytes = glib::Bytes::from(html_for_scheme.as_bytes());
             let stream = gio::MemoryInputStream::from_bytes(&bytes);
-            request.finish(&stream, html_for_scheme.len() as i64, Some("text/html; charset=utf-8"));
+            request.finish(
+                &stream,
+                html_for_scheme.len() as i64,
+                Some("text/html; charset=utf-8"),
+            );
             return;
         }
 
@@ -175,9 +176,7 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
         request.finish(&stream, 9i64, Some("text/plain"));
     });
 
-    let webview = webkit2gtk::WebView::builder()
-        .web_context(&context)
-        .build();
+    let webview = webkit2gtk::WebView::builder().web_context(&context).build();
 
     if let Some(settings) = WebViewExt::settings(&webview) {
         settings.set_enable_developer_extras(true);

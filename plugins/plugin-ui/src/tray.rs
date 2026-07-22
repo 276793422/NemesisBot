@@ -29,7 +29,9 @@ struct TrayMenuItemConfig {
     enabled: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// Tray 配置（由 nemesis-desktop 生成）。
 #[derive(serde::Deserialize)]
@@ -99,12 +101,18 @@ pub extern "C" fn plugin_tray_create_indicator(
 /// warnings are forwarded to stderr normally.
 fn suppress_deprecation_warning() {
     let levels = gtk::glib::LogLevels::LEVEL_WARNING;
-    gtk::glib::log_set_handler(Some("libayatana-appindicator"), levels, false, false, |_domain: Option<&str>, _level: gtk::glib::LogLevel, message: &str| {
-        if message.contains("libayatana-appindicator is deprecated") {
-            return; // suppress only this specific message
-        }
-        eprintln!("[plugin-ui:tray] GLib warning: {}", message);
-    });
+    gtk::glib::log_set_handler(
+        Some("libayatana-appindicator"),
+        levels,
+        false,
+        false,
+        |_domain: Option<&str>, _level: gtk::glib::LogLevel, message: &str| {
+            if message.contains("libayatana-appindicator is deprecated") {
+                return; // suppress only this specific message
+            }
+            eprintln!("[plugin-ui:tray] GLib warning: {}", message);
+        },
+    );
 }
 
 fn run_gtk_event_loop(config: TrayConfigJson, callbacks: TrayCallbacks) {
@@ -188,7 +196,8 @@ fn run_gtk_event_loop(config: TrayConfigJson, callbacks: TrayCallbacks) {
     // GTK event loop (blocking)
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         gtk::main();
-    })).unwrap_or_else(|e| {
+    }))
+    .unwrap_or_else(|e| {
         eprintln!("[plugin-ui:tray] GTK event loop exited: {:?}", e);
     });
 
@@ -206,13 +215,19 @@ fn prepare_icon(config: &TrayConfigJson) -> Option<(String, String)> {
         let img = image::RgbaImage::from_raw(w, h, rgba.clone())?;
         let path = temp_dir.join("nemesisbot.png");
         img.save(&path).ok()?;
-        Some((temp_dir.to_string_lossy().into_owned(), "nemesisbot".to_string()))
+        Some((
+            temp_dir.to_string_lossy().into_owned(),
+            "nemesisbot".to_string(),
+        ))
     } else if let Some(path) = &config.icon_path {
         let data = std::fs::read(path).ok()?;
         let img = image::load_from_memory(&data).ok()?;
         let out = temp_dir.join("nemesisbot.png");
         img.save(&out).ok()?;
-        Some((temp_dir.to_string_lossy().into_owned(), "nemesisbot".to_string()))
+        Some((
+            temp_dir.to_string_lossy().into_owned(),
+            "nemesisbot".to_string(),
+        ))
     } else {
         None
     }
@@ -220,11 +235,7 @@ fn prepare_icon(config: &TrayConfigJson) -> Option<(String, String)> {
 
 /// 更新菜单项启用/禁用状态。
 #[no_mangle]
-pub extern "C" fn plugin_tray_set_menu_enabled(
-    _id: *const c_char,
-    _enabled: i32,
-) {
-}
+pub extern "C" fn plugin_tray_set_menu_enabled(_id: *const c_char, _enabled: i32) {}
 
 /// 销毁托盘指示器。
 #[no_mangle]

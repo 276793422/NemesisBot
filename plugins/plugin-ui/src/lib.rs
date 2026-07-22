@@ -104,10 +104,18 @@ pub struct WindowConfig {
     pub timeout_seconds: u64,
 }
 
-fn default_title() -> String { "NemesisBot".to_string() }
-fn default_width() -> f64 { 1280.0 }
-fn default_height() -> f64 { 800.0 }
-fn default_timeout() -> u64 { 120 }
+fn default_title() -> String {
+    "NemesisBot".to_string()
+}
+fn default_width() -> f64 {
+    1280.0
+}
+fn default_height() -> f64 {
+    800.0
+}
+fn default_timeout() -> u64 {
+    120
+}
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -150,7 +158,14 @@ pub extern "C" fn plugin_init(config_dir: *const c_char, host: *const HostServic
         // Not a fatal error — still return OK, window creation will fail later
     }
 
-    log_msg(2, &format!("plugin_init: version={}, host={}", PLUGIN_VERSION, if host.is_null() { "none" } else { "provided" }));
+    log_msg(
+        2,
+        &format!(
+            "plugin_init: version={}, host={}",
+            PLUGIN_VERSION,
+            if host.is_null() { "none" } else { "provided" }
+        ),
+    );
     PLUGIN_OK
 }
 
@@ -236,15 +251,23 @@ pub extern "C" fn plugin_create_window(config_json: *const c_char) -> i32 {
     let result = match config.window_type.as_str() {
         "dashboard" => {
             #[cfg(not(target_os = "linux"))]
-            { window::create_dashboard_window(&config) }
+            {
+                window::create_dashboard_window(&config)
+            }
             #[cfg(target_os = "linux")]
-            { window_gtk::create_dashboard_window(&config) }
+            {
+                window_gtk::create_dashboard_window(&config)
+            }
         }
         "approval" => {
             #[cfg(not(target_os = "linux"))]
-            { window::create_approval_window(&config) }
+            {
+                window::create_approval_window(&config)
+            }
             #[cfg(target_os = "linux")]
-            { window_gtk::create_approval_window(&config) }
+            {
+                window_gtk::create_approval_window(&config)
+            }
         }
         _ => {
             eprintln!("[plugin-ui] Unknown window type: {}", config.window_type);
@@ -387,7 +410,9 @@ pub fn set_approval_result(result: &str) {
         let hwnd = get_active_hwnd();
         if hwnd != 0 {
             // WM_CLOSE = 0x0010
-            unsafe { PostMessageW(hwnd, 0x0010, 0, 0); }
+            unsafe {
+                PostMessageW(hwnd, 0x0010, 0, 0);
+            }
         }
     }
 }
@@ -400,7 +425,9 @@ extern "system" {
 
 /// Get the approval result as a Rust String (for testing).
 pub fn get_approval_result_value() -> Option<String> {
-    APPROVAL_RESULT.lock().unwrap_or_else(|e| e.into_inner())
+    APPROVAL_RESULT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .map(|c| c.to_str().unwrap_or("rejected").to_string())
 }

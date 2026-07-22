@@ -43,7 +43,10 @@ fn test_parse_config_valid_dashboard() {
     assert_eq!(config.width, 800.0);
     assert_eq!(config.height, 600.0);
     assert_eq!(config.url.as_deref(), Some("http://127.0.0.1:49000/"));
-    assert_eq!(config.init_script.as_deref(), Some("window.__DASHBOARD_TOKEN__=\"abc123\";"));
+    assert_eq!(
+        config.init_script.as_deref(),
+        Some("window.__DASHBOARD_TOKEN__=\"abc123\";")
+    );
     assert!(config.html.is_none());
 }
 
@@ -53,7 +56,10 @@ fn test_parse_config_valid_approval() {
     let ptr = c_str(json);
     let config = parse_config(ptr).unwrap();
     assert_eq!(config.window_type, "approval");
-    assert_eq!(config.html.as_deref(), Some("<html><body>Approve?</body></html>"));
+    assert_eq!(
+        config.html.as_deref(),
+        Some("<html><body>Approve?</body></html>")
+    );
     assert_eq!(config.timeout_seconds, 60);
     assert!(config.url.is_none());
 }

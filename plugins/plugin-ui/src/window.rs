@@ -3,14 +3,12 @@
 //! This module is only used on non-Linux platforms.
 //! On Linux, window_gtk.rs provides the GTK + WebKitGTK implementation.
 
-use crate::{
-    is_close_requested,
-    set_approval_result, take_bring_to_front_requested, bring_window_to_foreground,
-    WindowConfig,
-    PLUGIN_ERR_WINDOW,
-};
 #[cfg(target_os = "windows")]
 use crate::set_active_hwnd;
+use crate::{
+    bring_window_to_foreground, is_close_requested, set_approval_result,
+    take_bring_to_front_requested, WindowConfig, PLUGIN_ERR_WINDOW,
+};
 
 use tao::dpi::{LogicalSize, PhysicalPosition};
 use tao::event::{Event, WindowEvent};
@@ -39,14 +37,28 @@ fn create_window_icon() -> Option<Icon> {
     // First call: query required dimensions (out_rgba=null → returns -3 with w/h filled)
     let mut w: u32 = 0;
     let mut h: u32 = 0;
-    decode_fn(ICON_PNG.as_ptr(), ICON_PNG.len(), std::ptr::null_mut(), 0, &mut w, &mut h);
+    decode_fn(
+        ICON_PNG.as_ptr(),
+        ICON_PNG.len(),
+        std::ptr::null_mut(),
+        0,
+        &mut w,
+        &mut h,
+    );
     if w == 0 || h == 0 {
         return None;
     }
 
     let buf_len = (w * h * 4) as usize;
     let mut rgba = vec![0u8; buf_len];
-    let rc = decode_fn(ICON_PNG.as_ptr(), ICON_PNG.len(), rgba.as_mut_ptr(), buf_len, &mut w, &mut h);
+    let rc = decode_fn(
+        ICON_PNG.as_ptr(),
+        ICON_PNG.len(),
+        rgba.as_mut_ptr(),
+        buf_len,
+        &mut w,
+        &mut h,
+    );
     if rc != 0 {
         return None;
     }
@@ -75,12 +87,10 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
     if let Some(ico) = icon {
         builder = builder.with_window_icon(Some(ico));
     }
-    let window = builder
-        .build(&event_loop)
-        .map_err(|e| {
-            eprintln!("[plugin-ui] failed to create window: {:?}", e);
-            PLUGIN_ERR_WINDOW
-        })?;
+    let window = builder.build(&event_loop).map_err(|e| {
+        eprintln!("[plugin-ui] failed to create window: {:?}", e);
+        PLUGIN_ERR_WINDOW
+    })?;
 
     // Center the window
     center_window(&window, config.width, config.height);
@@ -148,12 +158,10 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
     if let Some(ico) = icon {
         builder = builder.with_window_icon(Some(ico));
     }
-    let window = builder
-        .build(&event_loop)
-        .map_err(|e| {
-            eprintln!("[plugin-ui] failed to create window: {:?}", e);
-            PLUGIN_ERR_WINDOW
-        })?;
+    let window = builder.build(&event_loop).map_err(|e| {
+        eprintln!("[plugin-ui] failed to create window: {:?}", e);
+        PLUGIN_ERR_WINDOW
+    })?;
 
     // Capture HWND for bring-to-front dedup
     capture_hwnd(&window);
@@ -168,11 +176,15 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
         .with_navigation_handler(|url: String| -> bool {
             // Intercept approval result navigation from JS
             if url.contains("/__approval_result") {
-                let action = url.split("action=")
+                let action = url
+                    .split("action=")
                     .nth(1)
                     .map(|s| s.split('&').next().unwrap_or("rejected"))
                     .unwrap_or("rejected");
-                eprintln!("[plugin-ui] Navigation handler: approval result = {}", action);
+                eprintln!(
+                    "[plugin-ui] Navigation handler: approval result = {}",
+                    action
+                );
                 set_approval_result(action);
                 return false; // Block navigation, we handled it
             }
@@ -196,15 +208,20 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
                 }
 
                 if uri.starts_with("/__approval_result") {
-                    let action = request.uri().query()
+                    let action = request
+                        .uri()
+                        .query()
                         .and_then(|q| {
-                            q.split('&')
-                                .find_map(|pair| {
-                                    let mut parts = pair.splitn(2, '=');
-                                    let key = parts.next()?;
-                                    let value = parts.next()?;
-                                    if key == "action" { Some(value.to_string()) } else { None }
-                                })
+                            q.split('&').find_map(|pair| {
+                                let mut parts = pair.splitn(2, '=');
+                                let key = parts.next()?;
+                                let value = parts.next()?;
+                                if key == "action" {
+                                    Some(value.to_string())
+                                } else {
+                                    None
+                                }
+                            })
                         })
                         .unwrap_or_else(|| "rejected".to_string());
 
@@ -244,7 +261,10 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
         std::thread::sleep(std::time::Duration::from_secs(timeout_secs));
         // Only auto-reject if no result has been set yet
         if crate::get_approval_result_value().is_none() {
-            eprintln!("[plugin-ui] Approval timeout ({}s) — auto-rejecting", timeout_secs);
+            eprintln!(
+                "[plugin-ui] Approval timeout ({}s) — auto-rejecting",
+                timeout_secs
+            );
             set_approval_result("rejected");
         }
     });
@@ -272,7 +292,7 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
 fn run_event_loop(mut event_loop: EventLoop<()>) {
     event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(
-            std::time::Instant::now() + std::time::Duration::from_millis(100)
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
         );
 
         // Check for bring-to-front request (from parent via WebSocket)
@@ -362,21 +382,25 @@ fn cleanup_web_context(data_dir: &std::path::Path) {
     if data_dir.exists() {
         match std::fs::remove_dir_all(data_dir) {
             Ok(()) => eprintln!("[plugin-ui] cleaned up WebView2 data dir: {:?}", data_dir),
-            Err(e) => eprintln!("[plugin-ui] warning: failed to clean up WebView2 data dir {:?}: {}", data_dir, e),
+            Err(e) => eprintln!(
+                "[plugin-ui] warning: failed to clean up WebView2 data dir {:?}: {}",
+                data_dir, e
+            ),
         }
     }
 }
 
 /// Center a window on the primary monitor.
 fn center_window(window: &tao::window::Window, width: f64, height: f64) {
-    if let Some(monitor) = window.primary_monitor().or_else(|| window.current_monitor()) {
+    if let Some(monitor) = window
+        .primary_monitor()
+        .or_else(|| window.current_monitor())
+    {
         let monitor_size = monitor.size();
         let scale = monitor.scale_factor();
         let x = (monitor_size.width as f64 / scale - width) / 2.0;
         let y = (monitor_size.height as f64 / scale - height) / 2.0;
-        let _ = window.set_outer_position(PhysicalPosition::new(
-            x.max(0.0) as i32,
-            y.max(0.0) as i32,
-        ));
+        let _ =
+            window.set_outer_position(PhysicalPosition::new(x.max(0.0) as i32, y.max(0.0) as i32));
     }
 }

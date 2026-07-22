@@ -19,20 +19,14 @@ pub struct HostServices {
 
     // ---- 路径解析 ----
     pub get_workspace_dir: Option<extern "C" fn(buf: *mut c_char, buf_len: usize) -> i32>,
-    pub get_plugin_data_dir: Option<extern "C" fn(
-        plugin_name: *const c_char,
-        buf: *mut c_char,
-        buf_len: usize,
-    ) -> i32>,
+    pub get_plugin_data_dir:
+        Option<extern "C" fn(plugin_name: *const c_char, buf: *mut c_char, buf_len: usize) -> i32>,
     pub get_plugin_config_dir: Option<extern "C" fn(buf: *mut c_char, buf_len: usize) -> i32>,
 
     // ---- 文件操作 ----
     pub file_exists: Option<extern "C" fn(path: *const c_char) -> i32>,
     pub file_size: Option<extern "C" fn(path: *const c_char) -> i64>,
-    pub download_file: Option<extern "C" fn(
-        url: *const c_char,
-        dest_path: *const c_char,
-    ) -> i32>,
+    pub download_file: Option<extern "C" fn(url: *const c_char, dest_path: *const c_char) -> i32>,
 
     // ---- 内存管理 ----
     pub free_string: Option<extern "C" fn(ptr: *mut c_char)>,
@@ -44,14 +38,16 @@ pub struct HostServices {
     /// out_rgba_len: 输出缓冲区大小（字节）
     /// out_width/out_height: 写入图像尺寸
     /// 返回: 0=成功, 负数=错误（-1=参数无效, -2=解码失败, -3=缓冲区不足）
-    pub decode_png: Option<extern "C" fn(
-        png_data: *const u8,
-        png_len: usize,
-        out_rgba: *mut u8,
-        out_rgba_len: usize,
-        out_width: *mut u32,
-        out_height: *mut u32,
-    ) -> i32>,
+    pub decode_png: Option<
+        extern "C" fn(
+            png_data: *const u8,
+            png_len: usize,
+            out_rgba: *mut u8,
+            out_rgba_len: usize,
+            out_width: *mut u32,
+            out_height: *mut u32,
+        ) -> i32,
+    >,
 }
 
 /// Helper: call host log if available.
@@ -85,5 +81,7 @@ unsafe impl Sync for TrayCallbacks {}
 impl Copy for TrayCallbacks {}
 #[cfg(target_os = "linux")]
 impl Clone for TrayCallbacks {
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }

@@ -180,12 +180,11 @@ fn test_ndarray_mean_pool_matches() {
 // ===================================================================
 
 fn test_model_dir() -> String {
-    std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-        .unwrap_or_else(|_| {
-            let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../test-tools/plugin-onnx-test/test-data");
-            dir.to_str().expect("valid path").to_string()
-        })
+    std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR").unwrap_or_else(|_| {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-tools/plugin-onnx-test/test-data");
+        dir.to_str().expect("valid path").to_string()
+    })
 }
 
 /// All model tests in a single lifecycle to avoid ONNX Runtime re-init crash.
@@ -240,7 +239,11 @@ fn test_all_model_scenarios() {
         let result = plugin_embed(text.as_ptr(), buf.as_mut_ptr(), 384);
         assert_eq!(result, E_OK);
         let l2_norm: f32 = buf.iter().map(|v| v * v).sum::<f32>().sqrt();
-        assert!((l2_norm - 1.0).abs() < 1e-4, "L2 norm should be ~1.0, got {}", l2_norm);
+        assert!(
+            (l2_norm - 1.0).abs() < 1e-4,
+            "L2 norm should be ~1.0, got {}",
+            l2_norm
+        );
         println!("[model-test] L2 normalized — PASS");
     }
 
@@ -254,7 +257,13 @@ fn test_all_model_scenarios() {
         assert_eq!(r1, E_OK);
         assert_eq!(r2, E_OK);
         for (i, (a, b)) in buf1.iter().zip(buf2.iter()).enumerate() {
-            assert!((a - b).abs() < 1e-6, "Mismatch at index {}: {} vs {}", i, a, b);
+            assert!(
+                (a - b).abs() < 1e-6,
+                "Mismatch at index {}: {} vs {}",
+                i,
+                a,
+                b
+            );
         }
         println!("[model-test] deterministic — PASS");
     }
@@ -280,13 +289,19 @@ fn test_all_model_scenarios() {
             .zip(embeddings[1].iter())
             .map(|(a, b)| (a - b).powi(2))
             .sum();
-        assert!(diff > 0.0, "Different texts should produce different embeddings");
+        assert!(
+            diff > 0.0,
+            "Different texts should produce different embeddings"
+        );
         println!("[model-test] multiple texts — PASS");
     }
 
     // ---- Free ----
     plugin_free();
-    assert!(PERMANENTLY_FREED.load(Ordering::SeqCst), "should be permanently freed");
+    assert!(
+        PERMANENTLY_FREED.load(Ordering::SeqCst),
+        "should be permanently freed"
+    );
     assert_eq!(INIT_COUNT.load(Ordering::SeqCst), 0);
 
     // ---- Scenario: embed after free fails ----

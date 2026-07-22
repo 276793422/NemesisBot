@@ -17,12 +17,12 @@ mod host_services;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicI32, AtomicBool, AtomicPtr, Ordering};
 
+use host_services::HostServices;
 #[cfg(test)]
 use ndarray::{Array1, Array2};
-use host_services::HostServices;
 use ort::session::Session;
 #[allow(unused_imports)]
 use ort::value::Tensor;
@@ -167,7 +167,10 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
 
     // --- Gate 1: ONNX Runtime already torn down? ---
     if PERMANENTLY_FREED.load(Ordering::SeqCst) {
-        log_msg(4, "plugin_init: cannot re-init after free (ONNX Runtime limitation)");
+        log_msg(
+            4,
+            "plugin_init: cannot re-init after free (ONNX Runtime limitation)",
+        );
         return E_INIT;
     }
 
@@ -179,7 +182,10 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
         match unsafe { CStr::from_ptr(model_dir) }.to_str() {
             Ok(s) => s.to_string(),
             Err(e) => {
-                log_msg(4, &format!("plugin_init: model_dir is not valid UTF-8: {}", e));
+                log_msg(
+                    4,
+                    &format!("plugin_init: model_dir is not valid UTF-8: {}", e),
+                );
                 return E_INIT;
             }
         }
@@ -188,10 +194,13 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
     // --- Gate 2: Fast path — already initialised, just bump ref count ---
     if INIT_COUNT.load(Ordering::SeqCst) > 0 {
         INIT_COUNT.fetch_add(1, Ordering::SeqCst);
-        log_msg(1, &format!(
-            "plugin_init: already initialised, ref_count={}",
-            INIT_COUNT.load(Ordering::SeqCst)
-        ));
+        log_msg(
+            1,
+            &format!(
+                "plugin_init: already initialised, ref_count={}",
+                INIT_COUNT.load(Ordering::SeqCst)
+            ),
+        );
         return E_OK;
     }
 
@@ -200,12 +209,24 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
     let tokenizer_path = Path::new(&model_dir_str).join("tokenizer.json");
 
     if !model_path.exists() {
-        log_msg(4, &format!("plugin_init: model file not found: {}", model_path.display()));
+        log_msg(
+            4,
+            &format!(
+                "plugin_init: model file not found: {}",
+                model_path.display()
+            ),
+        );
         return E_INIT;
     }
 
     if !tokenizer_path.exists() {
-        log_msg(4, &format!("plugin_init: tokenizer file not found: {}", tokenizer_path.display()));
+        log_msg(
+            4,
+            &format!(
+                "plugin_init: tokenizer file not found: {}",
+                tokenizer_path.display()
+            ),
+        );
         return E_INIT;
     }
 
@@ -222,32 +243,46 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
     if state.session.is_some() {
         drop(state);
         INIT_COUNT.fetch_add(1, Ordering::SeqCst);
-        log_msg(1, &format!(
-            "plugin_init: initialised by another thread, ref_count={}",
-            INIT_COUNT.load(Ordering::SeqCst)
-        ));
+        log_msg(
+            1,
+            &format!(
+                "plugin_init: initialised by another thread, ref_count={}",
+                INIT_COUNT.load(Ordering::SeqCst)
+            ),
+        );
         return E_OK;
     }
 
     // Load tokenizer
     let tokenizer = match Tokenizer::from_file(&tokenizer_path) {
         Ok(t) => {
-            log_msg(1, &format!("Tokenizer loaded from {}", tokenizer_path.display()));
+            log_msg(
+                1,
+                &format!("Tokenizer loaded from {}", tokenizer_path.display()),
+            );
             Some(t)
         }
         Err(e) => {
-            log_msg(4, &format!("Failed to load tokenizer from {}: {}", tokenizer_path.display(), e));
+            log_msg(
+                4,
+                &format!(
+                    "Failed to load tokenizer from {}: {}",
+                    tokenizer_path.display(),
+                    e
+                ),
+            );
             return E_INIT;
         }
     };
 
     // Create ONNX session
-    let session = match Session::builder()
-        .and_then(|mut b| b.commit_from_file(&model_path))
-    {
+    let session = match Session::builder().and_then(|mut b| b.commit_from_file(&model_path)) {
         Ok(s) => s,
         Err(e) => {
-            log_msg(4, &format!("plugin_init: failed to create ONNX session: {}", e));
+            log_msg(
+                4,
+                &format!("plugin_init: failed to create ONNX session: {}", e),
+            );
             return E_INIT;
         }
     };
@@ -258,10 +293,10 @@ pub extern "C" fn plugin_init(model_dir: *const c_char, host: *const HostService
     drop(state);
 
     INIT_COUNT.fetch_add(1, Ordering::SeqCst);
-    log_msg(2, &format!(
-        "Initialized: model_dir={}, ref_count=1",
-        model_dir_str
-    ));
+    log_msg(
+        2,
+        &format!("Initialized: model_dir={}, ref_count=1", model_dir_str),
+    );
     E_OK
 }
 
@@ -344,30 +379,47 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
     let input_ids_tensor = match Tensor::from_array((input_ids_shape, input_ids_data)) {
         Ok(t) => t,
         Err(e) => {
-            log_msg(4, &format!("plugin_embed: failed to create input_ids tensor: {}", e));
+            log_msg(
+                4,
+                &format!("plugin_embed: failed to create input_ids tensor: {}", e),
+            );
             return E_INFER;
         }
     };
 
     let attention_mask_data: Vec<i64> = attention_mask.iter().map(|&m| m as i64).collect();
     let attention_mask_shape = vec![1i64, seq_len as i64];
-    let attention_mask_tensor = match Tensor::from_array((attention_mask_shape, attention_mask_data)) {
-        Ok(t) => t,
-        Err(e) => {
-            log_msg(4, &format!("plugin_embed: failed to create attention_mask tensor: {}", e));
-            return E_INFER;
-        }
-    };
+    let attention_mask_tensor =
+        match Tensor::from_array((attention_mask_shape, attention_mask_data)) {
+            Ok(t) => t,
+            Err(e) => {
+                log_msg(
+                    4,
+                    &format!(
+                        "plugin_embed: failed to create attention_mask tensor: {}",
+                        e
+                    ),
+                );
+                return E_INFER;
+            }
+        };
 
     let token_type_ids_data = vec![0i64; seq_len];
     let token_type_ids_shape = vec![1i64, seq_len as i64];
-    let token_type_ids_tensor = match Tensor::from_array((token_type_ids_shape, token_type_ids_data)) {
-        Ok(t) => t,
-        Err(e) => {
-            log_msg(4, &format!("plugin_embed: failed to create token_type_ids tensor: {}", e));
-            return E_INFER;
-        }
-    };
+    let token_type_ids_tensor =
+        match Tensor::from_array((token_type_ids_shape, token_type_ids_data)) {
+            Ok(t) => t,
+            Err(e) => {
+                log_msg(
+                    4,
+                    &format!(
+                        "plugin_embed: failed to create token_type_ids tensor: {}",
+                        e
+                    ),
+                );
+                return E_INFER;
+            }
+        };
 
     // Run inference
     let session = state.session.as_mut().expect("session checked above");
@@ -407,7 +459,10 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
     let (_shape, output_data) = match output_value.try_extract_tensor::<f32>() {
         Ok(s) => s,
         Err(e) => {
-            log_msg(4, &format!("plugin_embed: failed to extract output tensor: {}", e));
+            log_msg(
+                4,
+                &format!("plugin_embed: failed to extract output tensor: {}", e),
+            );
             return E_INFER;
         }
     };
@@ -421,22 +476,32 @@ pub extern "C" fn plugin_embed(text: *const c_char, out: *mut f32, dim: i32) -> 
     }
 
     // Validate caller's dim matches model's actual dim
-    let expected_dim = if cached_dim != 0 { cached_dim } else { model_dim as i32 };
+    let expected_dim = if cached_dim != 0 {
+        cached_dim
+    } else {
+        model_dim as i32
+    };
     if dim != expected_dim {
-        log_msg(4, &format!(
-            "plugin_embed: dimension mismatch (model={}, got={})",
-            expected_dim, dim
-        ));
+        log_msg(
+            4,
+            &format!(
+                "plugin_embed: dimension mismatch (model={}, got={})",
+                expected_dim, dim
+            ),
+        );
         return E_DIM;
     }
 
     let expected_elements = seq_len * dim_usize;
     if output_data.len() < expected_elements {
-        log_msg(4, &format!(
-            "plugin_embed: output too small (got {}, expected {})",
-            output_data.len(),
-            expected_elements
-        ));
+        log_msg(
+            4,
+            &format!(
+                "plugin_embed: output too small (got {}, expected {})",
+                output_data.len(),
+                expected_elements
+            ),
+        );
         return E_INFER;
     }
 
@@ -484,11 +549,14 @@ pub extern "C" fn plugin_free() {
         HOST_PTR.store(std::ptr::null_mut(), Ordering::SeqCst);
         log_msg(2, "Resources released (last reference freed)");
     } else {
-        log_msg(1, &format!(
-            "plugin_free: ref_count {} → {} (session kept alive)",
-            prev,
-            prev - 1
-        ));
+        log_msg(
+            1,
+            &format!(
+                "plugin_free: ref_count {} → {} (session kept alive)",
+                prev,
+                prev - 1
+            ),
+        );
     }
 }
 
